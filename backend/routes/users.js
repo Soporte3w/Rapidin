@@ -54,17 +54,17 @@ router.post('/', async (req, res) => {
 router.put('/:id', validateUUID, async (req, res) => {
   try {
     const { id } = req.params;
-    const { first_name, last_name, role, country, active } = req.body;
+    const { first_name, last_name, role, country, active, password } = req.body;
 
     const updates = [];
     const values = [];
     let paramCount = 1;
 
-    if (first_name) {
+    if (first_name != null && first_name !== '') {
       updates.push(`first_name = $${paramCount++}`);
       values.push(first_name);
     }
-    if (last_name) {
+    if (last_name != null && last_name !== '') {
       updates.push(`last_name = $${paramCount++}`);
       values.push(last_name);
     }
@@ -80,16 +80,26 @@ router.put('/:id', validateUUID, async (req, res) => {
       updates.push(`active = $${paramCount++}`);
       values.push(active);
     }
+    if (password && String(password).trim()) {
+      const passwordHash = await bcrypt.hash(String(password).trim(), 10);
+      updates.push(`password_hash = $${paramCount++}`);
+      values.push(passwordHash);
+    }
 
     if (updates.length === 0) {
       return errorResponse(res, 'No hay campos para actualizar', 400);
     }
 
+    updates.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
     const result = await query(
       `UPDATE module_rapidin_users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING id, email, first_name, last_name, role, country, active`,
       values
     );
+
+    if (result.rows.length === 0) {
+      return errorResponse(res, 'Usuario no encontrado', 404);
+    }
 
     return successResponse(res, result.rows[0], 'Usuario actualizado exitosamente');
   } catch (error) {

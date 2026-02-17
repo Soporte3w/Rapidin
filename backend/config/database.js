@@ -13,7 +13,7 @@ const pool = new Pool({
     password: process.env.DB_PASSWORD || '37>MNA&-35+',
     max: 20,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
+    connectionTimeoutMillis: 30000,
 });
 
 // Cache para evitar establecer search_path múltiples veces por conexión

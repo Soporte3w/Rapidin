@@ -81,6 +81,12 @@ function parseParkId(req, fromQuery = true) {
   return (value != null && value !== '') ? String(value).trim() : null;
 }
 
+/** Parsea driver_id (UUID de module_rapidin_drivers) desde query. Con solo este id se buscan solicitudes y préstamos. */
+function parseDriverId(req, fromQuery = true) {
+  const value = fromQuery ? req.query?.driver_id : req.body?.driver_id;
+  return (value != null && value !== '') ? String(value).trim() : null;
+}
+
 /** Valida que el usuario sea conductor (phone + country). Retorna errorResponse o null. */
 function requireDriverAuth(req, res) {
   const { phone, country } = req.user || {};
@@ -211,16 +217,17 @@ router.patch('/profile', authenticate, async (req, res) => {
   }
 });
 
-// Obtener todos los préstamos del conductor (por flota: park_id = la que eligió al entrar)
+// Obtener préstamos y solicitudes. Prioridad: driver_id (UUID) > park_id. Con driver_id basta (va enlazado al park en BD).
 router.get('/loans', authenticate, async (req, res) => {
   try {
     const authErr = requireDriverAuth(req, res);
     if (authErr) return authErr;
     const { phone, country } = req.user;
+    const driverId = parseDriverId(req, true);
     const parkId = parseParkId(req, true);
 
-    const { loans, pendingRequest, rejectedRequest } = await getDriverLoans(phone, country, parkId);
-    return successResponse(res, { loans, pendingRequest, rejectedRequest }, 'Préstamos obtenidos exitosamente');
+    const result = await getDriverLoans(phone, country, parkId, driverId);
+    return successResponse(res, result, 'Préstamos obtenidos exitosamente');
   } catch (error) {
     logger.error('Error en /driver/loans:', error);
     return errorResponse(res, error.message || 'Error al obtener los préstamos', 500);
@@ -233,13 +240,21 @@ async function getRapidinDriverId(phone, country, parkId = null) {
   const digitsOnly = (phone || '').toString().replace(/\D/g, '');
   const parkNorm = (parkId != null && String(parkId).trim() !== '') ? String(parkId).trim() : null;
   if (parkNorm) {
-    const r = await pool.query(
+    let r = await pool.query(
       `SELECT id FROM module_rapidin_drivers 
        WHERE country = $2 AND COALESCE(park_id, '') = $3 
        AND (phone = $1 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5) 
        LIMIT 1`,
       [phoneForDb, country, parkNorm, phone, digitsOnly]
     );
+    if (r.rows.length === 0) {
+      r = await pool.query(
+        `SELECT id FROM module_rapidin_drivers 
+         WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4) 
+         LIMIT 1`,
+        [country, phoneForDb, phone, digitsOnly]
+      );
+    }
     return r.rows[0]?.id ?? null;
   }
   const r = await pool.query(

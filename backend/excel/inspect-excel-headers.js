@@ -1,6 +1,7 @@
 /**
- * Lista TODAS las columnas exactas del Excel (Rptas PE y Cronogramas PE).
+ * Lista TODAS las columnas exactas del Excel (Rptas PE/CO y Cronogramas PE/CO).
  * Uso (desde backend/): node excel/inspect-excel-headers.js
+ * Opcional: node excel/inspect-excel-headers.js CO   → solo hojas de Colombia
  */
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,8 +9,10 @@ import XLSX from 'xlsx';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXCEL_PATH = path.join(__dirname, '..', '..', 'Prestamos Yego (6).xlsx');
+const onlyCountry = (process.argv[2] || '').toUpperCase();
 
 const workbook = XLSX.readFile(EXCEL_PATH);
+console.log('Hojas en el libro:', workbook.SheetNames.join(', '));
 
 function showHeaders(sheetName) {
   const sheet = workbook.Sheets[sheetName];
@@ -24,7 +27,6 @@ function showHeaders(sheetName) {
     const name = String(h ?? '').trim();
     if (name) console.log(`  [${i}] "${name}"`);
   });
-  // Primera fila de datos: valores de columnas que contienen "marca|fecha|temporal|solicitud"
   const row1 = data[1] || [];
   const dateLike = headers
     .map((h, i) => ({ i, name: String(h ?? '').trim() }))
@@ -35,7 +37,14 @@ function showHeaders(sheetName) {
   }
 }
 
-showHeaders('Rptas PE');
-showHeaders('Cronogramas PE');
+const sheetsPE = ['Rptas PE', 'Cronogramas PE'];
+const sheetsCO = ['Rptas CO', 'Cronogramas CO', 'Cronograma CO'];
+if (onlyCountry === 'CO') {
+  sheetsCO.forEach(showHeaders);
+} else if (onlyCountry === 'PE') {
+  sheetsPE.forEach(showHeaders);
+} else {
+  [...sheetsPE, ...sheetsCO].forEach(showHeaders);
+}
 
 process.exit(0);

@@ -390,7 +390,6 @@ const Payments = () => {
     }
   };
 
-  const countryName = paymentCountry === 'PE' ? 'Perú' : paymentCountry === 'CO' ? 'Colombia' : '';
   const safePayments = Array.isArray(payments) ? payments : [];
   const safeVouchers = Array.isArray(vouchers) ? vouchers : [];
   const pendingCount = tab === 'comprobantes' && comprobantesFilter === 'pending' ? safeVouchers.length : pendingVouchersCount;

@@ -62,7 +62,7 @@ interface DriverPayment {
 export default function DriverVouchers() {
   const { loanId: urlLoanId } = useParams();
   const { user } = useAuth();
-  const [vouchers, setVouchers] = useState<Voucher[]>([]);
+  const [, setVouchers] = useState<Voucher[]>([]);
   const [payments, setPayments] = useState<DriverPayment[]>([]);
   const [installments, setInstallments] = useState<Installment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -302,34 +302,6 @@ export default function DriverVouchers() {
     setPaymentDate('');
     setObservations('');
     setSelectedInstallments([]);
-  };
-
-  const getStatusBadge = (status: string) => {
-    const badges = {
-      pending: {
-        color: 'bg-yellow-100 text-yellow-700 border-yellow-200',
-        icon: Clock,
-        text: 'Por Validar'
-      },
-      approved: {
-        color: 'bg-green-100 text-green-700 border-green-200',
-        icon: CheckCircle,
-        text: 'Validado'
-      },
-      rejected: {
-        color: 'bg-red-100 text-red-700 border-red-200',
-        icon: XCircle,
-        text: 'Rechazado'
-      }
-    };
-    const badge = badges[status as keyof typeof badges];
-    const Icon = badge.icon;
-    return (
-      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${badge.color}`}>
-        <Icon className="w-3 h-3" />
-        <span>{badge.text}</span>
-      </span>
-    );
   };
 
   if (loading) {

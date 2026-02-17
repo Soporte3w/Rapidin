@@ -4,7 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { getStoredSelectedParkId, getStoredSelectedExternalDriverId } from '../../utils/authStorage';
 import { formatCurrency } from '../../utils/currency';
 import api from '../../services/api';
-import { CheckCircle2, Info, ChevronRight, ArrowLeft, PartyPopper, FileCheck, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, Info, ChevronRight, ArrowLeft, PartyPopper } from 'lucide-react';
 
 interface LoanOffer {
   cycle: number;

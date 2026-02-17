@@ -116,7 +116,7 @@ const Loans = () => {
       defaulted: {
         color: 'bg-red-100 text-red-800',
         icon: AlertCircle,
-        text: 'Incumplido'
+        text: 'Vencido'
       }
     };
     const badge = badges[status] || badges.active;
@@ -261,7 +261,7 @@ const Loans = () => {
               <option value="">Todos</option>
               <option value="active">Activo</option>
               <option value="cancelled">Cancelado</option>
-              <option value="defaulted">Incumplido</option>
+              <option value="defaulted">Vencido</option>
             </select>
           </div>
           <div className="flex-1 min-w-[150px]">

@@ -223,6 +223,7 @@ const LoanRequestDetail = () => {
   const isDisbursingRef = useRef(false);
 
   const currentUserName = [authUser?.first_name, authUser?.last_name].filter(Boolean).join(' ') || 'Usuario';
+  const isSunday = new Date().getDay() === 0;
 
   const fetchPlan = async (requestId: string) => {
     try {
@@ -763,11 +764,11 @@ const LoanRequestDetail = () => {
                 setRechargeSuccess(false);
                 setShowConfirmDisburseModal(true);
               }}
-              disabled={loadingDisburse}
+              disabled={loadingDisburse || isSunday}
               className="bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white font-semibold py-2.5 px-6 rounded-lg transition-all shadow-md flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loadingDisburse ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
-              {loadingDisburse ? 'Procesando...' : 'Desembolsar'}
+              {loadingDisburse ? 'Procesando...' : isSunday ? 'Desembolsar (no disponible domingos)' : 'Desembolsar'}
             </button>
           </div>
         </div>
@@ -804,7 +805,7 @@ const LoanRequestDetail = () => {
                   setFirstPaymentToday(false);
                   await handleDisburse();
                 }}
-                disabled={loadingDisburse}
+                disabled={loadingDisburse || isSunday}
                 className="px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {loadingDisburse ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
@@ -948,7 +949,7 @@ const LoanRequestDetail = () => {
                   await handleDisburse();
                   setFirstPaymentToday(false);
                 }}
-                disabled={loadingDisburse || (isYangoPro && !rechargeSuccess)}
+                disabled={loadingDisburse || (isYangoPro && !rechargeSuccess) || isSunday}
                 className="px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {loadingDisburse ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}

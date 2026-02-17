@@ -294,8 +294,8 @@ const buildPaymentsWhere = (filters, params, paramCountRef) => {
   }
   if (filters.date_from) {
     sql += ` AND p.payment_date >= $${paramCountRef.current++}`;
-    params.push(filters.date_from);
-  }
+      params.push(filters.date_from);
+    }
   if (filters.date_to) {
     sql += ` AND p.payment_date <= $${paramCountRef.current++}`;
     params.push(filters.date_to);

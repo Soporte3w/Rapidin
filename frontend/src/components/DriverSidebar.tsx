@@ -17,7 +17,7 @@ interface DriverSidebarProps {
 export default function DriverSidebar({ isOpen, onClose }: DriverSidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { logout } = useAuth();
 
   const handleLogout = () => {
     logout();

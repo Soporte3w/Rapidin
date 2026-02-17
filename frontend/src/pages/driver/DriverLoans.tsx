@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
-import { getStoredSelectedParkId } from '../../utils/authStorage';
+import { getStoredRapidinDriverId, setStoredRapidinDriverId, getStoredSelectedParkId, getStoredSelectedExternalDriverId } from '../../utils/authStorage';
 import { formatCurrency, getCurrencyLabel } from '../../utils/currency';
 import toast from 'react-hot-toast';
 
@@ -117,10 +117,18 @@ export default function DriverLoans() {
     try {
       setLoading(true);
       setError('');
+      const driverId = getStoredRapidinDriverId();
       const parkId = getStoredSelectedParkId();
-      const params = parkId ? { park_id: parkId } : {};
+      const externalDriverId = getStoredSelectedExternalDriverId();
+      const params: Record<string, string> = {};
+      if (driverId) params.driver_id = driverId;
+      else {
+        if (parkId) params.park_id = parkId;
+        if (externalDriverId) params.external_driver_id = externalDriverId;
+      }
       const { data } = await api.get('/driver/loans', { params });
       const raw = data?.data;
+      if (raw?.rapidin_driver_id) setStoredRapidinDriverId(raw.rapidin_driver_id);
       const loansList = Array.isArray(raw) ? raw : (raw?.loans ?? []);
       const pending = Array.isArray(raw) ? null : (raw?.pendingRequest ?? null);
       const rejected = Array.isArray(raw) ? null : (raw?.rejectedRequest ?? null);
@@ -139,8 +147,15 @@ export default function DriverLoans() {
     setScheduleLoading(true);
     setSchedule([]);
     try {
+      const driverId = getStoredRapidinDriverId();
       const parkId = getStoredSelectedParkId();
-      const params = parkId ? { park_id: parkId } : {};
+      const externalDriverId = getStoredSelectedExternalDriverId();
+      const params: Record<string, string> = {};
+      if (driverId) params.driver_id = driverId;
+      else {
+        if (parkId) params.park_id = parkId;
+        if (externalDriverId) params.external_driver_id = externalDriverId;
+      }
       const res = await api.get(`/driver/loans/${loan.id}/schedule`, { params });
       const data = res.data?.data ?? res.data ?? [];
       const scheduleList = Array.isArray(data) ? data : (data?.schedule ?? []);
@@ -160,8 +175,15 @@ export default function DriverLoans() {
   const downloadSchedule = async (loan: Loan) => {
     try {
       toast.loading('Preparando descarga...', { id: 'download-schedule' });
+      const driverId = getStoredRapidinDriverId();
       const parkId = getStoredSelectedParkId();
-      const params = parkId ? { park_id: parkId } : {};
+      const externalDriverId = getStoredSelectedExternalDriverId();
+      const params: Record<string, string> = {};
+      if (driverId) params.driver_id = driverId;
+      else {
+        if (parkId) params.park_id = parkId;
+        if (externalDriverId) params.external_driver_id = externalDriverId;
+      }
       const res = await api.get(`/driver/loans/${loan.id}/schedule`, { params });
       const data = res.data?.data ?? res.data ?? [];
       const list: ScheduleItem[] = Array.isArray(data) ? data : (data?.schedule ?? []);

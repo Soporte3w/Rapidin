@@ -43,7 +43,17 @@ export const getDriverDashboard = async (phone, country, parkId = null) => {
       `;
       rapidinDriverParams = [country, phoneForDb, phone, digitsOnly];
     }
-    const rapidinDriverResult = await query(rapidinDriverQuery, rapidinDriverParams);
+    let rapidinDriverResult = await query(rapidinDriverQuery, rapidinDriverParams);
+    // Si enviaron flota pero no hay fila con ese park_id (ej. conductor con park_id NULL), buscar por teléfono+país
+    if (parkNorm && rapidinDriverResult.rows.length === 0) {
+      const fallbackQuery = `
+        SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
+        WHERE country = $1
+          AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)
+        LIMIT 1
+      `;
+      rapidinDriverResult = await query(fallbackQuery, [country, phoneForDb, phone, digitsOnly]);
+    }
 
     let driver;
     if (driverResult.rows.length > 0) {
@@ -371,7 +381,16 @@ export const getDriverLoans = async (phone, country, parkId = null) => {
       `;
       rapidinDriverParams = [country, phoneForDb, phone, digitsOnly];
     }
-    const rapidinDriverResult = await query(rapidinDriverQuery, rapidinDriverParams);
+    let rapidinDriverResult = await query(rapidinDriverQuery, rapidinDriverParams);
+    if (parkNorm && rapidinDriverResult.rows.length === 0) {
+      const fallbackQuery = `
+        SELECT id FROM module_rapidin_drivers 
+        WHERE country = $1
+          AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)
+        LIMIT 1
+      `;
+      rapidinDriverResult = await query(fallbackQuery, [country, phoneForDb, phone, digitsOnly]);
+    }
 
     if (rapidinDriverResult.rows.length === 0) {
       return { loans: [], pendingRequest: null, rejectedRequest: null };
@@ -434,6 +453,41 @@ export const getDriverLoans = async (phone, country, parkId = null) => {
     `;
 
     const loansResult = await query(loansQuery, [rapidinDriverId, country]);
+    const loanIds = loansResult.rows.map((r) => r.id);
+
+    // Cronograma (cuotas) por préstamo: una sola consulta para todos los loans
+    const scheduleByLoan = new Map();
+    if (loanIds.length > 0) {
+      const scheduleResult = await query(
+        `SELECT id, loan_id, installment_number, installment_amount, principal_amount, interest_amount,
+                due_date, paid_date, paid_amount,
+                GREATEST(0, COALESCE(late_fee, 0))::numeric AS late_fee,
+                COALESCE(paid_late_fee, 0)::numeric AS paid_late_fee,
+                days_overdue, status
+         FROM module_rapidin_installments
+         WHERE loan_id = ANY($1)
+         ORDER BY loan_id, installment_number`,
+        [loanIds]
+      );
+      for (const row of scheduleResult.rows) {
+        const loanId = row.loan_id;
+        if (!scheduleByLoan.has(loanId)) scheduleByLoan.set(loanId, []);
+        scheduleByLoan.get(loanId).push({
+          id: row.id,
+          installment_number: row.installment_number,
+          installment_amount: parseFloat(row.installment_amount || 0),
+          principal_amount: parseFloat(row.principal_amount || 0),
+          interest_amount: parseFloat(row.interest_amount || 0),
+          due_date: row.due_date,
+          paid_date: row.paid_date,
+          paid_amount: parseFloat(row.paid_amount || 0),
+          late_fee: parseFloat(row.late_fee || 0),
+          paid_late_fee: parseFloat(row.paid_late_fee || 0),
+          days_overdue: row.days_overdue ?? 0,
+          status: row.status || 'pending'
+        });
+      }
+    }
 
     const loans = loansResult.rows.map(loan => {
       let status = 'completed';
@@ -444,6 +498,7 @@ export const getDriverLoans = async (phone, country, parkId = null) => {
       } else if (loan.status === 'cancelled') {
         status = 'completed';
       }
+      const schedule = scheduleByLoan.get(loan.id) || [];
 
       return {
         id: loan.id,
@@ -454,11 +509,12 @@ export const getDriverLoans = async (phone, country, parkId = null) => {
         paidInstallments: parseInt(loan.paid_installments) || 0,
         pendingAmount: parseFloat(loan.pending_amount || 0),
         totalAmount: parseFloat(loan.total_amount),
-        paymentFrequency: loan.payment_frequency
+        paymentFrequency: loan.payment_frequency,
+        schedule
       };
     });
 
-    return { loans, pendingRequest, rejectedRequest };
+    return { loans, pendingRequest, rejectedRequest, rapidin_driver_id: rapidinDriverId };
   } catch (error) {
     logger.error('Error obteniendo préstamos del conductor:', error);
     throw error;

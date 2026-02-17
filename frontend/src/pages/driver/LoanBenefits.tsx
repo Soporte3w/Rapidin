@@ -3,8 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   Shield, DollarSign, Car, Hospital, Cake, Wrench, Smartphone, Star, Droplet,
-  ChevronRight, Info,
-  Badge
+  ChevronRight, Info
 } from 'lucide-react';
 
 const benefits = [
@@ -21,7 +20,7 @@ const benefits = [
 
 export default function LoanBenefits() {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  useAuth();
   const [currentPage, setCurrentPage] = useState(0);
   const itemsPerPage = 4;
   const totalPages = Math.ceil(benefits.length / itemsPerPage);

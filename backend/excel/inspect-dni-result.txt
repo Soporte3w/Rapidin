@@ -1,0 +1,124 @@
+Columnas relevantes: {"dniCol":"DNI","prestamoCol":"PrestamoID","fechaProgCol":"Fecha_Programada"}
+Todas las cabeceras: PrestamoID | Row | DNI | Nombre | N_Cuota | Fecha_Programada | Cuota_Programada | Estado | Monto_Pagado | Fecha_Pago | Dias_Atraso | Mora | Total_a_Cobrar | Saldo_Cuota | Tasa_Semanal | Monto_Otorgado | PAGO_MARCAR | PAGO_IMPORTE | PAGO_OBS | __EMPTY | __EMPTY_1 | __EMPTY_2 | __EMPTY_3 | __EMPTY_4 | __EMPTY_5 | __EMPTY_6 | __EMPTY_7
+
+--- Filas en Cronogramas PE con DNI o PréstamoID 46768207: 24 ---
+
+Fila 1: N_Cuota=1
+  Fecha_Programada (raw) = 45908 (tipo: number)
+  Sin +1 día → 2025-09-08 (día: 8)
+  Con +1 día → 2025-09-09 (día: 9)
+
+Fila 2: N_Cuota=2
+  Fecha_Programada (raw) = 45915 (tipo: number)
+  Sin +1 día → 2025-09-15 (día: 15)
+  Con +1 día → 2025-09-16 (día: 16)
+
+Fila 3: N_Cuota=3
+  Fecha_Programada (raw) = 45922 (tipo: number)
+  Sin +1 día → 2025-09-22 (día: 22)
+  Con +1 día → 2025-09-23 (día: 23)
+
+Fila 4: N_Cuota=4
+  Fecha_Programada (raw) = 45929 (tipo: number)
+  Sin +1 día → 2025-09-29 (día: 29)
+  Con +1 día → 2025-09-30 (día: 30)
+
+Fila 5: N_Cuota=5
+  Fecha_Programada (raw) = 45936 (tipo: number)
+  Sin +1 día → 2025-10-06 (día: 6)
+  Con +1 día → 2025-10-07 (día: 7)
+
+Fila 6: N_Cuota=1
+  Fecha_Programada (raw) = 45943 (tipo: number)
+  Sin +1 día → 2025-10-13 (día: 13)
+  Con +1 día → 2025-10-14 (día: 14)
+
+Fila 7: N_Cuota=2
+  Fecha_Programada (raw) = 45950 (tipo: number)
+  Sin +1 día → 2025-10-20 (día: 20)
+  Con +1 día → 2025-10-21 (día: 21)
+
+Fila 8: N_Cuota=3
+  Fecha_Programada (raw) = 45957 (tipo: number)
+  Sin +1 día → 2025-10-27 (día: 27)
+  Con +1 día → 2025-10-28 (día: 28)
+
+Fila 9: N_Cuota=4
+  Fecha_Programada (raw) = 45964 (tipo: number)
+  Sin +1 día → 2025-11-03 (día: 3)
+  Con +1 día → 2025-11-04 (día: 4)
+
+Fila 10: N_Cuota=5
+  Fecha_Programada (raw) = 45971 (tipo: number)
+  Sin +1 día → 2025-11-10 (día: 10)
+  Con +1 día → 2025-11-11 (día: 11)
+
+Fila 11: N_Cuota=6
+  Fecha_Programada (raw) = 45978 (tipo: number)
+  Sin +1 día → 2025-11-17 (día: 17)
+  Con +1 día → 2025-11-18 (día: 18)
+
+Fila 12: N_Cuota=7
+  Fecha_Programada (raw) = 45985 (tipo: number)
+  Sin +1 día → 2025-11-24 (día: 24)
+  Con +1 día → 2025-11-25 (día: 25)
+
+Fila 13: N_Cuota=8
+  Fecha_Programada (raw) = 45994 (tipo: number)
+  Sin +1 día → 2025-12-03 (día: 3)
+  Con +1 día → 2025-12-04 (día: 4)
+
+Fila 14: N_Cuota=9
+  Fecha_Programada (raw) = 46001 (tipo: number)
+  Sin +1 día → 2025-12-10 (día: 10)
+  Con +1 día → 2025-12-11 (día: 11)
+
+Fila 15: N_Cuota=1
+  Fecha_Programada (raw) = 46034 (tipo: number)
+  Sin +1 día → 2026-01-12 (día: 12)
+  Con +1 día → 2026-01-13 (día: 13)
+
+Fila 16: N_Cuota=2
+  Fecha_Programada (raw) = 46041 (tipo: number)
+  Sin +1 día → 2026-01-19 (día: 19)
+  Con +1 día → 2026-01-20 (día: 20)
+
+Fila 17: N_Cuota=3
+  Fecha_Programada (raw) = 46049 (tipo: number)
+  Sin +1 día → 2026-01-27 (día: 27)
+  Con +1 día → 2026-01-28 (día: 28)
+
+Fila 18: N_Cuota=4
+  Fecha_Programada (raw) = 46057 (tipo: number)
+  Sin +1 día → 2026-02-04 (día: 4)
+  Con +1 día → 2026-02-05 (día: 5)
+
+Fila 19: N_Cuota=5
+  Fecha_Programada (raw) = 46064 (tipo: number)
+  Sin +1 día → 2026-02-11 (día: 11)
+  Con +1 día → 2026-02-12 (día: 12)
+
+Fila 20: N_Cuota=1
+  Fecha_Programada (raw) = 46069 (tipo: number)
+  Sin +1 día → 2026-02-16 (día: 16)
+  Con +1 día → 2026-02-17 (día: 17)
+
+Fila 21: N_Cuota=2
+  Fecha_Programada (raw) = 46076 (tipo: number)
+  Sin +1 día → 2026-02-23 (día: 23)
+  Con +1 día → 2026-02-24 (día: 24)
+
+Fila 22: N_Cuota=3
+  Fecha_Programada (raw) = 46083 (tipo: number)
+  Sin +1 día → 2026-03-02 (día: 2)
+  Con +1 día → 2026-03-03 (día: 3)
+
+Fila 23: N_Cuota=4
+  Fecha_Programada (raw) = 46090 (tipo: number)
+  Sin +1 día → 2026-03-09 (día: 9)
+  Con +1 día → 2026-03-10 (día: 10)
+
+Fila 24: N_Cuota=5
+  Fecha_Programada (raw) = 46097 (tipo: number)
+  Sin +1 día → 2026-03-16 (día: 16)
+  Con +1 día → 2026-03-17 (día: 17)

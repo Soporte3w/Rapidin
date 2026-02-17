@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getStoredSelectedParkId, getStoredSelectedExternalDriverId, getStoredSession, setStoredSession } from '../utils/authStorage';
-import { Phone, Shield, ArrowRight, CheckCircle, AlertCircle, Zap, Clock } from 'lucide-react';
+import { Shield, ArrowRight, CheckCircle, AlertCircle, Zap, Clock } from 'lucide-react';
 import api from '../services/api';
 
 const LandingPage = () => {
@@ -50,10 +50,6 @@ const LandingPage = () => {
       color: 'yellow',
     },
   ];
-
-  const detectCountry = (phoneNumber: string): 'PE' | 'CO' => {
-    return detectedCountry; // Usar el país seleccionado en el combo
-  };
 
   const formatPhone = (value: string) => {
     // Solo números, sin formato especial

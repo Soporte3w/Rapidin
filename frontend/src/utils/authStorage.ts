@@ -9,6 +9,8 @@ export interface StoredSession {
   user: Record<string, unknown>;
   selectedParkId?: string;
   selectedExternalDriverId?: string;
+  /** UUID de module_rapidin_drivers; enviar como driver_id en las peticiones (va enlazado con park_id en BD) */
+  selectedRapidinDriverId?: string;
   selectedFlotaName?: string;
 }
 
@@ -44,6 +46,7 @@ export function updateStoredFlota(
     ...session,
     selectedParkId: selectedParkId || undefined,
     selectedExternalDriverId: selectedExternalDriverId || undefined,
+    selectedRapidinDriverId: session.selectedRapidinDriverId ?? undefined,
     selectedFlotaName: selectedFlotaName || undefined,
   });
 }
@@ -72,4 +75,14 @@ export function getStoredSelectedParkId(): string | null {
 
 export function getStoredSelectedExternalDriverId(): string | null {
   return getStoredSession()?.selectedExternalDriverId ?? null;
+}
+
+export function getStoredRapidinDriverId(): string | null {
+  return getStoredSession()?.selectedRapidinDriverId ?? null;
+}
+
+export function setStoredRapidinDriverId(driverId: string | null | undefined): void {
+  const session = getStoredSession();
+  if (!session) return;
+  setStoredSession({ ...session, selectedRapidinDriverId: driverId || undefined });
 }

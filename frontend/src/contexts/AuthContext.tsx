@@ -23,6 +23,8 @@ interface User {
   driver_id?: string | null;
   /** ID del car/registro en tabla drivers (consulta por teléfono al hacer login) */
   car_id?: string | null;
+  /** UUID en module_rapidin_drivers si el número ya está registrado; se guarda en localStorage para las peticiones */
+  rapidin_driver_id?: string | null;
 }
 
 interface AuthContextType {
@@ -89,8 +91,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loginWithPhone = async (phone: string, code: string, country: 'PE' | 'CO') => {
     const response = await api.post('/auth/verify-otp', { phone, code, country });
-    const { token, user: userData, flotas } = response.data.data || {};
-    setStoredSession({ token, user: userData });
+    const { token, user: userData, flotas, rapidin_driver_id } = response.data.data || {};
+    const rapidinId = rapidin_driver_id ?? (userData as User)?.rapidin_driver_id;
+    setStoredSession({
+      token,
+      user: userData,
+      selectedRapidinDriverId: rapidinId || undefined,
+    });
     setUser(userData);
     return { flotas: flotas || [] };
   };

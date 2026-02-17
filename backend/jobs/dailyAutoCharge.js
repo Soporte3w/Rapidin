@@ -1,8 +1,14 @@
 import cron from 'node-cron';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { query } from '../config/database.js';
 import { logger } from '../utils/logger.js';
 import { getContractorBalance, withdrawFromContractor } from '../services/yangoService.js';
 import { registerPaymentAuto, updateLoanBalance } from '../services/paymentService.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const COBROS_TXT_DIR = path.join(__dirname, '..', 'logs', 'cobros-automaticos');
 
 /**
  * Actualiza la mora diaria para todas las cuotas vencidas (due_date < hoy), estén en pending u overdue.
@@ -15,7 +21,7 @@ export const updateDailyLateFees = async () => {
      SELECT i.id, i.loan_id, i.due_date, i.installment_amount, i.paid_amount, i.late_fee
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
-     WHERE l.status = 'active'
+     WHERE l.status IN ('active', 'defaulted')
        AND i.status IN ('pending', 'overdue')
        AND i.due_date < CURRENT_DATE
        AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0`);
@@ -55,7 +61,7 @@ export const updateLateFeesForDriver = async (driverId) => {
      SELECT i.id, i.loan_id
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
-     WHERE l.driver_id = $1 AND l.status = 'active'
+     WHERE l.driver_id = $1 AND l.status IN ('active', 'defaulted')
        AND i.status IN ('pending', 'overdue')
        AND i.due_date < CURRENT_DATE
        AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0`,
@@ -119,11 +125,12 @@ const getDueInstallmentsForAutoCharge = async (dayOfWeek, driverIdFilter = null)
        d.external_driver_id,
        d.first_name AS driver_first_name,
        d.last_name AS driver_last_name,
-       d.park_id AS flota
+       d.park_id AS flota,
+       l.country AS country
      FROM module_rapidin_loans l
      JOIN module_rapidin_drivers d ON d.id = l.driver_id
      JOIN module_rapidin_installments i ON i.loan_id = l.id
-     WHERE l.status = 'active'
+     WHERE l.status IN ('active', 'defaulted')
        AND i.status = $1
        AND ${dateCondition}
        AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0
@@ -194,6 +201,8 @@ export const runDailyAutoCharge = async (forceDayOfWeek = null, driverIdFilter =
   logger.info(`${installments.length} cuotas a procesar`);
 
   let success = 0, partial = 0, failed = 0;
+  /** Líneas para el TXT de seguridad: nombre del conductor | país | monto cobrado (PE y CO) */
+  const cobrosTxtLines = [];
 
   for (const inst of installments) {
     try {
@@ -275,10 +284,12 @@ export const runDailyAutoCharge = async (forceDayOfWeek = null, driverIdFilter =
       if (amountToCharge >= pendingAmount) {
         logger.info(`✅ Cobro completo de ${driverName}: S/ ${amountToCharge.toFixed(2)} (cuota + mora)`);
         await logAutoPaymentAttempt(inst, pendingAmount, amountToCharge, 'success', 'Cobro completo', balance, paymentResult?.id);
+        cobrosTxtLines.push(`${driverName.trim()} | ${inst.country || 'PE'} | ${amountToCharge.toFixed(2)}`);
         success++;
       } else {
         logger.info(`⚠️ Cobro parcial de ${driverName}: S/ ${amountToCharge.toFixed(2)} de S/ ${pendingAmount.toFixed(2)} (se aplica primero a mora, luego a cuota)`);
         await logAutoPaymentAttempt(inst, pendingAmount, amountToCharge, 'partial', 'Cobro parcial (saldo insuficiente)', balance, paymentResult?.id);
+        cobrosTxtLines.push(`${driverName.trim()} | ${inst.country || 'PE'} | ${amountToCharge.toFixed(2)}`);
         await markInstallmentOverdueOnly(inst.installment_id);
         await updateLoanBalance(inst.loan_id);
         partial++;
@@ -292,6 +303,23 @@ export const runDailyAutoCharge = async (forceDayOfWeek = null, driverIdFilter =
   }
 
   logger.info(`Cobro automático completado: ${success} exitosos, ${partial} parciales, ${failed} fallidos`);
+
+  // Generar TXT de seguridad: nombre del conductor | país | monto cobrado (PE y CO)
+  if (cobrosTxtLines.length > 0) {
+    try {
+      await fs.promises.mkdir(COBROS_TXT_DIR, { recursive: true });
+      const now = new Date();
+      const fileName = `cobro-automatico-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}.txt`;
+      const filePath = path.join(COBROS_TXT_DIR, fileName);
+      const header = 'Nombre del conductor | País | Monto cobrado\n';
+      const content = header + cobrosTxtLines.join('\n') + '\n';
+      await fs.promises.writeFile(filePath, content, 'utf8');
+      logger.info(`TXT de cobros generado: ${filePath} (${cobrosTxtLines.length} registro(s))`);
+    } catch (err) {
+      logger.error('Error generando TXT de cobros automáticos:', err);
+    }
+  }
+
   return { success, partial, failed };
 };
 
@@ -301,18 +329,30 @@ const getAutoChargeDriverFilter = () => {
   return id || null;
 };
 
+/** A partir de este día se ejecutan cobro automático y mora. Antes no se ejecuta nada (ni mañana ni ningún día hasta el 23). */
+const COBRO_AUTOMATICO_DESDE = new Date('2026-02-23T00:00:00.000Z');
+
+const isDentroDeVentana = () => {
+  const hoy = new Date();
+  if (hoy < COBRO_AUTOMATICO_DESDE) {
+    logger.info(`Cobro automático / mora: omitido (inicio programado a partir del 23, hoy ${hoy.toISOString().slice(0, 10)})`);
+    return false;
+  }
+  return true;
+};
+
 /**
- * Cobro automático:
+ * Cobro automático (a partir del 23):
  * - Lunes 7:00am (Lima): cuotas pending que vencen ese día
  * - Martes 7:00am y 12:00 (Lima): cuotas overdue (vencidas)
- * - Si AUTO_CHARGE_DRIVER_ID está definido, solo se procesa ese conductor
- * - Mora: se actualiza diariamente a las 00:05
+ * - Mora: diario 00:05. Antes del 23 no se ejecuta nada.
  */
 export const startDailyAutoChargeJob = () => {
   const driverFilter = getAutoChargeDriverFilter();
 
   // Lunes 7:00am - cobrar cuotas que vencen hoy
   cron.schedule('0 7 * * 1', async () => {
+    if (!isDentroDeVentana()) return;
     logger.info(`Iniciando job de cobro automático - Lunes 7:00am (cuotas que vencen hoy)${driverFilter ? ' [solo driver: ' + driverFilter + ']' : ''}`);
     await runDailyAutoCharge(1, driverFilter);
   }, {
@@ -321,6 +361,7 @@ export const startDailyAutoChargeJob = () => {
 
   // Martes 7:00am - cobrar cuotas vencidas
   cron.schedule('0 7 * * 2', async () => {
+    if (!isDentroDeVentana()) return;
     logger.info(`Iniciando job de cobro automático - Martes 7:00am (cuotas vencidas/overdue)${driverFilter ? ' [solo driver: ' + driverFilter + ']' : ''}`);
     await runDailyAutoCharge(2, driverFilter);
   }, {
@@ -329,6 +370,7 @@ export const startDailyAutoChargeJob = () => {
 
   // Martes 12:00 - segundo intento de cobro de cuotas vencidas
   cron.schedule('0 12 * * 2', async () => {
+    if (!isDentroDeVentana()) return;
     logger.info(`Iniciando job de cobro automático - Martes 12:00 (cuotas vencidas/overdue)${driverFilter ? ' [solo driver: ' + driverFilter + ']' : ''}`);
     await runDailyAutoCharge(2, driverFilter);
   }, {
@@ -337,11 +379,12 @@ export const startDailyAutoChargeJob = () => {
 
   // Actualización diaria de mora a las 00:05
   cron.schedule('5 0 * * *', async () => {
+    if (!isDentroDeVentana()) return;
     logger.info('Iniciando actualización diaria de mora');
     await updateDailyLateFees();
   }, {
     timezone: 'America/Lima'
   });
 
-  logger.info(`Job de cobro automático: Lunes 7am (pending), Martes 7am y 12:00 (overdue); Mora: diario 00:05 (Lima)${driverFilter ? '; solo driver: ' + driverFilter : ''}`);
+  logger.info(`Job de cobro automático: activo a partir del 23. Lunes 7am (pending), Martes 7am y 12:00 (overdue); Mora: diario 00:05 (Lima)${driverFilter ? '; solo driver: ' + driverFilter : ''}`);
 };

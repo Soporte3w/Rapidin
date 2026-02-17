@@ -84,7 +84,7 @@ const LoanDetail = () => {
       defaulted: {
         color: 'bg-red-100 text-red-800',
         icon: XCircle,
-        text: 'Incumplido'
+        text: 'Vencido'
       }
     };
     const badge = badges[status] || badges.pending;

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Plus, X, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { Plus, X, Pencil, Trash2, Loader2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
@@ -10,6 +10,13 @@ const UsersManagement = () => {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
   const [open, setOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<any>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [userToDelete, setUserToDelete] = useState<any>(null);
+  const [loadingCreate, setLoadingCreate] = useState(false);
+  const [loadingEdit, setLoadingEdit] = useState(false);
+  const [loadingDelete, setLoadingDelete] = useState(false);
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -17,6 +24,14 @@ const UsersManagement = () => {
     last_name: '',
     role: '',
     country: 'PE',
+  });
+  const [editFormData, setEditFormData] = useState({
+    first_name: '',
+    last_name: '',
+    role: '',
+    country: 'PE',
+    active: true,
+    password: '',
   });
 
   const total = users.length;
@@ -44,6 +59,7 @@ const UsersManagement = () => {
   };
 
   const handleSubmit = async () => {
+    setLoadingCreate(true);
     try {
       await api.post('/users', formData);
       toast.success('Usuario creado correctamente');
@@ -61,6 +77,68 @@ const UsersManagement = () => {
     } catch (error: any) {
       console.error('Error creating user:', error);
       toast.error(error.response?.data?.message || 'Error al crear el usuario');
+    } finally {
+      setLoadingCreate(false);
+    }
+  };
+
+  const openEdit = (user: any) => {
+    setEditingUser(user);
+    setEditFormData({
+      first_name: user.first_name || '',
+      last_name: user.last_name || '',
+      role: user.role || '',
+      country: user.country || 'PE',
+      active: user.active !== false,
+      password: '',
+    });
+    setEditOpen(true);
+  };
+
+  const handleEditSubmit = async () => {
+    if (!editingUser?.id) return;
+    setLoadingEdit(true);
+    try {
+      const payload: any = {
+        first_name: editFormData.first_name,
+        last_name: editFormData.last_name,
+        role: editFormData.role,
+        country: editFormData.country,
+        active: editFormData.active,
+      };
+      if (editFormData.password.trim()) payload.password = editFormData.password;
+      await api.put(`/users/${editingUser.id}`, payload);
+      toast.success('Usuario actualizado correctamente');
+      setEditOpen(false);
+      setEditingUser(null);
+      fetchUsers();
+    } catch (error: any) {
+      console.error('Error updating user:', error);
+      toast.error(error.response?.data?.message || 'Error al actualizar el usuario');
+    } finally {
+      setLoadingEdit(false);
+    }
+  };
+
+  const openDelete = (user: any) => {
+    setUserToDelete(user);
+    setDeleteOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!userToDelete?.id) return;
+    setLoadingDelete(true);
+    try {
+      await api.delete(`/users/${userToDelete.id}`);
+      toast.success('Usuario desactivado correctamente');
+      setDeleteOpen(false);
+      setUserToDelete(null);
+      fetchUsers();
+    } catch (error: any) {
+      console.error('Error deleting user:', error);
+      toast.error(error.response?.data?.message || 'Error al desactivar el usuario');
+    } finally {
+      setLoadingDelete(false);
     }
   };
 
@@ -110,6 +188,9 @@ const UsersManagement = () => {
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                   Último Acceso
                 </th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  Acciones
+                </th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -144,6 +225,26 @@ const UsersManagement = () => {
                       month: 'short', 
                       day: 'numeric' 
                     }) : 'Nunca'}
+                  </td>
+                  <td className="px-4 py-4 whitespace-nowrap text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openEdit(user)}
+                        className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                        title="Editar"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openDelete(user)}
+                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Desactivar"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -337,9 +438,160 @@ const UsersManagement = () => {
               </button>
               <button
                 onClick={handleSubmit}
-                className="px-6 py-2 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-lg transition-all font-semibold shadow-md text-sm"
+                disabled={loadingCreate}
+                className="px-6 py-2 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-lg transition-all font-semibold shadow-md text-sm disabled:opacity-70 disabled:cursor-not-allowed flex items-center gap-2"
               >
-                Crear
+                {loadingCreate && <Loader2 className="h-4 w-4 animate-spin" />}
+                {loadingCreate ? 'Creando...' : 'Crear'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editOpen && editingUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto border border-gray-100">
+            <div className="flex justify-between items-center p-5 border-b border-gray-200 bg-[#8B1A1A] rounded-t-xl">
+              <h2 className="text-xl font-bold text-white">Editar Usuario</h2>
+              <button
+                onClick={() => { setEditOpen(false); setEditingUser(null); }}
+                className="text-white hover:text-gray-200 transition-colors"
+              >
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Email</label>
+                <input
+                  type="email"
+                  value={editingUser.email}
+                  disabled
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-600 text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-900 mb-1.5">Nueva contraseña (opcional)</label>
+                <input
+                  type="password"
+                  value={editFormData.password}
+                  onChange={(e) => setEditFormData({ ...editFormData, password: e.target.value })}
+                  placeholder="Dejar en blanco para no cambiar"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-900 mb-1.5">Nombre</label>
+                  <input
+                    type="text"
+                    value={editFormData.first_name}
+                    onChange={(e) => setEditFormData({ ...editFormData, first_name: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-900 mb-1.5">Apellido</label>
+                  <input
+                    type="text"
+                    value={editFormData.last_name}
+                    onChange={(e) => setEditFormData({ ...editFormData, last_name: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-900 mb-1.5">Rol</label>
+                <select
+                  value={editFormData.role}
+                  onChange={(e) => setEditFormData({ ...editFormData, role: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
+                >
+                  <option value="admin">Admin</option>
+                  <option value="analyst">Analista</option>
+                  <option value="approver">Aprobador</option>
+                  <option value="payer">Pagador</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-900 mb-1.5">País</label>
+                <select
+                  value={editFormData.country}
+                  onChange={(e) => setEditFormData({ ...editFormData, country: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
+                >
+                  <option value="PE">Perú</option>
+                  <option value="CO">Colombia</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="edit-active"
+                  checked={editFormData.active}
+                  onChange={(e) => setEditFormData({ ...editFormData, active: e.target.checked })}
+                  className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                />
+                <label htmlFor="edit-active" className="text-sm font-medium text-gray-700">Usuario activo</label>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 p-6 border-t border-gray-200">
+              <button
+                onClick={() => { setEditOpen(false); setEditingUser(null); }}
+                className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all font-medium"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleEditSubmit}
+                disabled={loadingEdit}
+                className="px-6 py-2 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-lg transition-all font-semibold shadow-md text-sm disabled:opacity-70 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {loadingEdit && <Loader2 className="h-4 w-4 animate-spin" />}
+                {loadingEdit ? 'Guardando...' : 'Guardar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteOpen && userToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full border border-gray-100">
+            <div className="flex justify-between items-center p-5 border-b border-gray-200 bg-red-600 rounded-t-2xl">
+              <h2 className="text-xl font-bold text-white">Desactivar usuario</h2>
+              <button
+                onClick={() => { setDeleteOpen(false); setUserToDelete(null); }}
+                className="text-white hover:text-gray-200 transition-colors"
+              >
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-gray-700">
+                ¿Desactivar al usuario <strong>{userToDelete.email}</strong>? No podrá iniciar sesión.
+              </p>
+            </div>
+            <div className="flex justify-end gap-3 p-6 border-t border-gray-200">
+              <button
+                onClick={() => { setDeleteOpen(false); setUserToDelete(null); }}
+                className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all font-medium"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleDeleteConfirm}
+                disabled={loadingDelete}
+                className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-all font-semibold shadow-md text-sm disabled:opacity-70 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {loadingDelete && <Loader2 className="h-4 w-4 animate-spin" />}
+                {loadingDelete ? 'Desactivando...' : 'Desactivar'}
               </button>
             </div>
           </div>

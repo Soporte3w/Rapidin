@@ -79,10 +79,12 @@ export const createLoanRequest = async (data, userId = null, options = {}) => {
     }
   }
 
-  const creditLine = await getCreditLine(driver_id, country);
-
-  if (requested_amount > creditLine) {
-    throw new Error(`El monto solicitado excede la línea de crédito disponible (${creditLine})`);
+  // Solo el flujo conductor debe respetar la línea de crédito por ciclo; el admin puede crear solicitudes por montos mayores.
+  if (!createdByAdmin) {
+    const creditLine = await getCreditLine(driver_id, country);
+    if (requested_amount > creditLine) {
+      throw new Error(`El monto solicitado excede la línea de crédito disponible (${creditLine})`);
+    }
   }
 
   const result = await query(

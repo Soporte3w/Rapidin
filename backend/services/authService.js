@@ -5,6 +5,7 @@ import { generateToken } from '../config/jwt.js';
 import { logger } from '../utils/logger.js';
 import { sendSMS } from './notificationService.js';
 import { getPartnerNameById } from './partnersService.js';
+import { normalizePhoneForDb } from '../utils/helpers.js';
 
 export const login = async (email, password) => {
     const result = await query(
@@ -278,6 +279,25 @@ export const verifyOTP = async (phone, code, country) => {
     const driverId = driver.driver_id != null ? String(driver.driver_id) : null;
     const carId = driver.car_id != null ? String(driver.car_id) : null;
 
+    // Devolver el id (UUID) de module_rapidin_drivers si el número ya está registrado — para localStorage
+    let rapidin_driver_id = null;
+    try {
+        const phoneForDb = normalizePhoneForDb(user.phone, countryCode);
+        const digitsOnly = (user.phone || '').toString().replace(/\D/g, '');
+        const rapidinRow = await query(
+            `SELECT id FROM module_rapidin_drivers
+             WHERE country = $1
+               AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)
+             LIMIT 1`,
+            [countryCode, phoneForDb, user.phone, digitsOnly]
+        );
+        if (rapidinRow.rows.length > 0) {
+            rapidin_driver_id = rapidinRow.rows[0].id != null ? String(rapidinRow.rows[0].id) : null;
+        }
+    } catch (e) {
+        logger.warn('No se pudo buscar id de module_rapidin_drivers al login:', e.message);
+    }
+
     return {
         token,
         user: {
@@ -292,9 +312,11 @@ export const verifyOTP = async (phone, code, country) => {
             has_active_loan: user.has_active_loan,
             active_loan: activeLoan,
             driver_id: driverId,
-            car_id: carId
+            car_id: carId,
+            rapidin_driver_id: rapidin_driver_id
         },
-        flotas
+        flotas,
+        rapidin_driver_id: rapidin_driver_id
     };
 };
 

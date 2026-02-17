@@ -1,0 +1,21 @@
+Columna encontrada: NUMERO DE CUENTA (índice 12)
+
+Primeras 15 celdas con valor (fila, tipo, valor raw, valor formateado .w):
+
+  Fila 227: t="s" (texto), v="01181400025306557019", w="01181400025306557019"
+  Fila 228: t="n" (número), v=1234567891013, w="1.23457E+12"
+  Fila 229: t="n" (número), v=19437827150040, w="1.94378E+13"
+  Fila 232: t="s" (texto), v="00389801329327245142", w="00389801329327245142"
+  Fila 233: t="s" (texto), v="00219210377085704533", w="00219210377085704533"
+  Fila 235: t="n" (número), v=19436168207041, w="1.94362E+13"
+  Fila 236: t="n" (número), v=21570502470011, w="2.15705E+13"
+  Fila 237: t="s" (texto), v="00333001338469814789", w="00333001338469814789"
+  Fila 238: t="n" (número), v=19406612542034, w="1.94066E+13"
+  Fila 242: t="n" (número), v=19177008337097, w="1.9177E+13"
+  Fila 244: t="n" (número), v=8983264408387, w="8.98326E+12"
+  Fila 247: t="n" (número), v=19226109602584, w="1.92261E+13"
+  Fila 248: t="s" (texto), v="00219117128483908659", w="00219117128483908659"
+  Fila 252: t="s" (texto), v="05432182321098960454", w="05432182321098960454"
+  Fila 253: t="n" (número), v=19495669671028, w="1.94957E+13"
+
+Resumen: tipo de dato predominante en la columna = ver "t" arriba (n=número, s=texto).

@@ -299,7 +299,7 @@ const LoanDetail = () => {
                         const pref = loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : '';
                         const pendiente = Math.max(0, parseFloat(installment.late_fee ?? 0));
                         const pagada = Math.max(0, parseFloat(installment.paid_late_fee ?? 0));
-                        const cobrada = Math.max(0, parseFloat((installment as { mora_cobrada?: number }).mora_cobrada ?? 0));
+                        const cobrada = Math.max(0, Number((installment as { mora_cobrada?: number }).mora_cobrada ?? 0));
                         const totalMora = pendiente + pagada + (installment.status === 'paid' ? cobrada : 0);
                         if (totalMora === 0 && cobrada === 0) return <span>{pref} 0.00</span>;
                         return (

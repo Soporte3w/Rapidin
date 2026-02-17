@@ -549,7 +549,6 @@ const LoanRequestDetail = () => {
           const obs = parseRequestObservations(request);
           const depositType = obs.deposit_type || '';
           const bank = obs.bank || '';
-          const accountType = obs.account_type || '';
           const accountNumber = obs.account_number || '';
           const bankAccountInputType = obs.bank_account_input_type || '';
           const savingsAccountCci = obs.savings_account_cci || '';

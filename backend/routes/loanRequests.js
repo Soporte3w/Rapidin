@@ -124,7 +124,7 @@ router.get('/:id', validateUUID, async (req, res) => {
     }
 
     const documents = await getDocumentsByRequestId(req.params.id);
-    const driverCycle = request.driver_cycle != null ? parseInt(request.driver_cycle, 10) : 1;
+    const driverCycle = (request.cycle ?? request.driver_cycle) != null ? parseInt(request.cycle ?? request.driver_cycle, 10) : 1;
     let requires_guarantor = false;
     if (request.country && driverCycle) {
       const cycleConfig = await pool.query(

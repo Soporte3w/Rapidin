@@ -12,6 +12,7 @@ interface LoanRequest {
   driver_last_name: string;
   requested_amount: number;
   disbursed_amount?: number | null;
+  cycle?: number | null;
   driver_cycle?: number | null;
   status: string;
   country: string;

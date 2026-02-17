@@ -42,7 +42,7 @@ router.post('/simulate', async (req, res) => {
       return errorResponse(res, 'No hay condiciones de préstamo configuradas', 400);
     }
 
-    let cycle = request.driver_cycle != null ? parseInt(request.driver_cycle, 10) : null;
+    let cycle = (request.cycle ?? request.driver_cycle) != null ? parseInt(request.cycle ?? request.driver_cycle, 10) : null;
     if (cycle == null && request.driver_id) {
       const driverRow = await query('SELECT cycle FROM module_rapidin_drivers WHERE id = $1', [request.driver_id]);
       cycle = driverRow.rows[0]?.cycle != null ? parseInt(driverRow.rows[0].cycle, 10) : 1;

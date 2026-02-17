@@ -5,7 +5,7 @@ import { generateToken } from '../config/jwt.js';
 import { logger } from '../utils/logger.js';
 import { sendSMS } from './notificationService.js';
 import { getPartnerNameById } from './partnersService.js';
-import { normalizePhoneForDb } from '../utils/helpers.js';
+import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helpers.js';
 
 export const login = async (email, password) => {
     const result = await query(
@@ -236,19 +236,23 @@ export const verifyOTP = async (phone, code, country) => {
         });
     }
 
-    // Verificar si tiene préstamo activo en module_rapidin_loans
+    // Verificar si tiene préstamo activo en module_rapidin_loans (rd.phone en BD puede ser "970180035")
+    const countryCodeForLoan = driver.license_country === 'per' ? 'PE' : 'CO';
+    const last9ForLoan = phoneDigitsForRapidinMatch(driver.phone, countryCodeForLoan);
+    const digitsOnlyForLoan = (driver.phone || '').toString().replace(/\D/g, '');
     const loanResult = await query(
         `SELECT l.id, l.status, l.pending_balance, l.disbursed_amount
          FROM module_rapidin_loans l
          JOIN module_rapidin_drivers rd ON rd.id = l.driver_id
-         WHERE rd.phone = $1 AND l.status = 'active'
+         WHERE rd.country = $1 AND l.status = 'active'
+           AND (rd.phone = $2 OR rd.phone = $3 OR REGEXP_REPLACE(COALESCE(rd.phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(rd.phone,''), '[^0-9]', '', 'g') = $5)
          LIMIT 1`,
-        [normalizedPhone]
+        [countryCodeForLoan, normalizePhoneForDb(driver.phone, countryCodeForLoan), driver.phone, digitsOnlyForLoan, last9ForLoan]
     );
 
     const activeLoan = loanResult.rows.length > 0 ? loanResult.rows[0] : null;
 
-    const countryCode = driver.license_country === 'per' ? 'PE' : 'CO';
+    const countryCode = countryCodeForLoan;
 
     // Crear objeto de usuario para el token (email no se consulta aquí; el conductor lo completa en Mi Perfil)
     const user = {
@@ -280,16 +284,18 @@ export const verifyOTP = async (phone, code, country) => {
     const carId = driver.car_id != null ? String(driver.car_id) : null;
 
     // Devolver el id (UUID) de module_rapidin_drivers si el número ya está registrado — para localStorage
+    // En BD el phone puede estar como "970180035" (9 dígitos) o "+51970180035"; comparar también por últimos 9 dígitos
     let rapidin_driver_id = null;
     try {
         const phoneForDb = normalizePhoneForDb(user.phone, countryCode);
         const digitsOnly = (user.phone || '').toString().replace(/\D/g, '');
+        const last9 = phoneDigitsForRapidinMatch(user.phone, countryCode);
         const rapidinRow = await query(
             `SELECT id FROM module_rapidin_drivers
              WHERE country = $1
-               AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)
+               AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
              LIMIT 1`,
-            [countryCode, phoneForDb, user.phone, digitsOnly]
+            [countryCode, phoneForDb, user.phone, digitsOnly, last9]
         );
         if (rapidinRow.rows.length > 0) {
             rapidin_driver_id = rapidinRow.rows[0].id != null ? String(rapidinRow.rows[0].id) : null;

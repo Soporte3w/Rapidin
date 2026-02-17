@@ -519,7 +519,7 @@ const LoanRequestDetail = () => {
             <DataRow label="Nombre" value={`${request.driver_first_name || ''} ${request.driver_last_name || ''}`.trim() || '—'} />
             <DataRow label="Licencia" value={String(request.driver_licencia || request.dni || '—')} mono copyable />
             <DataRow label="DNI" value={request.dni || '—'} mono copyable />
-            <DataRow label="Ciclo" value={request.driver_cycle != null ? `Ciclo ${request.driver_cycle}` : '—'} highlight />
+            <DataRow label="Ciclo" value={(request.cycle ?? request.driver_cycle) != null ? `Ciclo ${request.cycle ?? request.driver_cycle}` : '—'} highlight />
             <DataRow label="Flota" value={request.driver_partner_name || '—'} />
             <DataRow label="Teléfono" value={request.phone ? (request.phone.startsWith('+') ? request.phone : `+${request.phone}`) : '—'} copyable />
             <DataRow label="Email" value={request.email || '—'} />
@@ -551,7 +551,9 @@ const LoanRequestDetail = () => {
           const bank = obs.bank || '';
           const accountType = obs.account_type || '';
           const accountNumber = obs.account_number || '';
-          if (!depositType && !bank && !accountNumber) return null;
+          const bankAccountInputType = obs.bank_account_input_type || '';
+          const savingsAccountCci = obs.savings_account_cci || '';
+          if (!depositType && !bank && !accountNumber && !savingsAccountCci) return null;
           return (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
               <div className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b border-gray-100">
@@ -565,8 +567,9 @@ const LoanRequestDetail = () => {
                 {depositType === 'bank' && (
                   <>
                     <DataRow label="Banco" value={bank || '—'} />
-                    <DataRow label="Tipo de cuenta" value={accountType === 'savings' ? 'Ahorros' : accountType === 'checking' ? 'Corriente' : accountType || '—'} />
-                    <DataRow label="Número de cuenta" value={accountNumber || '—'} mono copyable />
+                    <DataRow label="Tipo de dato" value={bankAccountInputType === 'cci' ? 'CCI' : bankAccountInputType === 'ahorros' ? 'Cuenta de ahorro' : '—'} />
+                    {bankAccountInputType === 'ahorros' && <DataRow label="Número de cuenta de ahorro" value={accountNumber || '—'} mono copyable />}
+                    {bankAccountInputType === 'cci' && <DataRow label="CCI (20 dígitos)" value={savingsAccountCci || '—'} mono copyable />}
                   </>
                 )}
               </dl>

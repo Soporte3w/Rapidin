@@ -64,6 +64,8 @@ export default function AdminNewLoanRequest() {
     bank: '',
     accountType: '',
     accountNumber: '',
+    bankAccountInputType: '' as '' | 'ahorros' | 'cci',
+    savingsAccountOrCci: '',
     requestedAmount: '',
     purpose: '',
     contactName: '',
@@ -285,14 +287,29 @@ export default function AdminNewLoanRequest() {
     }
     if (step === 2) {
       if (formData.depositType === 'bank') {
-        if (!formData.bank || !formData.accountType || !formData.accountNumber) {
-          toast.error('Completa datos bancarios');
+        if (!formData.bank) {
+          toast.error('Selecciona el banco');
           return false;
         }
-        const v = validateBankAccount(formData.bank, formData.accountNumber);
-        if (!v.valid) {
-          toast.error(v.message ?? 'Número de cuenta inválido');
+        if (!formData.bankAccountInputType) {
+          toast.error('Elige tipo: Cuenta de ahorro o CCI');
           return false;
+        }
+        if (formData.bankAccountInputType === 'ahorros') {
+          if (!formData.accountNumber) {
+            toast.error('Ingresa el número de cuenta de ahorro');
+            return false;
+          }
+          const v = validateBankAccount(formData.bank, formData.accountNumber);
+          if (!v.valid) {
+            toast.error(v.message ?? 'Número de cuenta inválido');
+            return false;
+          }
+        } else {
+          if ((formData.savingsAccountOrCci || '').replace(/\D/g, '').length !== 20) {
+            toast.error('El CCI debe tener 20 dígitos');
+            return false;
+          }
         }
       }
       return true;
@@ -412,7 +429,9 @@ export default function AdminNewLoanRequest() {
         ...(formData.depositType === 'bank' && {
           bank: formData.bank,
           account_type: formData.accountType || 'CUENTA DE AHORRO',
-          account_number: formData.accountNumber,
+          account_number: formData.bankAccountInputType === 'ahorros' ? formData.accountNumber : '',
+          bank_account_input_type: formData.bankAccountInputType,
+          savings_account_cci: formData.bankAccountInputType === 'cci' ? formData.savingsAccountOrCci.trim() : '',
         }),
       };
       Object.entries(fields).forEach(([k, v]) => fd.append(k, v));
@@ -675,7 +694,7 @@ export default function AdminNewLoanRequest() {
                     <button
                       key={bank}
                       type="button"
-                      onClick={() => setFormData((p) => ({ ...p, bank, accountNumber: '' }))}
+                      onClick={() => setFormData((p) => ({ ...p, bank, accountNumber: '', bankAccountInputType: '', savingsAccountOrCci: '' }))}
                       className={`p-3 rounded-lg border-2 text-center transition-all ${
                         formData.bank === bank
                           ? 'border-red-500 bg-red-50 ring-2 ring-red-200'
@@ -690,41 +709,110 @@ export default function AdminNewLoanRequest() {
               </div>
 
               {formData.bank && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Número de cuenta <span className="text-red-600">*</span>
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      value={formData.accountNumber}
-                      onChange={(e) => {
-                        const maxLen = Math.max(...(selectedBank?.digits || [20]));
-                        setFormData((p) => ({ ...p, accountNumber: e.target.value.replace(/\D/g, '').slice(0, maxLen) }));
-                      }}
-                      className={`w-full px-3 py-2.5 border-2 rounded-lg transition-colors ${
-                        isAccountValid
-                          ? 'border-green-500 bg-green-50 focus:ring-2 focus:ring-green-200'
-                          : isAccountPartial
-                          ? 'border-yellow-400 focus:ring-2 focus:ring-yellow-200'
-                          : 'border-gray-300 focus:ring-2 focus:ring-red-200 focus:border-red-500'
-                      }`}
-                      placeholder={`Ingresa ${selectedBank?.label || 'el número de cuenta'}`}
-                    />
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                      <span className={`text-xs font-medium ${isAccountValid ? 'text-green-600' : isAccountPartial ? 'text-yellow-600' : 'text-gray-400'}`}>
-                        {accountDigits}/{selectedBank?.digits.join(' o ')}
-                      </span>
-                      {isAccountValid && (
-                        <CheckCircle className="w-5 h-5 text-green-500" />
-                      )}
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-3">Tipo de dato a ingresar</label>
+                    <div className="flex gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setFormData((p) => ({ ...p, bankAccountInputType: 'ahorros', savingsAccountOrCci: '' }))}
+                        className={`flex-1 p-3 rounded-lg border-2 text-center transition-all ${
+                          formData.bankAccountInputType === 'ahorros'
+                            ? 'border-red-500 bg-red-50 ring-2 ring-red-200'
+                            : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        <p className={`font-semibold ${formData.bankAccountInputType === 'ahorros' ? 'text-red-700' : 'text-gray-800'}`}>Cuenta de ahorro</p>
+                        <p className="text-xs text-gray-500 mt-0.5">Número de cuenta</p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData((p) => ({ ...p, bankAccountInputType: 'cci', accountNumber: '' }))}
+                        className={`flex-1 p-3 rounded-lg border-2 text-center transition-all ${
+                          formData.bankAccountInputType === 'cci'
+                            ? 'border-red-500 bg-red-50 ring-2 ring-red-200'
+                            : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        <p className={`font-semibold ${formData.bankAccountInputType === 'cci' ? 'text-red-700' : 'text-gray-800'}`}>CCI</p>
+                        <p className="text-xs text-gray-500 mt-0.5">Código de Cuenta Interbancario (20 dígitos)</p>
+                      </button>
                     </div>
                   </div>
-                  <p className="text-xs text-gray-500 mt-1.5">
-                    Cuenta de ahorro en soles · {formData.bank}
-                  </p>
-                </div>
+
+                  {formData.bankAccountInputType === 'ahorros' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Número de cuenta de ahorro <span className="text-red-600">*</span>
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={formData.accountNumber}
+                          onChange={(e) => {
+                            const maxLen = Math.max(...(selectedBank?.digits || [20]));
+                            setFormData((p) => ({ ...p, accountNumber: e.target.value.replace(/\D/g, '').slice(0, maxLen) }));
+                          }}
+                          className={`w-full px-3 py-2.5 border-2 rounded-lg transition-colors ${
+                            isAccountValid
+                              ? 'border-green-500 bg-green-50 focus:ring-2 focus:ring-green-200'
+                              : isAccountPartial
+                              ? 'border-yellow-400 focus:ring-2 focus:ring-yellow-200'
+                              : 'border-gray-300 focus:ring-2 focus:ring-red-200 focus:border-red-500'
+                          }`}
+                          placeholder={`Ingresa ${selectedBank?.label || 'el número de cuenta'}`}
+                        />
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                          <span className={`text-xs font-medium ${isAccountValid ? 'text-green-600' : isAccountPartial ? 'text-yellow-600' : 'text-gray-400'}`}>
+                            {accountDigits}/{selectedBank?.digits.join(' o ')}
+                          </span>
+                          {isAccountValid && (
+                            <CheckCircle className="w-5 h-5 text-green-500" />
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1.5">
+                        Cuenta de ahorro en soles · {formData.bank}
+                      </p>
+                    </div>
+                  )}
+
+                  {formData.bankAccountInputType === 'cci' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        CCI (Código de Cuenta Interbancario) <span className="text-red-600">*</span>
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={formData.savingsAccountOrCci}
+                          onChange={(e) =>
+                            setFormData((p) => ({ ...p, savingsAccountOrCci: e.target.value.replace(/\D/g, '').slice(0, 20) }))
+                          }
+                          className={`w-full px-3 py-2.5 border-2 rounded-lg transition-colors ${
+                            formData.savingsAccountOrCci.length === 20
+                              ? 'border-green-500 bg-green-50 focus:ring-2 focus:ring-green-200'
+                              : 'border-gray-300 focus:ring-2 focus:ring-red-200 focus:border-red-500'
+                          }`}
+                          placeholder="20 dígitos"
+                        />
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                          <span className={`text-xs font-medium ${formData.savingsAccountOrCci.length === 20 ? 'text-green-600' : 'text-gray-400'}`}>
+                            {formData.savingsAccountOrCci.length}/20
+                          </span>
+                          {formData.savingsAccountOrCci.length === 20 && (
+                            <CheckCircle className="w-5 h-5 text-green-500" />
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1.5">
+                        CCI de 20 dígitos para transferencias interbancarias.
+                      </p>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}

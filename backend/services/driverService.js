@@ -1,12 +1,12 @@
 import pool from '../database/connection.js';
 import { logger } from '../utils/logger.js';
-import { normalizePhoneForDb, getCountryCodeForDrivers } from '../utils/helpers.js';
+import { normalizePhoneForDb, getCountryCodeForDrivers, phoneDigitsForRapidinMatch } from '../utils/helpers.js';
 import { getPartnerNameById } from './partnersService.js';
 
 // Helper function para ejecutar queries
 const query = (text, params) => pool.query(text, params);
 
-export const getDriverDashboard = async (phone, country, parkId = null) => {
+export const getDriverDashboard = async (phone, country, parkId = null, rapidinDriverIdFromAuth = null) => {
   try {
     const countryCode = getCountryCodeForDrivers(country);
     const phoneForDb = normalizePhoneForDb(phone, country);
@@ -22,37 +22,51 @@ export const getDriverDashboard = async (phone, country, parkId = null) => {
     `;
     const driverResult = await query(driverQuery, [countryCode, phoneForDb, phone, digitsOnly]);
 
-    // 2. Resolver ID en module_rapidin_drivers (por flota si hay park_id) — búsqueda flexible
+    // 2. Resolver ID en module_rapidin_drivers: si ya viene del login (conductor en Rapidín), usarlo; si no, buscar por teléfono
     const parkNorm = (parkId != null && String(parkId).trim() !== '') ? String(parkId).trim() : null;
-    let rapidinDriverQuery;
-    let rapidinDriverParams;
-    if (parkNorm) {
-      rapidinDriverQuery = `
-        SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
-        WHERE country = $1 AND COALESCE(park_id, '') = $2
-          AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
-        LIMIT 1
-      `;
-      rapidinDriverParams = [country, parkNorm, phoneForDb, phone, digitsOnly];
-    } else {
-      rapidinDriverQuery = `
-        SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
-        WHERE country = $1
-          AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)
-        LIMIT 1
-      `;
-      rapidinDriverParams = [country, phoneForDb, phone, digitsOnly];
+    let rapidinDriverResult = { rows: [] };
+
+    const last9 = phoneDigitsForRapidinMatch(phone, country);
+    if (rapidinDriverIdFromAuth) {
+      const check = await query(
+        `SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
+         WHERE id = $1 AND country = $2
+           AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
+         LIMIT 1`,
+        [rapidinDriverIdFromAuth, country, phoneForDb, phone, digitsOnly, last9]
+      );
+      if (check.rows.length > 0) rapidinDriverResult = check;
     }
-    let rapidinDriverResult = await query(rapidinDriverQuery, rapidinDriverParams);
-    // Si enviaron flota pero no hay fila con ese park_id (ej. conductor con park_id NULL), buscar por teléfono+país
-    if (parkNorm && rapidinDriverResult.rows.length === 0) {
-      const fallbackQuery = `
-        SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
-        WHERE country = $1
-          AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)
-        LIMIT 1
-      `;
-      rapidinDriverResult = await query(fallbackQuery, [country, phoneForDb, phone, digitsOnly]);
+
+    if (rapidinDriverResult.rows.length === 0) {
+      let rapidinDriverQuery;
+      let rapidinDriverParams;
+      if (parkNorm) {
+        rapidinDriverQuery = `
+          SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
+          WHERE country = $1 AND COALESCE(park_id, '') = $2
+            AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
+          LIMIT 1
+        `;
+        rapidinDriverParams = [country, parkNorm, phoneForDb, phone, digitsOnly, last9];
+      } else {
+        rapidinDriverQuery = `
+          SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
+          WHERE country = $1
+            AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
+          LIMIT 1
+        `;
+        rapidinDriverParams = [country, phoneForDb, phone, digitsOnly, last9];
+      }
+      rapidinDriverResult = await query(rapidinDriverQuery, rapidinDriverParams);
+      if (parkNorm && rapidinDriverResult.rows.length === 0) {
+        rapidinDriverResult = await query(
+          `SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
+           WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
+           LIMIT 1`,
+          [country, phoneForDb, phone, digitsOnly, last9]
+        );
+      }
     }
 
     let driver;
@@ -348,7 +362,8 @@ export const getDriverDashboard = async (phone, country, parkId = null) => {
           totalPayments: total,
           onTimeRate: typeof rate === 'string' ? parseFloat(rate) : rate
         };
-      })()
+      })(),
+      rapidin_driver_id: rapidinDriverId
     };
   } catch (error) {
     logger.error('Error obteniendo dashboard del conductor:', error);
@@ -356,47 +371,62 @@ export const getDriverDashboard = async (phone, country, parkId = null) => {
   }
 };
 
-export const getDriverLoans = async (phone, country, parkId = null) => {
+export const getDriverLoans = async (phone, country, parkId = null, rapidinDriverIdFromAuth = null) => {
   try {
     const phoneForDb = normalizePhoneForDb(phone, country);
     const digitsOnly = (phone || '').toString().replace(/\D/g, '');
     const parkNorm = (parkId != null && String(parkId).trim() !== '') ? String(parkId).trim() : null;
 
-    let rapidinDriverQuery;
-    let rapidinDriverParams;
-    if (parkNorm) {
-      rapidinDriverQuery = `
-        SELECT id FROM module_rapidin_drivers 
-        WHERE country = $1 AND COALESCE(park_id, '') = $2
-          AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
-        LIMIT 1
-      `;
-      rapidinDriverParams = [country, parkNorm, phoneForDb, phone, digitsOnly];
-    } else {
-      rapidinDriverQuery = `
-        SELECT id FROM module_rapidin_drivers 
-        WHERE country = $1
-          AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)
-        LIMIT 1
-      `;
-      rapidinDriverParams = [country, phoneForDb, phone, digitsOnly];
-    }
-    let rapidinDriverResult = await query(rapidinDriverQuery, rapidinDriverParams);
-    if (parkNorm && rapidinDriverResult.rows.length === 0) {
-      const fallbackQuery = `
-        SELECT id FROM module_rapidin_drivers 
-        WHERE country = $1
-          AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)
-        LIMIT 1
-      `;
-      rapidinDriverResult = await query(fallbackQuery, [country, phoneForDb, phone, digitsOnly]);
+    let rapidinDriverId = null;
+
+    const last9 = phoneDigitsForRapidinMatch(phone, country);
+    // Si ya viene el id del login (conductor en module_rapidin_drivers), validar que sea de este teléfono y usarlo
+    if (rapidinDriverIdFromAuth) {
+      const check = await query(
+        `SELECT id FROM module_rapidin_drivers
+         WHERE id = $1 AND country = $2
+           AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
+         LIMIT 1`,
+        [rapidinDriverIdFromAuth, country, phoneForDb, phone, digitsOnly, last9]
+      );
+      if (check.rows.length > 0) rapidinDriverId = check.rows[0].id;
     }
 
-    if (rapidinDriverResult.rows.length === 0) {
-      return { loans: [], pendingRequest: null, rejectedRequest: null };
+    if (!rapidinDriverId) {
+      let rapidinDriverQuery;
+      let rapidinDriverParams;
+      if (parkNorm) {
+        rapidinDriverQuery = `
+          SELECT id FROM module_rapidin_drivers 
+          WHERE country = $1 AND COALESCE(park_id, '') = $2
+            AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
+          LIMIT 1
+        `;
+        rapidinDriverParams = [country, parkNorm, phoneForDb, phone, digitsOnly, last9];
+      } else {
+        rapidinDriverQuery = `
+          SELECT id FROM module_rapidin_drivers 
+          WHERE country = $1
+            AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
+          LIMIT 1
+        `;
+        rapidinDriverParams = [country, phoneForDb, phone, digitsOnly, last9];
+      }
+      let rapidinDriverResult = await query(rapidinDriverQuery, rapidinDriverParams);
+      if (parkNorm && rapidinDriverResult.rows.length === 0) {
+        rapidinDriverResult = await query(
+          `SELECT id FROM module_rapidin_drivers 
+           WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
+           LIMIT 1`,
+          [country, phoneForDb, phone, digitsOnly, last9]
+        );
+      }
+      if (rapidinDriverResult.rows.length > 0) rapidinDriverId = rapidinDriverResult.rows[0].id;
     }
 
-    const rapidinDriverId = rapidinDriverResult.rows[0].id;
+    if (!rapidinDriverId) {
+      return { loans: [], pendingRequest: null, rejectedRequest: null, requests: [], rapidin_driver_id: null };
+    }
 
     // Solicitud pendiente o en proceso (solo si aún NO está desembolsada; si está disbursed, el préstamo aparece en la lista)
     const pendingRequestsResult = await query(
@@ -469,22 +499,41 @@ export const getDriverLoans = async (phone, country, parkId = null) => {
          ORDER BY loan_id, installment_number`,
         [loanIds]
       );
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
       for (const row of scheduleResult.rows) {
         const loanId = row.loan_id;
         if (!scheduleByLoan.has(loanId)) scheduleByLoan.set(loanId, []);
+        const lateFee = Math.max(0, parseFloat(row.late_fee) || 0);
+        const paidLateFee = Math.max(0, parseFloat(row.paid_late_fee) || 0);
+        const totalCobrar = (parseFloat(row.installment_amount) || 0) + lateFee;
+        const totalPagado = (parseFloat(row.paid_amount) || 0) + paidLateFee;
+        const paid = totalPagado >= totalCobrar;
+        const dueDate = row.due_date ? new Date(row.due_date) : null;
+        if (dueDate) dueDate.setHours(0, 0, 0, 0);
+        const isOverdue = !paid && dueDate && dueDate.getTime() < today.getTime();
+        const effectiveStatus = paid ? 'paid' : (isOverdue ? 'overdue' : (row.status || 'pending'));
+        const lateFeeDisplay = paid ? 0 : lateFee;
+        const installmentAmt = parseFloat(row.installment_amount || 0);
+        const moraCobrada = paid
+          ? (paidLateFee > 0 ? paidLateFee : Math.max(0, totalPagado - installmentAmt))
+          : 0;
         scheduleByLoan.get(loanId).push({
           id: row.id,
           installment_number: row.installment_number,
-          installment_amount: parseFloat(row.installment_amount || 0),
+          installment_amount: installmentAmt,
           principal_amount: parseFloat(row.principal_amount || 0),
           interest_amount: parseFloat(row.interest_amount || 0),
           due_date: row.due_date,
           paid_date: row.paid_date,
           paid_amount: parseFloat(row.paid_amount || 0),
-          late_fee: parseFloat(row.late_fee || 0),
-          paid_late_fee: parseFloat(row.paid_late_fee || 0),
+          late_fee: lateFeeDisplay,
+          paid_late_fee: paidLateFee,
+          mora_cobrada: moraCobrada,
           days_overdue: row.days_overdue ?? 0,
-          status: row.status || 'pending'
+          status: effectiveStatus,
+          total_pagado: totalPagado,
+          total_a_cobrar: totalCobrar
         });
       }
     }

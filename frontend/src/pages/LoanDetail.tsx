@@ -299,18 +299,22 @@ const LoanDetail = () => {
                         const pref = loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : '';
                         const pendiente = Math.max(0, parseFloat(installment.late_fee ?? 0));
                         const pagada = Math.max(0, parseFloat(installment.paid_late_fee ?? 0));
-                        const totalMora = pendiente + pagada;
-                        if (totalMora === 0) return <span>{pref} 0.00</span>;
+                        const cobrada = Math.max(0, parseFloat((installment as { mora_cobrada?: number }).mora_cobrada ?? 0));
+                        const totalMora = pendiente + pagada + (installment.status === 'paid' ? cobrada : 0);
+                        if (totalMora === 0 && cobrada === 0) return <span>{pref} 0.00</span>;
                         return (
                           <span className="block space-y-0.5">
                             {pendiente > 0 && (
                               <span className="block text-red-600 font-medium">{pref} {pendiente.toFixed(2)} <span className="text-xs font-normal text-red-500">(pendiente)</span></span>
                             )}
-                            {pagada > 0 && (
+                            {installment.status === 'paid' && cobrada > 0 && (
+                              <span className="block text-amber-700 font-medium">{pref} {cobrada.toFixed(2)} <span className="text-xs font-normal">(cobrada)</span></span>
+                            )}
+                            {pagada > 0 && installment.status !== 'paid' && (
                               <span className="block text-amber-700 text-xs">{pref} {pagada.toFixed(2)} (pagada)</span>
                             )}
-                            {(pendiente > 0 || pagada > 0) && (
-                              <span className="block text-xs font-semibold text-gray-700 border-t border-gray-200 pt-0.5 mt-0.5">Total mora: {pref} {totalMora.toFixed(2)}</span>
+                            {(pendiente > 0 || pagada > 0 || cobrada > 0) && (
+                              <span className="block text-xs font-semibold text-gray-700 border-t border-gray-200 pt-0.5 mt-0.5">Total mora: {pref} {(pendiente + pagada + cobrada).toFixed(2)}</span>
                             )}
                           </span>
                         );

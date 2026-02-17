@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS module_rapidin_loan_requests (
     approved_at TIMESTAMP,
     disbursed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    cycle INTEGER DEFAULT 1
 );
 
 -- Loans table

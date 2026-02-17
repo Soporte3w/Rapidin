@@ -47,6 +47,8 @@ interface ScheduleItem {
   late_fee?: number;
   /** Mora ya pagada (para mostrar que la cuota tuvo mora) */
   paid_late_fee?: number;
+  /** Mora que se cobró (cuando la cuota está pagada; para mostrar en columna Mora) */
+  mora_cobrada?: number;
 }
 
 interface PendingRequest {
@@ -810,7 +812,7 @@ export default function DriverLoans() {
                             {row.due_date ? new Date(row.due_date).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}
                           </td>
                           <td className="px-2 py-2 text-gray-700">
-                            {row.status === 'pending' && Number(row.late_fee ?? 0) === 0 && Number(row.paid_late_fee ?? 0) === 0 ? (
+                            {row.status === 'pending' && Number(row.late_fee ?? 0) === 0 && Number(row.paid_late_fee ?? 0) === 0 && Number(row.mora_cobrada ?? 0) === 0 ? (
                               '—'
                             ) : (
                               <span className="block">
@@ -819,12 +821,17 @@ export default function DriverLoans() {
                                     {formatCurrency(Number(row.late_fee), country)} <span className="text-xs font-normal text-red-500">(pendiente)</span>
                                   </span>
                                 )}
-                                {Number(row.paid_late_fee ?? 0) > 0 && (
+                                {(row.status === 'paid' && Number(row.mora_cobrada ?? 0) > 0) && (
+                                  <span className="text-amber-700 font-medium block">
+                                    {formatCurrency(Number(row.mora_cobrada), country)} <span className="text-xs font-normal">(cobrada)</span>
+                                  </span>
+                                )}
+                                {Number(row.paid_late_fee ?? 0) > 0 && row.status !== 'paid' && (
                                   <span className={`text-amber-700 text-xs ${Number(row.late_fee ?? 0) > 0 ? 'mt-0.5' : ''}`}>
                                     {formatCurrency(Number(row.paid_late_fee), country)} (pagada)
                                   </span>
                                 )}
-                                {Number(row.late_fee ?? 0) === 0 && Number(row.paid_late_fee ?? 0) === 0 && (
+                                {Number(row.late_fee ?? 0) === 0 && Number(row.paid_late_fee ?? 0) === 0 && Number(row.mora_cobrada ?? 0) === 0 && (
                                   formatCurrency(0, country)
                                 )}
                               </span>

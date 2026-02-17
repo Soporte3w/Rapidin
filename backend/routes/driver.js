@@ -15,6 +15,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import pool from '../database/connection.js';
 import { logger } from '../utils/logger.js';
+import { phoneDigitsForRapidinMatch } from '../utils/helpers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -102,6 +103,7 @@ function requireDriverAuth(req, res) {
 async function getActiveLoanInOtherFlota(phone, country, currentParkId) {
   const phoneForDb = normalizePhoneForDb(phone, country);
   const digitsOnly = (phone || '').toString().replace(/\D/g, '');
+  const last9 = phoneDigitsForRapidinMatch(phone, country);
   const currentNorm = (currentParkId != null && currentParkId !== '') ? String(currentParkId).trim() : '';
 
   const result = await pool.query(
@@ -109,9 +111,9 @@ async function getActiveLoanInOtherFlota(phone, country, currentParkId) {
      FROM module_rapidin_drivers d
      JOIN module_rapidin_loans l ON l.driver_id = d.id AND l.status IN ('active', 'defaulted')
      WHERE d.country = $1
-       AND (d.phone = $2 OR d.phone = $3 OR REGEXP_REPLACE(COALESCE(d.phone,''), '[^0-9]', '', 'g') = $4)
-       AND (COALESCE(TRIM(d.park_id), '') <> $5 OR $5 = '')`,
-    [country, phoneForDb, phone, digitsOnly, currentNorm]
+       AND (d.phone = $2 OR d.phone = $3 OR REGEXP_REPLACE(COALESCE(d.phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(d.phone,''), '[^0-9]', '', 'g') = $5)
+       AND (COALESCE(TRIM(d.park_id), '') <> $6 OR $6 = '')`,
+    [country, phoneForDb, phone, digitsOnly, last9, currentNorm]
   );
 
   const flotas = [];
@@ -133,12 +135,13 @@ async function getActiveLoanInOtherFlota(phone, country, currentParkId) {
 async function getPendingRequestInAnyFlota(phone, country) {
   const phoneForDb = normalizePhoneForDb(phone, country);
   const digitsOnly = (phone || '').toString().replace(/\D/g, '');
+  const last9 = phoneDigitsForRapidinMatch(phone, country);
   const result = await pool.query(
     `SELECT r.status, d.park_id
      FROM module_rapidin_loan_requests r
      JOIN module_rapidin_drivers d ON d.id = r.driver_id
      WHERE d.country = $1
-       AND (d.phone = $2 OR d.phone = $3 OR REGEXP_REPLACE(COALESCE(d.phone,''), '[^0-9]', '', 'g') = $4)
+       AND (d.phone = $2 OR d.phone = $3 OR REGEXP_REPLACE(COALESCE(d.phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(d.phone,''), '[^0-9]', '', 'g') = $5)
        AND r.status NOT IN ('rejected', 'cancelled')
        AND (
          r.status IN ('pending', 'approved', 'signed')
@@ -148,7 +151,7 @@ async function getPendingRequestInAnyFlota(phone, country) {
          ))
        )
      ORDER BY r.created_at DESC`,
-    [country, phoneForDb, phone, digitsOnly]
+    [country, phoneForDb, phone, digitsOnly, last9]
   );
   if (result.rows.length === 0) return { hasPendingRequest: false };
   const flotas = [];
@@ -178,15 +181,17 @@ router.get('/flota-name', authenticate, async (req, res) => {
   }
 });
 
-// Obtener dashboard del conductor (park_id = flota elegida, opcional)
+// Obtener dashboard del conductor. Si ya existe conductor (login), usar driver_id; si no viene, resolver por teléfono.
 router.get('/dashboard', authenticate, async (req, res) => {
   try {
     const authErr = requireDriverAuth(req, res);
     if (authErr) return authErr;
     const { phone, country } = req.user;
     const parkId = parseParkId(req, true);
+    let driverId = parseDriverId(req, true);
+    if (!driverId) driverId = await getRapidinDriverId(phone, country, parkId);
 
-    const dashboard = await getDriverDashboard(phone, country, parkId);
+    const dashboard = await getDriverDashboard(phone, country, parkId, driverId);
     return successResponse(res, dashboard, 'Dashboard obtenido exitosamente');
   } catch (error) {
     logger.error('Error en /driver/dashboard:', error);
@@ -217,14 +222,15 @@ router.patch('/profile', authenticate, async (req, res) => {
   }
 });
 
-// Obtener préstamos y solicitudes. Prioridad: driver_id (UUID) > park_id. Con driver_id basta (va enlazado al park en BD).
+// Obtener préstamos y solicitudes. Si el conductor ya existe (login guarda driver_id), usar ese id; si no viene, resolver por teléfono.
 router.get('/loans', authenticate, async (req, res) => {
   try {
     const authErr = requireDriverAuth(req, res);
     if (authErr) return authErr;
     const { phone, country } = req.user;
-    const driverId = parseDriverId(req, true);
     const parkId = parseParkId(req, true);
+    let driverId = parseDriverId(req, true);
+    if (!driverId) driverId = await getRapidinDriverId(phone, country, parkId);
 
     const result = await getDriverLoans(phone, country, parkId, driverId);
     return successResponse(res, result, 'Préstamos obtenidos exitosamente');
@@ -234,34 +240,35 @@ router.get('/loans', authenticate, async (req, res) => {
   }
 });
 
-// Helper: resolver driver_id por (phone, country, park_id opcional). Usa teléfono normalizado para coincidir con lo guardado.
+// Helper: resolver driver_id por (phone, country, park_id opcional). En BD el phone puede estar como "970180035" (9 dígitos); comparar también por últimos 9.
 async function getRapidinDriverId(phone, country, parkId = null) {
   const phoneForDb = normalizePhoneForDb(phone, country);
   const digitsOnly = (phone || '').toString().replace(/\D/g, '');
+  const last9 = phoneDigitsForRapidinMatch(phone, country);
   const parkNorm = (parkId != null && String(parkId).trim() !== '') ? String(parkId).trim() : null;
   if (parkNorm) {
     let r = await pool.query(
       `SELECT id FROM module_rapidin_drivers 
        WHERE country = $2 AND COALESCE(park_id, '') = $3 
-       AND (phone = $1 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5) 
+       AND (phone = $1 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6) 
        LIMIT 1`,
-      [phoneForDb, country, parkNorm, phone, digitsOnly]
+      [phoneForDb, country, parkNorm, phone, digitsOnly, last9]
     );
     if (r.rows.length === 0) {
       r = await pool.query(
         `SELECT id FROM module_rapidin_drivers 
-         WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4) 
+         WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5) 
          LIMIT 1`,
-        [country, phoneForDb, phone, digitsOnly]
+        [country, phoneForDb, phone, digitsOnly, last9]
       );
     }
     return r.rows[0]?.id ?? null;
   }
   const r = await pool.query(
     `SELECT id FROM module_rapidin_drivers 
-     WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4) 
+     WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5) 
      LIMIT 1`,
-    [country, phoneForDb, phone, digitsOnly]
+    [country, phoneForDb, phone, digitsOnly, last9]
   );
   return r.rows[0]?.id ?? null;
 }
@@ -270,10 +277,11 @@ async function getRapidinDriverId(phone, country, parkId = null) {
 async function getRapidinDriverIds(phone, country) {
   const phoneForDb = normalizePhoneForDb(phone, country);
   const digitsOnly = (phone || '').toString().replace(/\D/g, '');
+  const last9 = phoneDigitsForRapidinMatch(phone, country);
   const r = await pool.query(
     `SELECT id FROM module_rapidin_drivers 
-     WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)`,
-    [country, phoneForDb, phone, digitsOnly]
+     WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)`,
+    [country, phoneForDb, phone, digitsOnly, last9]
   );
   return r.rows.map((row) => row.id);
 }
@@ -282,14 +290,15 @@ async function getRapidinDriverIds(phone, country) {
 async function loanBelongsToDriverByPhoneCountry(loanId, phone, country) {
   const phoneForDb = normalizePhoneForDb(phone, country);
   const digitsOnly = (phone || '').toString().replace(/\D/g, '');
+  const last9 = phoneDigitsForRapidinMatch(phone, country);
   const r = await pool.query(
     `SELECT l.id, l.driver_id, r.status as request_status
      FROM module_rapidin_loans l
      INNER JOIN module_rapidin_drivers d ON d.id = l.driver_id
      LEFT JOIN module_rapidin_loan_requests r ON r.id = l.request_id
      WHERE l.id = $1 AND d.country = $2
-       AND (d.phone = $3 OR d.phone = $4 OR REGEXP_REPLACE(COALESCE(d.phone,''), '[^0-9]', '', 'g') = $5)`,
-    [loanId, country, phoneForDb, phone, digitsOnly]
+       AND (d.phone = $3 OR d.phone = $4 OR REGEXP_REPLACE(COALESCE(d.phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(d.phone,''), '[^0-9]', '', 'g') = $6)`,
+    [loanId, country, phoneForDb, phone, digitsOnly, last9]
   );
   return r.rows[0] || null;
 }
@@ -650,19 +659,20 @@ router.get('/loan-offer', authenticate, async (req, res) => {
       );
     }
 
-    // Buscar el driver en module_rapidin_drivers: por (phone, country) y si hay park_id por (phone, country, park_id)
+    // Buscar el driver en module_rapidin_drivers: por (phone, country) y si hay park_id por (phone, country, park_id). En BD phone puede ser "970180035" (9 dígitos).
     const parkForQuery = parkIdFromQuery || '';
+    const last9Offer = phoneDigitsForRapidinMatch(phone, country);
     const rapidinDriverQuery = parkIdFromQuery
       ? `SELECT id, cycle FROM module_rapidin_drivers 
          WHERE country = $1 AND COALESCE(park_id, '') = $2 
-         AND (phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)
+         AND (phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
          LIMIT 1`
       : `SELECT id, cycle FROM module_rapidin_drivers 
-         WHERE phone = $1 AND country = $2 
+         WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
          LIMIT 1`;
     const rapidinDriverParams = parkIdFromQuery
-      ? [country, parkForQuery, phone, (phone || '').toString().replace(/\D/g, '')]
-      : [phone, country];
+      ? [country, parkForQuery, phoneForOffer, phone, digitsOnlyOffer, last9Offer]
+      : [country, phoneForOffer, phone, digitsOnlyOffer, last9Offer];
     const rapidinDriverResult = await pool.query(rapidinDriverQuery, rapidinDriverParams);
     let cycle = 1;
     let cycleFromColumn = 1;
@@ -930,15 +940,16 @@ router.post('/loan-request', authenticate, uploadLoanDocFields, async (req, res)
 
     const phoneForDb = truncateVarchar20(normalizePhoneForDb(phone, country));
 
-    // Buscar o crear driver en module_rapidin_drivers por (phone, country, park_id).
+    // Buscar o crear driver en module_rapidin_drivers por (phone, country, park_id). En BD phone puede ser "970180035" (9 dígitos).
     const parkForQuery = selectedParkId || '';
     const digitsOnly = (phone || '').toString().replace(/\D/g, '');
+    const last9Admin = phoneDigitsForRapidinMatch(phone, country);
     let rapidinDriverResult = await pool.query(
       `SELECT id FROM module_rapidin_drivers 
        WHERE country = $2 AND COALESCE(park_id, '') = $3 
-       AND (phone = $1 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
+       AND (phone = $1 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
        LIMIT 1`,
-      [phoneForDb, country, parkForQuery, phone, digitsOnly]
+      [phoneForDb, country, parkForQuery, phone, digitsOnly, last9Admin]
     );
 
     let driverId;
@@ -957,9 +968,9 @@ router.post('/loan-request', authenticate, uploadLoanDocFields, async (req, res)
           rapidinDriverResult = await pool.query(
             `SELECT id FROM module_rapidin_drivers 
              WHERE country = $2 AND COALESCE(park_id, '') = $3 
-             AND (phone = $1 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
+             AND (phone = $1 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
              LIMIT 1`,
-            [phoneForDb, country, parkForQuery, phone, digitsOnly]
+            [phoneForDb, country, parkForQuery, phone, digitsOnly, last9Admin]
           );
           if (rapidinDriverResult.rows.length === 0) throw insertErr;
           driverId = rapidinDriverResult.rows[0].id;

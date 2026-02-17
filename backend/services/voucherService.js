@@ -1,6 +1,6 @@
 import pool from '../database/connection.js';
 import { logger } from '../utils/logger.js';
-import { normalizePhoneForDb } from '../utils/helpers.js';
+import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helpers.js';
 import { updateLoanBalance, checkLoanCompleted } from './paymentService.js';
 import fs from 'fs';
 import path from 'path';
@@ -189,13 +189,14 @@ export const getDriverVouchers = async (phone, country, loanId = null) => {
   try {
     const phoneForDb = normalizePhoneForDb(phone, country);
     const digitsOnly = (phone || '').toString().replace(/\D/g, '');
+    const last9 = phoneDigitsForRapidinMatch(phone, country);
 
     const rapidinDriverQuery = `
       SELECT id FROM module_rapidin_drivers 
       WHERE country = $1
-        AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)
+        AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
     `;
-    const rapidinDriverResult = await query(rapidinDriverQuery, [country, phoneForDb, phone, digitsOnly]);
+    const rapidinDriverResult = await query(rapidinDriverQuery, [country, phoneForDb, phone, digitsOnly, last9]);
 
     if (rapidinDriverResult.rows.length === 0) {
       return [];

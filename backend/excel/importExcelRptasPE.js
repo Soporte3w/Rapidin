@@ -930,8 +930,8 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
           const cuotaAmt = toNum(getCronogramaCol(row, 'Cuota_Programada', 'cuota')) ?? 0;
           const estadoRaw = getCronogramaCol(row, 'Estado', 'Estado ') || '';
           const estadoInst = mapEstadoInstallment(estadoRaw);
+          // Monto_Pagado del Excel = total pagado (puede ser cuota+mora cuando pagó completo). Guardar tal cual; pagado cuando montoPagado >= total a cobrar (cuota + mora).
           const montoPagado = toNum(getCronogramaCol(row, 'Monto_Pagado', 'Monto_Pagado ')) ?? 0;
-          const paidAmt = estadoInst === 'paid' ? (montoPagado > 0 ? Math.min(montoPagado, cuotaAmt) : cuotaAmt) : (montoPagado || 0);
           // Si la cuota está vencida: calcular mora desde fecha de vencimiento hasta hoy. Si no está vencida, usar Excel (nunca negativa).
           const hoy = toUTCMidnight(new Date());
           let statusFinal = estadoInst;
@@ -939,26 +939,27 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
           let mora = Math.max(0, Number(moraRaw) || 0);
           const diasAtrasoRaw = toNum(getCronogramaCol(row, 'Dias_Atraso', 'Dias_Atraso ')) ?? 0;
           let diasAtraso = diasAtrasoRaw > 0 ? Math.floor(diasAtrasoRaw) : 0;
-          // Reglas de estado en importación (PE y CO): no confiar solo en el Excel.
-          if (cuotaAmt > 0 && paidAmt >= cuotaAmt) {
+          const totalCobrar = cuotaAmt + mora;
+          // Estado: pagado solo si monto pagado >= total a cobrar (cuota + mora); igual que en el Sheet.
+          if (cuotaAmt > 0 && montoPagado >= totalCobrar) {
             statusFinal = 'paid';
-          } else if (dueDate && dueDate.getTime() < hoy.getTime() && paidAmt < cuotaAmt) {
+          } else if (dueDate && dueDate.getTime() < hoy.getTime() && montoPagado < totalCobrar) {
             statusFinal = 'overdue';
-          } else if (statusFinal === 'pending' && dueDate && (mora > 0 || diasAtraso > 0) && paidAmt < cuotaAmt) {
+          } else if (statusFinal === 'pending' && dueDate && (mora > 0 || diasAtraso > 0) && montoPagado < totalCobrar) {
             statusFinal = 'overdue';
           }
-          if (statusFinal === 'overdue' && dueDate && dueDate.getTime() < hoy.getTime() && paidAmt < cuotaAmt) {
+          if (statusFinal === 'overdue' && dueDate && dueDate.getTime() < hoy.getTime() && montoPagado < totalCobrar) {
             diasAtraso = Math.max(0, Math.floor((hoy.getTime() - dueDate.getTime()) / (24 * 60 * 60 * 1000)));
             if (loanConditionsPE) {
-              const saldoPendiente = Math.max(0, cuotaAmt - paidAmt);
+              const saldoPendiente = Math.max(0, cuotaAmt - Math.min(montoPagado, cuotaAmt));
               mora = Math.max(0, calculateLateFeeAtImport(saldoPendiente, diasAtraso, loanConditionsPE));
             }
           }
           const fechaPagoRaw = getCronogramaCol(row, 'Fecha_Pago', 'Fecha_Pago ', 'Fecha_Pagc', 'Fecha_Pagc ');
           let paidDate = parseDateCell(fechaPagoRaw);
           const paidDateNorm = paidDate && !isNaN(paidDate.getTime()) ? toUTCMidnight(paidDate) : null;
-          // Cronograma de cuotas: registrar tal cual del Excel → Fecha_Programada=due_date, Monto_Pagado=paid_amount, Mora=late_fee (nunca negativa), Fecha_Pago=paid_date, Dias_Atraso=days_overdue, Estado=status
-          const paidAmtR = Math.round((paidAmt || 0) * 100) / 100;
+          // paid_amount = valor del Excel Monto_Pagado (total pagado: cuota + mora cuando pagó completo)
+          const paidAmtR = Math.round((montoPagado || 0) * 100) / 100;
           const moraR = Math.max(0, Math.round((mora || 0) * 100) / 100);
           await query(
             `INSERT INTO module_rapidin_installments (loan_id, installment_number, installment_amount, principal_amount, interest_amount, due_date, paid_date, paid_amount, late_fee, days_overdue, status)
@@ -1147,12 +1148,8 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
           const cuotaAmt = toNum(getCronogramaCol(row, 'Cuota_Programada', 'cuota')) ?? 0;
           const estadoRaw = getCronogramaCol(row, 'Estado', 'Estado ') || '';
           const estadoInst = mapEstadoInstallment(estadoRaw);
-          // Si Estado = CANCELADO/PAGADO → cuota pagada completamente; usar Monto_Pagado del Excel o cuota completa
+          // Monto_Pagado del Excel = total pagado (cuota + mora cuando pagó completo). Guardar tal cual; pagado cuando montoPagado >= total a cobrar (cuota + mora).
           const montoPagado = toNum(getCronogramaCol(row, 'Monto_Pagado', 'Monto_Pagado ')) ?? 0;
-          const paidAmt = estadoInst === 'paid' 
-            ? (montoPagado > 0 ? Math.min(montoPagado, cuotaAmt) : cuotaAmt) 
-            : (montoPagado || 0);
-          
           // Si la cuota está vencida: calcular mora desde fecha de vencimiento hasta hoy. Si no está vencida, usar Excel (nunca negativa).
           const hoy = toUTCMidnight(new Date());
           let statusFinal = estadoInst;
@@ -1160,28 +1157,28 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
           let mora = Math.max(0, Number(moraRaw) || 0);
           const diasAtrasoRaw = toNum(getCronogramaCol(row, 'Dias_Atraso', 'Dias_Atraso ')) ?? 0;
           let diasAtraso = diasAtrasoRaw > 0 ? Math.floor(diasAtrasoRaw) : 0;
-          // Reglas de estado en importación (PE y CO): no confiar solo en el Excel.
-          if (cuotaAmt > 0 && paidAmt >= cuotaAmt) {
+          const totalCobrar = cuotaAmt + mora;
+          // Estado: pagado solo si monto pagado >= total a cobrar (cuota + mora); igual que en el Sheet.
+          if (cuotaAmt > 0 && montoPagado >= totalCobrar) {
             statusFinal = 'paid';
-          } else if (dueDate && dueDate.getTime() < hoy.getTime() && paidAmt < cuotaAmt) {
+          } else if (dueDate && dueDate.getTime() < hoy.getTime() && montoPagado < totalCobrar) {
             statusFinal = 'overdue';
-          } else if (statusFinal === 'pending' && dueDate && (mora > 0 || diasAtraso > 0) && paidAmt < cuotaAmt) {
+          } else if (statusFinal === 'pending' && dueDate && (mora > 0 || diasAtraso > 0) && montoPagado < totalCobrar) {
             statusFinal = 'overdue';
           }
-          if (statusFinal === 'overdue' && dueDate && dueDate.getTime() < hoy.getTime() && paidAmt < cuotaAmt) {
+          if (statusFinal === 'overdue' && dueDate && dueDate.getTime() < hoy.getTime() && montoPagado < totalCobrar) {
             diasAtraso = Math.max(0, Math.floor((hoy.getTime() - dueDate.getTime()) / (24 * 60 * 60 * 1000)));
             if (loanConditionsPE) {
-              const saldoPendiente = Math.max(0, cuotaAmt - paidAmt);
+              const saldoPendiente = Math.max(0, cuotaAmt - Math.min(montoPagado, cuotaAmt));
               mora = Math.max(0, calculateLateFeeAtImport(saldoPendiente, diasAtraso, loanConditionsPE));
             }
           }
-          
           // Fecha_Pago / Fecha_Pagc → paid_date: del Excel
           const fechaPagoRaw = getCronogramaCol(row, 'Fecha_Pago', 'Fecha_Pago ', 'Fecha_Pagc', 'Fecha_Pagc ');
           let paidDate = parseDateCell(fechaPagoRaw);
           const paidDateNorm = paidDate && !isNaN(paidDate.getTime()) ? toUTCMidnight(paidDate) : null;
-          // Cronograma de cuotas: todo del Excel — Fecha_Programada→due_date, Monto_Pagado→paid_amount, Mora→late_fee (nunca negativa), Fecha_Pago→paid_date, Dias_Atraso→days_overdue, Estado→status
-          const paidAmtR = Math.round((paidAmt || 0) * 100) / 100;
+          // paid_amount = valor del Excel Monto_Pagado (total pagado: cuota + mora cuando pagó completo)
+          const paidAmtR = Math.round((montoPagado || 0) * 100) / 100;
           const moraR = Math.max(0, Math.round((mora || 0) * 100) / 100);
           await query(
             `INSERT INTO module_rapidin_installments (loan_id, installment_number, installment_amount, principal_amount, interest_amount, due_date, paid_date, paid_amount, late_fee, days_overdue, status)

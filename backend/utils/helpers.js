@@ -83,6 +83,17 @@ export const normalizePhoneForDb = (phone, country) => {
   return digits.length === 11 && digits.startsWith('51') ? `+${digits}` : digits.length >= 9 ? `+51${digits.slice(-9)}` : `+${digits}`;
 };
 
+/**
+ * Para module_rapidin_drivers el teléfono a veces está guardado solo con 9 dígitos (ej. "970180035" sin +51).
+ * Devuelve los últimos 9 dígitos del número para PE (o todos los dígitos para CO) y así poder hacer match.
+ */
+export const phoneDigitsForRapidinMatch = (phone, country) => {
+  const digits = (phone || '').toString().replace(/\D/g, '');
+  if (country === 'PE' && digits.length >= 9) return digits.slice(-9);
+  if (country === 'CO' && digits.length >= 10) return digits.slice(-10);
+  return digits;
+};
+
 /** Código país para tabla drivers (license_country): PE -> per, CO -> col. */
 export const getCountryCodeForDrivers = (country) => {
   return country === 'PE' ? 'per' : country === 'CO' ? 'col' : (country || '').toLowerCase();

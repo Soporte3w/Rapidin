@@ -98,6 +98,7 @@ const Payments = () => {
   const [loanPreview, setLoanPreview] = useState<{
     driver_first_name?: string;
     driver_last_name?: string;
+    next_installment_number?: number;
     next_installment_amount?: number;
     next_installment_late_fee?: number;
     pending_balance?: number;
@@ -140,6 +141,7 @@ const Payments = () => {
       .then((res) => {
         const data = res.data?.data ?? res.data;
         if (data?.driver_first_name !== undefined || data?.driver_last_name !== undefined) {
+          const nextNumber = data.next_installment_number != null ? Number(data.next_installment_number) : undefined;
           const nextAmount = data.next_installment_amount != null ? Number(data.next_installment_amount) : undefined;
           const nextLateFee = data.next_installment_late_fee != null ? Number(data.next_installment_late_fee) : undefined;
           const pendingBalance = data.pending_balance != null ? Number(data.pending_balance) : undefined;
@@ -150,6 +152,7 @@ const Payments = () => {
           setLoanPreview({
             driver_first_name: data.driver_first_name,
             driver_last_name: data.driver_last_name,
+            next_installment_number: nextNumber,
             next_installment_amount: nextAmount,
             next_installment_late_fee: nextLateFee,
             pending_balance: pendingBalance,
@@ -861,7 +864,10 @@ const Payments = () => {
               <div>
                 <label htmlFor="amount" className="block text-xs font-semibold text-gray-900 mb-1.5">
                   Monto {loanPreview?.next_installment_amount != null && Number(loanPreview.next_installment_amount) > 0 && (
-                    <span className="text-gray-500 font-normal">(rellenado con siguiente cuota)</span>
+                    <span className="text-gray-500 font-normal">
+                      {loanPreview?.next_installment_number != null ? `(Cuota ${loanPreview.next_installment_number}) ` : ''}
+                
+                    </span>
                   )}
                 </label>
                 <input

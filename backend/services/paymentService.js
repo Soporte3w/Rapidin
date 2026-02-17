@@ -50,12 +50,15 @@ export const registerPaymentAuto = async (loanId, amount, paymentDate) => {
   }
 };
 
+const ROUND_CENTS = (v) => Math.round((v) * 100) / 100;
+const MIN_APPLIED = 0.01; // No aplicar ni registrar si el monto es menor (evita errores de punto flotante)
+
 export const distributePayment = async (paymentId, loanId, totalAmount, strategy = 'by_date') => {
   const installments = await query(
     `SELECT * FROM module_rapidin_installments 
      WHERE loan_id = $1 AND status IN ('pending', 'overdue') 
        AND ((installment_amount - COALESCE(paid_amount, 0)) > 0 OR COALESCE(late_fee, 0) > 0)
-     ORDER BY due_date ASC`,
+     ORDER BY due_date ASC, installment_number ASC`,
     [loanId]
   );
 
@@ -63,35 +66,36 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
     throw new Error('No hay cuotas pendientes para este préstamo');
   }
 
-  let remainingAmount = totalAmount;
+  let remainingAmount = ROUND_CENTS(totalAmount);
 
   if (strategy === 'by_date') {
     for (const installment of installments.rows) {
-      if (remainingAmount <= 0) break;
+      if (remainingAmount < MIN_APPLIED) break;
 
       // Total a pagar = cuota pendiente + mora (si no aplicamos primero a mora, el resto quedaría mal: ej. 15.50 en vez de 15.86)
-      const pendingInstallmentAmount = parseFloat(installment.installment_amount) - parseFloat(installment.paid_amount || 0);
-      const pendingLateFee = parseFloat(installment.late_fee) || 0;
+      const pendingInstallmentAmount = ROUND_CENTS(parseFloat(installment.installment_amount) - parseFloat(installment.paid_amount || 0));
+      const pendingLateFee = ROUND_CENTS(parseFloat(installment.late_fee) || 0);
       const totalToPay = pendingInstallmentAmount + pendingLateFee;
 
-      if (totalToPay <= 0) continue;
+      if (totalToPay < MIN_APPLIED) continue;
 
       // Primero pagar la mora, luego la cuota (así el resto = 25.50 - (10 - 0.36) = 15.86, no 15.50)
       let lateFeePaid = 0;
       let installmentPaid = 0;
 
       if (pendingLateFee > 0 && remainingAmount > 0) {
-        lateFeePaid = Math.min(remainingAmount, pendingLateFee);
-        remainingAmount -= lateFeePaid;
+        lateFeePaid = ROUND_CENTS(Math.min(remainingAmount, pendingLateFee));
+        remainingAmount = ROUND_CENTS(remainingAmount - lateFeePaid);
       }
 
       if (pendingInstallmentAmount > 0 && remainingAmount > 0) {
-        installmentPaid = Math.min(remainingAmount, pendingInstallmentAmount);
-        remainingAmount -= installmentPaid;
+        installmentPaid = ROUND_CENTS(Math.min(remainingAmount, pendingInstallmentAmount));
+        remainingAmount = ROUND_CENTS(remainingAmount - installmentPaid);
       }
 
-      // Actualizar la cuota: paid_amount, paid_late_fee (mora pagada acumulada), status, paid_date.
-      if (lateFeePaid > 0 || installmentPaid > 0) {
+      const appliedTotal = lateFeePaid + installmentPaid;
+      // Solo actualizar e insertar si se aplicó un monto significativo (evita aplicar a cuota 5 por error de punto flotante)
+      if (appliedTotal >= MIN_APPLIED) {
         await query(
           `UPDATE module_rapidin_installments 
            SET paid_amount = paid_amount + $2,
@@ -139,11 +143,11 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
           );
         }
 
-        // Registrar el pago total aplicado a esta cuota
+        // Registrar el pago total aplicado a esta cuota (solo si appliedTotal >= MIN_APPLIED)
         await query(
           `INSERT INTO module_rapidin_payment_installments (payment_id, installment_id, applied_amount)
            VALUES ($1, $2, $3)`,
-          [paymentId, installment.id, lateFeePaid + installmentPaid]
+          [paymentId, installment.id, appliedTotal]
         );
       }
     }
@@ -152,28 +156,29 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
     const installmentsWithoutLateFee = installments.rows.filter(i => (i.late_fee || 0) === 0);
 
     for (const installment of [...installmentsWithLateFee, ...installmentsWithoutLateFee]) {
-      if (remainingAmount <= 0) break;
+      if (remainingAmount < MIN_APPLIED) break;
 
-      const pendingInstallmentAmount = installment.installment_amount - (installment.paid_amount || 0);
-      const pendingLateFee = (installment.late_fee || 0) - (installment.paid_late_fee || 0);
+      const pendingInstallmentAmount = ROUND_CENTS(installment.installment_amount - (installment.paid_amount || 0));
+      const pendingLateFee = ROUND_CENTS((installment.late_fee || 0) - (installment.paid_late_fee || 0));
       const totalToPay = pendingInstallmentAmount + pendingLateFee;
 
-      if (totalToPay <= 0) continue;
+      if (totalToPay < MIN_APPLIED) continue;
 
       let lateFeePaid = 0;
       let installmentPaid = 0;
 
       if (pendingLateFee > 0 && remainingAmount > 0) {
-        lateFeePaid = Math.min(remainingAmount, pendingLateFee);
-        remainingAmount -= lateFeePaid;
+        lateFeePaid = ROUND_CENTS(Math.min(remainingAmount, pendingLateFee));
+        remainingAmount = ROUND_CENTS(remainingAmount - lateFeePaid);
       }
 
       if (pendingInstallmentAmount > 0 && remainingAmount > 0) {
-        installmentPaid = Math.min(remainingAmount, pendingInstallmentAmount);
-        remainingAmount -= installmentPaid;
+        installmentPaid = ROUND_CENTS(Math.min(remainingAmount, pendingInstallmentAmount));
+        remainingAmount = ROUND_CENTS(remainingAmount - installmentPaid);
       }
 
-      if (lateFeePaid > 0 || installmentPaid > 0) {
+      const appliedTotal = lateFeePaid + installmentPaid;
+      if (appliedTotal >= MIN_APPLIED) {
         await query(
           `UPDATE module_rapidin_installments 
            SET paid_amount = paid_amount + $2,
@@ -210,7 +215,7 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
         await query(
           `INSERT INTO module_rapidin_payment_installments (payment_id, installment_id, applied_amount)
            VALUES ($1, $2, $3)`,
-          [paymentId, installment.id, lateFeePaid + installmentPaid]
+          [paymentId, installment.id, appliedTotal]
         );
       }
     }

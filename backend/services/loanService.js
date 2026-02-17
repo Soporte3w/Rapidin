@@ -101,6 +101,7 @@ export const createLoanRequest = async (data, userId = null, options = {}) => {
 export const getLoanRequests = async (filters = {}) => {
   let sql = `
     SELECT r.*,
+           COALESCE(r.cycle, 1) AS cycle,
            l.disbursed_amount AS disbursed_amount,
            d.dni, d.first_name as driver_first_name, d.last_name as driver_last_name,
            d.cycle AS driver_cycle,
@@ -163,7 +164,8 @@ export const getLoanRequests = async (filters = {}) => {
 
 export const getLoanRequestById = async (id) => {
   const result = await query(
-    `SELECT r.*, 
+    `SELECT r.*,
+            COALESCE(r.cycle, 1) AS cycle,
             d.dni, d.first_name as driver_first_name, d.last_name as driver_last_name, d.phone, d.email, d.cycle as driver_cycle,
             u.first_name as created_by_first_name
      FROM module_rapidin_loan_requests r
@@ -207,7 +209,7 @@ export const applySimulationOption = async (requestId, option, userId) => {
     throw new Error('Conductor no encontrado');
   }
 
-  const cycleFromDb = request.driver_cycle ?? driver.rows[0]?.cycle ?? 1;
+  const cycleFromDb = request.cycle ?? request.driver_cycle ?? driver.rows[0]?.cycle ?? 1;
   const interestRate = option.interestRate != null ? parseFloat(option.interestRate) : await getInterestRate(request.country, cycleFromDb);
 
   const conditions = await query(
@@ -284,7 +286,7 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
   if (!option) {
     const driver = await query('SELECT * FROM module_rapidin_drivers WHERE id = $1', [request.driver_id]);
     if (driver.rows.length === 0) throw new Error('Conductor no encontrado');
-    const cycleFromDb = request.driver_cycle ?? driver.rows[0]?.cycle ?? 1;
+    const cycleFromDb = request.cycle ?? request.driver_cycle ?? driver.rows[0]?.cycle ?? 1;
     const conditions = await query(
       'SELECT * FROM module_rapidin_loan_conditions WHERE country = $1 AND active = true ORDER BY version DESC LIMIT 1',
       [request.country]
@@ -326,7 +328,7 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
 
   const driver = await query('SELECT * FROM module_rapidin_drivers WHERE id = $1', [request.driver_id]);
   if (driver.rows.length === 0) throw new Error('Conductor no encontrado');
-  const cycleFromDb = request.driver_cycle ?? driver.rows[0]?.cycle ?? 1;
+  const cycleFromDb = request.cycle ?? request.driver_cycle ?? driver.rows[0]?.cycle ?? 1;
   const interestRate = option.interestRate != null ? parseFloat(option.interestRate) : await getInterestRate(request.country, cycleFromDb);
 
   await query('BEGIN');
@@ -452,15 +454,20 @@ export const getLoanById = async (id) => {
             d.dni, d.first_name as driver_first_name, d.last_name as driver_last_name, d.phone, d.email,
             d.external_driver_id,
             COALESCE((SELECT SUM(COALESCE(i.late_fee, 0)) FROM module_rapidin_installments i WHERE i.loan_id = l.id), 0)::numeric AS total_late_fee,
+            (SELECT i.installment_number
+             FROM module_rapidin_installments i
+             WHERE i.loan_id = l.id AND i.status IN ('pending', 'overdue')
+             ORDER BY i.due_date ASC, i.installment_number ASC
+             LIMIT 1) AS next_installment_number,
             (SELECT (i.installment_amount - COALESCE(i.paid_amount, 0)) + COALESCE(i.late_fee, 0)
              FROM module_rapidin_installments i
              WHERE i.loan_id = l.id AND i.status IN ('pending', 'overdue')
-             ORDER BY i.due_date ASC
+             ORDER BY i.due_date ASC, i.installment_number ASC
              LIMIT 1) AS next_installment_amount,
             (SELECT COALESCE(i.late_fee, 0)
              FROM module_rapidin_installments i
              WHERE i.loan_id = l.id AND i.status IN ('pending', 'overdue')
-             ORDER BY i.due_date ASC
+             ORDER BY i.due_date ASC, i.installment_number ASC
              LIMIT 1) AS next_installment_late_fee
      FROM module_rapidin_loans l
      LEFT JOIN module_rapidin_drivers d ON d.id = l.driver_id
@@ -525,12 +532,20 @@ export const getInstallmentSchedule = async (loanId) => {
   const rows = result.rows.map((r) => {
     const lateFee = Math.max(0, parseFloat(r.late_fee) || 0);
     const paidLateFee = Math.max(0, parseFloat(r.paid_late_fee) || 0);
-    const paid = r.status === 'paid' || (parseFloat(r.paid_amount) || 0) >= (parseFloat(r.installment_amount) || 0);
+    const totalCobrar = (parseFloat(r.installment_amount) || 0) + lateFee;
+    const totalPagado = (parseFloat(r.paid_amount) || 0) + paidLateFee;
+    // Pagada solo cuando monto pagado (cuota + mora) >= total a cobrar; no confiar en status de BD
+    const paid = totalPagado >= totalCobrar;
     const dueDate = r.due_date ? new Date(r.due_date) : null;
     dueDate && dueDate.setHours(0, 0, 0, 0);
     const isOverdue = !paid && dueDate && dueDate.getTime() < today.getTime();
-    const effectiveStatus = paid ? r.status : (isOverdue ? 'overdue' : (r.status || 'pending'));
-    return { ...r, late_fee: lateFee, paid_late_fee: paidLateFee, status: effectiveStatus };
+    const effectiveStatus = paid ? 'paid' : (isOverdue ? 'overdue' : (r.status || 'pending'));
+    // Si está pagada: mora pendiente = 0; mora cobrada = la que se pagó (paid_late_fee o totalPagado - cuota si vino todo en paid_amount)
+    const lateFeeDisplay = paid ? 0 : lateFee;
+    const moraCobrada = paid
+      ? (paidLateFee > 0 ? paidLateFee : Math.max(0, totalPagado - (parseFloat(r.installment_amount) || 0)))
+      : 0;
+    return { ...r, late_fee: lateFeeDisplay, paid_late_fee: paidLateFee, mora_cobrada: moraCobrada, status: effectiveStatus, total_pagado: totalPagado, total_a_cobrar: totalCobrar };
   });
   return rows;
 };

@@ -48,7 +48,10 @@ export const verifyToken = async (req, res, next) => {
   }
 };
 
-// Middleware para autenticar conductores y admins
+// Middleware para autenticar conductores y admins.
+// Seguridad ante manipulación de URL: el cliente puede cambiar la URL o IDs en la petición;
+// el backend SIEMPRE valida el token y que el recurso pertenezca al usuario (ej. loanBelongsToDriverByPhoneCountry en rutas driver).
+// Sin token válido → 401. Recurso ajeno → 403/404.
 export const authenticate = async (req, res, next) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];

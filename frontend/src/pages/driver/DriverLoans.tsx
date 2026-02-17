@@ -75,7 +75,7 @@ export default function DriverLoans() {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
   const [pendingRequest, setPendingRequest] = useState<PendingRequest | null>(null);
-  const [rejectedRequest, setRejectedRequest] = useState<RejectedRequest | null>(null);
+  const [rejectedRequests, setRejectedRequests] = useState<RejectedRequest[]>([]);
   const [activeTab, setActiveTab] = useState<'prestamos' | 'rechazados'>('prestamos');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -91,7 +91,7 @@ export default function DriverLoans() {
     return loans.slice(start, start + limit);
   }, [loans, page, limit]);
 
-  const rejectedList = useMemo(() => (rejectedRequest ? [rejectedRequest] : []), [rejectedRequest]);
+  const rejectedList = useMemo(() => rejectedRequests, [rejectedRequests]);
   const [rejectedPage, setRejectedPage] = useState(1);
   const [rejectedLimit, setRejectedLimit] = useState(10);
   const rejectedTotal = rejectedList.length;
@@ -133,10 +133,10 @@ export default function DriverLoans() {
       if (raw?.rapidin_driver_id) setStoredRapidinDriverId(raw.rapidin_driver_id);
       const loansList = Array.isArray(raw) ? raw : (raw?.loans ?? []);
       const pending = Array.isArray(raw) ? null : (raw?.pendingRequest ?? null);
-      const rejected = Array.isArray(raw) ? null : (raw?.rejectedRequest ?? null);
+      const rejectedListFromApi = Array.isArray(raw?.rejectedRequests) ? raw.rejectedRequests : (raw?.rejectedRequest ? [raw.rejectedRequest] : []);
       setLoans(loansList);
       setPendingRequest(pending);
-      setRejectedRequest(rejected);
+      setRejectedRequests(rejectedListFromApi);
     } catch (err: any) {
       setError(err.response?.data?.message || 'Error al cargar los préstamos');
     } finally {
@@ -217,12 +217,11 @@ export default function DriverLoans() {
   };
 
   const getStatusBadge = (status: string) => {
+    // En la BD solo existen: active, cancelled, defaulted. Siempre mostrar Cancelado (gris) para cancelled.
     const config: Record<string, { color: string; icon: typeof Clock; text: string }> = {
       active: { color: 'bg-blue-100 text-blue-700', icon: Clock, text: 'Activo' },
-      completed: { color: 'bg-green-100 text-green-700', icon: CheckCircle, text: 'Completado' },
-      cancelled: { color: 'bg-green-100 text-green-700', icon: CheckCircle, text: 'Completado' },
-      late: { color: 'bg-red-100 text-red-700', icon: AlertCircle, text: 'Atrasado' },
-      defaulted: { color: 'bg-red-100 text-red-700', icon: AlertCircle, text: 'Atrasado' }
+      cancelled: { color: 'bg-gray-100 text-gray-700', icon: XCircle, text: 'Cancelado' },
+      defaulted: { color: 'bg-red-100 text-red-700', icon: AlertCircle, text: 'Vencido' }
     };
     const { color, icon: Icon, text } = config[status] ?? config.active;
     return (

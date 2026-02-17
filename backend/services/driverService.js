@@ -425,7 +425,14 @@ export const getDriverLoans = async (phone, country, parkId = null, rapidinDrive
     }
 
     if (!rapidinDriverId) {
-      return { loans: [], pendingRequest: null, rejectedRequest: null, requests: [], rapidin_driver_id: null };
+      return {
+        loans: [],
+        pendingRequest: null,
+        rejectedRequest: null,
+        rejectedRequests: [],
+        cancelledRequests: [],
+        rapidin_driver_id: null
+      };
     }
 
     // Solicitud pendiente o en proceso (solo si aún NO está desembolsada; si está disbursed, el préstamo aparece en la lista)
@@ -444,22 +451,38 @@ export const getDriverLoans = async (phone, country, parkId = null, rapidinDrive
       createdAt: pendingRequestRow.created_at
     } : null;
 
-    // Última solicitud rechazada (para que el conductor vea el motivo)
+    // Todas las solicitudes rechazadas (para la pestaña Rechazados y conteo)
     const rejectedResult = await query(
       `SELECT id, status, requested_amount, created_at, rejection_reason
        FROM module_rapidin_loan_requests 
        WHERE driver_id = $1 AND status = 'rejected'
-       ORDER BY created_at DESC LIMIT 1`,
+       ORDER BY created_at DESC`,
       [rapidinDriverId]
     );
-    const rejectedRow = rejectedResult.rows[0] || null;
-    const rejectedRequest = rejectedRow ? {
-      id: rejectedRow.id,
-      status: rejectedRow.status,
-      requestedAmount: parseFloat(rejectedRow.requested_amount),
-      createdAt: rejectedRow.created_at,
-      rejectionReason: rejectedRow.rejection_reason || null
-    } : null;
+    const rejectedRequests = rejectedResult.rows.map(row => ({
+      id: row.id,
+      status: row.status,
+      requestedAmount: parseFloat(row.requested_amount),
+      createdAt: row.created_at,
+      rejectionReason: row.rejection_reason || null
+    }));
+    const rejectedRequest = rejectedRequests[0] || null;
+
+    // Solicitudes canceladas (para conteo y lista si se muestra)
+    const cancelledRequestsResult = await query(
+      `SELECT id, status, requested_amount, created_at, observations
+       FROM module_rapidin_loan_requests 
+       WHERE driver_id = $1 AND status = 'cancelled'
+       ORDER BY created_at DESC`,
+      [rapidinDriverId]
+    );
+    const cancelledRequests = cancelledRequestsResult.rows.map(row => ({
+      id: row.id,
+      status: row.status,
+      requestedAmount: parseFloat(row.requested_amount),
+      createdAt: row.created_at,
+      observations: row.observations || null
+    }));
 
     // Todos los préstamos del conductor (incluyendo históricos cancelled/completados)
     const loansQuery = `
@@ -539,14 +562,8 @@ export const getDriverLoans = async (phone, country, parkId = null, rapidinDrive
     }
 
     const loans = loansResult.rows.map(loan => {
-      let status = 'completed';
-      if (loan.status === 'active') {
-        status = 'active';
-      } else if (loan.status === 'defaulted') {
-        status = 'late';
-      } else if (loan.status === 'cancelled') {
-        status = 'completed';
-      }
+      // Pasar estado tal cual: active, late, defaulted (vencido), cancelled, completed
+      const status = loan.status || 'active';
       const schedule = scheduleByLoan.get(loan.id) || [];
 
       return {
@@ -563,7 +580,14 @@ export const getDriverLoans = async (phone, country, parkId = null, rapidinDrive
       };
     });
 
-    return { loans, pendingRequest, rejectedRequest, rapidin_driver_id: rapidinDriverId };
+    return {
+      loans,
+      pendingRequest,
+      rejectedRequest,
+      rejectedRequests,
+      cancelledRequests,
+      rapidin_driver_id: rapidinDriverId
+    };
   } catch (error) {
     logger.error('Error obteniendo préstamos del conductor:', error);
     throw error;

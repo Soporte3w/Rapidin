@@ -24,7 +24,8 @@
  *
  * 1) PASO 1 — Rptas PE/CO (hoja "Rptas PE" o "Rptas CO")
  *    - Por cada fila con DNI:
- *      a) Crear o actualizar CONDUCTOR (ensureDriver): DNI, nombre, teléfono, email, Ciclo actual, Flota, etc.
+ *      a) Resolver Flota → park_id (id de la API de partners; aliases Yego Mi Auto, Yego Pro). Nunca se guarda el nombre en BD.
+ *      b) Crear o actualizar CONDUCTOR por (dni, country, park_id): un mismo DNI puede tener varias filas (una por flota). ensureDriver usa el id resuelto.
  *      b) Crear SOLICITUD (loan_request) con:
  *         - requested_amount = Monto Otorgado; si no hay valor → Monto Solicitado
  *         - status = según Estado (rechazado, cancelado, pendiente, aprobado, desembolsado)
@@ -64,6 +65,7 @@ dotenv.config({ path: path.join(__dirname, '..', envFile) });
 
 const { query } = await import('../config/database.js');
 const { logger } = await import('../utils/logger.js');
+const { fetchPartners } = await import('../services/partnersService.js');
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const DEBUG = process.argv.includes('--debug');
@@ -540,6 +542,106 @@ function isCronogramaSheet(rows, sheetName) {
   return !!hasNCuota;
 }
 
+// --- Resolución Flota → park_id (id API). Mismo conductor = mismo DNI; diferenciador = park_id (una fila por flota). ---
+function normalizePartnerName(s) {
+  if (s == null) return '';
+  return String(s).trim().toLowerCase().replace(/\s+/g, ' ');
+}
+function normalizePartnerId(s) {
+  if (s == null) return '';
+  return String(s).trim().toLowerCase().replace(/-/g, '');
+}
+function stripFlotaParenthetical(s) {
+  if (s == null || typeof s !== 'string') return '';
+  return s.replace(/\s*\([^)]*\)\s*$/g, '').trim();
+}
+const PARK_ID_YEGO_MI_AUTO = 'fafd623109d740f8a1f15af7c3dd86c6';
+const PARK_ID_YEGO_PRO = '64085dd85e124e2c808806f70d527ea8';
+const FLOTA_ALIASES_IMPORT = new Map([
+  ['yego mi auto', PARK_ID_YEGO_MI_AUTO],
+  ['yego pro', PARK_ID_YEGO_PRO],
+  ['yego pro (alquiler - venta)', PARK_ID_YEGO_PRO],
+  ['yego pro (alquiler -venta)', PARK_ID_YEGO_PRO],
+]);
+async function buildFlotaNameToParkIdImport() {
+  const partners = await fetchPartners();
+  const nameToId = new Map();
+  const idSet = new Set();
+  if (partners?.length) {
+    for (const p of partners) {
+      const id = p?.id != null ? String(p.id).trim() : '';
+      const name = normalizePartnerName(p?.name);
+      if (id) idSet.add(normalizePartnerId(id));
+      if (name && id) nameToId.set(name, id);
+    }
+  }
+  for (const [name, id] of FLOTA_ALIASES_IMPORT) {
+    idSet.add(normalizePartnerId(id));
+    if (!nameToId.has(name)) nameToId.set(name, id);
+  }
+  return { map: nameToId, idSet };
+}
+function resolveFlotaToParkIdImport(flotaStr, nameToId, idSet) {
+  const raw = flotaStr ? toStr(flotaStr, 100) : '';
+  if (!raw) return '';
+  const trimmed = raw.trim();
+  if (idSet.has(normalizePartnerId(trimmed))) return trimmed;
+  const forMatch = stripFlotaParenthetical(trimmed) || trimmed;
+  if (idSet.has(normalizePartnerId(forMatch))) return trimmed;
+  const nameNormStripped = normalizePartnerName(forMatch);
+  const byName = nameToId.get(nameNormStripped);
+  if (byName) return byName;
+  const byAlias = FLOTA_ALIASES_IMPORT.get(nameNormStripped);
+  if (byAlias) return byAlias;
+  const nameNormRaw = normalizePartnerName(trimmed);
+  const byAliasRaw = FLOTA_ALIASES_IMPORT.get(nameNormRaw);
+  if (byAliasRaw) return byAliasRaw;
+  return null;
+}
+function isValidParkIdFormat(val) {
+  if (val == null || val === '') return true;
+  const s = String(val).trim();
+  return !s || /^[a-f0-9]{32}$/i.test(s) || /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(s);
+}
+
+/** Código país en tabla drivers: PE → per, CO → col. */
+function getLicenseCountryForDrivers(country) {
+  return country === 'PE' ? 'per' : country === 'CO' ? 'col' : (country || '').toLowerCase().slice(0, 3);
+}
+
+function digitsOnly(str) {
+  return (str || '').toString().replace(/\D/g, '');
+}
+
+/**
+ * Busca en tabla drivers por DNI (license_number/document_number) y opcionalmente por flota (park_id).
+ * Del Excel vienen conductores y flotas; por cada flota hay préstamos. Solo enlazamos external_driver_id
+ * cuando en drivers existe una fila para ese DNI y ESA MISMA flota (park_id). Si no hay fila para esa flota, no se asigna.
+ */
+async function findInDriversByDni(dni, country, parkIdOptional = null) {
+  const trimmed = (dni || '').toString().trim();
+  if (!trimmed || trimmed.length < 4) return [];
+  const digits = digitsOnly(trimmed);
+  const licenseCountry = getLicenseCountryForDrivers(country);
+  const parkNorm = (parkIdOptional || '').toString().trim();
+  const r = await query(
+    `SELECT driver_id, park_id FROM drivers
+     WHERE license_country = $1
+       AND (
+         TRIM(COALESCE(license_number, '')) = $2
+         OR REGEXP_REPLACE(COALESCE(license_number, ''), '[^0-9]', '', 'g') = $3
+         OR TRIM(COALESCE(document_number, '')) = $2
+         OR REGEXP_REPLACE(COALESCE(document_number, ''), '[^0-9]', '', 'g') = $3
+         OR (LENGTH($3) >= 6 AND REGEXP_REPLACE(COALESCE(license_number, ''), '[^0-9]', '', 'g') LIKE '%' || $3 || '%')
+       )
+       AND ($4 = '' OR COALESCE(TRIM(park_id), '') = $4)
+     ORDER BY park_id NULLS LAST
+     LIMIT 1`,
+    [licenseCountry, trimmed, digits, parkNorm]
+  );
+  return r.rows || [];
+}
+
 // Crear/obtener conductor desde fila de Cronograma PE (DNI, Nombre, Ciclo actual → cycle)
 async function ensureDriverFromCronograma(dni, nombre, idByDni, cycle = 1, flota = null) {
   if (!dni) return null;
@@ -576,13 +678,24 @@ async function ensureDriverFromCronograma(dni, nombre, idByDni, cycle = 1, flota
   return 'dry-run-uuid';
 }
 
-async function ensureDriver(row, idByDni, canonicalDniOverride = null) {
+/**
+ * Crea/obtiene conductor por (dni, country, park_id). Un mismo DNI puede tener varias filas (una por flota).
+ * park_id debe ser id de la API (nunca nombre). Se guarda siempre el id resuelto.
+ * idByDniAndPark: clave `${dni}|${parkId}` → driver_id. idByDni: primer driver por dni (fallback Cronograma).
+ */
+async function ensureDriver(row, idByDniAndPark, idByDni, parkIdResolved, canonicalDniOverride = null) {
   let dni = toStr(getCol(row, 'DNI - CARNÉ EXTRANJERÍA ', 'CÉDULA DE CIUDADANIA - CARNÉ EXTRANJERÍA ', 'DNI', 'Cédula'), 20);
   if (!dni) return null;
   const dniForDb = canonicalDniOverride != null ? (String(canonicalDniOverride).trim() || dni) : dni;
   if (dniForDb) dni = dniForDb;
 
-  if (idByDni.has(dni)) return idByDni.get(dni);
+  const parkVal = parkIdResolved != null && parkIdResolved !== '' ? String(parkIdResolved).trim() : '';
+  if (parkVal && !isValidParkIdFormat(parkVal)) {
+    logger.warn(`Import: park_id rechazado (debe ser id API), se usa vacío. Valor: "${parkIdResolved}"`);
+  }
+  const parkForDb = parkVal && isValidParkIdFormat(parkVal) ? parkVal : '';
+  const mapKey = `${dni}|${parkForDb}`;
+  if (idByDniAndPark.has(mapKey)) return idByDniAndPark.get(mapKey);
 
   const fullName = toStr(getCol(row, 'Nombres y Apellidos'), 255) || 'Sin nombre';
   const parts = fullName.trim().split(/\s+/).filter(Boolean);
@@ -592,7 +705,6 @@ async function ensureDriver(row, idByDni, canonicalDniOverride = null) {
   const email = toStr(getCol(row, 'Dirección de correo electrónico'), 255);
   const phone = normalizePhone(getCol(row, 'Teléfono'), COUNTRY);
   const yegoPremium = /sí|si|yes|1|oro/i.test(String(getCol(row, '¿Eres Yego Premium Oro?') || ''));
-  // Ciclo actual: del Excel histórico; se guarda en conductor y se muestra en solicitudes / info conductor
   const cycleVal =
     getCol(row, 'Ciclo actual', 'Ciclo actual ', 'Ciclo Actual', 'Ciclo') ??
     getColByAnyNormalized(row, 'Ciclo actual', 'Ciclo');
@@ -601,18 +713,15 @@ async function ensureDriver(row, idByDni, canonicalDniOverride = null) {
   const creditLine = toNum(getCol(row, 'Linea aprobada')) ?? 0;
   const tripsRaw = toNum(getCol(row, 'viajes'));
   const trips = tripsRaw != null ? Math.floor(tripsRaw) : 0;
-  // Flota: guardar nombre tal cual viene del Excel (puede ser ID o nombre)
-  const flota = toStr(getCol(row, 'Flota'), 100);
 
   if (!DRY_RUN) {
-    // Rptas: solo por DNI para evitar duplicidad. No buscar por teléfono (no mezclar personas). Primero insertar toda la hoja Rptas; luego Cronograma solo valida/vincula.
-    const existingByDni = await query(
-      `SELECT id FROM module_rapidin_drivers WHERE dni = $1 AND country = $2 LIMIT 1`,
-      [dniForDb || dni, COUNTRY]
+    const existing = await query(
+      `SELECT id FROM module_rapidin_drivers WHERE dni = $1 AND country = $2 AND COALESCE(TRIM(park_id), '') = $3 LIMIT 1`,
+      [dniForDb || dni, COUNTRY, parkForDb]
     );
     let id;
-    if (existingByDni.rows.length > 0) {
-      id = existingByDni.rows[0].id;
+    if (existing.rows.length > 0) {
+      id = existing.rows[0].id;
       await query(
         `UPDATE module_rapidin_drivers SET
            first_name = $1, last_name = $2, phone = COALESCE(NULLIF(TRIM($3), ''), phone),
@@ -620,43 +729,54 @@ async function ensureDriver(row, idByDni, canonicalDniOverride = null) {
            credit_line = $7, completed_trips = $8, park_id = COALESCE(NULLIF(TRIM($9), ''), park_id),
            updated_at = CURRENT_TIMESTAMP
          WHERE id = $10`,
-        [first_name, last_name, phone, email, yegoPremium, cycle, creditLine, trips, flota, id]
+        [first_name, last_name, phone, email, yegoPremium, cycle, creditLine, trips, parkForDb || null, id]
       );
     } else {
       try {
         const r = await query(
           `INSERT INTO module_rapidin_drivers (dni, country, first_name, last_name, phone, email, yego_premium, cycle, credit_line, completed_trips, park_id)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
-          [dni, COUNTRY, first_name, last_name, phone || null, email || null, yegoPremium, cycle, creditLine, trips, flota || null]
+          [dni, COUNTRY, first_name, last_name, phone || null, email || null, yegoPremium, cycle, creditLine, trips, parkForDb || null]
         );
         id = r.rows[0].id;
       } catch (insErr) {
-        if (insErr.code === '23505') {
-          const again = await query(
-            `SELECT id FROM module_rapidin_drivers WHERE dni = $1 AND country = $2 LIMIT 1`,
-            [dni, COUNTRY]
+        if (insErr.code === '23505' && insErr.message && insErr.message.includes('idx_rapidin_drivers_phone_country_park')) {
+          const r2 = await query(
+            `INSERT INTO module_rapidin_drivers (dni, country, first_name, last_name, phone, email, yego_premium, cycle, credit_line, completed_trips, park_id)
+             VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9, $10) RETURNING id`,
+            [dni, COUNTRY, first_name, last_name, email || null, yegoPremium, cycle, creditLine, trips, parkForDb || null]
           );
-          if (again.rows.length > 0) {
-            id = again.rows[0].id;
-          } else if (insErr.message && insErr.message.includes('idx_rapidin_drivers_phone_country_park')) {
-            // (phone, country, park_id) ya existe con otro DNI: insertar este conductor sin phone/park para no mezclar y no duplicar
-            const r2 = await query(
-              `INSERT INTO module_rapidin_drivers (dni, country, first_name, last_name, phone, email, yego_premium, cycle, credit_line, completed_trips, park_id)
-               VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9, NULL) RETURNING id`,
-              [dni, COUNTRY, first_name, last_name, email || null, yegoPremium, cycle, creditLine, trips]
-            );
-            id = r2.rows[0].id;
-          } else {
-            throw insErr;
-          }
-        } else throw insErr;
+          id = r2.rows[0].id;
+        } else {
+          throw insErr;
+        }
       }
     }
-    idByDni.set(dni, id);
+    idByDniAndPark.set(mapKey, id);
+    if (!idByDni.has(dni)) idByDni.set(dni, id);
+
+    // Match con tabla drivers: mismo DNI y misma flota (park_id). Solo enlazamos si existe esa flota en drivers.
+    try {
+      const driversMatch = await findInDriversByDni(dniForDb || dni, COUNTRY, parkForDb || null);
+      if (driversMatch.length > 0) {
+        const extId = driversMatch[0].driver_id != null ? String(driversMatch[0].driver_id).trim() : null;
+        if (extId) {
+          await query(
+            `UPDATE module_rapidin_drivers SET external_driver_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+            [extId, id]
+          );
+        }
+      }
+    } catch (errDrivers) {
+      logger.warn('ensureDriver: no se pudo enlazar con drivers por DNI/flota', { dni: dniForDb || dni, park_id: parkForDb || '', message: errDrivers.message });
+    }
+
     return id;
   }
-  idByDni.set(dni, 'dry-run-uuid');
-  return 'dry-run-uuid';
+  const dryId = 'dry-run-uuid';
+  idByDniAndPark.set(mapKey, dryId);
+  if (!idByDni.has(dni)) idByDni.set(dni, dryId);
+  return dryId;
 }
 
 // Leer valor de fila Cronograma PE: prueba nombres exactos Y normalizados de TODOS los nombres
@@ -1270,6 +1390,7 @@ async function run() {
   }
 
   const idByDni = new Map();
+  const idByDniAndPark = new Map();
   let driversCreated = 0;
   let requestsCreated = 0;
   let loansCreated = 0;
@@ -1316,6 +1437,8 @@ async function run() {
       rptasByExcelRow.set(2 + idx, rptasRows[idx]);
     }
     const colIndexNumCuenta = getNumeroCuentaColIndex(rptasSheet);
+    const { map: flotaNameToParkId, idSet: flotaIdSet } = await buildFlotaNameToParkIdImport();
+    logger.info(`Import: flotas API + alias cargados (${flotaNameToParkId.size} nombres → id). Inserción por (dni, country, park_id); mismo DNI puede tener varias flotas.`);
     logger.info(`Paso 1 - Rptas ${COUNTRY}: ${rptasData.length} filas. Solo conductores + solicitudes (Estado, Monto Otorgado/Monto Solicitado, Ciclo, Flota). Préstamos en Cronograma.`);
   for (let i = 0; i < rptasRows.length; i++) {
     const row = rptasRows[i];
@@ -1327,6 +1450,13 @@ async function run() {
       skipped++;
       continue;
     }
+
+    const flotaCol = toStr(getCol(row, 'Flota'), 100);
+    const parkIdResolved = resolveFlotaToParkIdImport(flotaCol, flotaNameToParkId, flotaIdSet);
+    if (flotaCol && parkIdResolved === null) {
+      logger.warn(`Rptas fila ${2 + i} DNI ${dni}: flota "${flotaCol}" no resuelta a park_id; se usa vacío.`);
+    }
+    const parkForDriver = parkIdResolved !== null ? parkIdResolved : '';
 
     const excelRowNum = 2 + i;
     if (rptasRowNumbersInCronograma.size > 0 && !rptasRowNumbersInCronograma.has(excelRowNum)) {
@@ -1340,8 +1470,9 @@ async function run() {
     }
 
     try {
-      if (!idByDni.has(dni)) driversCreated++;
-      const driverId = await ensureDriver(row, idByDni);
+      const mapKey = `${dni}|${parkForDriver}`;
+      if (!idByDniAndPark.has(mapKey)) driversCreated++;
+      const driverId = await ensureDriver(row, idByDniAndPark, idByDni, parkForDriver);
       if (!driverId) continue;
 
       // Solo Estado, Monto Otorgado (si no hay valor → Monto Solicitado), Ciclo, Flota
@@ -1373,7 +1504,6 @@ async function run() {
       const loanAllowedByCronograma = false;
       let createLoan = false;
 
-      const flota = toStr(getCol(row, 'Flota'), 100);
       // created_at: RECHAZADO y APROBADO → solo Marca temporal. DESEMBOLSADO/CANCELADO → FECHA DESEMBOLSO (si no hay → Marca temporal). Resto → Marca temporal. Se guarda fecha y hora como en el Excel.
       let dateForRequestFull = null; // fecha y hora completas del Excel
       if (requestStatus === 'rejected' || requestStatus === 'approved') {
@@ -1394,7 +1524,7 @@ async function run() {
       const tipoCuenta = toStr(getCol(row, 'TIPO DE CUENTA', 'TIPO DE CUENTA ', 'Tipo de cuenta') ?? getColByAnyNormalized(row, 'TIPO DE CUENTA', 'Tipo de cuenta'), 50);
       const banco = toStr(getCol(row, 'BANCO', 'BANCO '), 100);
       const observations = buildObservationsJson({
-        flota,
+        flota: flotaCol,
         adondeAbonamos,
         numCuenta,
         tipoCuenta,

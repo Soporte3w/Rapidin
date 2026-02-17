@@ -292,7 +292,7 @@ async function loanBelongsToDriverByPhoneCountry(loanId, phone, country) {
   const digitsOnly = (phone || '').toString().replace(/\D/g, '');
   const last9 = phoneDigitsForRapidinMatch(phone, country);
   const r = await pool.query(
-    `SELECT l.id, l.driver_id, r.status as request_status
+    `SELECT l.id, l.driver_id, l.status as loan_status, r.status as request_status
      FROM module_rapidin_loans l
      INNER JOIN module_rapidin_drivers d ON d.id = l.driver_id
      LEFT JOIN module_rapidin_loan_requests r ON r.id = l.request_id
@@ -301,6 +301,13 @@ async function loanBelongsToDriverByPhoneCountry(loanId, phone, country) {
     [loanId, country, phoneForDb, phone, digitsOnly, last9]
   );
   return r.rows[0] || null;
+}
+
+const DISBURSED_LOAN_STATUSES = ['active', 'completed', 'cancelled', 'late', 'defaulted'];
+function canShowSchedule(loanRow) {
+  if (loanRow.request_status === 'disbursed' || loanRow.request_status === 'cancelled') return true;
+  if (loanRow.loan_status && DISBURSED_LOAN_STATUSES.includes(loanRow.loan_status)) return true;
+  return false;
 }
 
 // Obtener cuotas pendientes de un préstamo (solo si la solicitud está desembolsada; sin desembolso no hay cronograma)
@@ -316,7 +323,7 @@ router.get('/loans/:loanId/installments', authenticate, async (req, res) => {
     if (!loanRow) {
       return errorResponse(res, 'Préstamo no encontrado o no corresponde a tu usuario', 404);
     }
-    if (loanRow.request_status !== 'disbursed') {
+    if (!canShowSchedule(loanRow)) {
       return errorResponse(res, 'El cronograma de cuotas solo está disponible después del desembolso.', 403);
     }
 
@@ -341,7 +348,7 @@ router.get('/loans/:loanId/schedule', authenticate, async (req, res) => {
     if (!loanRow) {
       return errorResponse(res, 'Préstamo no encontrado o no corresponde a tu usuario', 404);
     }
-    if (loanRow.request_status !== 'disbursed') {
+    if (!canShowSchedule(loanRow)) {
       return errorResponse(res, 'El cronograma solo está disponible después del desembolso.', 403);
     }
 

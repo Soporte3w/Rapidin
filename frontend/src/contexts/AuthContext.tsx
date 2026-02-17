@@ -1,6 +1,11 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import api from '../services/api';
 import { getStoredSession, setStoredSession, clearSession } from '../utils/authStorage';
+
+/** Minutos de inactividad tras los cuales se cierra sesión y se redirige a login. */
+const INACTIVITY_MINUTES = 5;
+const INACTIVITY_MS = INACTIVITY_MINUTES * 60 * 1000;
+const CHECK_INTERVAL_MS = 30 * 1000; // comprobar cada 30 s
 
 interface User {
   id: string;
@@ -62,6 +67,13 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const lastActivityAt = useRef<number>(Date.now());
+  const inactivityCheckId = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const logout = () => {
+    clearSession();
+    setUser(null);
+  };
 
   useEffect(() => {
     const session = getStoredSession();
@@ -82,6 +94,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setLoading(false);
   }, []);
 
+  // Cierre de sesión por inactividad (5 min sin interacción). Solo cuando hay usuario logueado.
+  useEffect(() => {
+    if (!user) {
+      if (inactivityCheckId.current) {
+        clearInterval(inactivityCheckId.current);
+        inactivityCheckId.current = null;
+      }
+      return;
+    }
+
+    lastActivityAt.current = Date.now();
+
+    const handleActivity = () => {
+      lastActivityAt.current = Date.now();
+    };
+
+    const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'];
+    events.forEach((ev) => window.addEventListener(ev, handleActivity));
+
+    const id = setInterval(() => {
+      if (Date.now() - lastActivityAt.current >= INACTIVITY_MS) {
+        logout();
+        if (inactivityCheckId.current) {
+          clearInterval(inactivityCheckId.current);
+          inactivityCheckId.current = null;
+        }
+      }
+    }, CHECK_INTERVAL_MS);
+    inactivityCheckId.current = id;
+
+    return () => {
+      events.forEach((ev) => window.removeEventListener(ev, handleActivity));
+      if (inactivityCheckId.current) {
+        clearInterval(inactivityCheckId.current);
+        inactivityCheckId.current = null;
+      }
+    };
+  }, [user]);
+
   const login = async (email: string, password: string) => {
     const response = await api.post('/auth/login', { email, password });
     const { token, user: userData } = response.data.data;
@@ -100,11 +151,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
     setUser(userData);
     return { flotas: flotas || [] };
-  };
-
-  const logout = () => {
-    clearSession();
-    setUser(null);
   };
 
   const updateUser = (partial: Partial<User>) => {

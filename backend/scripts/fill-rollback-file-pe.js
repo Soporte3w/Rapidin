@@ -1,0 +1,12 @@
+import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, '..', '.env.development') });
+const { query } = await import('../config/database.js');
+const res = await query("SELECT request_id FROM module_rapidin_loans WHERE country = 'PE' AND request_id IS NOT NULL");
+const ids = (res.rows || []).map((r) => r.request_id).filter(Boolean);
+const out = path.join(__dirname, 'rollback-request-ids.txt');
+fs.writeFileSync(out, ids.join('\n'), 'utf8');
+console.log('Escritos', ids.length, 'request_id en', out);

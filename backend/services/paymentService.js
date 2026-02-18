@@ -14,9 +14,16 @@ export const registerPayment = async (data, userId) => {
     const paymentResult = await query(
       `INSERT INTO module_rapidin_payments 
        (loan_id, amount, payment_date, payment_method, observations, registered_by)
-       VALUES ($1, $2, $3, $4, $5, $6)
+       VALUES ($1::uuid, $2::decimal, $3::date, $4, $5, $6::uuid)
        RETURNING *`,
-      [loan_id, amount, payment_date, payment_method || 'manual', observations, userId]
+      [
+        loan_id ?? null,
+        amount != null ? Number(amount) : null,
+        payment_date ?? null,
+        payment_method && String(payment_method).trim() ? String(payment_method).trim() : 'manual',
+        observations != null && observations !== '' ? String(observations) : null,
+        userId ?? null
+      ]
     );
 
     const payment = paymentResult.rows[0];
@@ -137,7 +144,7 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
         if (!waiveMora) {
           const pendingAfterPayment = parseFloat(installment.installment_amount) - (parseFloat(installment.paid_amount || 0) + installmentPaid);
           if (pendingAfterPayment <= 0) {
-            const feeRes = await query('SELECT calculate_late_fee($1, CURRENT_DATE) as late_fee', [installment.id]);
+            const feeRes = await query('SELECT calculate_late_fee($1::uuid, CURRENT_DATE) as late_fee', [String(installment.id)]);
             const newLateFee = Math.max(0, parseFloat(feeRes.rows[0]?.late_fee) || 0);
             await query(
               `UPDATE module_rapidin_installments 
@@ -217,7 +224,7 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
         );
 
         // Recalcular mora sobre el saldo pendiente (monto sobrante)
-        const feeRes = await query('SELECT calculate_late_fee($1, CURRENT_DATE) as late_fee', [installment.id]);
+        const feeRes = await query('SELECT calculate_late_fee($1::uuid, CURRENT_DATE) as late_fee', [String(installment.id)]);
         const newLateFee = Math.max(0, parseFloat(feeRes.rows[0]?.late_fee) || 0);
         await query(
           `UPDATE module_rapidin_installments 

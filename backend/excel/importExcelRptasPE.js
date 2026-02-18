@@ -9,6 +9,7 @@
  *   node excel/importExcelRptasPE.js --dry-run        # solo simular
  *   node excel/importExcelRptasPE.js --limit=20       # solo 20 filas
  *   node excel/importExcelRptasPE.js --debug          # ver columnas y ejemplo
+ *   node excel/importExcelRptasPE.js --fix-missing-loans   # solo crear préstamos para solicitudes desembolsadas que aún no tienen (usa hoja Cronograma: cuotas, fechas, montos)
  *   node excel/importExcelRptasPE.js --google-sheet-id=1mXdVRuSsOK9IlbpY1CQaNe_AHEVeePiU   # usar Excel desde Google Sheets (descarga y usa ese archivo)
  *
  * Requiere: Prestamos Yego (6).xlsx en la raíz del proyecto (fuera de frontend y backend).
@@ -82,6 +83,7 @@ const dniArg = process.argv.find(a => a.startsWith('--dni='));
 const FILTER_DNI = dniArg ? String(dniArg.split('=')[1]).trim() : null;
 const googleSheetIdArg = process.argv.find(a => a.startsWith('--google-sheet-id='));
 const GOOGLE_SHEET_ID = (googleSheetIdArg ? googleSheetIdArg.split('=')[1].trim() : null) || process.env.EXCEL_GOOGLE_SHEET_ID || null;
+const FIX_MISSING_LOANS = process.argv.includes('--fix-missing-loans');
 // Priorizar Cronogramas (una fila por cuota); si no existe, usar Rptas (una fila por solicitud)
 const SHEET_NAMES = COUNTRY === 'CO'
   ? ['Cronogramas CO', 'Cronograma CO', 'Rptas CO']
@@ -128,6 +130,18 @@ function toNum(val) {
   if (val == null || val === '') return null;
   const n = parseFloat(String(val).replace(',', '.'));
   return isNaN(n) ? null : n;
+}
+
+/** Devuelve candidatos para buscar por DNI: el valor tal cual y coincidencias (mismo número con/sin ceros a la izquierda). No normaliza datos; solo usa coincidencias al buscar. */
+function getDniLookupCandidates(dni) {
+  const s = (dni || '').toString().trim();
+  if (!s) return [];
+  const digits = s.replace(/\D/g, '');
+  if (digits === '') return [s];
+  const withoutLeadingZeros = digits.replace(/^0+/, '') || '0';
+  const padded8 = withoutLeadingZeros.padStart(8, '0');
+  const set = new Set([s, digits, withoutLeadingZeros, padded8]);
+  return [...set];
 }
 
 function toStr(val, maxLen = 255) {
@@ -894,7 +908,7 @@ async function syncLoanStatusAfterImport() {
 // rptasByExcelRow: mapa número de fila Excel (Rptas PE/CO) → datos de esa fila (para columna "row" del Cronograma).
 // requestIdByRptasRow: mapa número de fila Excel → request_id ya creado en Paso 1.
 // prestamoIdToRequestId: mapa PréstamoID → request_id (match por PréstamoID cuando no hay "row").
-async function processCronogramaPE(rows, idByDni, stats, errors, workbook, existingLoansByPrestamoId = new Map(), rptasByExcelRow = null, requestIdByRptasRow = null, prestamoIdToRequestId = null, requestIdsByDni = null, requestIdsByNombre = null, requestIdsByDniAndPark = null, flotaNameToParkId = null, flotaIdSet = null) {
+async function processCronogramaPE(rows, idByDni, stats, errors, workbook, existingLoansByPrestamoId = new Map(), rptasByExcelRow = null, requestIdByRptasRow = null, prestamoIdToRequestId = null, requestIdsByDni = null, requestIdsByNombre = null, requestIdsByDniAndPark = null, flotaNameToParkId = null, flotaIdSet = null, requestIdsWithoutLoanSet = null) {
   // Crear mapa DNI -> Ciclo actual y Flota desde Rptas (PE o CO según país)
   const cicloByDni = new Map();
   const flotaByDni = new Map();
@@ -907,10 +921,9 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
       for (const rptasRow of rptasData) {
         const dniRptas = toStr(getCol(rptasRow, 'DNI - CARNÉ EXTRANJERÍA ', 'CÉDULA DE CIUDADANIA - CARNÉ EXTRANJERÍA ', 'DNI'), 20);
         if (dniRptas) {
-          // Leer Ciclo actual de Rptas PE (columna "Ciclo actual")
+          // Leer Ciclo actual de Rptas PE (columna "Ciclo actual"); se guarda con DNI tal cual
           const cycleVal = getCol(rptasRow, 'Ciclo actual', 'Ciclo actual ', 'Ciclo Actual', 'Ciclo') ?? getColByAnyNormalized(rptasRow, 'Ciclo actual', 'Ciclo');
           const cycle = toNum(cycleVal) != null && !isNaN(toNum(cycleVal)) && toNum(cycleVal) > 0 ? Math.max(1, Math.floor(toNum(cycleVal))) : null;
-          // Guardar el ciclo (si hay múltiples filas del mismo DNI, siempre usar el último valor encontrado)
           if (cycle != null) {
             cicloByDni.set(dniRptas, cycle);
           }
@@ -981,20 +994,27 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
     const nombre = toStr(getCronogramaCol(first, 'Nombre'), 255);
     const montoOtorgado = toNum(getCronogramaCol(first, 'Monto_Otorgado', 'Monto Otorgado', 'Monto Otorgado '));
     const tasaSemanal = toNum(getCronogramaCol(first, 'Tasa_Semanal', 'Tasa semanal (t)', 'Tasa semanal'));
-    // Ciclo actual: primero buscar en Cronogramas, si no existe buscar en Rptas (mapa cicloByDni)
-    // El ciclo se guarda en el conductor y se muestra en cada solicitud
+    // Ciclo actual: primero buscar en Cronogramas, si no existe buscar en Rptas por DNI (si hay coincidencia con/sin ceros, se usa)
     let cycleVal = getCronogramaCol(first, 'Ciclo actual', 'Ciclo actual ', 'Ciclo Actual', 'Ciclo');
     let cycle = toNum(cycleVal) != null && !isNaN(toNum(cycleVal)) && toNum(cycleVal) > 0 ? Math.max(1, Math.floor(toNum(cycleVal))) : null;
-    // Si no está en Cronogramas PE, buscar en Rptas PE por DNI (columna "Ciclo actual")
-    if (cycle == null && cicloByDni.has(dni)) {
-      cycle = cicloByDni.get(dni);
+    if (cycle == null && dni) {
+      for (const key of getDniLookupCandidates(dni)) {
+        if (cicloByDni.has(key)) {
+          cycle = cicloByDni.get(key);
+          break;
+        }
+      }
     }
-    // Si tampoco está, usar 1 por defecto
     if (cycle == null) cycle = 1;
-    // Flota: primero buscar en Cronogramas PE, si no existe buscar en Rptas PE (mapa flotaByDni)
+    // Flota: primero Cronograma, si no existe buscar en Rptas por DNI (coincidencias con/sin ceros)
     let flota = toStr(getCronogramaCol(first, 'Flota'), 100);
-    if (!flota && flotaByDni.has(dni)) {
-      flota = flotaByDni.get(dni);
+    if (!flota && dni) {
+      for (const key of getDniLookupCandidates(dni)) {
+        if (flotaByDni.has(key)) {
+          flota = flotaByDni.get(key);
+          break;
+        }
+      }
     }
     const numInstallments = groupRows.length;
     const totalAmount = groupRows.reduce((sum, r) => sum + (toNum(getCronogramaCol(r, 'Cuota_Programada', 'cuota')) ?? 0), 0);
@@ -1181,12 +1201,22 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
       if (requestId == null && dni && flota && requestIdsByDniAndPark && flotaNameToParkId && flotaIdSet) {
         const parkIdFromFlota = resolveFlotaToParkIdImport(flota, flotaNameToParkId, flotaIdSet);
         if (parkIdFromFlota != null && parkIdFromFlota !== '') {
-          requestId = requestIdsByDniAndPark.get(`${dni}|${parkIdFromFlota}`) || null;
+          for (const key of getDniLookupCandidates(dni)) {
+            requestId = requestIdsByDniAndPark.get(`${key}|${parkIdFromFlota}`) || null;
+            if (requestId != null) break;
+          }
         }
       }
-      if (requestId == null && dni && requestIdsByDni && requestIdsByDni.has(dni)) {
-        const arr = requestIdsByDni.get(dni);
-        if (arr && arr.length > 0) requestId = arr[0];
+      if (requestId == null && dni && requestIdsByDni) {
+        for (const key of getDniLookupCandidates(dni)) {
+          if (requestIdsByDni.has(key)) {
+            const arr = requestIdsByDni.get(key);
+            if (arr && arr.length > 0) {
+              requestId = arr[0];
+              break;
+            }
+          }
+        }
       }
       if (requestId == null && nombre && requestIdsByNombre) {
         const nomKey = normalizeNameForMatch(nombre);
@@ -1197,6 +1227,10 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
       }
       if (requestId == null) {
         logger.debug(`Cronograma ${COUNTRY}: sin match en Rptas (DNI ${dni}, PréstamoID ${prestamoIdTrim || 'N/A'}) — se omite, no se crea solicitud ni préstamo.`);
+        continue;
+      }
+      // Con --fix-missing-loans: solo crear préstamo si esta solicitud aún no tiene uno (usa datos y cuotas del Cronograma).
+      if (requestIdsWithoutLoanSet != null && !requestIdsWithoutLoanSet.has(requestId)) {
         continue;
       }
 
@@ -1447,8 +1481,33 @@ async function run() {
     flotaIdSet = built.idSet;
   }
 
-  // PASO 1: Rptas PE/CO — Solo conductores y solicitudes. Estado, Monto Otorgado (si vacío → Monto Solicitado), Ciclo, Flota. Préstamos se crean en Cronograma.
-  if (hasRptas) {
+  // Con --fix-missing-loans: NO crear ni duplicar solicitudes/conductores. Solo construir mapas desde BD y luego Cronograma creará solo los préstamos faltantes.
+  let requestIdsWithoutLoanSet = null;
+  if (FIX_MISSING_LOANS && !DRY_RUN) {
+    const missingRes = await query(
+      `SELECT r.id AS request_id, d.dni, d.park_id
+       FROM module_rapidin_loan_requests r
+       JOIN module_rapidin_drivers d ON d.id = r.driver_id
+       LEFT JOIN module_rapidin_loans l ON l.request_id = r.id
+       WHERE l.id IS NULL AND r.status IN ('disbursed', 'desembolsado', 'Desembolsado') AND r.country = $1`,
+      [COUNTRY]
+    );
+    requestIdsWithoutLoanSet = new Set((missingRes.rows || []).map((r) => r.request_id));
+    for (const row of missingRes.rows || []) {
+      const dni = (row.dni || '').toString().trim();
+      const parkId = (row.park_id || '').toString().trim();
+      if (!dni) continue;
+      for (const key of getDniLookupCandidates(dni)) {
+        if (!requestIdsByDni.has(key)) requestIdsByDni.set(key, []);
+        requestIdsByDni.get(key).push(row.request_id);
+        requestIdsByDniAndPark.set(`${key}|${parkId}`, row.request_id);
+      }
+    }
+    logger.info(`--fix-missing-loans: ${(missingRes.rows || []).length} solicitudes sin préstamo; mapas DNI desde BD. No se crean conductores ni solicitudes.`);
+  }
+
+  // PASO 1: Rptas PE/CO — Solo conductores y solicitudes (se omite con --fix-missing-loans para no duplicar).
+  if (hasRptas && !FIX_MISSING_LOANS) {
     const rptasSheet = workbook.Sheets[rptasSheetName];
     // raw: true para que Marca temporal y FECHA DESEMBOLSO vengan como número (serial Excel) y se parseen bien; evita que todas queden con la misma fecha (ej. 23 feb) por formato de texto
     const rptasData = XLSX.utils.sheet_to_json(rptasSheet, { defval: null, raw: true });
@@ -1734,7 +1793,7 @@ async function run() {
     const cronoRows = LIMIT ? cronoData.slice(0, LIMIT) : cronoData;
     logger.info(`Paso 2 - Cronogramas ${COUNTRY}: ${cronoData.length} filas, procesando ${cronoRows.length}.`);
     const stats = { driversCreated: 0, requestsCreated: 0, loansCreated: 0, installmentsCreated: 0 };
-    await processCronogramaPE(cronoRows, idByDni, stats, errors, workbook, existingLoansByPrestamoId, rptasByExcelRow, requestIdByRptasRow, prestamoIdToRequestId, requestIdsByDni, requestIdsByNombre, requestIdsByDniAndPark, flotaNameToParkId, flotaIdSet);
+    await processCronogramaPE(cronoRows, idByDni, stats, errors, workbook, existingLoansByPrestamoId, rptasByExcelRow, requestIdByRptasRow, prestamoIdToRequestId, requestIdsByDni, requestIdsByNombre, requestIdsByDniAndPark, flotaNameToParkId, flotaIdSet, requestIdsWithoutLoanSet);
     driversCreated += stats.driversCreated;
     requestsCreated += stats.requestsCreated;
     loansCreated += stats.loansCreated;

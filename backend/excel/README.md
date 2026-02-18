@@ -41,6 +41,12 @@ node excel/importExcelRptasCO.js
 node excel/importExcelRptasPE.js --dry-run
 node excel/importExcelRptasCO.js --dry-run
 
+# Solo crear préstamos para solicitudes desembolsadas que aún no tienen (usa hoja Cronograma: cuotas y fechas reales)
+node excel/importExcelRptasPE.js --fix-missing-loans
+# Con Excel desde Google Sheets (si no tienes el .xlsx en la raíz):
+node excel/importExcelRptasPE.js --fix-missing-loans --google-sheet-id=TU_SHEET_ID
+# O define EXCEL_GOOGLE_SHEET_ID en .env y no pases --google-sheet-id
+
 # Límite de filas o debug
 node excel/importExcelRptasPE.js --limit=20
 node excel/importExcelRptasCO.js --limit=20

@@ -109,13 +109,13 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
         if (waiveMora) {
           await query(
             `UPDATE module_rapidin_installments 
-             SET paid_amount = paid_amount + $2,
+             SET paid_amount = paid_amount + $1,
                  late_fee = 0,
                  late_fee_waived = true,
-                 status = CASE WHEN (paid_amount + $2) >= installment_amount THEN 'paid' ELSE status END,
-                 paid_date = CASE WHEN (paid_amount + $2) >= installment_amount THEN CURRENT_DATE ELSE paid_date END
-             WHERE id = $3`,
-            [0, installmentPaid, installment.id]
+                 status = CASE WHEN (paid_amount + $1) >= installment_amount THEN 'paid' ELSE status END,
+                 paid_date = CASE WHEN (paid_amount + $1) >= installment_amount THEN CURRENT_DATE ELSE paid_date END
+             WHERE id = $2::uuid`,
+            [installmentPaid, String(installment.id)]
           );
         } else {
           await query(

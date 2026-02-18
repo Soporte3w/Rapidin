@@ -7,6 +7,7 @@ interface FlotaItem {
   driver_id: string | null;
   park_id: string | null;
   flota_name: string;
+  rapidin_driver_id?: string | null;
 }
 
 export default function SelectFlota() {
@@ -38,7 +39,8 @@ export default function SelectFlota() {
   }, []);
 
   const handleSelect = (f: FlotaItem) => {
-    updateStoredFlota(f.park_id || '', f.driver_id || '');
+    // Guardar el id de ese conductor en esa flota (rapidin_driver_id = id en module_rapidin_drivers)
+    updateStoredFlota(f.park_id || '', f.driver_id || '', f.flota_name || undefined, f.rapidin_driver_id ?? undefined);
     navigate('/driver/resumen', { replace: true });
   };
 

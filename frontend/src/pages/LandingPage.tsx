@@ -164,10 +164,13 @@ const LandingPage = () => {
       } else if (flotas.length === 1) {
         const session = getStoredSession();
         if (session) {
+          const f = flotas[0];
           setStoredSession({
             ...session,
-            selectedParkId: flotas[0].park_id || undefined,
-            selectedExternalDriverId: flotas[0].driver_id || undefined,
+            selectedParkId: f.park_id || undefined,
+            selectedExternalDriverId: f.driver_id || undefined,
+            selectedRapidinDriverId: (f as { rapidin_driver_id?: string | null }).rapidin_driver_id ?? undefined,
+            selectedFlotaName: f.flota_name || undefined,
           });
         }
         navigate('/driver/resumen', { replace: true });

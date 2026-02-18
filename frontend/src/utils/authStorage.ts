@@ -9,7 +9,7 @@ export interface StoredSession {
   user: Record<string, unknown>;
   selectedParkId?: string;
   selectedExternalDriverId?: string;
-  /** UUID de module_rapidin_drivers; enviar como driver_id en las peticiones (va enlazado con park_id en BD) */
+  /** Id del conductor en la flota elegida (module_rapidin_drivers). Se guarda al elegir flota. */
   selectedRapidinDriverId?: string;
   selectedFlotaName?: string;
 }
@@ -38,7 +38,8 @@ export function clearSession(): void {
 export function updateStoredFlota(
   selectedParkId: string,
   selectedExternalDriverId: string,
-  selectedFlotaName?: string
+  selectedFlotaName?: string,
+  selectedRapidinDriverId?: string | null
 ): void {
   const session = getStoredSession();
   if (!session) return;
@@ -46,7 +47,7 @@ export function updateStoredFlota(
     ...session,
     selectedParkId: selectedParkId || undefined,
     selectedExternalDriverId: selectedExternalDriverId || undefined,
-    selectedRapidinDriverId: session.selectedRapidinDriverId ?? undefined,
+    selectedRapidinDriverId: selectedRapidinDriverId || undefined,
     selectedFlotaName: selectedFlotaName || undefined,
   });
 }
@@ -81,8 +82,12 @@ export function getStoredRapidinDriverId(): string | null {
   return getStoredSession()?.selectedRapidinDriverId ?? null;
 }
 
+/** Guarda el rapidin_driver_id en localStorage (se usa al elegir flota y cuando la API lo devuelve en loans/dashboard). */
 export function setStoredRapidinDriverId(driverId: string | null | undefined): void {
   const session = getStoredSession();
   if (!session) return;
-  setStoredSession({ ...session, selectedRapidinDriverId: driverId || undefined });
+  setStoredSession({
+    ...session,
+    selectedRapidinDriverId: driverId && String(driverId).trim() ? String(driverId).trim() : undefined,
+  });
 }

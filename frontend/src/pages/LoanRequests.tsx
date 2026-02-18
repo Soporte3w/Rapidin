@@ -4,6 +4,7 @@ import api from '../services/api';
 import { Eye, FileText, Calendar, AlertCircle, CheckCircle, Clock, XCircle, Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { formatCurrency } from '../utils/currency';
+import { formatDateUTC } from '../utils/date';
 
 interface LoanRequest {
   id: string;
@@ -349,11 +350,7 @@ const LoanRequests = () => {
                       <div className="flex items-center space-x-2 text-sm text-gray-600">
                         <Calendar className="w-4 h-4 text-gray-400" />
                         <span>
-                          {request.created_at ? new Date(request.created_at).toLocaleDateString('es-PE', {
-                            day: '2-digit',
-                            month: 'short',
-                            year: 'numeric'
-                          }) : 'N/A'}
+                          {request.created_at ? formatDateUTC(request.created_at, 'es-PE') : 'N/A'}
                         </span>
                       </div>
                     </td>

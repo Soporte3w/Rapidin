@@ -142,13 +142,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loginWithPhone = async (phone: string, code: string, country: 'PE' | 'CO') => {
     const response = await api.post('/auth/verify-otp', { phone, code, country });
-    const { token, user: userData, flotas, rapidin_driver_id } = response.data.data || {};
-    const rapidinId = rapidin_driver_id ?? (userData as User)?.rapidin_driver_id;
-    setStoredSession({
-      token,
-      user: userData,
-      selectedRapidinDriverId: rapidinId || undefined,
-    });
+    const { token, user: userData, flotas } = response.data.data || {};
+    setStoredSession({ token, user: userData });
     setUser(userData);
     return { flotas: flotas || [] };
   };

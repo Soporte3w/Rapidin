@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   FileText,
@@ -20,8 +20,9 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
-import { getStoredRapidinDriverId, setStoredRapidinDriverId, getStoredSelectedParkId, getStoredSelectedExternalDriverId } from '../../utils/authStorage';
+import { getStoredRapidinDriverId, getStoredSelectedParkId, getStoredFlotaName } from '../../utils/authStorage';
 import { formatCurrency, getCurrencyLabel } from '../../utils/currency';
+import { formatDateUTC } from '../../utils/date';
 import toast from 'react-hot-toast';
 
 interface Loan {
@@ -82,7 +83,6 @@ export default function DriverLoans() {
   const [selectedLoan, setSelectedLoan] = useState<Loan | null>(null);
   const [schedule, setSchedule] = useState<ScheduleItem[]>([]);
   const [scheduleLoading, setScheduleLoading] = useState(false);
-  const loansFetchedRef = useRef(false);
 
   const total = loans.length;
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -101,9 +101,8 @@ export default function DriverLoans() {
     return rejectedList.slice(start, start + rejectedLimit);
   }, [rejectedList, rejectedPage, rejectedLimit]);
 
+  // Cargar siempre al montar: así al cambiar de flota y volver se ven los datos de la flota seleccionada (park_id/driver_id desde storage).
   useEffect(() => {
-    if (loansFetchedRef.current) return;
-    loansFetchedRef.current = true;
     loadLoans();
   }, []);
 
@@ -121,19 +120,14 @@ export default function DriverLoans() {
       setError('');
       const driverId = getStoredRapidinDriverId();
       const parkId = getStoredSelectedParkId();
-      const externalDriverId = getStoredSelectedExternalDriverId();
       const params: Record<string, string> = {};
       if (driverId) params.driver_id = driverId;
-      else {
-        if (parkId) params.park_id = parkId;
-        if (externalDriverId) params.external_driver_id = externalDriverId;
-      }
+      if (parkId) params.park_id = parkId;
       const { data } = await api.get('/driver/loans', { params });
       const raw = data?.data;
-      if (raw?.rapidin_driver_id) setStoredRapidinDriverId(raw.rapidin_driver_id);
       const loansList = Array.isArray(raw) ? raw : (raw?.loans ?? []);
       const pending = Array.isArray(raw) ? null : (raw?.pendingRequest ?? null);
-      const rejectedListFromApi = Array.isArray(raw?.rejectedRequests) ? raw.rejectedRequests : (raw?.rejectedRequest ? [raw.rejectedRequest] : []);
+      const rejectedListFromApi = Array.isArray(raw?.rejectedRequests) ? raw.rejectedRequests : [];
       setLoans(loansList);
       setPendingRequest(pending);
       setRejectedRequests(rejectedListFromApi);
@@ -151,13 +145,9 @@ export default function DriverLoans() {
     try {
       const driverId = getStoredRapidinDriverId();
       const parkId = getStoredSelectedParkId();
-      const externalDriverId = getStoredSelectedExternalDriverId();
       const params: Record<string, string> = {};
       if (driverId) params.driver_id = driverId;
-      else {
-        if (parkId) params.park_id = parkId;
-        if (externalDriverId) params.external_driver_id = externalDriverId;
-      }
+      if (parkId) params.park_id = parkId;
       const res = await api.get(`/driver/loans/${loan.id}/schedule`, { params });
       const data = res.data?.data ?? res.data ?? [];
       const scheduleList = Array.isArray(data) ? data : (data?.schedule ?? []);
@@ -179,13 +169,9 @@ export default function DriverLoans() {
       toast.loading('Preparando descarga...', { id: 'download-schedule' });
       const driverId = getStoredRapidinDriverId();
       const parkId = getStoredSelectedParkId();
-      const externalDriverId = getStoredSelectedExternalDriverId();
       const params: Record<string, string> = {};
       if (driverId) params.driver_id = driverId;
-      else {
-        if (parkId) params.park_id = parkId;
-        if (externalDriverId) params.external_driver_id = externalDriverId;
-      }
+      if (parkId) params.park_id = parkId;
       const res = await api.get(`/driver/loans/${loan.id}/schedule`, { params });
       const data = res.data?.data ?? res.data ?? [];
       const list: ScheduleItem[] = Array.isArray(data) ? data : (data?.schedule ?? []);
@@ -194,12 +180,12 @@ export default function DriverLoans() {
       const rows = list.map((row) => [
         row.installment_number,
         Number(row.installment_amount).toFixed(2),
-        row.due_date ? new Date(row.due_date).toLocaleDateString('es-PE') : '',
+        row.due_date ? formatDateUTC(row.due_date, 'es-PE') : '',
         Number(row.late_fee ?? 0).toFixed(2),
         Number(row.paid_late_fee ?? 0).toFixed(2),
         row.status === 'paid' ? 'Pagada' : row.status === 'overdue' ? 'Vencida' : 'Pendiente',
         (Number(row.paid_amount ?? 0) + Number(row.paid_late_fee ?? 0)) > 0 ? (Number(row.paid_amount ?? 0) + Number(row.paid_late_fee ?? 0)).toFixed(2) : '',
-        row.paid_date ? new Date(row.paid_date).toLocaleDateString('es-PE') : ''
+        row.paid_date ? formatDateUTC(row.paid_date, 'es-PE') : ''
       ]);
       const csvContent = [headers.join(','), ...rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))].join('\n');
       const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8' });
@@ -277,7 +263,11 @@ export default function DriverLoans() {
                 Mis Préstamos
               </h1>
               <p className="text-xs lg:text-sm text-white/90 mt-0.5">
-                Historial completo de tus préstamos - {countryName}
+                {getStoredFlotaName() ? (
+                  <>Préstamos y solicitudes de la flota <strong>{getStoredFlotaName()}</strong></>
+                ) : (
+                  <>Historial completo de tus préstamos - {countryName}</>
+                )}
               </p>
             </div>
           </div>
@@ -358,7 +348,7 @@ export default function DriverLoans() {
                 ) : (
                   <>
                     Tu solicitud por <strong>{formatCurrency(pendingRequest.requestedAmount, country)}</strong> fue enviada el{' '}
-                    {new Date(pendingRequest.createdAt).toLocaleDateString('es-PE', { day: 'numeric', month: 'long', year: 'numeric' })}.
+                    {formatDateUTC(pendingRequest.createdAt, 'es-PE')}.
                     Aparecerá aquí cuando sea aprobada y desembolsada.
                   </>
                 )}
@@ -442,11 +432,7 @@ export default function DriverLoans() {
                       <td className="px-4 py-4 whitespace-nowrap">
                         <div className="flex items-center gap-2 text-sm text-gray-900">
                           <Calendar className="w-4 h-4 text-gray-500 flex-shrink-0" />
-                          {new Date(loan.date).toLocaleDateString('es-PE', {
-                            day: '2-digit',
-                            month: 'short',
-                            year: 'numeric'
-                          })}
+                          {formatDateUTC(loan.date, 'es-PE')}
                         </div>
                       </td>
                       <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -638,11 +624,7 @@ export default function DriverLoans() {
                           </span>
                         </td>
                         <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {new Date(req.createdAt).toLocaleDateString('es-PE', {
-                            day: '2-digit',
-                            month: 'short',
-                            year: 'numeric'
-                          })}
+                          {formatDateUTC(req.createdAt, 'es-PE')}
                         </td>
                         <td className="px-4 py-4 text-sm text-gray-900 max-w-md">
                           {req.rejectionReason ? (
@@ -767,7 +749,7 @@ export default function DriverLoans() {
                 <div className="bg-gray-50 rounded-lg p-3">
                   <p className="text-xs text-gray-500 font-semibold uppercase">Fecha</p>
                   <p className="text-sm font-medium text-gray-900">
-                    {new Date(selectedLoan.date).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    {formatDateUTC(selectedLoan.date, 'es-PE')}
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3">
@@ -808,7 +790,7 @@ export default function DriverLoans() {
                           <td className="px-2 py-2 font-medium text-gray-900">{row.installment_number}</td>
                           <td className="px-2 py-2 text-gray-700">{formatCurrency(Number(row.installment_amount), country)}</td>
                           <td className="px-2 py-2 text-gray-700">
-                            {row.due_date ? new Date(row.due_date).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}
+                            {row.due_date ? formatDateUTC(row.due_date, 'es-PE') : '—'}
                           </td>
                           <td className="px-2 py-2 text-gray-700">
                             {row.status === 'pending' && Number(row.late_fee ?? 0) === 0 && Number(row.paid_late_fee ?? 0) === 0 && Number(row.mora_cobrada ?? 0) === 0 ? (
@@ -855,7 +837,7 @@ export default function DriverLoans() {
                             })()}
                           </td>
                           <td className="px-2 py-2 text-gray-600">
-                            {row.paid_date ? new Date(row.paid_date).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}
+                            {row.paid_date ? formatDateUTC(row.paid_date, 'es-PE') : '—'}
                           </td>
                         </tr>
                       ))}

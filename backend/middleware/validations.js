@@ -40,6 +40,8 @@ export const validatePayment = [
   body('loan_id').isUUID().withMessage('ID de préstamo inválido'),
   body('amount').isFloat({ min: 0.01 }).withMessage('Monto inválido'),
   body('payment_date').isISO8601().withMessage('Fecha inválida'),
+  body('waive_late_fee_installment_ids').optional().isArray().withMessage('Debe ser un arreglo'),
+  body('waive_late_fee_installment_ids.*').optional().isUUID().withMessage('ID de cuota inválido'),
   validateResults
 ];
 

@@ -507,10 +507,11 @@ function mapEstado(estado) {
   return { requestStatus: 'pending', createLoan: false };
 }
 
-// Estado (Cronograma PE) -> status de cuota: CANCELADO = pagado, PENDIENTE = pending
+// Estado (Cronograma PE) -> status de cuota: CANCELADO = pagado, VENCIDO = overdue, PENDIENTE = pending
 function mapEstadoInstallment(estado) {
   const e = (toStr(estado) || '').toUpperCase();
   if (e.includes('CANCELADO') || e.includes('CANCELLED') || e.includes('PAGADO') || e.includes('PAID')) return 'paid';
+  if (e.includes('VENCIDO') || e.includes('OVERDUE') || e.includes('VENCIDA')) return 'overdue';
   return 'pending';
 }
 
@@ -893,7 +894,7 @@ async function syncLoanStatusAfterImport() {
 // rptasByExcelRow: mapa número de fila Excel (Rptas PE/CO) → datos de esa fila (para columna "row" del Cronograma).
 // requestIdByRptasRow: mapa número de fila Excel → request_id ya creado en Paso 1.
 // prestamoIdToRequestId: mapa PréstamoID → request_id (match por PréstamoID cuando no hay "row").
-async function processCronogramaPE(rows, idByDni, stats, errors, workbook, existingLoansByPrestamoId = new Map(), rptasByExcelRow = null, requestIdByRptasRow = null, prestamoIdToRequestId = null, requestIdsByDni = null, requestIdsByNombre = null) {
+async function processCronogramaPE(rows, idByDni, stats, errors, workbook, existingLoansByPrestamoId = new Map(), rptasByExcelRow = null, requestIdByRptasRow = null, prestamoIdToRequestId = null, requestIdsByDni = null, requestIdsByNombre = null, requestIdsByDniAndPark = null, flotaNameToParkId = null, flotaIdSet = null) {
   // Crear mapa DNI -> Ciclo actual y Flota desde Rptas (PE o CO según país)
   const cicloByDni = new Map();
   const flotaByDni = new Map();
@@ -1036,6 +1037,7 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
         const principalPerInstallment = montoOtorgado / numInstallments;
         const interestTotal = totalAmount - montoOtorgado;
         const interestPerInstallment = interestTotal / numInstallments;
+        let hasAnyOverdue = false;
         for (let idx = 0; idx < groupRows.length; idx++) {
           const row = groupRows[idx];
           const nCuota = toNum(getCronogramaCol(row, 'N_Cuota')) ?? idx + 1;
@@ -1087,6 +1089,12 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
             [loanId, nCuota, cuotaAmt, Math.round(principalPerInstallment * 100) / 100, Math.round(interestPerInstallment * 100) / 100, dateToDateString(dueDate), dateToDateString(paidDateNorm), paidAmtR, moraR, diasAtraso, statusFinal]
           );
           stats.installmentsCreated++;
+          if (statusFinal === 'overdue') hasAnyOverdue = true;
+        }
+        // Regla obligatoria: si en cronograma al menos una cuota está vencida, el préstamo debe estar defaulted (vencido).
+        if (hasAnyOverdue && !DRY_RUN) {
+          await query(`UPDATE module_rapidin_loans SET status = 'defaulted', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [loanId]);
+          logger.debug(`Préstamo ${prestamoIdTrim}: al menos una cuota vencida → status = defaulted (regla obligatoria).`);
         }
         if (allCancelado && existingLoan.request_id) {
           const lastRowUpd = groupRows[groupRows.length - 1];
@@ -1170,6 +1178,12 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
       if (requestId == null && prestamoIdTrim && prestamoIdToRequestId && prestamoIdToRequestId.has(prestamoIdTrim)) {
         requestId = prestamoIdToRequestId.get(prestamoIdTrim);
       }
+      if (requestId == null && dni && flota && requestIdsByDniAndPark && flotaNameToParkId && flotaIdSet) {
+        const parkIdFromFlota = resolveFlotaToParkIdImport(flota, flotaNameToParkId, flotaIdSet);
+        if (parkIdFromFlota != null && parkIdFromFlota !== '') {
+          requestId = requestIdsByDniAndPark.get(`${dni}|${parkIdFromFlota}`) || null;
+        }
+      }
       if (requestId == null && dni && requestIdsByDni && requestIdsByDni.has(dni)) {
         const arr = requestIdsByDni.get(dni);
         if (arr && arr.length > 0) requestId = arr[0];
@@ -1186,13 +1200,14 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
         continue;
       }
 
-      // driverId siempre desde la solicitud existente en Rptas (no crear conductor desde Cronograma)
-      let driverId = idByDni.get(dni);
-      if (!driverId && requestId && !DRY_RUN) {
+      // driverId SIEMPRE desde la solicitud (request_id) para que loan.driver_id = request.driver_id = misma flota
+      let driverId = null;
+      if (requestId && !DRY_RUN) {
         const reqRow = await query('SELECT driver_id FROM module_rapidin_loan_requests WHERE id = $1', [requestId]);
-        driverId = reqRow.rows[0]?.driver_id;
+        driverId = reqRow.rows[0]?.driver_id || null;
         if (driverId) idByDni.set(dni, driverId);
       }
+      if (!driverId) driverId = idByDni.get(dni) || null;
       if (!driverId) {
         logger.warn(`Cronograma ${COUNTRY}: no se pudo obtener driver_id para request ${requestId}, se omite.`);
         continue;
@@ -1248,7 +1263,7 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
         const principalPerInstallment = montoOtorgado / numInstallments;
         const interestTotal = totalAmount - montoOtorgado;
         const interestPerInstallment = interestTotal / numInstallments;
-
+        let hasAnyOverdueNew = false;
         for (const row of groupRows) {
           const nCuota = Math.max(1, Math.floor(toNum(getCronogramaCol(row, 'N_Cuota', 'N_Cuota ')) ?? 1));
           // Cronograma: due_date = Fecha_Programada (serial Excel o texto sin formato; parseDateCell acepta ambos).
@@ -1318,6 +1333,13 @@ async function processCronogramaPE(rows, idByDni, stats, errors, workbook, exist
             ]
           );
           stats.installmentsCreated++;
+          if (statusFinal === 'overdue') hasAnyOverdueNew = true;
+        }
+
+        // Regla obligatoria: si en cronograma al menos una cuota está vencida, el préstamo debe estar defaulted (vencido).
+        if (hasAnyOverdueNew && !DRY_RUN) {
+          await query(`UPDATE module_rapidin_loans SET status = 'defaulted', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [loanId]);
+          logger.debug(`Préstamo nuevo ${prestamoIdTrim}: al menos una cuota vencida → status = defaulted (regla obligatoria).`);
         }
 
         // Si todas las cuotas están CANCELADAS/PAGADAS, el préstamo ya está cancelled desde el INSERT
@@ -1402,6 +1424,7 @@ async function run() {
   const requestIdByRptasRow = new Map();
   const prestamoIdToRequestId = new Map();
   const requestIdsByDni = new Map();
+  const requestIdsByDniAndPark = new Map();
   const requestIdsByNombre = new Map();
 
   // Números de fila Rptas que existen en Cronograma (columna "row" / "Rptas PE row" / "Rptas CO row") — para validar existencia en todos los estados
@@ -1414,6 +1437,14 @@ async function run() {
       if (rowNum != null && !isNaN(rowNum)) rptasRowNumbersInCronograma.add(Math.floor(rowNum));
     }
     logger.info(`Validación: ${rptasRowNumbersInCronograma.size} números de fila Rptas encontrados en Cronograma ${COUNTRY}.`);
+  }
+
+  let flotaNameToParkId = new Map();
+  let flotaIdSet = new Set();
+  if (hasRptas || cronogramaSheetName) {
+    const built = await buildFlotaNameToParkIdImport();
+    flotaNameToParkId = built.map;
+    flotaIdSet = built.idSet;
   }
 
   // PASO 1: Rptas PE/CO — Solo conductores y solicitudes. Estado, Monto Otorgado (si vacío → Monto Solicitado), Ciclo, Flota. Préstamos se crean en Cronograma.
@@ -1437,7 +1468,6 @@ async function run() {
       rptasByExcelRow.set(2 + idx, rptasRows[idx]);
     }
     const colIndexNumCuenta = getNumeroCuentaColIndex(rptasSheet);
-    const { map: flotaNameToParkId, idSet: flotaIdSet } = await buildFlotaNameToParkIdImport();
     logger.info(`Import: flotas API + alias cargados (${flotaNameToParkId.size} nombres → id). Inserción por (dni, country, park_id); mismo DNI puede tener varias flotas.`);
     logger.info(`Paso 1 - Rptas ${COUNTRY}: ${rptasData.length} filas. Solo conductores + solicitudes (Estado, Monto Otorgado/Monto Solicitado, Ciclo, Flota). Préstamos en Cronograma.`);
   for (let i = 0; i < rptasRows.length; i++) {
@@ -1521,6 +1551,7 @@ async function run() {
       const numCuentaRaw = getNumeroCuentaFromSheet(rptasSheet, i, colIndexNumCuenta) ?? getCol(row, 'NUMERO DE CUENTA', 'NUMERO DE CUENTA ', 'Número de cuenta') ?? getColByAnyNormalized(row, 'NUMERO DE CUENTA', 'Numero de cuenta');
       // Siempre en texto (string) para no perder dígitos, venga la celda como número o texto en Excel
       const numCuenta = (numCuentaRaw != null && numCuentaRaw !== '') ? String(numCuentaRaw).trim().slice(0, 100) : null;
+      if (DRY_RUN) logger.info(`[DRY-RUN] Rptas PE fila Excel ${2 + i}: NUMERO DE CUENTA = "${numCuenta ?? '(vacío)'}" (raw: "${String(numCuentaRaw ?? '').slice(0, 50)}")`);
       const tipoCuenta = toStr(getCol(row, 'TIPO DE CUENTA', 'TIPO DE CUENTA ', 'Tipo de cuenta') ?? getColByAnyNormalized(row, 'TIPO DE CUENTA', 'Tipo de cuenta'), 50);
       const banco = toStr(getCol(row, 'BANCO', 'BANCO '), 100);
       const observations = buildObservationsJson({
@@ -1577,6 +1608,7 @@ async function run() {
         }
         if (!requestIdsByDni.has(dni)) requestIdsByDni.set(dni, []);
         requestIdsByDni.get(dni).push(requestId);
+        requestIdsByDniAndPark.set(`${dni}|${parkForDriver}`, requestId);
         const fullNameRptas = toStr(getCol(row, 'Nombres y Apellidos'), 255) || '';
         const nomKey = normalizeNameForMatch(fullNameRptas);
         if (nomKey) {
@@ -1702,7 +1734,7 @@ async function run() {
     const cronoRows = LIMIT ? cronoData.slice(0, LIMIT) : cronoData;
     logger.info(`Paso 2 - Cronogramas ${COUNTRY}: ${cronoData.length} filas, procesando ${cronoRows.length}.`);
     const stats = { driversCreated: 0, requestsCreated: 0, loansCreated: 0, installmentsCreated: 0 };
-    await processCronogramaPE(cronoRows, idByDni, stats, errors, workbook, existingLoansByPrestamoId, rptasByExcelRow, requestIdByRptasRow, prestamoIdToRequestId, requestIdsByDni, requestIdsByNombre);
+    await processCronogramaPE(cronoRows, idByDni, stats, errors, workbook, existingLoansByPrestamoId, rptasByExcelRow, requestIdByRptasRow, prestamoIdToRequestId, requestIdsByDni, requestIdsByNombre, requestIdsByDniAndPark, flotaNameToParkId, flotaIdSet);
     driversCreated += stats.driversCreated;
     requestsCreated += stats.requestsCreated;
     loansCreated += stats.loansCreated;

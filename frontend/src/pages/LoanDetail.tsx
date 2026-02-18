@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, User, Banknote, Calendar, AlertCircle, FileText, CheckCircle, Clock, XCircle } from 'lucide-react';
 import api from '../services/api';
+import { formatDateUTC } from '../utils/date';
 
 const LoanDetail = () => {
   const { id } = useParams();
@@ -277,11 +278,7 @@ const LoanDetail = () => {
                       {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : ''} {parseFloat(installment.installment_amount || 0).toFixed(2)}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {installment.due_date ? new Date(installment.due_date).toLocaleDateString('es-ES', { 
-                        year: 'numeric', 
-                        month: 'short', 
-                        day: 'numeric' 
-                      }) : 'N/A'}
+                      {installment.due_date ? formatDateUTC(installment.due_date, 'es-ES') : 'N/A'}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
                       {(() => {
@@ -292,7 +289,7 @@ const LoanDetail = () => {
                       })()}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {installment.paid_date ? new Date(installment.paid_date).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}
+                      {installment.paid_date ? formatDateUTC(installment.paid_date, 'es-ES') : '—'}
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-900">
                       {(() => {

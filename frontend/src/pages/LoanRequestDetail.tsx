@@ -5,6 +5,7 @@ import api from '../services/api';
 import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
 import { formatCurrency, getCurrencyLabel } from '../utils/currency';
+import { formatDateTimeUTC } from '../utils/date';
 
 const DOC_LABELS: Record<string, string> = {
   id_document: 'Foto DNI del conductor (parte frontal)',
@@ -539,7 +540,7 @@ const LoanRequestDetail = () => {
             <DataRow label="Estado" value="" custom={<div className="mt-0.5">{getStatusBadge(request.status)}</div>} />
             <DataRow
               label="Fecha"
-              value={request.created_at ? new Date(request.created_at).toLocaleDateString('es-ES', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
+              value={formatDateTimeUTC(request.created_at)}
             />
           </dl>
         </div>
@@ -551,8 +552,15 @@ const LoanRequestDetail = () => {
           const bank = obs.bank || '';
           const accountNumber = obs.account_number || '';
           const bankAccountInputType = obs.bank_account_input_type || '';
+          const accountType = (obs.account_type || '').toLowerCase();
           const savingsAccountCci = obs.savings_account_cci || '';
           if (!depositType && !bank && !accountNumber && !savingsAccountCci) return null;
+          // Tipo de dato: prioridad bank_account_input_type (formulario) o account_type (import: savings/checking)
+          const isCci = bankAccountInputType === 'cci' || !!savingsAccountCci;
+          const isAhorros = bankAccountInputType === 'ahorros' || accountType === 'savings' || accountType === 'ahorros';
+          const isCorriente = accountType === 'checking' || accountType === 'corriente';
+          const tipoDatoLabel = isCci ? 'CCI' : isAhorros ? 'Cuenta de ahorro' : isCorriente ? 'Cuenta corriente' : accountType || '—';
+          const showAccountNumber = accountNumber && (bankAccountInputType === 'ahorros' || isAhorros || isCorriente || !isCci);
           return (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
               <div className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b border-gray-100">
@@ -566,9 +574,9 @@ const LoanRequestDetail = () => {
                 {depositType === 'bank' && (
                   <>
                     <DataRow label="Banco" value={bank || '—'} />
-                    <DataRow label="Tipo de dato" value={bankAccountInputType === 'cci' ? 'CCI' : bankAccountInputType === 'ahorros' ? 'Cuenta de ahorro' : '—'} />
-                    {bankAccountInputType === 'ahorros' && <DataRow label="Número de cuenta de ahorro" value={accountNumber || '—'} mono copyable />}
-                    {bankAccountInputType === 'cci' && <DataRow label="CCI (20 dígitos)" value={savingsAccountCci || '—'} mono copyable />}
+                    <DataRow label="Tipo de cuenta" value={tipoDatoLabel === '—' ? '—' : tipoDatoLabel} />
+                    {showAccountNumber && <DataRow label="Número de cuenta" value={accountNumber || '—'} mono copyable />}
+                    {isCci && savingsAccountCci && <DataRow label="CCI (20 dígitos)" value={savingsAccountCci || '—'} mono copyable />}
                   </>
                 )}
               </dl>

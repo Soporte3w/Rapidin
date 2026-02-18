@@ -229,10 +229,10 @@ router.get('/loans', authenticate, async (req, res) => {
     if (authErr) return authErr;
     const { phone, country } = req.user;
     const parkId = parseParkId(req, true);
-    let driverId = parseDriverId(req, true);
-    if (!driverId) driverId = await getRapidinDriverId(phone, country, parkId);
+    const driverId = parseDriverId(req, true);
+    const resolvedDriverId = driverId || await getRapidinDriverId(phone, country, parkId);
 
-    const result = await getDriverLoans(phone, country, parkId, driverId);
+    const result = await getDriverLoans(phone, country, parkId, resolvedDriverId);
     return successResponse(res, result, 'Préstamos obtenidos exitosamente');
   } catch (error) {
     logger.error('Error en /driver/loans:', error);

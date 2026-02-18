@@ -37,7 +37,14 @@ const Dashboard = () => {
       setError('');
       const response = await api.get('/kpis/executive', { params: { country } });
       const raw = response.data?.data ?? response.data;
-      setKpis(raw && typeof raw === 'object' ? raw : null);
+      const data = raw && typeof raw === 'object' ? raw : null;
+      setKpis(data ? {
+        total_requests: Number(data.total_requests) || 0,
+        active_loans: Number(data.active_loans) || 0,
+        total_portfolio: data.total_portfolio != null ? Number(data.total_portfolio) : 0,
+        overdue_installments: Number(data.overdue_installments) || 0,
+        payments_last_30_days: Number(data.payments_last_30_days) || 0,
+      } : null);
     } catch (err: any) {
       console.error('Error fetching dashboard:', err);
       setError(err.response?.data?.message || 'Error al cargar el dashboard');
@@ -51,13 +58,14 @@ const Dashboard = () => {
     fetchStats();
   }, [country]);
 
+  const n = (v: number | string | null | undefined) => (v != null && v !== '') ? Number(v) : 0;
   const statCards = kpis
     ? [
-        { title: 'Total Solicitudes', value: String(kpis.total_requests ?? 0), icon: FileText, iconBg: 'bg-blue-100', iconColor: 'text-blue-600' },
-        { title: 'Préstamos Activos', value: String(kpis.active_loans ?? 0), icon: Banknote, iconBg: 'bg-green-100', iconColor: 'text-green-600' },
-        { title: 'Cartera Total', value: `${currencyLabel} ${Number(kpis.total_portfolio ?? 0).toFixed(2)}`, icon: TrendingUp, iconBg: 'bg-amber-100', iconColor: 'text-amber-700', highlight: true },
-        { title: 'Cuotas Vencidas', value: String(kpis.overdue_installments ?? 0), icon: AlertCircle, iconBg: 'bg-red-100', iconColor: 'text-red-600', alert: Number(kpis.overdue_installments ?? 0) > 0 },
-        { title: 'Cobros últimos 30 días', value: `${currencyLabel} ${Number(kpis.payments_last_30_days ?? 0).toFixed(2)}`, icon: DollarSign, iconBg: 'bg-purple-100', iconColor: 'text-purple-600' },
+        { title: 'Total Solicitudes', value: String(n(kpis.total_requests)), icon: FileText, iconBg: 'bg-blue-100', iconColor: 'text-blue-600' },
+        { title: 'Préstamos Activos', value: String(n(kpis.active_loans)), icon: Banknote, iconBg: 'bg-green-100', iconColor: 'text-green-600' },
+        { title: 'Cartera Total', value: `${currencyLabel} ${n(kpis.total_portfolio).toFixed(2)}`, icon: TrendingUp, iconBg: 'bg-amber-100', iconColor: 'text-amber-700', highlight: true },
+        { title: 'Préstamos con cuotas vencidas', value: String(n(kpis.overdue_installments)), icon: AlertCircle, iconBg: 'bg-red-100', iconColor: 'text-red-600', alert: n(kpis.overdue_installments) > 0 },
+        { title: 'Cobros últimos 30 días', value: `${currencyLabel} ${n(kpis.payments_last_30_days).toFixed(2)}`, icon: DollarSign, iconBg: 'bg-purple-100', iconColor: 'text-purple-600' },
       ]
     : [];
 

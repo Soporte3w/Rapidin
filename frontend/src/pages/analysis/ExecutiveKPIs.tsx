@@ -60,7 +60,7 @@ function ExecutiveKPIs({ country }: ExecutiveKPIsProps) {
         { title: 'Total Solicitudes', value: String(kpis.total_requests ?? 0), icon: FileText, color: 'bg-blue-100 text-blue-600' },
         { title: 'Préstamos Activos', value: String(kpis.active_loans ?? 0), icon: Banknote, color: 'bg-green-100 text-green-600' },
         { title: 'Cartera Total (saldo pendiente)', value: `${currencyLabel} ${parseFloat(kpis.total_portfolio || 0).toFixed(2)}`, icon: DollarSign, color: 'bg-amber-100 text-amber-700' },
-        { title: 'Cuotas Vencidas', value: String(kpis.overdue_installments ?? 0), icon: AlertCircle, color: 'bg-red-100 text-red-600' },
+        { title: 'Préstamos con cuotas vencidas', value: String(kpis.overdue_installments ?? 0), icon: AlertCircle, color: 'bg-red-100 text-red-600' },
         { title: 'Cobros últimos 30 días', value: `${currencyLabel} ${Number(kpis.payments_last_30_days ?? 0).toFixed(2)}`, icon: TrendingUp, color: 'bg-purple-100 text-purple-600', subtitle: 'Suma de pagos registrados' },
       ]
     : [];

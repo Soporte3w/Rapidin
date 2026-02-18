@@ -468,7 +468,12 @@ export const getLoanById = async (id) => {
              FROM module_rapidin_installments i
              WHERE i.loan_id = l.id AND i.status IN ('pending', 'overdue')
              ORDER BY i.due_date ASC, i.installment_number ASC
-             LIMIT 1) AS next_installment_late_fee
+             LIMIT 1) AS next_installment_late_fee,
+            (SELECT i.id
+             FROM module_rapidin_installments i
+             WHERE i.loan_id = l.id AND i.status IN ('pending', 'overdue')
+             ORDER BY i.due_date ASC, i.installment_number ASC
+             LIMIT 1) AS next_installment_id
      FROM module_rapidin_loans l
      LEFT JOIN module_rapidin_drivers d ON d.id = l.driver_id
      WHERE l.id = $1`,
@@ -520,6 +525,7 @@ export const getInstallmentSchedule = async (loanId) => {
        due_date, paid_date, paid_amount,
        GREATEST(0, COALESCE(late_fee, 0))::numeric AS late_fee,
        COALESCE(paid_late_fee, 0)::numeric AS paid_late_fee,
+       COALESCE(late_fee_waived, false) AS late_fee_waived,
        days_overdue, status, created_at, updated_at
      FROM module_rapidin_installments 
      WHERE loan_id = $1 

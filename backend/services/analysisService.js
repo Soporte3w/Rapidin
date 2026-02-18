@@ -73,17 +73,24 @@ export const getExecutiveKPIs = async (country) => {
     `SELECT 
       (SELECT COUNT(*) FROM module_rapidin_loan_requests WHERE country = $1) as total_requests,
       (SELECT COUNT(*) FROM module_rapidin_loans WHERE country = $1 AND status = 'active') as active_loans,
-      (SELECT SUM(pending_balance) FROM module_rapidin_loans WHERE country = $1 AND status = 'active') as total_portfolio,
-      (SELECT COUNT(*) FROM module_rapidin_installments i 
+      (SELECT COALESCE(SUM(pending_balance), 0) FROM module_rapidin_loans WHERE country = $1 AND status = 'active') as total_portfolio,
+      (SELECT COUNT(DISTINCT l.id) FROM module_rapidin_installments i 
        JOIN module_rapidin_loans l ON l.id = i.loan_id 
-       WHERE l.country = $1 AND i.status = 'overdue') as overdue_installments,
+       WHERE l.country = $1 AND l.status IN ('active', 'defaulted') AND i.status = 'overdue') as overdue_installments,
       (SELECT COALESCE(SUM(p.amount), 0) FROM module_rapidin_payments p 
-       JOIN module_rapidin_loans l ON l.id = p.loan_id 
-       WHERE l.country = $1 AND p.payment_date >= CURRENT_DATE - INTERVAL '30 days') as payments_last_30_days`,
+       INNER JOIN module_rapidin_loans l ON l.id = p.loan_id AND l.country = $1
+       WHERE p.payment_date >= CURRENT_DATE - INTERVAL '30 days') as payments_last_30_days`,
     [country]
   );
 
-  return result.rows[0];
+  const row = result.rows[0] || {};
+  return {
+    total_requests: Number(row.total_requests) || 0,
+    active_loans: Number(row.active_loans) || 0,
+    total_portfolio: Number(row.total_portfolio) || 0,
+    overdue_installments: Number(row.overdue_installments) || 0,
+    payments_last_30_days: Number(row.payments_last_30_days) || 0,
+  };
 };
 
 export const getPortfolioAtRisk = async (country, days) => {

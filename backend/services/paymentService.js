@@ -3,7 +3,10 @@ import { logger } from '../utils/logger.js';
 import { getPaymentPunctuality } from './calculationsService.js';
 
 export const registerPayment = async (data, userId) => {
-  const { loan_id, amount, payment_date, payment_method, observations } = data;
+  const { loan_id, amount, payment_date, payment_method, observations, waive_late_fee_installment_ids } = data;
+  const waiveIds = Array.isArray(waive_late_fee_installment_ids)
+    ? waive_late_fee_installment_ids.filter((id) => id && String(id).trim()).map((id) => String(id).trim())
+    : [];
 
   await query('BEGIN');
 
@@ -18,7 +21,7 @@ export const registerPayment = async (data, userId) => {
 
     const payment = paymentResult.rows[0];
 
-    await distributePayment(payment.id, loan_id, amount, 'by_date');
+    await distributePayment(payment.id, loan_id, amount, 'by_date', waiveIds);
 
     await query('COMMIT');
 
@@ -53,7 +56,9 @@ export const registerPaymentAuto = async (loanId, amount, paymentDate) => {
 const ROUND_CENTS = (v) => Math.round((v) * 100) / 100;
 const MIN_APPLIED = 0.01; // No aplicar ni registrar si el monto es menor (evita errores de punto flotante)
 
-export const distributePayment = async (paymentId, loanId, totalAmount, strategy = 'by_date') => {
+export const distributePayment = async (paymentId, loanId, totalAmount, strategy = 'by_date', waiveLateFeeInstallmentIds = []) => {
+  const waiveSet = new Set(waiveLateFeeInstallmentIds);
+
   const installments = await query(
     `SELECT * FROM module_rapidin_installments 
      WHERE loan_id = $1 AND status IN ('pending', 'overdue') 
@@ -72,14 +77,13 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
     for (const installment of installments.rows) {
       if (remainingAmount < MIN_APPLIED) break;
 
-      // Total a pagar = cuota pendiente + mora (si no aplicamos primero a mora, el resto quedaría mal: ej. 15.50 en vez de 15.86)
+      const waiveMora = waiveSet.has(installment.id);
       const pendingInstallmentAmount = ROUND_CENTS(parseFloat(installment.installment_amount) - parseFloat(installment.paid_amount || 0));
-      const pendingLateFee = ROUND_CENTS(parseFloat(installment.late_fee) || 0);
+      const pendingLateFee = waiveMora ? 0 : ROUND_CENTS(parseFloat(installment.late_fee) || 0);
       const totalToPay = pendingInstallmentAmount + pendingLateFee;
 
       if (totalToPay < MIN_APPLIED) continue;
 
-      // Primero pagar la mora, luego la cuota (así el resto = 25.50 - (10 - 0.36) = 15.86, no 15.50)
       let lateFeePaid = 0;
       let installmentPaid = 0;
 
@@ -94,56 +98,67 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
       }
 
       const appliedTotal = lateFeePaid + installmentPaid;
-      // Solo actualizar e insertar si se aplicó un monto significativo (evita aplicar a cuota 5 por error de punto flotante)
       if (appliedTotal >= MIN_APPLIED) {
-        await query(
-          `UPDATE module_rapidin_installments 
-           SET paid_amount = paid_amount + $2,
-               late_fee = GREATEST(0, COALESCE(late_fee, 0) - $1),
-               paid_late_fee = COALESCE(paid_late_fee, 0) + $1,
-               status = CASE 
-                 WHEN (paid_amount + $2) >= installment_amount 
-                   AND (COALESCE(late_fee, 0) - $1) <= 0
-                 THEN 'paid' 
-                 WHEN (paid_amount + $2) >= installment_amount THEN 'pending'
-                 ELSE status 
-               END,
-               paid_date = CASE 
-                 WHEN (paid_amount + $2) >= installment_amount 
-                   AND (COALESCE(late_fee, 0) - $1) <= 0
-                 THEN CURRENT_DATE 
-                 ELSE paid_date 
-               END
-           WHERE id = $3`,
-          [lateFeePaid, installmentPaid, installment.id]
-        );
-
-        // Recalcular mora solo si la cuota quedó pagada al 100%: si quedó saldo pendiente, no generamos mora nueva el mismo día del pago (el job diario la actualizará al día siguiente).
-        const pendingAfterPayment = parseFloat(installment.installment_amount) - (parseFloat(installment.paid_amount || 0) + installmentPaid);
-        if (pendingAfterPayment <= 0) {
-          const feeRes = await query('SELECT calculate_late_fee($1, CURRENT_DATE) as late_fee', [installment.id]);
-          const newLateFee = Math.max(0, parseFloat(feeRes.rows[0]?.late_fee) || 0);
+        if (waiveMora) {
           await query(
             `UPDATE module_rapidin_installments 
-             SET late_fee = $1, 
-                 days_overdue = GREATEST(0, CURRENT_DATE - due_date),
-                 late_fee_base_date = NULL
-             WHERE id = $2`,
-            [newLateFee, installment.id]
+             SET paid_amount = paid_amount + $2,
+                 late_fee = 0,
+                 late_fee_waived = true,
+                 status = CASE WHEN (paid_amount + $2) >= installment_amount THEN 'paid' ELSE status END,
+                 paid_date = CASE WHEN (paid_amount + $2) >= installment_amount THEN CURRENT_DATE ELSE paid_date END
+             WHERE id = $3`,
+            [0, installmentPaid, installment.id]
           );
-        } else { 
-          // Pago parcial: mora en 0 hasta mañana;la mora futura cuenta desde hoy (late_fee_base_date).
+        } else {
           await query(
             `UPDATE module_rapidin_installments 
-             SET late_fee = 0, 
-                 days_overdue = GREATEST(0, CURRENT_DATE - due_date),
-                 late_fee_base_date = CURRENT_DATE
-             WHERE id = $1`,
-            [installment.id]
+             SET paid_amount = paid_amount + $2,
+                 late_fee = GREATEST(0, COALESCE(late_fee, 0) - $1),
+                 paid_late_fee = COALESCE(paid_late_fee, 0) + $1,
+                 status = CASE 
+                   WHEN (paid_amount + $2) >= installment_amount 
+                     AND (COALESCE(late_fee, 0) - $1) <= 0
+                   THEN 'paid' 
+                   WHEN (paid_amount + $2) >= installment_amount THEN 'pending'
+                   ELSE status 
+                 END,
+                 paid_date = CASE 
+                   WHEN (paid_amount + $2) >= installment_amount 
+                     AND (COALESCE(late_fee, 0) - $1) <= 0
+                   THEN CURRENT_DATE 
+                   ELSE paid_date 
+                 END
+             WHERE id = $3`,
+            [lateFeePaid, installmentPaid, installment.id]
           );
         }
 
-        // Registrar el pago total aplicado a esta cuota (solo si appliedTotal >= MIN_APPLIED)
+        if (!waiveMora) {
+          const pendingAfterPayment = parseFloat(installment.installment_amount) - (parseFloat(installment.paid_amount || 0) + installmentPaid);
+          if (pendingAfterPayment <= 0) {
+            const feeRes = await query('SELECT calculate_late_fee($1, CURRENT_DATE) as late_fee', [installment.id]);
+            const newLateFee = Math.max(0, parseFloat(feeRes.rows[0]?.late_fee) || 0);
+            await query(
+              `UPDATE module_rapidin_installments 
+               SET late_fee = $1, 
+                   days_overdue = GREATEST(0, CURRENT_DATE - due_date),
+                   late_fee_base_date = NULL
+               WHERE id = $2`,
+              [newLateFee, installment.id]
+            );
+          } else {
+            await query(
+              `UPDATE module_rapidin_installments 
+               SET late_fee = 0, 
+                   days_overdue = GREATEST(0, CURRENT_DATE - due_date),
+                   late_fee_base_date = CURRENT_DATE
+               WHERE id = $1`,
+              [installment.id]
+            );
+          }
+        }
+
         await query(
           `INSERT INTO module_rapidin_payment_installments (payment_id, installment_id, applied_amount)
            VALUES ($1, $2, $3)`,

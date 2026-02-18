@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
-import { getStoredRapidinDriverId, setStoredRapidinDriverId, getStoredSelectedParkId, getStoredSelectedExternalDriverId } from '../../utils/authStorage';
+import { getStoredRapidinDriverId, getStoredSelectedParkId } from '../../utils/authStorage';
 import { formatCurrency } from '../../utils/currency';
 
 interface DashboardData {
@@ -95,16 +95,11 @@ export default function DriverDashboard() {
       setLoading(true);
       const driverId = getStoredRapidinDriverId();
       const parkId = getStoredSelectedParkId();
-      const externalDriverId = getStoredSelectedExternalDriverId();
       const params: Record<string, string> = {};
       if (driverId) params.driver_id = driverId;
-      else {
-        if (parkId) params.park_id = parkId;
-        if (externalDriverId) params.external_driver_id = externalDriverId;
-      }
+      if (parkId) params.park_id = parkId;
       const response = await api.get('/driver/dashboard', { params });
       const data = response.data.data;
-      if (data?.rapidin_driver_id) setStoredRapidinDriverId(data.rapidin_driver_id);
       setDashboardData(data);
     } catch (error: any) {
       console.error('Error loading dashboard:', error);

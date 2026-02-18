@@ -1,10 +1,10 @@
 /**
- * Revierte la importación para DNI 42864766 (PE):
- * Elimina todo lo asociado a ese DNI en module_rapidin: cuotas, préstamos, solicitudes y conductores.
+ * Revierte la importación de prueba para DNI 44261479 (PE):
+ * Elimina todo lo asociado a ese DNI en module_rapidin (lo que se insertó para probar).
  *
  * Uso (desde backend/):
- *   node excel/revert-update-by-dni-42864766.js
- *   node excel/revert-update-by-dni-42864766.js --dry-run
+ *   node excel/revert-import-dni-44261479.js
+ *   node excel/revert-import-dni-44261479.js --dry-run
  */
 
 import dotenv from 'dotenv';
@@ -17,12 +17,12 @@ dotenv.config({ path: path.join(__dirname, '..', envFile) });
 
 const { query } = await import('../config/database.js');
 
-const DNI = '42864766';
+const DNI = '44261479';
 const COUNTRY = 'PE';
 const DRY_RUN = process.argv.includes('--dry-run');
 
 async function run() {
-  console.log(`Reversión para DNI ${DNI} (${COUNTRY}): eliminar cuotas, préstamos, solicitudes y conductores.`);
+  console.log(`Reversión import de prueba DNI ${DNI} (${COUNTRY}): eliminar cuotas, préstamos, solicitudes y conductores.`);
   if (DRY_RUN) console.log('Modo --dry-run: no se modificará la base de datos.');
 
   const drivers = await query(
@@ -44,7 +44,6 @@ async function run() {
   );
   const loanIds = (loans.rows || []).map((r) => r.id);
   console.log(`Préstamos a eliminar: ${loanIds.length}`);
-  console.log(`Solicitudes a eliminar: de ${driverIds.length} conductor(es).`);
 
   if (!DRY_RUN) {
     if (loanIds.length > 0) {

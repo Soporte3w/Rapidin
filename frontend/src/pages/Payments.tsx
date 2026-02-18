@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import api from '../services/api';
 import { Plus, X, FileText, CreditCard, AlertCircle, Eye, CheckCircle, XCircle, Copy, Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { formatDateShortUTC, formatDateUTC } from '../utils/date';
 import toast from 'react-hot-toast';
 
 interface Payment {
@@ -101,10 +102,12 @@ const Payments = () => {
     next_installment_number?: number;
     next_installment_amount?: number;
     next_installment_late_fee?: number;
+    next_installment_id?: string;
     pending_balance?: number;
     status?: string;
     fully_paid?: boolean;
   } | null>(null);
+  const [chargeLateFee, setChargeLateFee] = useState(true);
   const [loanPreviewLoading, setLoanPreviewLoading] = useState(false);
   const [loanPreviewFetched, setLoanPreviewFetched] = useState(false);
   const [submittingPayment, setSubmittingPayment] = useState(false);
@@ -144,6 +147,7 @@ const Payments = () => {
           const nextNumber = data.next_installment_number != null ? Number(data.next_installment_number) : undefined;
           const nextAmount = data.next_installment_amount != null ? Number(data.next_installment_amount) : undefined;
           const nextLateFee = data.next_installment_late_fee != null ? Number(data.next_installment_late_fee) : undefined;
+          const nextInstallmentId = data.next_installment_id ?? undefined;
           const pendingBalance = data.pending_balance != null ? Number(data.pending_balance) : undefined;
           const status = data.status;
           const fullyPaid =
@@ -155,11 +159,12 @@ const Payments = () => {
             next_installment_number: nextNumber,
             next_installment_amount: nextAmount,
             next_installment_late_fee: nextLateFee,
+            next_installment_id: nextInstallmentId,
             pending_balance: pendingBalance,
             status,
             fully_paid: fullyPaid,
           });
-          // Rellenar el monto con lo que falta pagar: next_installment_amount ya incluye (monto pendiente + mora)
+          setChargeLateFee(true);
           if (fullyPaid) {
             setFormData((prev) => ({ ...prev, amount: '' }));
           } else {
@@ -363,10 +368,14 @@ const Payments = () => {
     }
     setSubmittingPayment(true);
     try {
-      await api.post('/payments', {
+      const payload: Record<string, unknown> = {
         ...formData,
         amount: parseFloat(formData.amount),
-      });
+      };
+      if (!chargeLateFee && loanPreview?.next_installment_id && (loanPreview?.next_installment_late_fee ?? 0) > 0) {
+        payload.waive_late_fee_installment_ids = [loanPreview.next_installment_id];
+      }
+      await api.post('/payments', payload);
       toast.success('Pago registrado correctamente');
       setOpen(false);
       setFormData({
@@ -375,6 +384,7 @@ const Payments = () => {
         payment_date: new Date().toISOString().split('T')[0],
         reference: '',
       });
+      setChargeLateFee(true);
       fetchPayments(1, pagination.limit);
     } catch (error: any) {
       console.error('Error registering payment:', error);
@@ -572,7 +582,7 @@ const Payments = () => {
                       <tr key={inst.id} className={isPaid ? 'bg-green-50/60' : ''}>
                         <td className="px-3 py-2 font-medium text-gray-900">{inst.installment_number}</td>
                         <td className="px-3 py-2 text-gray-700">
-                          {inst.due_date ? new Date(inst.due_date).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}
+                          {inst.due_date ? formatDateUTC(inst.due_date, 'es-ES') : '—'}
                         </td>
                         <td className="px-3 py-2 text-right text-gray-900">{currencyLabel} {Number(inst.installment_amount || 0).toFixed(2)}</td>
                         <td className="px-3 py-2 text-right text-amber-700">{currencyLabel} {mora.toFixed(2)}</td>
@@ -676,11 +686,7 @@ const Payments = () => {
                       </td>
                       <td className="px-4 py-4 whitespace-nowrap">
                         <div className="text-sm text-gray-900">
-                          {p?.payment_date ? new Date(p.payment_date).toLocaleDateString('es-ES', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric'
-                          }) : 'N/A'}
+                          {p?.payment_date ? formatDateUTC(p.payment_date, 'es-ES') : '—'}
                         </div>
                       </td>
                       <td className="px-4 py-4 whitespace-nowrap">
@@ -882,11 +888,29 @@ const Payments = () => {
                   placeholder="0.00"
                 />
                 {loanPreview?.next_installment_late_fee != null && Number(loanPreview.next_installment_late_fee) > 0 && (
-                  <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded-lg">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-amber-700">Esta cuota tiene mora:</span>
-                      <span className="text-amber-800 font-semibold">{currencyLabel} {Number(loanPreview.next_installment_late_fee).toFixed(2)}</span>
+                  <div className="mt-2 rounded-lg border border-amber-200/80 bg-gradient-to-br from-amber-50 to-orange-50/50 shadow-sm overflow-hidden">
+                    <div className="px-3 py-2 flex items-center justify-between border-b border-amber-200/60">
+                      <span className="text-xs font-medium text-amber-800">Mora de la cuota</span>
+                      <span className="text-sm font-semibold tabular-nums text-amber-900">{currencyLabel} {Number(loanPreview.next_installment_late_fee).toFixed(2)}</span>
                     </div>
+                    <label className="flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors hover:bg-amber-100/40 active:bg-amber-100/60">
+                      <input
+                        type="checkbox"
+                        checked={chargeLateFee}
+                        onChange={(e) => {
+                          const cobrar = e.target.checked;
+                          setChargeLateFee(cobrar);
+                          const total = Number(loanPreview?.next_installment_amount) || 0;
+                          const mora = Number(loanPreview?.next_installment_late_fee) || 0;
+                          setFormData((prev) => ({
+                            ...prev,
+                            amount: cobrar ? String(Number((total).toFixed(2))) : String(Number((total - mora).toFixed(2))),
+                          }));
+                        }}
+                        className="w-3 h-3 rounded border border-amber-500 bg-white text-red-600 focus:ring-2 focus:ring-amber-400 focus:ring-offset-1 cursor-pointer"
+                      />
+                      <span className="text-xs text-amber-900/90">Incluir mora en el pago</span>
+                    </label>
                   </div>
                 )}
               </div>
@@ -1044,7 +1068,7 @@ const Payments = () => {
                       S/. {v?.amount != null ? Number(v.amount).toFixed(2) : '0.00'}
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-700">
-                      {v?.paymentDate ? new Date(v.paymentDate).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}
+                      {v?.paymentDate ? formatDateUTC(v.paymentDate, 'es-ES') : '—'}
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
@@ -1203,7 +1227,7 @@ const Payments = () => {
                     <tr key={row?.id ?? `log-${idx}`} className="hover:bg-gray-50">
                       <td className="px-4 py-3 text-sm text-gray-600 font-mono">{row?.loan_id ? String(row.loan_id).slice(0, 8) + '…' : '—'}</td>
                       <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
-                        {row?.created_at ? new Date(row.created_at).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                        {row?.created_at ? formatDateShortUTC(row.created_at, 'es-ES') : '—'}
                       </td>
                       <td className="px-4 py-3 text-sm font-medium text-gray-900">
                         {[row?.driver_first_name, row?.driver_last_name].filter(Boolean).join(' ') || '—'}

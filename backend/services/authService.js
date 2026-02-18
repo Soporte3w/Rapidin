@@ -215,12 +215,60 @@ export const verifyOTP = async (phone, code, country) => {
     }
 
     const driver = driverResult.rows[0];
+    const countryCodeForFlotas = driver.license_country === 'per' ? 'PE' : 'CO';
+    const phoneForDb = normalizePhoneForDb(driver.phone, countryCodeForFlotas);
+    const digitsOnly = (driver.phone || '').toString().replace(/\D/g, '');
+    const last9 = phoneDigitsForRapidinMatch(driver.phone, countryCodeForFlotas);
 
-    // Flotas disponibles: cada fila en drivers (working) con nombre de flota
+    // Id del conductor por flota: en module_rapidin_drivers hay una fila por (conductor + park_id). Ese id es el que se guarda al elegir flota.
+    let rapidinByPark = new Map();
+    try {
+        const rapidinRows = await query(
+            `SELECT id, COALESCE(park_id, '') AS park_id FROM module_rapidin_drivers
+             WHERE country = $1
+               AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)`,
+            [countryCodeForFlotas, phoneForDb, driver.phone, digitsOnly, last9]
+        );
+        for (const r of rapidinRows.rows) {
+            const pid = (r.park_id != null && String(r.park_id).trim() !== '') ? String(r.park_id).trim() : '';
+            rapidinByPark.set(pid, r.id != null ? String(r.id) : null);
+        }
+        // Por DNI también: mismo conductor puede estar con otro formato de teléfono en module_rapidin_drivers
+        const docNum = driver.document_number != null ? String(driver.document_number).trim() : '';
+        const docDigits = docNum ? docNum.replace(/\D/g, '') : '';
+        if (docNum) {
+            const byDni = await query(
+                `SELECT id, COALESCE(park_id, '') AS park_id FROM module_rapidin_drivers
+                 WHERE country = $1
+                   AND (TRIM(dni) = $2 OR REGEXP_REPLACE(COALESCE(dni,''), '[^0-9]', '', 'g') = $3)`,
+                [countryCodeForFlotas, docNum, docDigits || docNum]
+            );
+            for (const r of byDni.rows) {
+                const pid = (r.park_id != null && String(r.park_id).trim() !== '') ? String(r.park_id).trim() : '';
+                if (r.id) rapidinByPark.set(pid, String(r.id));
+            }
+        }
+    } catch (e) {
+        logger.warn('No se pudo listar id del conductor por flota al login:', e.message);
+    }
+
+    // Solo incluir rapidin_driver_id si ese id existe en module_rapidin_drivers (evitar guardar UUIDs que no existen)
+    const idsToCheck = [...new Set(rapidinByPark.values())].filter(Boolean);
+    let validIds = new Set();
+    if (idsToCheck.length > 0) {
+        const check = await query(
+            'SELECT id FROM module_rapidin_drivers WHERE id = ANY($1)',
+            [idsToCheck]
+        );
+        check.rows.forEach((r) => { if (r.id) validIds.add(String(r.id)); });
+    }
     const flotas = [];
     for (const row of driverResult.rows) {
         const parkId = row.park_id || null;
+        const parkNorm = (parkId != null && String(parkId).trim() !== '') ? String(parkId).trim() : '';
         const driverId = row.driver_id != null ? String(row.driver_id) : null;
+        let rapidinDriverId = rapidinByPark.get(parkNorm) || null;
+        if (rapidinDriverId && !validIds.has(rapidinDriverId)) rapidinDriverId = null;
         let flotaName = null;
         if (parkId) {
             try {
@@ -232,7 +280,8 @@ export const verifyOTP = async (phone, code, country) => {
         flotas.push({
             driver_id: driverId,
             park_id: parkId,
-            flota_name: flotaName || 'Sin flota'
+            flota_name: flotaName || 'Sin flota',
+            rapidin_driver_id: rapidinDriverId
         });
     }
 

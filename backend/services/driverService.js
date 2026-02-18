@@ -28,46 +28,23 @@ export const getDriverDashboard = async (phone, country, parkId = null, rapidinD
 
     const last9 = phoneDigitsForRapidinMatch(phone, country);
     if (rapidinDriverIdFromAuth) {
-      const check = await query(
-        `SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
-         WHERE id = $1 AND country = $2
-           AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
-         LIMIT 1`,
-        [rapidinDriverIdFromAuth, country, phoneForDb, phone, digitsOnly, last9]
-      );
+      const checkQuery = parkNorm
+        ? `SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
+           WHERE id = $1 AND country = $2 AND COALESCE(park_id, '') = $3
+             AND (phone = $4 OR phone = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $7)
+           LIMIT 1`
+        : `SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
+           WHERE id = $1 AND country = $2
+             AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
+           LIMIT 1`;
+      const checkParams = parkNorm
+        ? [rapidinDriverIdFromAuth, country, parkNorm, phoneForDb, phone, digitsOnly, last9]
+        : [rapidinDriverIdFromAuth, country, phoneForDb, phone, digitsOnly, last9];
+      const check = await query(checkQuery, checkParams);
       if (check.rows.length > 0) rapidinDriverResult = check;
     }
 
-    if (rapidinDriverResult.rows.length === 0) {
-      let rapidinDriverQuery;
-      let rapidinDriverParams;
-      if (parkNorm) {
-        rapidinDriverQuery = `
-          SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
-          WHERE country = $1 AND COALESCE(park_id, '') = $2
-            AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
-          LIMIT 1
-        `;
-        rapidinDriverParams = [country, parkNorm, phoneForDb, phone, digitsOnly, last9];
-      } else {
-        rapidinDriverQuery = `
-          SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
-          WHERE country = $1
-            AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
-          LIMIT 1
-        `;
-        rapidinDriverParams = [country, phoneForDb, phone, digitsOnly, last9];
-      }
-      rapidinDriverResult = await query(rapidinDriverQuery, rapidinDriverParams);
-      if (parkNorm && rapidinDriverResult.rows.length === 0) {
-        rapidinDriverResult = await query(
-          `SELECT id, first_name, last_name, phone, dni FROM module_rapidin_drivers
-           WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
-           LIMIT 1`,
-          [country, phoneForDb, phone, digitsOnly, last9]
-        );
-      }
-    }
+    // Solo usamos el id que el conductor guardó al elegir flota. Si no viene o no es válido → dashboard vacío, no asumir nada.
 
     let driver;
     if (driverResult.rows.length > 0) {
@@ -380,58 +357,30 @@ export const getDriverLoans = async (phone, country, parkId = null, rapidinDrive
     let rapidinDriverId = null;
 
     const last9 = phoneDigitsForRapidinMatch(phone, country);
-    // Si ya viene el id del login (conductor en module_rapidin_drivers), validar que sea de este teléfono y usarlo
+    // Usar el driver_id guardado al elegir flota (rapidin_driver_id). Validar que sea del conductor (phone, country) y, si viene park_id, que el driver sea de esa flota.
     if (rapidinDriverIdFromAuth) {
-      const check = await query(
-        `SELECT id FROM module_rapidin_drivers
-         WHERE id = $1 AND country = $2
-           AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
-         LIMIT 1`,
-        [rapidinDriverIdFromAuth, country, phoneForDb, phone, digitsOnly, last9]
+      const checkParams = [rapidinDriverIdFromAuth, country, phoneForDb, phone, digitsOnly, last9];
+      const checkQuery = parkNorm
+        ? `SELECT id FROM module_rapidin_drivers
+           WHERE id = $1 AND country = $2 AND COALESCE(park_id, '') = $3
+             AND (phone = $4 OR phone = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $7)
+           LIMIT 1`
+        : `SELECT id FROM module_rapidin_drivers
+           WHERE id = $1 AND country = $2
+             AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
+           LIMIT 1`;
+      const checkResult = await query(
+        checkQuery,
+        parkNorm ? [...checkParams.slice(0, 2), parkNorm, ...checkParams.slice(2)] : checkParams
       );
-      if (check.rows.length > 0) rapidinDriverId = check.rows[0].id;
+      if (checkResult.rows.length > 0) rapidinDriverId = checkResult.rows[0].id;
     }
-
-    if (!rapidinDriverId) {
-      let rapidinDriverQuery;
-      let rapidinDriverParams;
-      if (parkNorm) {
-        rapidinDriverQuery = `
-          SELECT id FROM module_rapidin_drivers 
-          WHERE country = $1 AND COALESCE(park_id, '') = $2
-            AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
-          LIMIT 1
-        `;
-        rapidinDriverParams = [country, parkNorm, phoneForDb, phone, digitsOnly, last9];
-      } else {
-        rapidinDriverQuery = `
-          SELECT id FROM module_rapidin_drivers 
-          WHERE country = $1
-            AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
-          LIMIT 1
-        `;
-        rapidinDriverParams = [country, phoneForDb, phone, digitsOnly, last9];
-      }
-      let rapidinDriverResult = await query(rapidinDriverQuery, rapidinDriverParams);
-      if (parkNorm && rapidinDriverResult.rows.length === 0) {
-        rapidinDriverResult = await query(
-          `SELECT id FROM module_rapidin_drivers 
-           WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
-           LIMIT 1`,
-          [country, phoneForDb, phone, digitsOnly, last9]
-        );
-      }
-      if (rapidinDriverResult.rows.length > 0) rapidinDriverId = rapidinDriverResult.rows[0].id;
-    }
-
+    // Solo usamos el id que el conductor guardó al elegir flota. Si no viene o no es válido → null, no asumir nada.
     if (!rapidinDriverId) {
       return {
         loans: [],
         pendingRequest: null,
-        rejectedRequest: null,
-        rejectedRequests: [],
-        cancelledRequests: [],
-        rapidin_driver_id: null
+        rejectedRequests: []
       };
     }
 
@@ -466,23 +415,6 @@ export const getDriverLoans = async (phone, country, parkId = null, rapidinDrive
       createdAt: row.created_at,
       rejectionReason: row.rejection_reason || null
     }));
-    const rejectedRequest = rejectedRequests[0] || null;
-
-    // Solicitudes canceladas (para conteo y lista si se muestra)
-    const cancelledRequestsResult = await query(
-      `SELECT id, status, requested_amount, created_at, observations
-       FROM module_rapidin_loan_requests 
-       WHERE driver_id = $1 AND status = 'cancelled'
-       ORDER BY created_at DESC`,
-      [rapidinDriverId]
-    );
-    const cancelledRequests = cancelledRequestsResult.rows.map(row => ({
-      id: row.id,
-      status: row.status,
-      requestedAmount: parseFloat(row.requested_amount),
-      createdAt: row.created_at,
-      observations: row.observations || null
-    }));
 
     // Todos los préstamos del conductor (incluyendo históricos cancelled/completados)
     const loansQuery = `
@@ -516,6 +448,7 @@ export const getDriverLoans = async (phone, country, parkId = null, rapidinDrive
                 due_date, paid_date, paid_amount,
                 GREATEST(0, COALESCE(late_fee, 0))::numeric AS late_fee,
                 COALESCE(paid_late_fee, 0)::numeric AS paid_late_fee,
+                COALESCE(late_fee_waived, false) AS late_fee_waived,
                 days_overdue, status
          FROM module_rapidin_installments
          WHERE loan_id = ANY($1)
@@ -552,6 +485,7 @@ export const getDriverLoans = async (phone, country, parkId = null, rapidinDrive
           paid_amount: parseFloat(row.paid_amount || 0),
           late_fee: lateFeeDisplay,
           paid_late_fee: paidLateFee,
+          late_fee_waived: !!row.late_fee_waived,
           mora_cobrada: moraCobrada,
           days_overdue: row.days_overdue ?? 0,
           status: effectiveStatus,
@@ -583,10 +517,7 @@ export const getDriverLoans = async (phone, country, parkId = null, rapidinDrive
     return {
       loans,
       pendingRequest,
-      rejectedRequest,
-      rejectedRequests,
-      cancelledRequests,
-      rapidin_driver_id: rapidinDriverId
+      rejectedRequests
     };
   } catch (error) {
     logger.error('Error obteniendo préstamos del conductor:', error);

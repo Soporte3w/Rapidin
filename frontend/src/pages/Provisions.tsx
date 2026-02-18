@@ -62,7 +62,7 @@ const Provisions = () => {
   };
 
   const countryName = country === 'PE' ? 'Perú' : country === 'CO' ? 'Colombia' : '';
-  const currencyLabel = country === 'PE' ? 'S/.' : country === 'CO' ? 'COP $' : '';
+  const currencyLabel = country === 'PE' ? 'S/.' : country === 'CO' ? 'COP' : '';
   const chartData = useMemo(() => [...history].reverse(), [history]);
 
   if (loading && history.length === 0) {

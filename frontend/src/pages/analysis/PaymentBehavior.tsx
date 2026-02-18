@@ -13,7 +13,7 @@ const PaymentBehavior: React.FC<PaymentBehaviorProps> = ({ country }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const currencyLabel = country === 'PE' ? 'S/.' : country === 'CO' ? 'COP $' : '';
+  const currencyLabel = country === 'PE' ? 'S/.' : country === 'CO' ? 'COP' : '';
 
   const fetchAnalysis = async () => {
     setLoading(true);

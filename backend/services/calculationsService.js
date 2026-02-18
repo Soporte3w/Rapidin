@@ -239,10 +239,16 @@ function buildScheduleFromFixedCuota(P, iPerPeriod, n, fixedCuota) {
   return schedule;
 }
 
-export const simulateLoanOptions = async (amount, country, cycle, conditions) => {
+export const simulateLoanOptions = async (amount, country, cycle, conditions, optionalWeeks = null) => {
   const interestRate = await getInterestRate(country, cycle);
   const i = (interestRate / 100);
-  const weeks = cycle < 7 ? 5 : 3;
+  const minW = conditions?.min_weeks != null ? parseInt(conditions.min_weeks, 10) : 4;
+  const maxW = conditions?.max_weeks != null ? parseInt(conditions.max_weeks, 10) : 24;
+  const defaultWeeks = cycle < 7 ? 5 : 3;
+  let weeks = optionalWeeks != null ? parseInt(optionalWeeks, 10) : defaultWeeks;
+  if (isNaN(weeks) || weeks < minW || weeks > maxW) {
+    weeks = Math.max(minW, Math.min(maxW, defaultWeeks));
+  }
 
   const cuotaFija = fixedInstallmentFormula(amount, i, weeks);
   const totalAmount = Math.round(cuotaFija * weeks * 100) / 100;

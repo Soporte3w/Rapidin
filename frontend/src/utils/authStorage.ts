@@ -91,3 +91,21 @@ export function setStoredRapidinDriverId(driverId: string | null | undefined): v
     selectedRapidinDriverId: driverId && String(driverId).trim() ? String(driverId).trim() : undefined,
   });
 }
+
+/**
+ * Persiste park_id y rapidin_driver_id en localStorage a partir de la respuesta de /driver/loans o /driver/dashboard.
+ * Así, aunque el usuario entre sin haber elegido flota, la primera carga rehidrata el contexto y las siguientes peticiones ya llevan los params.
+ */
+export function persistDriverContextFromResponse(data: { park_id?: string | null; rapidin_driver_id?: string | null } | null | undefined): void {
+  if (!data || typeof data !== 'object') return;
+  const session = getStoredSession();
+  if (!session) return;
+  const parkId = data.park_id != null && data.park_id !== '' ? String(data.park_id).trim() : undefined;
+  const driverId = data.rapidin_driver_id != null && data.rapidin_driver_id !== '' ? String(data.rapidin_driver_id).trim() : undefined;
+  if (!parkId && !driverId) return;
+  setStoredSession({
+    ...session,
+    ...(parkId != null && { selectedParkId: parkId }),
+    ...(driverId != null && { selectedRapidinDriverId: driverId }),
+  });
+}

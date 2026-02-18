@@ -11,7 +11,7 @@ function ExecutiveKPIs({ country }: ExecutiveKPIsProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const currencyLabel = country === 'PE' ? 'S/.' : country === 'CO' ? 'COP $' : '';
+  const currencyLabel = country === 'PE' ? 'S/.' : country === 'CO' ? 'COP' : '';
 
   const fetchKPIs = async () => {
     setLoading(true);

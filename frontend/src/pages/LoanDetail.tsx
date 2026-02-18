@@ -191,19 +191,19 @@ const LoanDetail = () => {
             <div>
               <span className="text-xs font-semibold text-gray-600">Monto Desembolsado:</span>
               <p className="text-sm text-gray-900 mt-0.5 font-semibold">
-                {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : ''} {parseFloat(loan.disbursed_amount || 0).toFixed(2)}
+                {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {parseFloat(loan.disbursed_amount || 0).toFixed(2)}
               </p>
             </div>
             <div>
               <span className="text-xs font-semibold text-gray-600">Monto Total (a pagar):</span>
               <p className="text-sm text-gray-900 mt-0.5 font-semibold">
-                {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : ''} {parseFloat(loan.pending_balance ?? loan.total_amount ?? 0).toFixed(2)}
+                {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {parseFloat(loan.pending_balance ?? loan.total_amount ?? 0).toFixed(2)}
               </p>
             </div>
             <div>
               <span className="text-xs font-semibold text-gray-600">Saldo Pendiente:</span>
               <p className="text-sm text-red-600 mt-0.5 font-bold">
-                {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : ''} {parseFloat(loan.pending_balance || 0).toFixed(2)}
+                {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {parseFloat(loan.pending_balance || 0).toFixed(2)}
               </p>
             </div>
             <div>
@@ -275,7 +275,7 @@ const LoanDetail = () => {
                       {installment.installment_number}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : ''} {parseFloat(installment.installment_amount || 0).toFixed(2)}
+                      {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {parseFloat(installment.installment_amount || 0).toFixed(2)}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
                       {installment.due_date ? formatDateUTC(installment.due_date, 'es-ES') : 'N/A'}
@@ -284,8 +284,8 @@ const LoanDetail = () => {
                       {(() => {
                         const totalPagado = parseFloat(installment.paid_amount || 0) + parseFloat(installment.paid_late_fee ?? 0);
                         return totalPagado > 0
-                          ? `${loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : ''} ${totalPagado.toFixed(2)}`
-                          : (loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : '') + ' 0.00';
+                          ? `${loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} ${totalPagado.toFixed(2)}`
+                          : (loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : '') + ' 0.00';
                       })()}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -293,7 +293,7 @@ const LoanDetail = () => {
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-900">
                       {(() => {
-                        const pref = loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : '';
+                        const pref = loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : '';
                         const pendiente = Math.max(0, parseFloat(installment.late_fee ?? 0));
                         const pagada = Math.max(0, parseFloat(installment.paid_late_fee ?? 0));
                         const cobrada = Math.max(0, Number((installment as { mora_cobrada?: number }).mora_cobrada ?? 0));

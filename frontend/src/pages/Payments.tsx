@@ -287,7 +287,7 @@ const Payments = () => {
   }, [resolvedLoanIdForSchedule, tab]);
 
   const paymentCountry = paymentFilters.country || 'PE';
-  const currencyLabel = paymentCountry === 'PE' ? 'S/.' : paymentCountry === 'CO' ? 'COP $' : 'S/.';
+  const currencyLabel = paymentCountry === 'PE' ? 'S/.' : paymentCountry === 'CO' ? 'COP' : 'S/.';
 
   const fetchPayments = async (page = pagination.page, limit = pagination.limit, isPaginationChange = false) => {
     try {

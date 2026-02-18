@@ -29,7 +29,7 @@ const Dashboard = () => {
   const [error, setError] = useState('');
 
   const countryName = country === 'PE' ? 'Perú' : country === 'CO' ? 'Colombia' : '';
-  const currencyLabel = country === 'PE' ? 'S/.' : country === 'CO' ? 'COP $' : '';
+  const currencyLabel = country === 'PE' ? 'S/.' : country === 'CO' ? 'COP' : '';
 
   const fetchStats = async () => {
     try {

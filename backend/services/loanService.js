@@ -276,7 +276,7 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
       observationsJson = typeof request.observations === 'string' ? JSON.parse(request.observations) : request.observations;
     }
   } catch (_) {}
-  option = observationsJson?.approvedOption;
+  option = observationsJson?.approvedOption || observationsJson?.admin_selected_option;
   if (option && option.weeks != null && option.weeklyInstallment != null) {
     option = { ...option, totalAmount: option.totalAmount ?? (option.weeklyInstallment * (option.weeks - 1) + (option.lastInstallment ?? option.weeklyInstallment)) };
   } else {

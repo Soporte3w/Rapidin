@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
-import { getStoredRapidinDriverId, getStoredSelectedParkId, getStoredFlotaName } from '../../utils/authStorage';
+import { getStoredRapidinDriverId, getStoredSelectedParkId, getStoredFlotaName, persistDriverContextFromResponse } from '../../utils/authStorage';
 import { formatCurrency, getCurrencyLabel } from '../../utils/currency';
 import { formatDateUTC } from '../../utils/date';
 import toast from 'react-hot-toast';
@@ -131,6 +131,7 @@ export default function DriverLoans() {
       setLoans(loansList);
       setPendingRequest(pending);
       setRejectedRequests(rejectedListFromApi);
+      persistDriverContextFromResponse(raw);
     } catch (err: any) {
       setError(err.response?.data?.message || 'Error al cargar los préstamos');
     } finally {

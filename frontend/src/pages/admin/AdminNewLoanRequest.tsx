@@ -4,7 +4,7 @@ import api from '../../services/api';
 import toast from 'react-hot-toast';
 import {
   CheckCircle, ArrowLeft, ArrowRight, User, CreditCard, FileText, Users,
-  Calendar, FileCheck, Camera, Loader2, DollarSign, ChevronDown
+  Calendar, FileCheck, Camera, Loader2, DollarSign, ChevronDown, Trash2
 } from 'lucide-react';
 import { formatCurrency, getCurrencyLabel } from '../../utils/currency';
 
@@ -36,6 +36,7 @@ export default function AdminNewLoanRequest() {
   const signatureRef = useRef<HTMLCanvasElement>(null);
   const contactSignatureRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
+  const [isDraggingDni, setIsDraggingDni] = useState(false);
   const isSubmittingRef = useRef(false);
 
   const [beneficiary, setBeneficiary] = useState({
@@ -75,6 +76,7 @@ export default function AdminNewLoanRequest() {
     contactSignature: '',
     contactFrontPhoto: null as File | null,
     selectedOption: null as number | null,
+    number_of_weeks: null as number | null,
     termsAccepted: false,
     contractSignature: '',
     idDocument: null as File | null,
@@ -189,12 +191,20 @@ export default function AdminNewLoanRequest() {
   useEffect(() => {
     if (currentStep === 5 && formData.requestedAmount && beneficiary.country) {
       setLoading(true);
+      const weeksParam = formData.number_of_weeks != null ? formData.number_of_weeks : undefined;
       api.post('/admin/loan-simulate', {
         country: beneficiary.country,
         requested_amount: formData.requestedAmount,
         cycle: offer?.cycle ?? 1,
+        ...(weeksParam != null && { weeks: weeksParam }),
       })
-        .then((res) => setLoanOptions(res.data.data))
+        .then((res) => {
+          const data = res.data?.data ?? res.data;
+          setLoanOptions(data);
+          if (data?.option?.weeks != null && formData.number_of_weeks == null) {
+            setFormData((p) => ({ ...p, number_of_weeks: data.option.weeks, selectedOption: 1 }));
+          }
+        })
         .catch(() => toast.error('Error al cargar opciones'))
         .finally(() => setLoading(false));
     }
@@ -364,11 +374,6 @@ export default function AdminNewLoanRequest() {
       return true;
     }
     if (step === 7) {
-      const hasSig = !!formData.contractSignature || hasCanvasContent(signatureRef.current);
-      if (!hasSig) {
-        toast.error('Debes firmar el contrato');
-        return false;
-      }
       if (!formData.idDocument) {
         toast.error('Sube una foto del DNI del solicitante');
         return false;
@@ -426,6 +431,7 @@ export default function AdminNewLoanRequest() {
         contact_phone: formData.contactPhone.trim(),
         contact_relationship: formData.contactRelationship.trim(),
         selected_option: String(formData.selectedOption ?? ''),
+        number_of_weeks: String(formData.number_of_weeks ?? loanOptions?.option?.weeks ?? ''),
         ...(formData.depositType === 'bank' && {
           bank: formData.bank,
           account_type: formData.accountType || 'CUENTA DE AHORRO',
@@ -435,6 +441,9 @@ export default function AdminNewLoanRequest() {
         }),
       };
       Object.entries(fields).forEach(([k, v]) => fd.append(k, v));
+      if (loanOptions?.option) {
+        fd.append('admin_selected_option', JSON.stringify(loanOptions.option));
+      }
       if (selectedParkIdForLoan) fd.append('park_id', selectedParkIdForLoan);
       // driver_id del conductor seleccionado en la búsqueda (Yego): se guarda como external_driver_id en rapidin_drivers
       if (selectedDriverId && selectedDriverId.startsWith('driver-')) {
@@ -1005,12 +1014,45 @@ export default function AdminNewLoanRequest() {
 
     if (currentStep === 5) {
       const opt = loanOptions?.option;
+      const minW = loanOptions?.min_weeks ?? 4;
+      const maxW = loanOptions?.max_weeks ?? 24;
+      const numCuotas = formData.number_of_weeks ?? opt?.weeks ?? minW;
+
+      const handleNumCuotasChange = (weeks: number) => {
+        setFormData((p) => ({ ...p, number_of_weeks: weeks, selectedOption: 1 }));
+        setLoading(true);
+        api.post('/admin/loan-simulate', {
+          country: beneficiary.country,
+          requested_amount: formData.requestedAmount,
+          cycle: offer?.cycle ?? 1,
+          weeks,
+        })
+          .then((res) => setLoanOptions(res.data?.data ?? res.data))
+          .catch(() => toast.error('Error al actualizar el plan'))
+          .finally(() => setLoading(false));
+      };
+
       return (
         <div className="space-y-6">
           <div>
             <h2 className="text-xl font-semibold text-gray-900">Plan de pago</h2>
-            <p className="text-sm text-gray-500 mt-1">Revisa y selecciona el plan de cuotas.</p>
+            <p className="text-sm text-gray-500 mt-1">Elige el número de cuotas y revisa el plan.</p>
           </div>
+
+          {!loading && (loanOptions?.min_weeks != null || opt) && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Número de cuotas</label>
+              <select
+                value={numCuotas}
+                onChange={(e) => handleNumCuotasChange(Number(e.target.value))}
+                className="w-full max-w-xs rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-gray-900 shadow-sm focus:border-red-500 focus:ring-1 focus:ring-red-500"
+              >
+                {Array.from({ length: maxW - minW + 1 }, (_, i) => minW + i).map((n) => (
+                  <option key={n} value={n}>{n} cuotas</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {loading && !opt ? (
             <div className="flex items-center justify-center gap-3 py-12 bg-gray-50 rounded-xl">
@@ -1140,7 +1182,7 @@ export default function AdminNewLoanRequest() {
         <div className="space-y-6">
           <div>
             <h2 className="text-xl font-semibold text-gray-900">Firma y documento</h2>
-            <p className="text-sm text-gray-500 mt-1">Sube el DNI y obtén la firma del solicitante para finalizar.</p>
+            <p className="text-sm text-gray-500 mt-1">Sube el DNI del solicitante (obligatorio). La firma es opcional.</p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
@@ -1153,8 +1195,26 @@ export default function AdminNewLoanRequest() {
                 className={`flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-xl cursor-pointer transition-all ${
                   formData.idDocument
                     ? 'border-green-500 bg-green-50'
-                    : 'border-gray-300 hover:border-red-400 hover:bg-red-50'
+                    : isDraggingDni
+                      ? 'border-red-500 bg-red-50'
+                      : 'border-gray-300 hover:border-red-400 hover:bg-red-50'
                 }`}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingDni(true); }}
+                onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingDni(false); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDraggingDni(false);
+                  const file = e.dataTransfer.files?.[0];
+                  if (!file) return;
+                  const isImage = file.type.startsWith('image/');
+                  const isPdf = file.type === 'application/pdf';
+                  if (isImage || isPdf) {
+                    setFormData((p) => ({ ...p, idDocument: file }));
+                  } else {
+                    toast.error('Solo se permiten imágenes (JPG, PNG) o PDF');
+                  }
+                }}
               >
                 <input
                   type="file"
@@ -1167,21 +1227,29 @@ export default function AdminNewLoanRequest() {
                     <CheckCircle className="w-10 h-10 text-green-500 mb-2" />
                     <p className="text-sm font-medium text-green-700">Documento cargado</p>
                     <p className="text-xs text-green-600 mt-1 truncate max-w-full">{formData.idDocument.name}</p>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); setFormData((p) => ({ ...p, idDocument: null })); }}
+                      className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Eliminar foto
+                    </button>
                   </>
                 ) : (
                   <>
                     <Camera className="w-10 h-10 text-gray-400 mb-2" />
                     <p className="text-sm font-medium text-gray-700">Subir foto del DNI</p>
-                    <p className="text-xs text-gray-500 mt-1">JPG, PNG o PDF</p>
+                    <p className="text-xs text-gray-500 mt-1">JPG, PNG o PDF · o arrastra la imagen aquí</p>
                   </>
                 )}
               </label>
             </div>
 
-            {/* Firma */}
+            {/* Firma (opcional para admin) */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Firma del solicitante <span className="text-red-600">*</span>
+                Firma del solicitante <span className="text-gray-500 font-normal">(opcional)</span>
               </label>
               <div className={`border-2 rounded-xl overflow-hidden transition-all ${
                 hasSignature ? 'border-green-500' : 'border-gray-300'

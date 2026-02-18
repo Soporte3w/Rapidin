@@ -610,10 +610,10 @@ router.get('/loan-offer', async (req, res) => {
   }
 });
 
-/** POST /api/admin/loan-simulate - Simular opciones sin request_id (para nueva solicitud admin) */
+/** POST /api/admin/loan-simulate - Simular opciones sin request_id (para nueva solicitud admin). Acepta weeks opcional para elegir número de cuotas. */
 router.post('/loan-simulate', async (req, res) => {
   try {
-    const { country, requested_amount, cycle } = req.body;
+    const { country, requested_amount, cycle, weeks: weeksBody } = req.body;
     if (!country || !requested_amount) {
       return errorResponse(res, 'País y monto solicitado son requeridos', 400);
     }
@@ -628,9 +628,13 @@ router.post('/loan-simulate', async (req, res) => {
     if (conditions.rows.length === 0) {
       return errorResponse(res, 'No hay condiciones de préstamo configuradas para este país', 400);
     }
+    const cond = conditions.rows[0];
     const cycleNum = cycle != null ? parseInt(cycle, 10) : 1;
-    const options = await simulateLoanOptions(amount, country, cycleNum, conditions.rows[0]);
-    return successResponse(res, options, 'Opciones generadas');
+    const optionalWeeks = weeksBody != null && weeksBody !== '' ? parseInt(weeksBody, 10) : null;
+    const options = await simulateLoanOptions(amount, country, cycleNum, cond, optionalWeeks);
+    const minW = cond.min_weeks != null ? parseInt(cond.min_weeks, 10) : 4;
+    const maxW = cond.max_weeks != null ? parseInt(cond.max_weeks, 10) : 24;
+    return successResponse(res, { ...options, min_weeks: minW, max_weeks: maxW }, 'Opciones generadas');
   } catch (error) {
     logger.error('Error admin loan-simulate:', error);
     return errorResponse(res, error.message || 'Error al simular', 400);
@@ -661,6 +665,8 @@ router.post('/loan-request', uploadLoanDocFields, async (req, res) => {
       contact_relationship,
       contact_signature,
       selected_option,
+      number_of_weeks,
+      admin_selected_option: adminSelectedOptionBody,
       contract_signature,
       park_id: parkIdBody,
       external_driver_id: externalDriverIdBody
@@ -779,6 +785,51 @@ router.post('/loan-request', uploadLoanDocFields, async (req, res) => {
       }
     }
 
+    let adminSelectedOptionParsed = adminSelectedOptionBody;
+    if (typeof adminSelectedOptionBody === 'string') {
+      try {
+        adminSelectedOptionParsed = adminSelectedOptionBody ? JSON.parse(adminSelectedOptionBody) : null;
+      } catch (_) {
+        adminSelectedOptionParsed = null;
+      }
+    }
+    let adminSelectedOption = null;
+    if (adminSelectedOptionParsed && typeof adminSelectedOptionParsed === 'object' && adminSelectedOptionParsed.weeks != null) {
+      adminSelectedOption = {
+        weeks: parseInt(adminSelectedOptionParsed.weeks, 10),
+        weeklyInstallment: parseFloat(adminSelectedOptionParsed.weeklyInstallment),
+        lastInstallment: adminSelectedOptionParsed.lastInstallment != null ? parseFloat(adminSelectedOptionParsed.lastInstallment) : undefined,
+        totalAmount: adminSelectedOptionParsed.totalAmount != null ? parseFloat(adminSelectedOptionParsed.totalAmount) : undefined,
+        interestRate: adminSelectedOptionParsed.interestRate != null ? parseFloat(adminSelectedOptionParsed.interestRate) : undefined
+      };
+    } else if (number_of_weeks != null && number_of_weeks !== '') {
+      const weeksNum = parseInt(number_of_weeks, 10);
+      if (!isNaN(weeksNum)) {
+        const conditions = await query(
+          'SELECT * FROM module_rapidin_loan_conditions WHERE country = $1 AND active = true ORDER BY version DESC LIMIT 1',
+          [country]
+        );
+        if (conditions.rows.length > 0) {
+          const sim = await simulateLoanOptions(
+            parseFloat(requested_amount),
+            country,
+            driverCycle,
+            conditions.rows[0],
+            weeksNum
+          );
+          if (sim?.option) {
+            adminSelectedOption = {
+              weeks: sim.option.weeks,
+              weeklyInstallment: sim.option.weeklyInstallment,
+              lastInstallment: sim.option.lastInstallment,
+              totalAmount: sim.option.totalAmount,
+              interestRate: sim.option.interestRate
+            };
+          }
+        }
+      }
+    }
+
     const loanRequest = await createLoanRequest(
       {
         driver_id: driverId,
@@ -796,7 +847,9 @@ router.post('/loan-request', uploadLoanDocFields, async (req, res) => {
           contact_dni: contact_dni || '',
           contact_phone: contact_phone || '',
           contact_relationship: contact_relationship || '',
-          selected_option: selected_option ? parseInt(selected_option, 10) : null
+          selected_option: selected_option ? parseInt(selected_option, 10) : null,
+          number_of_weeks: number_of_weeks != null && number_of_weeks !== '' ? parseInt(number_of_weeks, 10) : null,
+          admin_selected_option: adminSelectedOption
         })
       },
       null,

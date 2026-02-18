@@ -248,7 +248,7 @@ const CycleConfigSettings = () => {
                       {config.cycle}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {config.country === 'PE' ? 'S/.' : config.country === 'CO' ? 'COP $' : ''} {parseFloat(config.max_credit_line || 0).toFixed(2)}
+                      {config.country === 'PE' ? 'S/.' : config.country === 'CO' ? 'COP' : ''} {parseFloat(config.max_credit_line || 0).toFixed(2)}
                     </td>
                     <td className="px-3 sm:px-6 py-4 whitespace-nowrap text-xs sm:text-sm text-gray-900">
                       {config.interest_rate}%
@@ -266,7 +266,7 @@ const CycleConfigSettings = () => {
                       {config.requires_guarantor ? 'Sí' : 'No'}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {config.min_guarantor_amount ? `${config.country === 'PE' ? 'S/.' : config.country === 'CO' ? 'COP $' : ''} ${parseFloat(config.min_guarantor_amount).toFixed(2)}` : 'N/A'}
+                      {config.min_guarantor_amount ? `${config.country === 'PE' ? 'S/.' : config.country === 'CO' ? 'COP' : ''} ${parseFloat(config.min_guarantor_amount).toFixed(2)}` : 'N/A'}
                     </td>
                     <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
                       <span
@@ -706,7 +706,7 @@ const CycleConfigSettings = () => {
                 <p className="text-sm text-gray-900">{deletingConfig.cycle}</p>
                 <p className="text-xs font-semibold text-gray-600 mb-1 mt-2">Línea Máxima:</p>
                 <p className="text-sm text-gray-900">
-                  {deletingConfig.country === 'PE' ? 'S/.' : 'COP $'}{' '}
+                  {deletingConfig.country === 'PE' ? 'S/.' : 'COP'}{' '}
                   {parseFloat(deletingConfig.max_credit_line || 0).toFixed(2)}
                 </p>
                 <p className="text-xs font-semibold text-gray-600 mb-1 mt-2">Tasa de Interés:</p>

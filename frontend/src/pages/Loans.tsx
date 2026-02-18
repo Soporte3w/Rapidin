@@ -367,22 +367,22 @@ const Loans = () => {
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
                       <div className="text-sm font-semibold text-gray-900">
-                        {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : ''} {loan.disbursed_amount ? Number(loan.disbursed_amount).toFixed(2) : '0.00'}
+                        {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {loan.disbursed_amount ? Number(loan.disbursed_amount).toFixed(2) : '0.00'}
                       </div>
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
                       <div className="text-sm font-semibold text-gray-900">
-                        {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : ''} {loan.total_amount ? Number(loan.total_amount).toFixed(2) : '0.00'}
+                        {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {loan.total_amount ? Number(loan.total_amount).toFixed(2) : '0.00'}
                       </div>
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
                       <div className="text-sm font-semibold text-red-600">
-                        {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : ''} {loan.pending_balance ? Number(loan.pending_balance).toFixed(2) : '0.00'}
+                        {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {loan.pending_balance ? Number(loan.pending_balance).toFixed(2) : '0.00'}
                       </div>
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
                       <div className={`text-sm font-medium ${Number(loan.total_late_fee ?? 0) > 0 ? 'text-red-600' : 'text-gray-500'}`}>
-                        {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP $' : ''} {Number(loan.total_late_fee ?? 0).toFixed(2)}
+                        {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {Number(loan.total_late_fee ?? 0).toFixed(2)}
                       </div>
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">

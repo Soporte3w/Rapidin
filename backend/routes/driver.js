@@ -192,6 +192,10 @@ router.get('/dashboard', authenticate, async (req, res) => {
     if (!driverId) driverId = await getRapidinDriverId(phone, country, parkId);
 
     const dashboard = await getDriverDashboard(phone, country, parkId, driverId);
+    if (dashboard && typeof dashboard === 'object') {
+      dashboard.rapidin_driver_id = driverId || dashboard.rapidin_driver_id || null;
+      dashboard.park_id = parkId || dashboard.park_id || null;
+    }
     return successResponse(res, dashboard, 'Dashboard obtenido exitosamente');
   } catch (error) {
     logger.error('Error en /driver/dashboard:', error);
@@ -233,6 +237,11 @@ router.get('/loans', authenticate, async (req, res) => {
     const resolvedDriverId = driverId || await getRapidinDriverId(phone, country, parkId);
 
     const result = await getDriverLoans(phone, country, parkId, resolvedDriverId);
+    // Devolver contexto usado para que el frontend pueda persistirlo en localStorage (park_id / rapidin_driver_id)
+    if (result && typeof result === 'object') {
+      result.rapidin_driver_id = resolvedDriverId || result.rapidin_driver_id || null;
+      result.park_id = parkId || result.park_id || null;
+    }
     return successResponse(res, result, 'Préstamos obtenidos exitosamente');
   } catch (error) {
     logger.error('Error en /driver/loans:', error);

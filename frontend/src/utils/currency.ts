@@ -1,9 +1,9 @@
 /**
  * Etiqueta de moneda para mostrar junto a montos.
- * PE: S/. (soles), CO: COP $ (pesos colombianos).
+ * PE: S/. (soles), CO: COP (pesos colombianos).
  */
 export function getCurrencyLabel(country: string): string {
-  return country === 'CO' ? 'COP $' : 'S/.';
+  return country === 'CO' ? 'COP' : 'S/.';
 }
 
 /**
@@ -28,7 +28,7 @@ export function formatAmount(amount: number, country: string): string {
 
 /**
  * Monto listo para mostrar: símbolo + número formateado (siempre 2 decimales).
- * Ej: "S/. 1,234.56" (PE) o "COP $ 1.234,56" (CO).
+ * Ej: "S/. 1,234.56" (PE) o "COP 1.234,56" (CO).
  */
 export function formatCurrency(amount: number, country: string): string {
   return `${getCurrencyLabel(country)} ${formatAmount(amount, country)}`;

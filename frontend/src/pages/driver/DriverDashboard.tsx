@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
-import { getStoredRapidinDriverId, getStoredSelectedParkId } from '../../utils/authStorage';
+import { getStoredRapidinDriverId, getStoredSelectedParkId, persistDriverContextFromResponse } from '../../utils/authStorage';
 import { formatCurrency } from '../../utils/currency';
 
 interface DashboardData {
@@ -101,6 +101,7 @@ export default function DriverDashboard() {
       const response = await api.get('/driver/dashboard', { params });
       const data = response.data.data;
       setDashboardData(data);
+      persistDriverContextFromResponse(data);
     } catch (error: any) {
       console.error('Error loading dashboard:', error);
       setError(error.response?.data?.message || 'Error al cargar el resumen');

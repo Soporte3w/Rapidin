@@ -847,11 +847,19 @@ export default function AdminNewLoanRequest() {
               </span>
               <input
                 type="text"
-                inputMode="numeric"
+                inputMode="decimal"
                 value={formData.requestedAmount}
-                onChange={(e) => setFormData((p) => ({ ...p, requestedAmount: e.target.value.replace(/\D/g, '') }))}
+                onChange={(e) => {
+                  const raw = e.target.value.replace(',', '.');
+                  const allowed = raw.replace(/[^\d.]/g, '');
+                  const parts = allowed.split('.');
+                  const filtered = parts.length > 1
+                    ? parts[0] + '.' + parts.slice(1).join('').slice(0, 2)
+                    : allowed;
+                  setFormData((p) => ({ ...p, requestedAmount: filtered }));
+                }}
                 className="flex-1 min-w-0 px-4 py-3 text-lg font-semibold border-0 outline-none placeholder:text-gray-400"
-                placeholder="0"
+                placeholder="0 o 0.00"
               />
             </div>
             <p className="text-xs mt-1.5 text-gray-500">Ingresa el monto que solicita el conductor</p>

@@ -112,10 +112,10 @@ export default function DriverDashboard() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
+      <div className="flex items-center justify-center min-h-[50vh] sm:min-h-[60vh] px-4">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-16 w-16 border-4 border-red-600 border-t-transparent mx-auto mb-4" />
-          <p className="text-gray-600">Cargando información...</p>
+          <div className="animate-spin rounded-full h-12 w-12 sm:h-16 sm:w-16 border-4 border-red-600 border-t-transparent mx-auto mb-3 sm:mb-4" />
+          <p className="text-sm sm:text-base text-gray-600">Cargando información...</p>
         </div>
       </div>
     );
@@ -123,15 +123,15 @@ export default function DriverDashboard() {
 
   if (error || !dashboardData) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh]">
-        <div className="bg-red-50 border-2 border-red-200 rounded-full p-4 mb-4">
-          <AlertCircle className="w-12 h-12 text-red-600" />
+      <div className="flex flex-col items-center justify-center min-h-[50vh] sm:min-h-[60vh] px-4">
+        <div className="bg-red-50 border-2 border-red-200 rounded-full p-3 sm:p-4 mb-3 sm:mb-4">
+          <AlertCircle className="w-10 h-10 sm:w-12 sm:h-12 text-red-600" />
         </div>
-        <h3 className="text-xl font-bold text-gray-900 mb-2">Error al cargar el resumen</h3>
-        <p className="text-gray-600 mb-6 text-center max-w-md">{error || 'No se pudo cargar la información'}</p>
+        <h3 className="text-lg sm:text-xl font-bold text-gray-900 mb-2 text-center">Error al cargar el resumen</h3>
+        <p className="text-sm sm:text-base text-gray-600 mb-4 sm:mb-6 text-center max-w-md">{error || 'No se pudo cargar la información'}</p>
         <button
           onClick={loadDashboardData}
-          className="bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-3 rounded-lg font-medium hover:from-red-700 hover:to-red-800 transition-all shadow-md"
+          className="bg-[#8B1A1A] text-white min-h-[44px] px-6 py-3 rounded-xl sm:rounded-lg font-medium hover:bg-[#7A1717] active:bg-[#6B1515] transition-all shadow-md touch-manipulation"
         >
           Reintentar
         </button>
@@ -150,19 +150,19 @@ export default function DriverDashboard() {
   const countryName = user?.country === 'PE' ? 'Perú' : user?.country === 'CO' ? 'Colombia' : '';
 
   return (
-    <div className="space-y-4 lg:space-y-6">
-      {/* Header */}
-      <div className="bg-[#8B1A1A] rounded-lg p-4 lg:p-5">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-          <div className="flex items-center gap-3">
+    <div className="space-y-3 sm:space-y-4 lg:space-y-6 px-2 sm:px-0">
+      {/* Header - más compacto en móvil */}
+      <div className="bg-[#8B1A1A] rounded-xl sm:rounded-lg p-3 sm:p-4 lg:p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 bg-[#6B1515] rounded-lg flex items-center justify-center flex-shrink-0">
               <Activity className="w-5 h-5 text-white" />
             </div>
-            <div>
-              <h1 className="text-lg lg:text-xl font-bold text-white leading-tight">
+            <div className="min-w-0">
+              <h1 className="text-base sm:text-lg lg:text-xl font-bold text-white leading-tight truncate">
                 Resumen
               </h1>
-              <p className="text-xs lg:text-sm text-white/90 mt-0.5">
+              <p className="text-xs text-white/90 mt-0.5 truncate lg:text-sm">
                 Resumen de tu actividad - {countryName}
               </p>
             </div>
@@ -171,18 +171,18 @@ export default function DriverDashboard() {
           {(!activeLoan || !activeLoan.message) && (
             <Link
               to="/driver/loan-benefits"
-              className="bg-white border-2 border-red-600 text-red-600 font-semibold py-2 px-4 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-2 text-sm w-full lg:w-auto justify-center whitespace-nowrap"
+              className="bg-white border-2 border-white text-[#8B1A1A] font-semibold min-h-[44px] py-3 px-4 rounded-xl sm:rounded-lg hover:bg-gray-50 active:bg-gray-100 transition-colors flex items-center justify-center gap-2 text-sm w-full lg:w-auto touch-manipulation"
             >
-              <PlusCircle className="w-4 h-4" />
-              Solicitar Préstamo
+              <PlusCircle className="w-4 h-4 flex-shrink-0" />
+              <span>Solicitar Préstamo</span>
             </Link>
           )}
         </div>
       </div>
 
       {/* Welcome Message */}
-      <div className="bg-gradient-to-r from-red-50 to-orange-50 rounded-xl border border-red-100 p-4 lg:p-5">
-        <p className="text-base lg:text-lg font-semibold text-gray-800">
+      <div className="bg-gradient-to-r from-red-50 to-orange-50 rounded-xl border border-red-100 p-3 sm:p-4 lg:p-5">
+        <p className="text-sm sm:text-base lg:text-lg font-semibold text-gray-800">
           {(() => {
             const hour = new Date().getHours();
             if (hour < 12) return '¡Buenos días';
@@ -192,56 +192,56 @@ export default function DriverDashboard() {
         </p>
       </div>
 
-      {/* Main Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 lg:gap-6">
+      {/* Main Stats Grid - tarjetas más compactas en móvil */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 lg:gap-6">
         {/* Completed Loans Card */}
-        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-5 lg:p-6 hover:shadow-lg transition-all">
-          <div className="flex items-center justify-between mb-4">
-            <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
-              <CheckCircle className="w-6 h-6 text-blue-600" />
+        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-4 sm:p-5 lg:p-6 hover:shadow-lg transition-all">
+          <div className="flex items-center justify-between mb-3 lg:mb-4">
+            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-blue-100 rounded-xl flex items-center justify-center">
+              <CheckCircle className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600" />
             </div>
-            <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-3 py-1 rounded-full">
+            <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-full">
               Historial
             </span>
           </div>
-          <p className="text-3xl lg:text-4xl font-bold text-gray-900 mb-1">
+          <p className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 mb-1">
             {loanHistory.completedLoans}
           </p>
-          <p className="text-sm text-gray-600">
+          <p className="text-xs sm:text-sm text-gray-600">
             Préstamos completados
           </p>
         </div>
 
         {/* Total Borrowed Card */}
-        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-5 lg:p-6 hover:shadow-lg transition-all">
-          <div className="flex items-center justify-between mb-4">
-            <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
-              <TrendingUp className="w-6 h-6 text-purple-600" />
+        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-4 sm:p-5 lg:p-6 hover:shadow-lg transition-all">
+          <div className="flex items-center justify-between mb-3 lg:mb-4">
+            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-purple-100 rounded-xl flex items-center justify-center">
+              <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6 text-purple-600" />
             </div>
-            <span className="text-xs font-semibold text-purple-700 bg-purple-50 px-3 py-1 rounded-full">
+            <span className="text-xs font-semibold text-purple-700 bg-purple-50 px-2.5 py-1 rounded-full">
               Total
             </span>
           </div>
-          <p className="text-3xl lg:text-4xl font-bold text-gray-900 mb-1">
+          <p className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 mb-1">
             {formatCurrency(Number(loanHistory.totalBorrowed ?? 0), country)}
           </p>
-          <p className="text-sm text-gray-600">
+          <p className="text-xs sm:text-sm text-gray-600">
             Histórico prestado
           </p>
         </div>
 
         {/* Payment Performance Card */}
-        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-5 lg:p-6 hover:shadow-lg transition-all sm:col-span-2 lg:col-span-1">
-          <div className="flex items-center justify-between mb-4">
-            <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
-              <Activity className="w-6 h-6 text-green-600" />
+        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-4 sm:p-5 lg:p-6 hover:shadow-lg transition-all sm:col-span-2 lg:col-span-1">
+          <div className="flex items-center justify-between mb-3 lg:mb-4">
+            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-green-100 rounded-xl flex items-center justify-center">
+              <Activity className="w-5 h-5 sm:w-6 sm:h-6 text-green-600" />
             </div>
-            <span className="text-xs font-semibold text-green-700 bg-green-50 px-3 py-1 rounded-full">
+            <span className="text-xs font-semibold text-green-700 bg-green-50 px-2.5 py-1 rounded-full">
               Puntualidad
             </span>
           </div>
           <div className="flex items-baseline gap-2 mb-2">
-            <p className="text-3xl lg:text-4xl font-bold text-gray-900">
+            <p className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900">
               {Number.isFinite(Number(paymentStats.onTimeRate)) ? Number(paymentStats.onTimeRate) : 0}%
             </p>
             {(Number(paymentStats.onTimeRate) || 0) >= 90 && (
@@ -264,7 +264,7 @@ export default function DriverDashboard() {
 
       {/* Mensaje: solicitud aprobada pendiente de desembolso */}
       {dashboardData.pendingRequest && dashboardData.pendingRequest.status === 'approved' && !activeLoan && (
-        <div className="bg-green-50 border-2 border-green-200 rounded-xl p-5 lg:p-6">
+        <div className="bg-green-50 border-2 border-green-200 rounded-xl p-4 sm:p-5 lg:p-6">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center flex-shrink-0">
               <CheckCircle className="w-5 h-5 text-green-700" />
@@ -289,11 +289,11 @@ export default function DriverDashboard() {
 
       {/* Préstamos activos de esta flota (puede haber más de uno) */}
       {activeLoansList.length > 0 ? (
-        <div className="space-y-6">
+        <div className="space-y-4 lg:space-y-6">
           {activeLoansList.map((loan, index) => (
             <div key={loan.id} className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
-              <div className="p-5 lg:p-6">
-                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-5">
+              <div className="p-4 sm:p-5 lg:p-6">
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4 mb-4 lg:mb-5">
                   <div>
                     <div className="flex items-center gap-3 mb-2">
                       <h2 className="text-lg lg:text-xl font-bold text-gray-900">
@@ -312,9 +312,9 @@ export default function DriverDashboard() {
                       Cuota {Number(loan.paidInstallments) || 0} de {Number(loan.totalInstallments) || 0} • {(loan.paymentFrequency === 'weekly' || loan.paymentFrequency === 'semanal' || !loan.paymentFrequency) ? 'Semanal' : loan.paymentFrequency === 'biweekly' || loan.paymentFrequency === 'quincenal' ? 'Quincenal' : 'Semanal'}
                     </p>
                   </div>
-                  <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                  <div className="bg-gray-50 rounded-xl p-3 sm:p-4 border border-gray-200">
                     <p className="text-xs text-gray-600 mb-1">Próximo pago en</p>
-                    <p className={`text-xl lg:text-2xl font-bold ${
+                    <p className={`text-lg sm:text-xl lg:text-2xl font-bold ${
                       (loan.daysUntilPayment != null && loan.daysUntilPayment <= 3) ? 'text-red-600' : 'text-gray-900'
                     }`}>
                       {typeof loan.daysUntilPayment === 'number' && !Number.isNaN(loan.daysUntilPayment)
@@ -324,8 +324,8 @@ export default function DriverDashboard() {
                   </div>
                 </div>
 
-                <div className="mb-5">
-                  <div className="flex items-center justify-between text-sm mb-2">
+                <div className="mb-4 lg:mb-5">
+                  <div className="flex items-center justify-between text-xs sm:text-sm mb-2">
                     <span className="font-semibold text-gray-700">Progreso de Pago</span>
                     <span className="font-bold text-gray-900">
                       {(() => {
@@ -351,40 +351,40 @@ export default function DriverDashboard() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <Calendar className="w-3.5 h-3.5 text-gray-500" />
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3 mb-4 lg:mb-5">
+                  <div className="bg-gray-50 rounded-lg p-2.5 sm:p-3 border border-gray-200">
+                    <div className="flex items-center gap-2 mb-1 sm:mb-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
                       <p className="text-xs text-gray-600">Monto Total</p>
                     </div>
-                    <p className="text-lg lg:text-xl font-bold text-gray-900">
+                    <p className="text-base sm:text-lg lg:text-xl font-bold text-gray-900">
                       {formatCurrency(Number(loan.loanAmount ?? 0), country)}
                     </p>
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <TrendingDown className="w-3.5 h-3.5 text-red-500" />
+                  <div className="bg-gray-50 rounded-lg p-2.5 sm:p-3 border border-gray-200">
+                    <div className="flex items-center gap-2 mb-1 sm:mb-1.5">
+                      <TrendingDown className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
                       <p className="text-xs text-gray-600">Saldo Pendiente</p>
                     </div>
-                    <p className="text-lg lg:text-xl font-bold text-red-600">
+                    <p className="text-base sm:text-lg lg:text-xl font-bold text-red-600">
                       {formatCurrency(Number(loan.pendingAmount ?? 0), country)}
                     </p>
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <Clock className="w-3.5 h-3.5 text-blue-500" />
+                  <div className="bg-gray-50 rounded-lg p-2.5 sm:p-3 border border-gray-200">
+                    <div className="flex items-center gap-2 mb-1 sm:mb-1.5">
+                      <Clock className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
                       <p className="text-xs text-gray-600">Próxima Cuota</p>
                     </div>
-                    <p className="text-lg lg:text-xl font-bold text-blue-600">
+                    <p className="text-base sm:text-lg lg:text-xl font-bold text-blue-600">
                       {formatCurrency(Number(loan.nextPaymentAmount ?? 0), country)}
                     </p>
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <Target className="w-3.5 h-3.5 text-green-500" />
+                  <div className="bg-gray-50 rounded-lg p-2.5 sm:p-3 border border-gray-200">
+                    <div className="flex items-center gap-2 mb-1 sm:mb-1.5">
+                      <Target className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
                       <p className="text-xs text-gray-600">Fecha Pago</p>
                     </div>
-                    <p className="text-base font-bold text-green-600">
+                    <p className="text-sm sm:text-base font-bold text-green-600">
                       {loan.nextPaymentDate ? (() => {
                         const d = new Date(loan.nextPaymentDate);
                         if (Number.isNaN(d.getTime())) return '—';
@@ -394,19 +394,19 @@ export default function DriverDashboard() {
                   </div>
                 </div>
 
-                <div className="flex flex-col sm:flex-row gap-3">
+                <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
                   <Link
                     to="/driver/loans"
-                    className="flex-1 flex items-center justify-center gap-2 bg-gray-100 text-gray-700 px-4 py-2.5 rounded-lg font-semibold hover:bg-gray-200 transition-all text-sm"
+                    className="flex-1 flex items-center justify-center gap-2 bg-gray-100 text-gray-700 min-h-[44px] px-4 py-3 sm:py-2.5 rounded-xl sm:rounded-lg font-semibold hover:bg-gray-200 active:bg-gray-200 transition-all text-sm touch-manipulation"
                   >
-                    <FileText className="w-4 h-4" />
+                    <FileText className="w-4 h-4 flex-shrink-0" />
                     <span>Ver Detalles</span>
                   </Link>
                   <Link
                     to={`/driver/loans/${loan.id}/vouchers`}
-                    className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-red-600 to-red-700 text-white px-4 py-2.5 rounded-lg font-semibold hover:from-red-700 hover:to-red-800 transition-all text-sm shadow-md"
+                    className="flex-1 flex items-center justify-center gap-2 bg-[#8B1A1A] text-white min-h-[44px] px-4 py-3 sm:py-2.5 rounded-xl sm:rounded-lg font-semibold hover:bg-[#7A1717] active:bg-[#6B1515] transition-all text-sm shadow-md touch-manipulation"
                   >
-                    <CreditCard className="w-4 h-4" />
+                    <CreditCard className="w-4 h-4 flex-shrink-0" />
                     <span>Realizar Pago</span>
                   </Link>
                 </div>
@@ -415,49 +415,49 @@ export default function DriverDashboard() {
           ))}
         </div>
       ) : (
-        <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6 lg:p-8 text-center">
+        <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-4 sm:p-6 lg:p-8 text-center">
           <div className="max-w-md mx-auto">
-            <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Zap className="w-8 h-8 text-red-600" />
+            <div className="w-14 h-14 sm:w-16 sm:h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-3 sm:mb-4">
+              <Zap className="w-7 h-7 sm:w-8 sm:h-8 text-red-600" />
             </div>
-            <h3 className="text-xl lg:text-2xl font-bold text-gray-900 mb-2">
+            <h3 className="text-lg sm:text-xl lg:text-2xl font-bold text-gray-900 mb-2">
               ¿Necesitas financiamiento?
             </h3>
-            <p className="text-gray-600 mb-6 leading-relaxed text-sm">
+            <p className="text-gray-600 mb-4 sm:mb-6 leading-relaxed text-sm">
               Solicita tu préstamo ahora y obtén una respuesta rápida. Proceso 100% digital con tasas competitivas.
             </p>
             <Link
               to="/driver/loan-benefits"
-              className="inline-flex items-center gap-2 bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-3 rounded-lg font-semibold hover:from-red-700 hover:to-red-800 transition-all shadow-md text-sm"
+              className="inline-flex items-center justify-center gap-2 bg-[#8B1A1A] text-white min-h-[44px] px-6 py-3 rounded-xl sm:rounded-lg font-semibold hover:bg-[#7A1717] active:bg-[#6B1515] transition-all shadow-md text-sm touch-manipulation"
             >
-              <PlusCircle className="w-5 h-5" />
+              <PlusCircle className="w-5 h-5 flex-shrink-0" />
               <span>Solicitar Préstamo</span>
-              <ArrowRight className="w-4 h-4" />
+              <ArrowRight className="w-4 h-4 flex-shrink-0" />
             </Link>
           </div>
         </div>
       )}
 
       {/* Payment Stats and Recent Activity */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
         {/* Payment Performance */}
-        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6 lg:p-8">
-          <div className="mb-6">
-            <h3 className="text-lg lg:text-xl font-bold text-gray-900">Desempeño de Pagos</h3>
-            <p className="text-sm text-gray-600">Tus estadísticas de puntualidad</p>
+        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-4 sm:p-6 lg:p-8">
+          <div className="mb-4 lg:mb-6">
+            <h3 className="text-base sm:text-lg lg:text-xl font-bold text-gray-900">Desempeño de Pagos</h3>
+            <p className="text-xs sm:text-sm text-gray-600">Tus estadísticas de puntualidad</p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-            <div className="flex flex-col p-4 bg-gray-50 rounded-lg border border-gray-200">
-              <span className="font-semibold text-gray-700 text-sm mb-2">Pagos a Tiempo</span>
-              <span className="text-3xl lg:text-4xl font-bold text-gray-900">
+          <div className="grid grid-cols-2 sm:grid-cols-2 gap-3 sm:gap-4 mb-4">
+            <div className="flex flex-col p-3 sm:p-4 bg-gray-50 rounded-lg border border-gray-200">
+              <span className="font-semibold text-gray-700 text-xs sm:text-sm mb-1 sm:mb-2">Pagos a Tiempo</span>
+              <span className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900">
                 {paymentStats.onTimePayments}
               </span>
             </div>
 
-            <div className="flex flex-col p-4 bg-gray-50 rounded-lg border border-gray-200">
-              <span className="font-semibold text-gray-700 text-sm mb-2">Pagos Tardíos</span>
-              <span className="text-3xl lg:text-4xl font-bold text-gray-900">
+            <div className="flex flex-col p-3 sm:p-4 bg-gray-50 rounded-lg border border-gray-200">
+              <span className="font-semibold text-gray-700 text-xs sm:text-sm mb-1 sm:mb-2">Pagos Tardíos</span>
+              <span className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900">
                 {paymentStats.latePayments}
               </span>
             </div>
@@ -490,26 +490,26 @@ export default function DriverDashboard() {
         </div>
 
         {/* Recent Payments */}
-        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6 lg:p-8">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h3 className="text-lg lg:text-xl font-bold text-gray-900">Pagos Recientes</h3>
-              <p className="text-sm text-gray-600">Tus últimos movimientos</p>
+        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-4 sm:p-6 lg:p-8">
+          <div className="flex items-center justify-between mb-4 lg:mb-6">
+            <div className="min-w-0">
+              <h3 className="text-base sm:text-lg lg:text-xl font-bold text-gray-900">Pagos Recientes</h3>
+              <p className="text-xs sm:text-sm text-gray-600 truncate">Tus últimos movimientos</p>
             </div>
             <Link
               to="/driver/loans"
-              className="text-sm text-red-600 hover:text-red-700 font-semibold"
+              className="text-sm text-red-600 hover:text-red-700 font-semibold flex-shrink-0 ml-2 min-h-[44px] flex items-center"
             >
               Ver todos
             </Link>
           </div>
 
           {recentPayments.length > 0 ? (
-            <div className="space-y-3">
+            <div className="space-y-2 sm:space-y-3">
               {recentPayments.filter(Boolean).map((payment, idx) => (
                 <div
                   key={payment?.id ?? `payment-${idx}`}
-                  className="flex items-center justify-between p-4 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors border border-gray-100"
+                  className="flex items-center justify-between p-3 sm:p-4 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors border border-gray-100 gap-2"
                 >
                   <div className="flex items-center space-x-3">
                     <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
@@ -535,41 +535,41 @@ export default function DriverDashboard() {
               ))}
             </div>
           ) : (
-            <div className="text-center py-12">
-              <CreditCard className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-              <p className="text-gray-500">No hay pagos registrados aún</p>
+            <div className="text-center py-8 sm:py-12">
+              <CreditCard className="w-10 h-10 sm:w-12 sm:h-12 text-gray-300 mx-auto mb-2 sm:mb-3" />
+              <p className="text-sm text-gray-500">No hay pagos registrados aún</p>
             </div>
           )}
         </div>
       </div>
 
-      {/* Quick Actions */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 lg:gap-6">
+      {/* Quick Actions - tarjetas táctiles en móvil */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4 lg:gap-6">
         <Link
           to="/driver/loans"
-          className="group bg-white rounded-xl shadow-md border border-gray-200 p-6 hover:shadow-lg transition-all"
+          className="group bg-white rounded-xl shadow-md border border-gray-200 p-4 sm:p-6 hover:shadow-lg transition-all active:bg-gray-50 min-h-[80px] sm:min-h-0 flex flex-col justify-center touch-manipulation"
         >
-          <div className="mb-4">
-            <h3 className="text-lg font-bold text-gray-900 mb-1">Mis Préstamos</h3>
-            <p className="text-sm text-gray-600">Historial completo</p>
+          <div className="mb-2 sm:mb-4">
+            <h3 className="text-base sm:text-lg font-bold text-gray-900 mb-0.5 sm:mb-1">Mis Préstamos</h3>
+            <p className="text-xs sm:text-sm text-gray-600">Historial completo</p>
           </div>
-          <div className="flex items-center space-x-2 text-gray-700 group-hover:text-red-600 font-semibold">
+          <div className="flex items-center space-x-2 text-gray-700 group-hover:text-red-600 font-semibold text-sm sm:text-base">
             <span>Ver todos mis préstamos</span>
-            <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            <ArrowRight className="w-4 h-4 flex-shrink-0 group-hover:translate-x-1 transition-transform" />
           </div>
         </Link>
 
         <Link
           to="/driver/profile"
-          className="group bg-white rounded-xl shadow-md border border-gray-200 p-6 hover:shadow-lg transition-all"
+          className="group bg-white rounded-xl shadow-md border border-gray-200 p-4 sm:p-6 hover:shadow-lg transition-all active:bg-gray-50 min-h-[80px] sm:min-h-0 flex flex-col justify-center touch-manipulation"
         >
-          <div className="mb-4">
-            <h3 className="text-lg font-bold text-gray-900 mb-1">Mi Perfil</h3>
-            <p className="text-sm text-gray-600">Información personal</p>
+          <div className="mb-2 sm:mb-4">
+            <h3 className="text-base sm:text-lg font-bold text-gray-900 mb-0.5 sm:mb-1">Mi Perfil</h3>
+            <p className="text-xs sm:text-sm text-gray-600">Información personal</p>
           </div>
-          <div className="flex items-center space-x-2 text-gray-700 group-hover:text-red-600 font-semibold">
+          <div className="flex items-center space-x-2 text-gray-700 group-hover:text-red-600 font-semibold text-sm sm:text-base">
             <span>Actualizar datos</span>
-            <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            <ArrowRight className="w-4 h-4 flex-shrink-0 group-hover:translate-x-1 transition-transform" />
           </div>
         </Link>
       </div>

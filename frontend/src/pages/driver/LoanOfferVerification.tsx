@@ -75,10 +75,10 @@ export default function LoanOfferVerification() {
 
   if (loading) {
     return (
-      <div className="h-screen overflow-hidden flex items-center justify-center bg-gradient-to-b from-gray-50 to-white">
+      <div className="min-h-[50vh] sm:min-h-screen overflow-hidden flex items-center justify-center bg-gradient-to-b from-gray-50 to-white px-4">
         <div className="text-center">
-          <div className="w-14 h-14 border-4 border-[#8B1A1A] border-t-transparent rounded-full animate-spin mx-auto mb-5"></div>
-          <p className="text-base font-semibold text-gray-700">Verificando ofertas disponibles...</p>
+          <div className="w-12 h-12 sm:w-14 sm:h-14 border-4 border-[#8B1A1A] border-t-transparent rounded-full animate-spin mx-auto mb-3 sm:mb-5"></div>
+          <p className="text-sm sm:text-base font-semibold text-gray-700">Verificando ofertas disponibles...</p>
         </div>
       </div>
     );
@@ -94,22 +94,22 @@ export default function LoanOfferVerification() {
         ? (mentionsFlota ? 'Crédito o solicitud en otra flota' : 'Ya tienes un préstamo o solicitud en curso')
         : 'No puedes continuar';
     return (
-      <div className="h-screen overflow-hidden flex flex-col">
-        <div className="flex-1 flex items-center justify-center p-4 min-h-0">
-          <div className="bg-white rounded-3xl shadow-xl border border-amber-100 max-w-md w-full overflow-hidden">
-            <div className="p-6 sm:p-8 text-center">
-              <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">
+      <div className="min-h-[50vh] sm:min-h-screen overflow-hidden flex flex-col">
+        <div className="flex-1 flex items-center justify-center p-3 sm:p-4 min-h-0">
+          <div className="bg-white rounded-2xl sm:rounded-3xl shadow-xl border border-amber-100 max-w-md w-full overflow-hidden">
+            <div className="p-4 sm:p-6 lg:p-8 text-center">
+              <h2 className="text-lg sm:text-xl lg:text-2xl font-bold text-gray-900 mb-2">
                 {errorTitle}
               </h2>
-              <p className="text-sm sm:text-base text-gray-600 leading-relaxed mb-4 whitespace-pre-line">
+              <p className="text-xs sm:text-sm lg:text-base text-gray-600 leading-relaxed mb-3 sm:mb-4 whitespace-pre-line">
                 {error}
               </p>
               {blockingFlotas.length > 0 && (
-                <div className="mb-6 text-left">
-                  <p className="text-sm font-semibold text-gray-700 mb-2">Flotas donde tienes crédito o solicitud en curso:</p>
-                  <ul className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-1.5 max-h-40 overflow-y-auto">
+                <div className="mb-4 sm:mb-6 text-left">
+                  <p className="text-xs sm:text-sm font-semibold text-gray-700 mb-2">Flotas donde tienes crédito o solicitud en curso:</p>
+                  <ul className="bg-gray-50 border border-gray-200 rounded-lg p-2.5 sm:p-3 space-y-1.5 max-h-32 sm:max-h-40 overflow-y-auto">
                     {blockingFlotas.map((f, i) => (
-                      <li key={i} className="text-sm text-gray-800 flex items-center gap-2">
+                      <li key={i} className="text-xs sm:text-sm text-gray-800 flex items-center gap-2">
                         <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
                         {f.flota_name}
                         {f.status && (
@@ -122,7 +122,7 @@ export default function LoanOfferVerification() {
               )}
               <button
                 onClick={() => navigate('/driver/resumen')}
-                className="w-full bg-[#8B1A1A] hover:bg-[#7A1616] text-white font-semibold py-3.5 px-6 rounded-xl transition-colors shadow-md hover:shadow-lg"
+                className="w-full min-h-[44px] bg-[#8B1A1A] hover:bg-[#7A1616] active:bg-[#6B1515] text-white font-semibold py-3 px-6 rounded-xl transition-colors shadow-md touch-manipulation"
               >
                 Ir al Resumen
               </button>
@@ -135,20 +135,20 @@ export default function LoanOfferVerification() {
 
   if (!offer?.hasOffer) {
     return (
-      <div className="h-screen overflow-hidden flex flex-col bg-gradient-to-b from-gray-50 via-white to-slate-50">
-        <div className="flex-1 flex items-center justify-center p-4 min-h-0">
-          <div className="bg-white rounded-3xl shadow-xl border border-gray-100 max-w-md w-full overflow-hidden text-center">
-            <div className="p-6 sm:p-8">
-              <div className="w-16 h-16 sm:w-20 sm:h-20 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-gray-400 to-gray-500 flex items-center justify-center shadow-lg">
-                <Info className="w-8 h-8 sm:w-10 sm:h-10 text-white" strokeWidth={2.5} />
+      <div className="min-h-[50vh] sm:min-h-screen overflow-hidden flex flex-col bg-gradient-to-b from-gray-50 via-white to-slate-50">
+        <div className="flex-1 flex items-center justify-center p-3 sm:p-4 min-h-0">
+          <div className="bg-white rounded-2xl sm:rounded-3xl shadow-xl border border-gray-100 max-w-md w-full overflow-hidden text-center">
+            <div className="p-4 sm:p-6 lg:p-8">
+              <div className="w-14 h-14 sm:w-16 sm:h-16 lg:w-20 lg:h-20 mx-auto mb-4 sm:mb-5 rounded-xl sm:rounded-2xl bg-gradient-to-br from-gray-400 to-gray-500 flex items-center justify-center shadow-lg">
+                <Info className="w-7 h-7 sm:w-8 sm:h-8 lg:w-10 lg:h-10 text-white" strokeWidth={2.5} />
               </div>
-              <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">No hay ofertas disponibles</h2>
-              <p className="text-sm sm:text-base text-gray-600 leading-relaxed mb-6">
+              <h2 className="text-lg sm:text-xl lg:text-2xl font-bold text-gray-900 mb-2">No hay ofertas disponibles</h2>
+              <p className="text-xs sm:text-sm lg:text-base text-gray-600 leading-relaxed mb-4 sm:mb-6">
                 En este momento no tienes ofertas de préstamo disponibles. Mantén un buen historial de cumplimiento para acceder a préstamos en el futuro.
               </p>
               <button
                 onClick={() => navigate('/driver/resumen')}
-                className="w-full bg-[#8B1A1A] hover:bg-[#7A1616] text-white font-semibold py-3.5 px-6 rounded-xl transition-colors shadow-md hover:shadow-lg"
+                className="w-full min-h-[44px] bg-[#8B1A1A] hover:bg-[#7A1616] active:bg-[#6B1515] text-white font-semibold py-3 px-6 rounded-xl transition-colors shadow-md touch-manipulation"
               >
                 Ir al Resumen
               </button>
@@ -162,30 +162,30 @@ export default function LoanOfferVerification() {
   const countryName = user?.country === 'PE' ? 'Perú' : user?.country === 'CO' ? 'Colombia' : '';
 
   return (
-    <div className="space-y-2 lg:space-y-3 flex flex-col">
-      {/* Header */}
-      <div className="bg-[#8B1A1A] rounded-lg p-2.5 lg:p-3 flex-shrink-0">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2">
-          <div className="flex items-center gap-2">
+    <div className="space-y-2 lg:space-y-3 flex flex-col px-2 sm:px-0">
+      {/* Header - compacto en móvil */}
+      <div className="bg-[#8B1A1A] rounded-xl sm:rounded-lg p-3 lg:p-3 flex-shrink-0">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-2 min-w-0">
             <div className="w-8 h-8 bg-[#6B1515] rounded-lg flex items-center justify-center flex-shrink-0">
               <CheckCircle2 className="w-4 h-4 text-white" />
             </div>
-            <div>
-              <h1 className="text-sm lg:text-base font-bold text-white leading-tight">
+            <div className="min-w-0">
+              <h1 className="text-xs sm:text-sm lg:text-base font-bold text-white leading-tight truncate">
                 Verificación de Oferta Rapidín
               </h1>
-              <p className="text-xs text-white/90">
-                Beneficio exclusivo Yego Premium Oro - {countryName}
+              <p className="text-[10px] sm:text-xs text-white/90 truncate">
+                Yego Premium Oro - {countryName}
               </p>
             </div>
           </div>
 
           <button
             onClick={handleContinue}
-            className="bg-white border-2 border-red-600 text-red-600 font-semibold py-3 px-5 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-2 text-sm w-full lg:w-auto justify-center whitespace-nowrap"
+            className="bg-white border-2 border-red-600 text-red-600 font-semibold min-h-[44px] py-3 px-4 rounded-xl sm:rounded-lg hover:bg-gray-50 active:bg-gray-100 transition-colors flex items-center justify-center gap-2 text-sm w-full lg:w-auto touch-manipulation"
           >
-            Continuar con mi solicitud
-            <ChevronRight className="w-4 h-4" />
+            <span>Continuar con mi solicitud</span>
+            <ChevronRight className="w-4 h-4 flex-shrink-0" />
           </button>
         </div>
       </div>
@@ -193,14 +193,14 @@ export default function LoanOfferVerification() {
       {/* Botón Volver */}
       <button
         onClick={handleGoBack}
-        className="flex items-center gap-1.5 text-xs font-medium text-gray-600 hover:text-red-600 transition-colors flex-shrink-0"
+        className="flex items-center gap-1.5 text-xs font-medium text-gray-600 hover:text-red-600 transition-colors flex-shrink-0 min-h-[36px] touch-manipulation"
       >
-        <ArrowLeft className="w-3 h-3" />
+        <ArrowLeft className="w-3.5 h-3.5 flex-shrink-0" />
         <span>Volver para ver los beneficios</span>
       </button>
 
-      {/* Offer Section */}
-      <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-3 lg:p-4 animate-fade-in relative overflow-hidden flex-1 flex flex-col">
+      {/* Offer Section - "¡Tienes una oferta disponible!" */}
+      <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-3 sm:p-4 animate-fade-in relative overflow-hidden flex-1 flex flex-col">
         {/* Confeti Animation dentro del card - Explosión */}
         {showConfetti && (
           <div className="absolute inset-0 pointer-events-none z-10 overflow-hidden rounded-xl">
@@ -254,28 +254,28 @@ export default function LoanOfferVerification() {
         `}</style>
 
         <div className="text-center mb-2 relative z-20 flex-shrink-0">
-          <div className="flex items-center justify-center gap-2 mb-2">
-            <PartyPopper className="w-4 h-4 lg:w-5 lg:h-5 text-yellow-500 animate-bounce" />
-            <h2 className="text-base lg:text-lg font-bold text-gray-900">
+          <div className="flex items-center justify-center gap-1.5 sm:gap-2 mb-2">
+            <PartyPopper className="w-4 h-4 lg:w-5 lg:h-5 text-yellow-500 animate-bounce flex-shrink-0" />
+            <h2 className="text-sm sm:text-base lg:text-lg font-bold text-gray-900">
               ¡Tienes una oferta disponible!
             </h2>
-            <PartyPopper className="w-4 h-4 lg:w-5 lg:h-5 text-yellow-500 animate-bounce" />
+            <PartyPopper className="w-4 h-4 lg:w-5 lg:h-5 text-yellow-500 animate-bounce flex-shrink-0" />
           </div>
         </div>
 
         {/* Monto */}
-        <div className="bg-white rounded-xl p-5 lg:p-6 mb-4 shadow-lg flex-shrink-0">
+        <div className="bg-white rounded-xl p-4 sm:p-5 lg:p-6 mb-3 sm:mb-4 shadow-lg flex-shrink-0">
           <div className="text-center">
-            <p className="text-sm font-medium text-gray-500 mb-2 uppercase tracking-wide">
+            <p className="text-xs sm:text-sm font-medium text-gray-500 mb-1.5 sm:mb-2 uppercase tracking-wide">
               Monto máximo disponible
             </p>
             <div className="flex items-baseline justify-center gap-2">
-              <p className="text-4xl lg:text-5xl font-bold text-gray-900">
+              <p className="text-3xl sm:text-4xl lg:text-5xl font-bold text-gray-900">
                 {formatCurrency(offer.maxAmount, country)}
               </p>
             </div>
-            <div className="mt-3 pt-3 border-t border-gray-200">
-              <p className="text-sm text-gray-500">
+            <div className="mt-2 sm:mt-3 pt-2 sm:pt-3 border-t border-gray-200">
+              <p className="text-xs sm:text-sm text-gray-500">
                 Según tu historial de cumplimiento
               </p>
             </div>
@@ -283,7 +283,7 @@ export default function LoanOfferVerification() {
         </div>
 
         {/* Información Importante */}
-        <div className="bg-[#fefcea] rounded-lg border-l-4 border-[#e08a00] p-3 lg:p-4 mb-4 flex-shrink-0">
+        <div className="bg-[#fefcea] rounded-lg border-l-4 border-[#e08a00] p-2.5 sm:p-3 lg:p-4 mb-3 sm:mb-4 flex-shrink-0">
             <div className="flex items-start gap-2.5">
               <div className="flex-shrink-0 mt-0.5">
                 <Info className="w-4 h-4 text-[#e08a00]" />
@@ -302,7 +302,7 @@ export default function LoanOfferVerification() {
         <div className="pt-1.5 border-t border-gray-200 text-center flex-shrink-0">
           <a
             href="#"
-            className="text-xs font-medium text-gray-600 hover:text-red-600 transition-colors"
+            className="text-xs font-medium text-gray-600 hover:text-red-600 transition-colors inline-block py-2 touch-manipulation"
           >
             ¿Necesitas ayuda? Contactar por WhatsApp
           </a>

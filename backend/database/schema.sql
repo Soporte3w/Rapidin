@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS module_rapidin_drivers (
     active BOOLEAN DEFAULT true,
     external_driver_id VARCHAR(100),
     park_id VARCHAR(100),
+    license VARCHAR(100),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(dni, country)

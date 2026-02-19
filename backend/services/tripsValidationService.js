@@ -53,6 +53,9 @@ export async function getCompletedTripsCount(conductorId, year, month) {
   return 0;
 }
 
+/** Validación activa: se exige mínimo de 400 viajes en cada uno de los dos meses anteriores para oferta de préstamo. */
+const TRIPS_REQUIREMENT_ENABLED = true;
+
 /**
  * Comprueba si el conductor cumple el mínimo de viajes (400) en el mes anterior y en el mes pasado.
  * Ej: si hoy es febrero 2026, comprueba enero 2026 y diciembre 2025.
@@ -60,6 +63,10 @@ export async function getCompletedTripsCount(conductorId, year, month) {
  * @returns {Promise<{ allowed: boolean, message?: string, previousMonth?: { year, month, count }, pastMonth?: { year, month, count } }>}
  */
 export async function checkMinimumTripsForLoanOffer(conductorId) {
+  if (!TRIPS_REQUIREMENT_ENABLED) {
+    return { allowed: true };
+  }
+
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;

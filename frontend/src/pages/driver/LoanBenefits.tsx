@@ -44,19 +44,19 @@ export default function LoanBenefits() {
    // const countryName = user?.country === 'PE' ? 'Perú' : user?.country === 'CO' ? 'Colombia' : '';
 
   return (
-    <div className="space-y-6 lg:space-y-8">
-      {/* Header */}
-      <div className="bg-[#8B1A1A] rounded-lg p-5 lg:p-6">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="w-11 h-11 bg-[#6B1515] rounded-lg flex items-center justify-center flex-shrink-0">
-              <Star className="w-6 h-6 text-white" />
+    <div className="space-y-3 sm:space-y-4 lg:space-y-8 px-2 sm:px-0">
+      {/* Header - compacto en móvil */}
+      <div className="bg-[#8B1A1A] rounded-xl sm:rounded-lg p-3 sm:p-4 lg:p-6">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 sm:w-11 sm:h-11 bg-[#6B1515] rounded-lg flex items-center justify-center flex-shrink-0">
+              <Star className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
             </div>
-            <div>
-              <h1 className="text-xl lg:text-2xl font-bold text-white leading-tight">
+            <div className="min-w-0">
+              <h1 className="text-base sm:text-xl lg:text-2xl font-bold text-white leading-tight truncate">
                 Beneficios Yego Premium Oro
               </h1>
-              <p className="text-sm lg:text-base text-white/90 mt-0.5">
+              <p className="text-xs sm:text-sm lg:text-base text-white/90 mt-0.5 truncate">
                 Recursos exclusivos para conductores activos
               </p>
             </div>
@@ -64,36 +64,35 @@ export default function LoanBenefits() {
 
           <button
             onClick={handleContinue}
-            className="bg-white border-2 border-red-600 text-red-600 font-semibold py-2.5 px-5 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-2 text-sm lg:text-base w-full lg:w-auto justify-center whitespace-nowrap"
+            className="bg-white border-2 border-white text-[#8B1A1A] font-semibold min-h-[44px] py-3 px-4 rounded-xl sm:rounded-lg hover:bg-gray-50 active:bg-gray-100 transition-colors flex items-center justify-center gap-2 text-sm w-full lg:w-auto touch-manipulation"
           >
-            Solicitar Préstamo Rapidín
-            <ChevronRight className="w-4 h-4" />
+            <span>Solicitar Préstamo Rapidín</span>
+            <ChevronRight className="w-4 h-4 flex-shrink-0" />
           </button>
         </div>
       </div>
 
       {/* Main Content */}
-      <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-6 lg:p-10 animate-fade-in">
-          <div className="text-center mb-6">
-            <h2 className="text-2xl lg:text-3xl font-bold text-gray-900 mb-2">
+      <div className="bg-white rounded-xl sm:rounded-2xl shadow-xl border border-gray-100 p-4 sm:p-6 lg:p-10 animate-fade-in">
+          <div className="text-center mb-4 sm:mb-6">
+            <h2 className="text-lg sm:text-2xl lg:text-3xl font-bold text-gray-900 mb-2">
               Yego Premium - <span className="text-red-600">Beneficios Exclusivos</span>
             </h2>
-            <p className="text-base text-gray-700 mb-3">
+            <p className="text-sm sm:text-base text-gray-700 mb-2 sm:mb-3">
               Tu esfuerzo merece respaldo. Con Yego Premium, conduces con más seguridad.
             </p>
-            <div className="inline-flex items-center gap-2 bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-300 rounded-lg px-4 py-2">
-              <p className="text-sm text-gray-900 font-bold">
-                Es completamente <span className="text-red-600">gratis</span> para todos los conductores activos en YEGO
+            <div className="inline-flex items-center gap-2 bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-300 rounded-lg px-3 sm:px-4 py-2">
+              <p className="text-xs sm:text-sm text-gray-900 font-bold">
+                Es completamente <span className="text-red-600">gratis</span> para conductores activos en YEGO
               </p>
             </div>
           </div>
 
           {/* Benefits Carousel con paginación */}
-          <div className="mb-8">
+          <div className="mb-5 sm:mb-8">
             <div className="relative">
-              {/* Grid de tarjetas */}
-              <div className="flex justify-center mb-6">
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 max-w-7xl w-full">
+              <div className="flex justify-center mb-4 sm:mb-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 max-w-7xl w-full">
                   {currentBenefits.map((benefit, idx) => {
                     const Icon = benefit.icon;
                     return (
@@ -101,34 +100,30 @@ export default function LoanBenefits() {
                         key={idx}
                         className="bg-white rounded-xl border-2 border-gray-200 hover:border-red-300 transition-all shadow-md hover:shadow-xl flex flex-col group"
                       >
-                        {/* Header con icono y tag */}
-                        <div className="relative p-4 pb-3">
-                          <div className="flex items-start justify-between mb-2">
-                            <div className="w-12 h-12 bg-gradient-to-br from-red-500 to-red-600 rounded-xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
-                              <Icon className="w-6 h-6 text-white" />
+                        <div className="relative p-3 sm:p-4 pb-2 sm:pb-3">
+                          <div className="flex items-start justify-between mb-1.5 sm:mb-2">
+                            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-gradient-to-br from-red-500 to-red-600 rounded-xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+                              <Icon className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
                             </div>
-                            <span className="bg-white border-2 border-gray-200 text-gray-900 text-xs font-bold px-2.5 py-1 rounded-lg shadow-sm">
+                            <span className="bg-white border-2 border-gray-200 text-gray-900 text-[10px] sm:text-xs font-bold px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-lg shadow-sm">
                               {benefit.tag}
                             </span>
                           </div>
                         </div>
 
-                        {/* Contenido */}
-                        <div className="px-4 pb-3 flex-1">
-                          <h3 className="text-base font-bold text-gray-900 mb-1.5 group-hover:text-red-600 transition-colors">
+                        <div className="px-3 sm:px-4 pb-2 sm:pb-3 flex-1">
+                          <h3 className="text-sm sm:text-base font-bold text-gray-900 mb-1 sm:mb-1.5 group-hover:text-red-600 transition-colors">
                             {benefit.title}
                           </h3>
-                          <p className="text-xs text-gray-600 leading-relaxed">
+                          <p className="text-[11px] sm:text-xs text-gray-600 leading-relaxed">
                             {benefit.description}
                           </p>
                         </div>
 
-                        {/* Separador */}
-                        <div className="border-t border-gray-200 mx-4"></div>
+                        <div className="border-t border-gray-200 mx-3 sm:mx-4"></div>
 
-                        {/* Footer */}
-                        <div className="px-4 py-3">
-                          <div className="flex items-center gap-2 text-xs text-gray-500">
+                        <div className="px-3 sm:px-4 py-2 sm:py-3">
+                          <div className="flex items-center gap-2 text-[10px] sm:text-xs text-gray-500">
                             <span>Beneficio exclusivo Yego Premium Oro</span>
                           </div>
                         </div>
@@ -138,40 +133,41 @@ export default function LoanBenefits() {
                 </div>
               </div>
 
-              {/* Paginación con puntos */}
-              <div className="flex flex-col items-center gap-3">
-                <div className="flex items-center justify-center gap-2">
+              {/* Paginación con puntos - táctil en móvil */}
+              <div className="flex flex-col items-center gap-2 sm:gap-3">
+                <div className="flex items-center justify-center gap-1.5 sm:gap-2">
                   {Array.from({ length: totalPages }).map((_, idx) => (
                     <button
                       key={idx}
                       onClick={() => setCurrentPage(idx)}
-                      className={`h-2 rounded-full transition-all duration-300 ${
+                      className={`h-1.5 sm:h-2 rounded-full transition-all duration-300 touch-manipulation min-w-[8px] ${
                         currentPage === idx
-                          ? 'bg-gradient-to-r from-red-600 to-red-500 w-8 shadow-md'
-                          : 'bg-gray-300 w-2 hover:bg-gray-400'
+                          ? 'bg-gradient-to-r from-red-600 to-red-500 w-6 sm:w-8 shadow-md'
+                          : 'bg-gray-300 w-1.5 sm:w-2 hover:bg-gray-400'
                       }`}
+                      aria-label={`Página ${idx + 1}`}
                     />
                   ))}
                 </div>
-                <p className="text-sm font-semibold text-gray-600">
-                  Has visto {Math.min((currentPage + 1) * itemsPerPage, benefits.length)} de {benefits.length} beneficios
+                <p className="text-xs sm:text-sm font-semibold text-gray-600">
+                  {Math.min((currentPage + 1) * itemsPerPage, benefits.length)} de {benefits.length} beneficios
                 </p>
               </div>
             </div>
           </div>
 
           {/* Información Importante */}
-          <div className="bg-[#fefcea] rounded-lg border-l-2 border-[#e08a00] p-3 lg:p-4 mb-4">
-            <div className="flex items-start gap-3">
+          <div className="bg-[#fefcea] rounded-lg border-l-2 border-[#e08a00] p-2.5 sm:p-3 lg:p-4 mb-0">
+            <div className="flex items-start gap-2 sm:gap-3">
               <div className="flex-shrink-0 mt-0.5">
                 <Info className="w-4 h-4 text-[#e08a00]" />
               </div>
-              <div className="flex-1">
-                <h3 className="text-sm lg:text-base font-bold text-[#e08a00] mb-1.5">
+              <div className="flex-1 min-w-0">
+                <h3 className="text-xs sm:text-sm lg:text-base font-bold text-[#e08a00] mb-1 sm:mb-1.5">
                   Importante
                 </h3>
-                <p className="text-xs lg:text-sm text-[#e08a00] leading-relaxed">
-                  <span className="font-semibold">Rapidín</span> es un beneficio exclusivo de <strong>Yego Premium Oro</strong>. Si dejas de ser conductor activo o no cumples con los requisitos (<strong>2 meses anteriores + 400 viajes</strong>), perderás el acceso a todos estos beneficios.
+                <p className="text-[11px] sm:text-xs lg:text-sm text-[#e08a00] leading-relaxed">
+                  <span className="font-semibold">Rapidín</span> es un beneficio exclusivo de <strong>Yego Premium Oro</strong>. Si dejas de ser conductor activo o no cumples con los requisitos (<strong>2 meses + 400 viajes</strong>), perderás el acceso a estos beneficios.
                 </p>
               </div>
             </div>

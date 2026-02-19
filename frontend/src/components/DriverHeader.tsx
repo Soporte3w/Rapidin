@@ -48,7 +48,8 @@ export default function DriverHeader({ onMenuClick }: DriverHeaderProps) {
       <div className="flex items-center justify-between px-4 py-4 lg:px-8">
         <button
           onClick={onMenuClick}
-          className="lg:hidden text-gray-700 hover:text-gray-900"
+          className="lg:hidden min-w-[44px] min-h-[44px] flex items-center justify-center -ml-2 text-gray-700 hover:text-gray-900 active:bg-gray-100 rounded-lg touch-manipulation"
+          aria-label="Abrir menú"
         >
           <Menu className="w-6 h-6" />
         </button>

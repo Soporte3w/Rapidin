@@ -249,6 +249,84 @@ router.get('/loans', authenticate, async (req, res) => {
   }
 });
 
+/** Solo dígitos del DNI/licencia: "F07658692" → "07658692", "DNI44208806" → "44208806". */
+function digitsOnlyDni(val) {
+  if (val == null || val === '') return '';
+  return String(val).replace(/\D/g, '');
+}
+
+/**
+ * GET /driver/conductor-data
+ * Datos del conductor para el flujo de solicitud. No usar dashboard para esto.
+ * - Si rapidin_driver_id viene en query y existe en module_rapidin_drivers: jalar dni (solo dígitos), first_name, last_name, phone.
+ * - Si no tiene rapidin_driver_id (no existe en rapidin): consulta por teléfono a tabla drivers, tomar license_number y quitar letras (solo números).
+ */
+router.get('/conductor-data', authenticate, async (req, res) => {
+  try {
+    const authErr = requireDriverAuth(req, res);
+    if (authErr) return authErr;
+    const { phone, country } = req.user;
+    const rapidinDriverId = (req.query.rapidin_driver_id != null && req.query.rapidin_driver_id !== '')
+      ? String(req.query.rapidin_driver_id).trim()
+      : null;
+
+    if (rapidinDriverId) {
+      const rapidinRow = await pool.query(
+        'SELECT id, dni, first_name, last_name, phone, license, park_id FROM module_rapidin_drivers WHERE id = $1 LIMIT 1',
+        [rapidinDriverId]
+      );
+      if (rapidinRow.rows.length > 0) {
+        const r = rapidinRow.rows[0];
+        const dniDigits = digitsOnlyDni(r.dni);
+        return successResponse(res, {
+          id: r.id,
+          firstName: r.first_name ?? '',
+          lastName: r.last_name ?? '',
+          phone: r.phone ?? phone ?? '',
+          documentNumber: dniDigits || null,
+          license: r.license ?? null,
+          park_id: r.park_id ?? null,
+          source: 'rapidin_drivers'
+        }, 'Datos del conductor');
+      }
+    }
+
+    // No hay rapidin_driver_id o no existía: buscar por teléfono en tabla drivers y usar license_number (solo dígitos)
+    const phoneForDb = normalizePhoneForDb(phone, country);
+    const digitsOnly = (phone || '').toString().replace(/\D/g, '');
+    const last9 = phoneDigitsForRapidinMatch(phone, country);
+    const driverResult = await pool.query(
+      `SELECT license_number, document_number, first_name, last_name, phone, park_id
+       FROM drivers
+       WHERE license_country = $1 AND work_status = 'working'
+         AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
+       ORDER BY park_id NULLS LAST
+       LIMIT 1`,
+      [getCountryCodeForDrivers(country), phoneForDb, phone, digitsOnly, last9]
+    );
+    if (driverResult.rows.length === 0) {
+      return errorResponse(res, 'Conductor no encontrado o inactivo en la tabla drivers', 404);
+    }
+    const d = driverResult.rows[0];
+    const licenseOrDoc = d.license_number ?? d.document_number ?? '';
+    const dniDigits = digitsOnlyDni(licenseOrDoc);
+    const licenseRaw = (d.license_number ?? '').toString().trim() || null;
+    return successResponse(res, {
+      id: null,
+      firstName: d.first_name ?? '',
+      lastName: d.last_name ?? '',
+      phone: d.phone ?? phone ?? '',
+      documentNumber: dniDigits || null,
+      license: licenseRaw,
+      park_id: d.park_id ?? null,
+      source: 'drivers'
+    }, 'Datos del conductor');
+  } catch (error) {
+    logger.error('Error en /driver/conductor-data:', error);
+    return errorResponse(res, error.message || 'Error al obtener datos del conductor', 500);
+  }
+});
+
 // Helper: resolver driver_id por (phone, country, park_id opcional). En BD el phone puede estar como "970180035" (9 dígitos); comparar también por últimos 9.
 async function getRapidinDriverId(phone, country, parkId = null) {
   const phoneForDb = normalizePhoneForDb(phone, country);
@@ -281,6 +359,55 @@ async function getRapidinDriverId(phone, country, parkId = null) {
   );
   return r.rows[0]?.id ?? null;
 }
+
+/**
+ * GET /driver/profile
+ * Devuelve los datos del conductor desde module_rapidin_drivers.
+ * Query opcional: rapidin_driver_id, park_id (para resolver cuál fila usar si tiene varias flotas).
+ */
+router.get('/profile', authenticate, async (req, res) => {
+  try {
+    const authErr = requireDriverAuth(req, res);
+    if (authErr) return authErr;
+    const { phone, country } = req.user;
+    const rapidinDriverIdParam = (req.query.rapidin_driver_id != null && req.query.rapidin_driver_id !== '')
+      ? String(req.query.rapidin_driver_id).trim()
+      : null;
+    const parkIdParam = parseParkId(req, true);
+
+    let driverId = rapidinDriverIdParam;
+    if (!driverId) {
+      driverId = await getRapidinDriverId(phone, country, parkIdParam);
+    }
+    if (!driverId) {
+      return errorResponse(res, 'Conductor no encontrado en Rapidín', 404);
+    }
+
+    const row = await pool.query(
+      'SELECT id, first_name, last_name, phone, email, dni, license, country, park_id FROM module_rapidin_drivers WHERE id = $1 LIMIT 1',
+      [driverId]
+    );
+    if (row.rows.length === 0) {
+      return errorResponse(res, 'Conductor no encontrado', 404);
+    }
+    const r = row.rows[0];
+    const documentNumber = digitsOnlyDni(r.dni) || null;
+    return successResponse(res, {
+      id: r.id,
+      firstName: r.first_name ?? '',
+      lastName: r.last_name ?? '',
+      phone: r.phone ?? phone ?? '',
+      email: r.email ?? null,
+      documentNumber,
+      license: r.license ?? null,
+      country: r.country ?? country ?? '',
+      park_id: r.park_id ?? null
+    }, 'Perfil del conductor');
+  } catch (error) {
+    logger.error('Error en GET /driver/profile:', error);
+    return errorResponse(res, error.message || 'Error al obtener perfil', 500);
+  }
+});
 
 // Todos los driver_id del conductor (phone + country), para historial de pagos en todas las flotas.
 async function getRapidinDriverIds(phone, country) {
@@ -698,15 +825,17 @@ router.get('/loan-offer', authenticate, async (req, res) => {
       driverId = rapidinDriverResult.rows[0].id;
       cycleFromColumn = Number(rapidinDriverResult.rows[0].cycle) || 1;
       cycle = cycleFromColumn;
-      // Guardar en rapidin_drivers la flota elegida (external_driver_id y park_id) al entrar en nueva solicitud
-      if (externalDriverIdFromQuery || parkIdFromQuery) {
+      // Guardar en rapidin_drivers la flota elegida (external_driver_id, park_id, license) al entrar en nueva solicitud
+      const licenseToSave = (driverData.license_number ?? '').toString().trim().slice(0, 100) || null;
+      if (externalDriverIdFromQuery || parkIdFromQuery || licenseToSave) {
         await pool.query(
           `UPDATE module_rapidin_drivers 
            SET external_driver_id = COALESCE(NULLIF(TRIM($1), ''), external_driver_id),
                park_id = COALESCE(NULLIF(TRIM($2), ''), park_id),
+               license = COALESCE($4, license),
                updated_at = CURRENT_TIMESTAMP 
            WHERE id = $3`,
-          [externalDriverIdFromQuery || null, parkIdFromQuery || null, driverId]
+          [externalDriverIdFromQuery || null, parkIdFromQuery || null, driverId, licenseToSave]
         );
       }
       // Si puntualidad de pago < 40%, el conductor regresa al ciclo 1
@@ -720,12 +849,14 @@ router.get('/loan-offer', authenticate, async (req, res) => {
         );
       }
     } else {
-      // Si no existe, crear registro para esta flota (phone y dni VARCHAR(20))
+      // Si no existe: jalar de drivers por teléfono + park_id elegido. dni = license_number normalizado (solo dígitos); license = license_number sin normalizar.
       const phoneStr = String(phone ?? '').trim().slice(0, 20);
-      const dniStr = (String(identifier ?? '').trim() || phoneStr).slice(0, 20);
+      const dniNormalized = digitsOnlyDni(driverData.license_number || driverData.document_number || '');
+      const dniStr = truncateVarchar20(dniNormalized || digitsOnlyDni(phone) || phoneStr);
+      const licenseStr = (driverData.license_number ?? '').toString().trim().slice(0, 100) || null;
       const createDriverQuery = `
-        INSERT INTO module_rapidin_drivers (phone, country, dni, cycle, credit_line, first_name, last_name, external_driver_id, park_id)
-        VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7)
+        INSERT INTO module_rapidin_drivers (phone, country, dni, cycle, credit_line, first_name, last_name, external_driver_id, park_id, license)
+        VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7, $8)
         RETURNING id, cycle
       `;
       const newDriverResult = await pool.query(createDriverQuery, [
@@ -735,7 +866,8 @@ router.get('/loan-offer', authenticate, async (req, res) => {
         driverData.first_name || '',
         driverData.last_name || '',
         externalDriverIdFromQuery || null,
-        parkIdFromQuery || null
+        parkIdFromQuery || null,
+        licenseStr
       ]);
       driverId = newDriverResult.rows[0].id;
       cycle = 1;
@@ -951,8 +1083,8 @@ router.post('/loan-request', authenticate, uploadLoanDocFields, async (req, res)
         return errorResponse(res, 'El teléfono del contacto no puede ser el mismo que el del conductor', 400);
       }
     }
-    // Usar número de licencia o document_number como identificador; truncar a 20 (dni VARCHAR(20))
-    const identifier = truncateVarchar20(driverData.license_number || driverData.document_number || phone);
+    // dni = license_number/document_number normalizado (solo dígitos); license = license_number sin normalizar
+    const identifier = truncateVarchar20(digitsOnlyDni(driverData.license_number || driverData.document_number || '') || digitsOnlyDni(phone) || phone);
 
     const phoneForDb = truncateVarchar20(normalizePhoneForDb(phone, country));
 
@@ -968,19 +1100,19 @@ router.post('/loan-request', authenticate, uploadLoanDocFields, async (req, res)
       [phoneForDb, country, parkForQuery, phone, digitsOnly, last9Admin]
     );
 
+    const licenseStr = (driverData.license_number ?? '').toString().trim().slice(0, 100) || null;
     let driverId;
     if (rapidinDriverResult.rows.length === 0) {
       try {
         const createResult = await pool.query(
-          `INSERT INTO module_rapidin_drivers (phone, country, dni, cycle, credit_line, first_name, last_name, external_driver_id, park_id)
-           VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7)
+          `INSERT INTO module_rapidin_drivers (phone, country, dni, cycle, credit_line, first_name, last_name, external_driver_id, park_id, license)
+           VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7, $8)
            RETURNING id`,
-          [phoneForDb, country, identifier, driverData.first_name || '', driverData.last_name || '', externalDriverId || null, selectedParkId || null]
+          [phoneForDb, country, identifier, driverData.first_name || '', driverData.last_name || '', externalDriverId || null, selectedParkId || null, licenseStr]
         );
         driverId = createResult.rows[0].id;
       } catch (insertErr) {
         if (insertErr.code === '23505') {
-          // Duplicado (race o phone en otro formato): usar la fila existente
           rapidinDriverResult = await pool.query(
             `SELECT id FROM module_rapidin_drivers 
              WHERE country = $2 AND COALESCE(park_id, '') = $3 
@@ -994,8 +1126,10 @@ router.post('/loan-request', authenticate, uploadLoanDocFields, async (req, res)
             `UPDATE module_rapidin_drivers 
              SET dni = COALESCE(NULLIF($1, ''), dni), first_name = COALESCE(NULLIF($2, ''), first_name), last_name = COALESCE(NULLIF($3, ''), last_name),
              external_driver_id = COALESCE(NULLIF(TRIM(COALESCE(external_driver_id, '')), ''), $5),
-             park_id = COALESCE(NULLIF(TRIM(COALESCE($6, '')), ''), park_id), updated_at = CURRENT_TIMESTAMP WHERE id = $4`,
-            [identifier, driverData.first_name || '', driverData.last_name || '', driverId, externalDriverId || null, selectedParkId || null]
+             park_id = COALESCE(NULLIF(TRIM(COALESCE($6, '')), ''), park_id),
+             license = COALESCE($7, license),
+             updated_at = CURRENT_TIMESTAMP WHERE id = $4`,
+            [identifier, driverData.first_name || '', driverData.last_name || '', driverId, externalDriverId || null, selectedParkId || null, licenseStr]
           );
         } else throw insertErr;
       }
@@ -1008,9 +1142,10 @@ router.post('/loan-request', authenticate, uploadLoanDocFields, async (req, res)
              last_name = COALESCE(NULLIF($3, ''), last_name),
              external_driver_id = COALESCE(NULLIF(TRIM(COALESCE(external_driver_id, '')), ''), $5),
              park_id = COALESCE(NULLIF(TRIM(COALESCE($6, '')), ''), park_id),
+             license = COALESCE($7, license),
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $4`,
-        [identifier, driverData.first_name || '', driverData.last_name || '', driverId, externalDriverId || null, selectedParkId || null]
+        [identifier, driverData.first_name || '', driverData.last_name || '', driverId, externalDriverId || null, selectedParkId || null, licenseStr]
       );
     }
 

@@ -87,12 +87,19 @@ export const createLoanRequest = async (data, userId = null, options = {}) => {
     }
   }
 
+  // Ciclo del conductor al momento de crear la solicitud (para tasa y condiciones correctas al desembolsar)
+  const driverRow = await query(
+    'SELECT COALESCE(cycle, 1) AS cycle FROM module_rapidin_drivers WHERE id = $1',
+    [driver_id]
+  );
+  const cycle = driverRow.rows.length > 0 ? Math.max(1, parseInt(driverRow.rows[0].cycle, 10) || 1) : 1;
+
   const result = await query(
     `INSERT INTO module_rapidin_loan_requests 
-     (driver_id, country, requested_amount, status, observations, created_by)
-     VALUES ($1, $2, $3, 'pending', $4, $5)
+     (driver_id, country, requested_amount, status, observations, created_by, cycle)
+     VALUES ($1, $2, $3, 'pending', $4, $5, $6)
      RETURNING *`,
-    [driver_id, country, requested_amount, observations, userId]
+    [driver_id, country, requested_amount, observations, userId, cycle]
   );
 
   return result.rows[0];

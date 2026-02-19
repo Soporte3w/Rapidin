@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../services/api';
 import { Eye, FileText, DollarSign, AlertCircle, CheckCircle, XCircle, Copy, Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -18,23 +18,44 @@ interface Loan {
   total_late_fee?: number;
 }
 
+export type LoansSearchState = {
+  fromLoanDetail?: boolean;
+  driver?: string;
+  loan_id?: string;
+  driverSearchInput?: string;
+  loanIdSearchInput?: string;
+};
+
 const Loans = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const [loans, setLoans] = useState<Loan[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const searchState = location.state as LoansSearchState | null;
+  const isReturnFromDetail = Boolean(searchState?.fromLoanDetail);
+  const initialDriver = isReturnFromDetail ? (searchState?.driverSearchInput ?? searchState?.driver ?? '') : '';
+  const initialLoanId = isReturnFromDetail ? (searchState?.loanIdSearchInput ?? searchState?.loan_id ?? '') : '';
+
   const [filters, setFilters] = useState({
     status: '',
     country: '',
-    driver: '',
-    loan_id: '',
+    driver: isReturnFromDetail ? (searchState?.driver ?? '') : '',
+    loan_id: isReturnFromDetail ? (searchState?.loan_id ?? '') : '',
   });
-  const [driverSearchInput, setDriverSearchInput] = useState('');
-  const [loanIdSearchInput, setLoanIdSearchInput] = useState('');
+  const [driverSearchInput, setDriverSearchInput] = useState(initialDriver);
+  const [loanIdSearchInput, setLoanIdSearchInput] = useState(initialLoanId);
   const [pagination, setPagination] = useState({ page: 1, limit: 5, total: 0, totalPages: 0 });
   const [paginationLoading, setPaginationLoading] = useState(false);
   const PAGE_SIZES = [5, 10, 20, 50];
+
+  // Limpiar state de navegación al volver del detalle para que un refresh no restaure
+  useEffect(() => {
+    if (isReturnFromDetail) {
+      window.history.replaceState({}, document.title, location.pathname);
+    }
+  }, [isReturnFromDetail, location.pathname]);
 
   useEffect(() => {
     setPagination((p) => ({ ...p, page: 1 }));
@@ -395,7 +416,15 @@ const Loans = () => {
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
                       <button
-                        onClick={() => navigate(`/admin/loans/${loan.id}`)}
+                        onClick={() => navigate(`/admin/loans/${loan.id}`, {
+                          state: {
+                            fromLoansSearch: true,
+                            driver: filters.driver,
+                            loan_id: filters.loan_id,
+                            driverSearchInput,
+                            loanIdSearchInput,
+                          },
+                        })}
                         className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"
                         title="Ver detalles"
                       >

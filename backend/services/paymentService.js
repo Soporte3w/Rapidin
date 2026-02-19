@@ -265,6 +265,11 @@ export const updateLoanBalance = async (loanId) => {
   );
 };
 
+/**
+ * Tras un pago (admin o automático): actualiza estado del préstamo.
+ * - Si todas las cuotas están pagadas → préstamo 'cancelled' y solicitud 'cancelled'.
+ * - Si el préstamo estaba 'defaulted' (vencido) y ya no hay cuotas en 'overdue' → préstamo 'active'.
+ */
 export const checkLoanCompleted = async (loanId) => {
   const result = await query(
     `SELECT COUNT(*) as pending_installments
@@ -274,15 +279,25 @@ export const checkLoanCompleted = async (loanId) => {
     [loanId]
   );
 
-  if (parseInt(result.rows[0].pending_installments) === 0) {
+  const allPaid = parseInt(result.rows[0].pending_installments) === 0;
+
+  if (allPaid) {
     await query(
-      `UPDATE module_rapidin_loans 
-       SET status = 'cancelled'
-       WHERE id = $1`,
+      `UPDATE module_rapidin_loans SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
       [loanId]
     );
+    const reqRes = await query(
+      `SELECT request_id FROM module_rapidin_loans WHERE id = $1`,
+      [loanId]
+    );
+    const requestId = reqRes.rows[0]?.request_id;
+    if (requestId) {
+      await query(
+        `UPDATE module_rapidin_loan_requests SET status = 'cancelled' WHERE id = $1`,
+        [requestId]
+      );
+    }
 
-    // Si el conductor tiene puntualidad de pago < 40%, regresa al ciclo 1
     const loanRow = await query(
       'SELECT driver_id FROM module_rapidin_loans WHERE id = $1',
       [loanId]
@@ -298,6 +313,26 @@ export const checkLoanCompleted = async (loanId) => {
         logger.info(`Driver ${driverId} puntualidad ${(punctuality * 100).toFixed(1)}% < 40%: ciclo actualizado a 1`);
       }
     }
+    return;
+  }
+
+  // No están todas pagadas: si el préstamo está vencido (defaulted) y ya no hay cuotas overdue, pasarlo a activo
+  const loanStatusRes = await query(
+    `SELECT status FROM module_rapidin_loans WHERE id = $1`,
+    [loanId]
+  );
+  if (loanStatusRes.rows[0]?.status !== 'defaulted') return;
+
+  const overdueRes = await query(
+    `SELECT COUNT(*) as n FROM module_rapidin_installments WHERE loan_id = $1 AND status = 'overdue'`,
+    [loanId]
+  );
+  if (parseInt(overdueRes.rows[0].n) === 0) {
+    await query(
+      `UPDATE module_rapidin_loans SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [loanId]
+    );
+    logger.info(`Préstamo ${loanId}: sin cuotas vencidas tras pago → status actualizado a active`);
   }
 };
 

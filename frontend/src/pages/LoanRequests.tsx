@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../services/api';
 import { Eye, FileText, Calendar, AlertCircle, CheckCircle, Clock, XCircle, Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -20,22 +20,41 @@ interface LoanRequest {
   created_at: string;
 }
 
+export type LoanRequestsSearchState = {
+  fromRequestDetail?: boolean;
+  driver?: string;
+  driverSearchInput?: string;
+  status?: string;
+  country?: string;
+};
+
 const LoanRequests = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
+  const searchState = location.state as LoanRequestsSearchState | null;
+  const isReturnFromDetail = Boolean(searchState?.fromRequestDetail);
+  const initialDriverInput = isReturnFromDetail ? (searchState?.driverSearchInput ?? searchState?.driver ?? '') : '';
+
   const [requests, setRequests] = useState<LoanRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filters, setFilters] = useState({
-    status: '',
-    country: '',
-    driver: '',
+    status: isReturnFromDetail ? (searchState?.status ?? '') : '',
+    country: isReturnFromDetail ? (searchState?.country ?? '') : '',
+    driver: isReturnFromDetail ? (searchState?.driver ?? '') : '',
   });
-  const [driverSearchInput, setDriverSearchInput] = useState('');
+  const [driverSearchInput, setDriverSearchInput] = useState(initialDriverInput);
   const [pagination, setPagination] = useState({ page: 1, limit: 5, total: 0, totalPages: 0 });
   const [paginationLoading, setPaginationLoading] = useState(false);
   const PAGE_SIZES = [5, 10, 20, 50];
   const lastFetchedKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (isReturnFromDetail) {
+      window.history.replaceState({}, document.title, location.pathname);
+    }
+  }, [isReturnFromDetail, location.pathname]);
 
   useEffect(() => {
     const key = `1-${filters.status}-${filters.country}-${(filters.driver ?? '').trim()}`;
@@ -356,7 +375,15 @@ const LoanRequests = () => {
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
                       <button
-                        onClick={() => navigate(`/admin/loan-requests/${request.id}`)}
+                        onClick={() => navigate(`/admin/loan-requests/${request.id}`, {
+                          state: {
+                            fromLoanRequestsSearch: true,
+                            driver: filters.driver,
+                            driverSearchInput,
+                            status: filters.status,
+                            country: filters.country,
+                          },
+                        })}
                         className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"
                         title="Ver detalles"
                       >

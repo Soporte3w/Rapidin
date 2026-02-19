@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, User, FileText, Calculator, CheckCircle, AlertCircle, Copy, Clock, XCircle, Image as ImageIcon, CreditCard, Loader2, RefreshCw } from 'lucide-react';
 import api from '../services/api';
 import toast from 'react-hot-toast';
@@ -200,10 +200,32 @@ function getSimulationOption(simulationOptions: any): any {
   return option && typeof option === 'object' ? option : null;
 }
 
+type LoanRequestsSearchState = {
+  fromLoanRequestsSearch?: boolean;
+  fromRequestDetail?: boolean;
+  driver?: string;
+  driverSearchInput?: string;
+  status?: string;
+  country?: string;
+};
+
 const LoanRequestDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user: authUser } = useAuth();
+
+  const getBackToRequestsState = (): LoanRequestsSearchState | undefined => {
+    const s = location.state as LoanRequestsSearchState | null;
+    if (!s?.fromLoanRequestsSearch) return undefined;
+    return {
+      fromRequestDetail: true,
+      driver: s.driver ?? '',
+      driverSearchInput: s.driverSearchInput ?? s.driver ?? '',
+      status: s.status ?? '',
+      country: s.country ?? '',
+    };
+  };
   const [request, setRequest] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [simulationOptions, setSimulationOptions] = useState<any>(null);
@@ -368,7 +390,7 @@ const LoanRequestDetail = () => {
     try {
       await api.post(`/loan-requests/${id}/reject`, { reason });
       toast.success('Solicitud rechazada');
-      navigate('/admin/loan-requests');
+      navigate('/admin/loan-requests', { state: getBackToRequestsState() });
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Error al rechazar la solicitud');
     }
@@ -453,7 +475,7 @@ const LoanRequestDetail = () => {
         <h3 className="text-xl font-bold text-gray-900 mb-2">Solicitud no encontrada</h3>
         <p className="text-gray-600 mb-6 text-center max-w-md">No se pudo cargar la información de la solicitud</p>
         <button
-          onClick={() => navigate('/admin/loan-requests')}
+          onClick={() => navigate('/admin/loan-requests', { state: getBackToRequestsState() })}
           className="bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-3 rounded-lg font-medium hover:from-red-700 hover:to-red-800 transition-all shadow-md"
         >
           Volver a Solicitudes
@@ -466,7 +488,7 @@ const LoanRequestDetail = () => {
     <div className="space-y-4 lg:space-y-6">
       {/* Botón Volver */}
       <button
-        onClick={() => navigate('/admin/loan-requests')}
+        onClick={() => navigate('/admin/loan-requests', { state: getBackToRequestsState() })}
         className="inline-flex items-center gap-2 text-gray-600 hover:text-red-600 transition-colors text-sm font-medium"
       >
         <ArrowLeft className="h-4 w-4" />

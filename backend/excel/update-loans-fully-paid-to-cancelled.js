@@ -1,5 +1,6 @@
 /**
- * Actualiza a 'cancelled' todos los préstamos (PE y CO) que están 'active' y tienen todas sus cuotas pagadas.
+ * Actualiza a 'cancelled' todos los préstamos (PE y CO) que tienen todas sus cuotas pagadas.
+ * Incluye préstamos en 'active' y en 'defaulted' (vencidos) que ya pagaron todo.
  * También actualiza la solicitud (loan_request) asociada a 'cancelled'.
  *
  * Uso (desde backend/):
@@ -21,13 +22,13 @@ const { logger } = await import('../utils/logger.js');
 const DRY_RUN = process.argv.includes('--dry-run');
 
 async function run() {
-  logger.info('Actualizando préstamos active → cancelled cuando todas las cuotas están pagadas (PE y CO)...');
+  logger.info('Actualizando préstamos (active o defaulted/vencidos) → cancelled cuando todas las cuotas están pagadas (PE y CO)...');
 
-  // IDs de préstamos que están active y tienen todas las cuotas pagadas (cualquier country)
+  // Préstamos que están active o defaulted y tienen todas las cuotas pagadas (cualquier country)
   const sel = await query(`
-    SELECT l.id, l.country
+    SELECT l.id, l.country, l.status AS current_status
     FROM module_rapidin_loans l
-    WHERE l.status = 'active'
+    WHERE l.status IN ('active', 'defaulted')
       AND (SELECT COUNT(*) FROM module_rapidin_installments i WHERE i.loan_id = l.id) > 0
       AND (SELECT COUNT(*) FROM module_rapidin_installments i WHERE i.loan_id = l.id)
           = (SELECT COUNT(*) FROM module_rapidin_installments i WHERE i.loan_id = l.id AND (i.status = 'paid' OR (i.installment_amount > 0 AND i.paid_amount >= i.installment_amount)))
@@ -39,7 +40,8 @@ async function run() {
     byCountry[r.country] = (byCountry[r.country] || 0) + 1;
   }
 
-  logger.info(`Préstamos a actualizar a cancelled: ${toUpdate.length} (PE: ${byCountry.PE || 0}, CO: ${byCountry.CO || 0})`);
+  const defaultedCount = (toUpdate.filter(r => r.current_status === 'defaulted')).length;
+  logger.info(`Préstamos a actualizar a cancelled: ${toUpdate.length} (PE: ${byCountry.PE || 0}, CO: ${byCountry.CO || 0})${defaultedCount ? `, de los cuales ${defaultedCount} estaban en defaulted/vencidos` : ''}`);
 
   if (DRY_RUN) {
     logger.info('Modo --dry-run: no se modificó la base de datos.');
@@ -56,7 +58,7 @@ async function run() {
   const updated = await query(`
     UPDATE module_rapidin_loans l
     SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-    WHERE l.status = 'active'
+    WHERE l.status IN ('active', 'defaulted')
       AND (SELECT COUNT(*) FROM module_rapidin_installments i WHERE i.loan_id = l.id) > 0
       AND (SELECT COUNT(*) FROM module_rapidin_installments i WHERE i.loan_id = l.id)
           = (SELECT COUNT(*) FROM module_rapidin_installments i WHERE i.loan_id = l.id AND (i.status = 'paid' OR (i.installment_amount > 0 AND i.paid_amount >= i.installment_amount)))

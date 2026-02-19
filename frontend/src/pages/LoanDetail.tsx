@@ -1,15 +1,36 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, User, Banknote, Calendar, AlertCircle, FileText, CheckCircle, Clock, XCircle } from 'lucide-react';
 import api from '../services/api';
 import { formatDateUTC } from '../utils/date';
 
+type LoansSearchState = {
+  fromLoansSearch?: boolean;
+  driver?: string;
+  loan_id?: string;
+  driverSearchInput?: string;
+  loanIdSearchInput?: string;
+};
+
 const LoanDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [loan, setLoan] = useState<any>(null);
   const [schedule, setSchedule] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const getBackToLoansState = (): { fromLoanDetail: true; driver: string; loan_id: string; driverSearchInput: string; loanIdSearchInput: string } | undefined => {
+    const s = location.state as LoansSearchState | null;
+    if (!s?.fromLoansSearch) return undefined;
+    return {
+      fromLoanDetail: true,
+      driver: s.driver ?? '',
+      loan_id: s.loan_id ?? '',
+      driverSearchInput: s.driverSearchInput ?? s.driver ?? '',
+      loanIdSearchInput: s.loanIdSearchInput ?? s.loan_id ?? '',
+    };
+  };
 
   useEffect(() => {
     if (id) {
@@ -118,7 +139,7 @@ const LoanDetail = () => {
         <h3 className="text-xl font-bold text-gray-900 mb-2">Préstamo no encontrado</h3>
         <p className="text-gray-600 mb-6 text-center max-w-md">No se pudo cargar la información del préstamo</p>
         <button
-          onClick={() => navigate('/admin/loans')}
+          onClick={() => navigate('/admin/loans', { state: getBackToLoansState() })}
           className="bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-3 rounded-lg font-medium hover:from-red-700 hover:to-red-800 transition-all shadow-md"
         >
           Volver a Préstamos
@@ -131,7 +152,7 @@ const LoanDetail = () => {
     <div className="space-y-4 lg:space-y-6">
       {/* Botón Volver */}
       <button
-        onClick={() => navigate('/admin/loans')}
+        onClick={() => navigate('/admin/loans', { state: getBackToLoansState() })}
         className="inline-flex items-center gap-2 text-gray-600 hover:text-red-600 transition-colors text-sm font-medium"
       >
         <ArrowLeft className="h-4 w-4" />

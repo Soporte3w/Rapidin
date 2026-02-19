@@ -40,7 +40,15 @@ const corsOrigin = isDev
         /^http:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}:5173$/.test(origin);
       cb(null, allowed ? origin : false);
     }
-  : (process.env.CORS_ORIGIN || 'http://localhost:5173');
+  : (() => {
+      const raw = process.env.CORS_ORIGIN || 'http://localhost:5173';
+      const origins = raw.split(',').map(s => s.trim()).filter(Boolean);
+      if (origins.length <= 1) return raw.trim() || 'http://localhost:5173';
+      return (origin, cb) => {
+        const allowed = !origin || origins.includes(origin);
+        cb(null, allowed ? origin : false);
+      };
+    })();
 
 app.use(cors({
   origin: corsOrigin,

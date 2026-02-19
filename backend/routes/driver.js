@@ -681,7 +681,7 @@ router.get('/loan-offer', authenticate, async (req, res) => {
     const rapidinDriverQuery = parkIdFromQuery
       ? `SELECT id, cycle FROM module_rapidin_drivers 
          WHERE country = $1 AND COALESCE(park_id, '') = $2 
-         AND (phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
+         AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $6)
          LIMIT 1`
       : `SELECT id, cycle FROM module_rapidin_drivers 
          WHERE country = $1 AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)

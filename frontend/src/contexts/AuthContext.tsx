@@ -94,9 +94,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setLoading(false);
   }, []);
 
-  // Cierre de sesión por inactividad (5 min sin interacción). Solo cuando hay usuario logueado.
+  // Cierre de sesión por inactividad (5 min) solo para conductores. Admin no tiene timeout.
+  const isDriver = user && (user.role === 'driver' || !!user.phone);
   useEffect(() => {
     if (!user) {
+      if (inactivityCheckId.current) {
+        clearInterval(inactivityCheckId.current);
+        inactivityCheckId.current = null;
+      }
+      return;
+    }
+    if (!isDriver) {
+      // Admin: no aplicar cierre por inactividad
       if (inactivityCheckId.current) {
         clearInterval(inactivityCheckId.current);
         inactivityCheckId.current = null;
@@ -131,7 +140,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         inactivityCheckId.current = null;
       }
     };
-  }, [user]);
+  }, [user, isDriver]);
 
   const login = async (email: string, password: string) => {
     const response = await api.post('/auth/login', { email, password });

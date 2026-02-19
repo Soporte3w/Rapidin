@@ -266,16 +266,26 @@ export const updateLoanBalance = async (loanId) => {
 };
 
 /**
- * Tras un pago (admin o automático): actualiza estado del préstamo.
- * - Si todas las cuotas están pagadas → préstamo 'cancelled' y solicitud 'cancelled'.
- * - Si el préstamo estaba 'defaulted' (vencido) y ya no hay cuotas en 'overdue' → préstamo 'active'.
+ * Tras un pago desde admin (o cobro automático): actualiza estado del préstamo.
+ *
+ * 1) Si después del pago el préstamo tiene TODAS sus cuotas pagadas
+ *    → préstamo pasa a 'cancelled' y la solicitud a 'cancelled' (en todos los casos).
+ *
+ * 2) Si tenía al menos una cuota vencida y otras pendientes, y se paga la vencida
+ *    → al ya no quedar cuotas en 'overdue', el préstamo pasa de 'vencido' (defaulted) a 'active'.
  */
 export const checkLoanCompleted = async (loanId) => {
+  // "Todas pagadas" = cada cuota tiene paid_amount >= installment_amount (monto de cuota cubierto).
+  // No exigir late_fee = 0: préstamos del Excel pueden tener mora en BD aunque la cuota esté pagada.
+  /*
+  AND ((installment_amount - COALESCE(paid_amount, 0)) > 0 OR COALESCE(late_fee, 0) > 0)`, este es la opcion anterior antes del proble de active a cancelado
+  */
+  
   const result = await query(
     `SELECT COUNT(*) as pending_installments
      FROM module_rapidin_installments
      WHERE loan_id = $1 
-       AND ((installment_amount - COALESCE(paid_amount, 0)) > 0 OR COALESCE(late_fee, 0) > 0)`,
+       AND (installment_amount - COALESCE(paid_amount, 0)) > 0.001`,
     [loanId]
   );
 

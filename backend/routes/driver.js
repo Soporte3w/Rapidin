@@ -792,14 +792,19 @@ router.get('/loan-offer', authenticate, async (req, res) => {
         message: 'No se puede validar viajes: indica la flota o el conductor (external_driver_id).',
       });
     }
-    const tripsCheck = await checkMinimumTripsForLoanOffer(conductorId);
-    if (!tripsCheck.allowed) {
-      return errorResponse(
-        res,
-        tripsCheck.message || 'No cumples el mínimo de viajes en los dos meses anteriores para solicitar un préstamo.',
-        400,
-        { reason: 'insufficient_trips' }
-      );
+    // Excepción temporal: DNI 77221246 puede acceder sin cumplir mínimo de viajes
+    const documentNumber = (driverData.document_number || '').toString().trim();
+    const bypassTripsForDni = '77221246';
+    if (documentNumber !== bypassTripsForDni) {
+      const tripsCheck = await checkMinimumTripsForLoanOffer(conductorId);
+      if (!tripsCheck.allowed) {
+        return errorResponse(
+          res,
+          tripsCheck.message || 'No cumples el mínimo de viajes en los dos meses anteriores para solicitar un préstamo.',
+          400,
+          { reason: 'insufficient_trips' }
+        );
+      }
     }
 
     // Buscar el driver en module_rapidin_drivers: por (phone, country) y si hay park_id por (phone, country, park_id). En BD phone puede ser "970180035" (9 dígitos).

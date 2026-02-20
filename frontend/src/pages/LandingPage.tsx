@@ -308,7 +308,7 @@ const LandingPage = () => {
                 </div>
               </div>
 
-              <div className="bg-white rounded-3xl shadow-2xl p-8 border border-gray-100">
+              <div className="bg-white rounded-2xl sm:rounded-3xl shadow-2xl p-4 sm:p-6 lg:p-8 border border-gray-100">
                 {step === 'phone' ? (
                   <form onSubmit={handlePhoneSubmit} className="space-y-6">
                     <div>
@@ -388,17 +388,17 @@ const LandingPage = () => {
                     </button>
                   </form>
                 ) : (
-                  <form onSubmit={handleCodeSubmit} className="space-y-6">
+                  <form onSubmit={handleCodeSubmit} className="space-y-4 sm:space-y-6">
                     <div>
-                      <h2 className="text-2xl font-bold text-gray-900 mb-2">Verifica tu Código</h2>
-                      <p className="text-sm text-gray-600">
-                        Hemos enviado un código de 6 dígitos al número <span className="font-semibold">+{detectedCountry === 'PE' ? '51' : '57'} {phone}</span>
+                      <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-1.5 sm:mb-2">Verifica tu código</h2>
+                      <p className="text-xs sm:text-sm text-gray-600 leading-relaxed break-all">
+                        Hemos enviado un código de 6 dígitos al <span className="font-semibold text-gray-900">+{detectedCountry === 'PE' ? '51' : '57'} {phone}</span>
                       </p>
-              
                     </div>
 
+                    {/* Inputs del código: más grandes y táctiles en móvil */}
                     <div>
-                      <div className="flex justify-center gap-3 mb-6">
+                      <div className="flex justify-center gap-2 sm:gap-3 mb-4 sm:mb-6 flex-wrap">
                         {code.map((digit, index) => (
                           <input
                             key={index}
@@ -411,13 +411,19 @@ const LandingPage = () => {
                             onKeyDown={(e) => handleCodeKeyDown(index, e)}
                             onPaste={handleCodePaste}
                             autoFocus={index === 0}
-                            className="w-14 h-14 text-center text-2xl font-bold bg-gray-50 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary focus:border-primary focus:bg-white outline-none transition-all"
+                            className="w-11 h-12 sm:w-12 sm:h-14 lg:w-14 lg:h-14 min-w-[44px] min-h-[48px] text-center text-xl sm:text-2xl font-bold bg-gray-50 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary focus:border-primary focus:bg-white outline-none transition-all touch-manipulation"
                           />
                         ))}
                       </div>
+                      {error && (
+                        <p className="mb-3 text-xs sm:text-sm text-red-600 flex items-center justify-center gap-1.5">
+                          <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                          {error}
+                        </p>
+                      )}
                       <div className="text-center">
                         {countdown > 0 ? (
-                          <p className="text-sm text-gray-600">
+                          <p className="text-xs sm:text-sm text-gray-600">
                             Reenviar código en <span className="font-semibold text-primary">{countdown}s</span>
                           </p>
                         ) : (
@@ -425,7 +431,7 @@ const LandingPage = () => {
                             type="button"
                             onClick={handleResendCode}
                             disabled={loading}
-                            className="text-sm text-primary hover:text-primary-600 font-semibold transition-colors"
+                            className="min-h-[44px] px-4 py-2 text-sm text-primary hover:text-primary-600 font-semibold transition-colors touch-manipulation"
                           >
                             Reenviar código
                           </button>
@@ -433,7 +439,7 @@ const LandingPage = () => {
                       </div>
                     </div>
 
-                    <div className="flex gap-3">
+                    <div className="flex flex-col-reverse sm:flex-row gap-2 sm:gap-3">
                       <button
                         type="button"
                         onClick={() => {
@@ -441,24 +447,24 @@ const LandingPage = () => {
                           setCode(['', '', '', '', '', '']);
                           setError('');
                         }}
-                        className="flex-1 px-4 py-3 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all font-semibold"
+                        className="flex-1 min-h-[44px] px-4 py-3 text-gray-700 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 rounded-xl transition-all font-semibold touch-manipulation"
                       >
                         Cambiar número
                       </button>
                       <button
                         type="submit"
                         disabled={loading || code.join('').length !== 6}
-                        className="flex-1 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-bold py-3 px-6 rounded-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg hover:shadow-xl"
+                        className="flex-1 min-h-[44px] bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-bold py-3 px-6 rounded-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg hover:shadow-xl touch-manipulation"
                       >
                         {loading ? (
                           <>
-                            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white flex-shrink-0"></div>
                             <span>Verificando...</span>
                           </>
                         ) : (
                           <>
                             <span>Verificar</span>
-                            <CheckCircle className="h-5 w-5" />
+                            <CheckCircle className="h-5 w-5 flex-shrink-0" />
                           </>
                         )}
                       </button>

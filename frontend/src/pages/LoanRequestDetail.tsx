@@ -853,7 +853,18 @@ const LoanRequestDetail = () => {
         const obs = parseRequestObservations(request);
         const isYangoPro = obs.deposit_type === 'yango';
         return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => { setShowConfirmDisburseModal(false); setFirstPaymentToday(false); setDisburseComment(''); setDisburseAmount(''); setRechargeSuccess(false); }}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+          onClick={() => {
+            if (!rechargeSuccess && !loadingDisburse) {
+              setShowConfirmDisburseModal(false);
+              setFirstPaymentToday(false);
+              setDisburseComment('');
+              setDisburseAmount('');
+              setRechargeSuccess(false);
+            }
+          }}
+        >
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 mb-4">
               <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
@@ -879,8 +890,8 @@ const LoanRequestDetail = () => {
                     min="0"
                     value={disburseAmount}
                     onChange={(e) => setDisburseAmount(e.target.value)}
-                    disabled={isYangoPro && rechargeSuccess}
-                    className={`flex-1 border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isYangoPro && rechargeSuccess ? 'border-gray-200 bg-gray-100 text-gray-600 cursor-not-allowed' : 'border-gray-300'}`}
+                    disabled={isYangoPro && (rechargeSuccess || loadingRecharge)}
+                    className={`flex-1 border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isYangoPro && (rechargeSuccess || loadingRecharge) ? 'border-gray-200 bg-gray-100 text-gray-600 cursor-not-allowed' : 'border-gray-300'}`}
                     placeholder={String(parseFloat(request.requested_amount || '0') || '')}
                   />
                 </div>
@@ -927,7 +938,14 @@ const LoanRequestDetail = () => {
                               description: (disburseComment && disburseComment.trim()) ? disburseComment.trim() : 'Recarga Rapidín'
                             });
                             setRechargeSuccess(true);
-                            toast.success('Recarga enviada a Yango Pro. Ya puedes confirmar el desembolso.');
+                            toast.success('Recarga enviada a Yango Pro. Confirmando desembolso automáticamente...');
+                            setLoadingRecharge(false);
+                            await handleDisburse();
+                            setShowConfirmDisburseModal(false);
+                            setFirstPaymentToday(false);
+                            setDisburseComment('');
+                            setDisburseAmount('');
+                            setRechargeSuccess(false);
                           } catch (err: any) {
                             toast.error(err.response?.data?.message || 'Error al recargar en Yango Pro');
                           } finally {
@@ -966,8 +984,16 @@ const LoanRequestDetail = () => {
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => { setShowConfirmDisburseModal(false); setFirstPaymentToday(false); setDisburseComment(''); setDisburseAmount(''); setRechargeSuccess(false); }}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
+                onClick={() => {
+                  if (isYangoPro && rechargeSuccess) return;
+                  setShowConfirmDisburseModal(false);
+                  setFirstPaymentToday(false);
+                  setDisburseComment('');
+                  setDisburseAmount('');
+                  setRechargeSuccess(false);
+                }}
+                disabled={(isYangoPro && rechargeSuccess) || loadingDisburse}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
               >
                 Cancelar
               </button>

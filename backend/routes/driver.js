@@ -792,10 +792,10 @@ router.get('/loan-offer', authenticate, async (req, res) => {
         message: 'No se puede validar viajes: indica la flota o el conductor (external_driver_id).',
       });
     }
-    // Excepción temporal: DNI 77221246 puede acceder sin cumplir mínimo de viajes
-    const documentNumber = (driverData.document_number || '').toString().trim();
-    const bypassTripsForDni = '77221246';
-    if (documentNumber !== bypassTripsForDni) {
+    // Excepción temporal: licencia 77221246 puede acceder sin cumplir mínimo de viajes
+    const licenseNumber = (driverData.license_number || '').toString().trim();
+    const bypassTripsForLicense = 'Q77221246';
+    if (licenseNumber !== bypassTripsForLicense) {
       const tripsCheck = await checkMinimumTripsForLoanOffer(conductorId);
       if (!tripsCheck.allowed) {
         return errorResponse(

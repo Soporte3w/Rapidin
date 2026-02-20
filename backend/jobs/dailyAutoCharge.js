@@ -10,8 +10,12 @@ import { registerPaymentAuto, updateLoanBalance } from '../services/paymentServi
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COBROS_TXT_DIR = path.join(__dirname, '..', 'logs', 'cobros-automaticos');
 
+/** Park ID de Yego Pro: lunes y martes no se hace cobro automático (retiro) a préstamos que pertenecen a Yego Pro. La mora sí les afecta igual que al resto. */
+const PARK_ID_YEGO_PRO = '64085dd85e124e2c808806f70d527ea8';
+
 /**
  * Actualiza la mora diaria para todas las cuotas vencidas (due_date < hoy), estén en pending u overdue.
+ * Afecta a todos por igual, incluidos préstamos Yego Pro (la restricción de no cobro automático lunes/martes solo aplica al retiro de dinero, no a la mora).
  */
 export const updateDailyLateFees = async () => {
   logger.info('Actualizando mora diaria para todas las cuotas vencidas...');
@@ -91,6 +95,7 @@ export const updateLateFeesForDriver = async (driverId) => {
  * Lunes (1): solo cuotas pending que vencen HOY (due_date = hoy).
  * Martes (2): cuotas overdue/vencidas que no se cobraron o cobraron parcialmente (due_date < hoy).
  * Resto de días: no se ejecuta cobro automático.
+ * Restricción: lunes y martes no se cobra a préstamos que pertenecen a Yego Pro (conductor con park_id = PARK_ID_YEGO_PRO).
  */
 const getDueInstallmentsForAutoCharge = async (dayOfWeek, driverIdFilter = null) => {
   let statusFilter, dateCondition;
@@ -108,7 +113,15 @@ const getDueInstallmentsForAutoCharge = async (dayOfWeek, driverIdFilter = null)
   }
 
   const driverFilter = driverIdFilter ? 'AND d.id = $2' : '';
-  const params = driverIdFilter ? [statusFilter, driverIdFilter] : [statusFilter];
+  // Lunes y martes: excluir conductores de Yego Pro (no cobrarles automáticamente esos días)
+  const excludeYegoPro = (dayOfWeek === 1 || dayOfWeek === 2)
+    ? 'AND (d.park_id IS NULL OR TRIM(d.park_id) <> $' + (driverIdFilter ? '3' : '2') + ')'
+    : '';
+  const params = driverIdFilter
+    ? [statusFilter, driverIdFilter, PARK_ID_YEGO_PRO]
+    : (dayOfWeek === 1 || dayOfWeek === 2)
+      ? [statusFilter, PARK_ID_YEGO_PRO]
+      : [statusFilter];
 
   const result = await query(`
      SELECT
@@ -134,6 +147,7 @@ const getDueInstallmentsForAutoCharge = async (dayOfWeek, driverIdFilter = null)
        AND i.status = $1
        AND ${dateCondition}
        AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0
+       ${excludeYegoPro}
        ${driverFilter}
      ORDER BY i.due_date ASC, i.installment_number ASC`, params);
 
@@ -198,6 +212,9 @@ export const runDailyAutoCharge = async (forceDayOfWeek = null, driverIdFilter =
     return { success: 0, partial: 0, failed: 0 };
   }
 
+  if (dayOfWeek === 1 || dayOfWeek === 2) {
+    logger.info('Restricción activa: préstamos que pertenecen a Yego Pro excluidos del cobro automático (lunes y martes)');
+  }
   logger.info(`${installments.length} cuotas a procesar`);
 
   let success = 0, partial = 0, failed = 0;

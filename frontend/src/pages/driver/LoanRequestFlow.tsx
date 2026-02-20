@@ -1824,7 +1824,7 @@ function Step5PaymentOptions({ setFormData, loanOptions, loading, driverCycle, r
                         <Info className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                       </div>
                       <p className="text-[11px] sm:text-xs text-gray-700 leading-relaxed pt-0.5">
-                        Esto es una <strong className="text-gray-900">simulación</strong>: los <strong className="text-gray-900">montos</strong> de cada cuota no cambian; solo las <strong className="text-gray-900">fechas de vencimiento</strong> pueden variar según el día en que se haga el desembolso.
+                        Esto es una <strong className="text-gray-900">simulación</strong>: los <strong className="text-gray-900">montos</strong> de cada cuota pueden cambiar si no se cancelan los pagos en las fechas correspondientes de tu cronograma.
                       </p>
                     </div>
                   </div>

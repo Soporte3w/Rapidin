@@ -889,9 +889,9 @@ const LoanRequestDetail = () => {
                     step="0.01"
                     min="0"
                     value={disburseAmount}
-                    onChange={(e) => setDisburseAmount(e.target.value)}
-                    disabled={isYangoPro && (rechargeSuccess || loadingRecharge)}
-                    className={`flex-1 border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isYangoPro && (rechargeSuccess || loadingRecharge) ? 'border-gray-200 bg-gray-100 text-gray-600 cursor-not-allowed' : 'border-gray-300'}`}
+                    readOnly
+                    disabled
+                    className="flex-1 border rounded-lg px-3 py-2 text-sm border-gray-200 bg-gray-100 text-gray-700 cursor-not-allowed"
                     placeholder={String(parseFloat(request.requested_amount || '0') || '')}
                   />
                 </div>

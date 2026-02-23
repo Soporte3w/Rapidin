@@ -30,5 +30,5 @@ export function formatDateShortUTC(isoString: string | null | undefined, locale 
   if (!isoString) return '—';
   const d = new Date(isoString);
   if (isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString(locale, { timeZone: UTC, dateStyle: 'short', timeStyle: 'short' });
+  return d.toLocaleDateString(locale, { timeZone: UTC, dateStyle: 'short' });
 }

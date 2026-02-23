@@ -50,6 +50,7 @@ interface AutoPaymentLogEntry {
   driver_first_name?: string;
   driver_last_name?: string;
   flota?: string;
+  flota_name?: string;
   amount_to_charge: number;
   amount_charged: number;
   installment_number?: number;
@@ -1225,14 +1226,26 @@ const Payments = () => {
                 <tbody className="divide-y divide-gray-100">
                   {(autoLog || []).filter(Boolean).map((row, idx) => (
                     <tr key={row?.id ?? `log-${idx}`} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 text-sm text-gray-600 font-mono">{row?.loan_id ? String(row.loan_id).slice(0, 8) + '…' : '—'}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600 font-mono">
+                        {row?.loan_id ? (
+                          <button
+                            type="button"
+                            onClick={() => handleCopyId(String(row.loan_id), 'ID préstamo copiado')}
+                            className="flex items-center gap-1.5 group cursor-pointer hover:text-red-600 transition-colors text-left"
+                            title="Click para copiar ID del préstamo"
+                          >
+                            <span>{String(row.loan_id).slice(0, 8)}…</span>
+                            <Copy className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                          </button>
+                        ) : '—'}
+                      </td>
                       <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
                         {row?.created_at ? formatDateShortUTC(row.created_at, 'es-ES') : '—'}
                       </td>
                       <td className="px-4 py-3 text-sm font-medium text-gray-900">
                         {[row?.driver_first_name, row?.driver_last_name].filter(Boolean).join(' ') || '—'}
                       </td>
-                      <td className="px-4 py-3 text-sm text-gray-600">{row?.flota ?? '—'}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600">{row?.flota_name ?? row?.flota ?? '—'}</td>
                       <td className="px-4 py-3 text-sm text-right tabular-nums">S/ {Number(row?.amount_to_charge ?? 0).toFixed(2)}</td>
                       <td className="px-4 py-3 text-sm text-right tabular-nums text-green-700">S/ {Number(row?.amount_charged ?? 0).toFixed(2)}</td>
                       <td className="px-4 py-3 text-sm text-center">{row?.installment_number ?? '—'}</td>

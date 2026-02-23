@@ -1,5 +1,6 @@
 import express from 'express';
 import { registerPayment, getPayments, getAutoPaymentLog } from '../services/paymentService.js';
+import { getPartnerNameById } from '../services/partnersService.js';
 import { verifyToken, verifyRole } from '../middleware/auth.js';
 import { filterByCountry } from '../middleware/permissions.js';
 import { validatePayment, validateUUID } from '../middleware/validations.js';
@@ -66,7 +67,11 @@ router.get('/automatic-log', async (req, res) => {
       limit: limitNum,
       offset: (pageNum - 1) * limitNum
     });
-    return paginatedResponse(res, result.data, pageNum, limitNum, result.total);
+    const data = result.data || [];
+    for (const row of data) {
+      row.flota_name = (await getPartnerNameById(row.flota)) || row.flota || null;
+    }
+    return paginatedResponse(res, data, pageNum, limitNum, result.total);
   } catch (error) {
     logger.error('Error obteniendo log de pagos automáticos:', error);
     return errorResponse(res, 'Error obteniendo log', 500);

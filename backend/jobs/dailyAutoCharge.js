@@ -13,12 +13,15 @@ const COBROS_TXT_DIR = path.join(__dirname, '..', 'logs', 'cobros-automaticos');
 /** Park ID de Yego Pro: lunes y martes no se hace cobro automático (retiro) a préstamos que pertenecen a Yego Pro. La mora sí les afecta igual que al resto. */
 const PARK_ID_YEGO_PRO = '64085dd85e124e2c808806f70d527ea8';
 
+/** Solo se cobran y se les aplica mora a préstamos con fecha de desembolso posterior a esta fecha (los “mayores al 19 de enero”). Los desembolsados on/before esta fecha se excluyen. */
+const DISBURSEMENT_CUTOFF_DATE = '2025-01-19';
+
 /**
  * Actualiza la mora diaria para todas las cuotas vencidas (due_date < hoy), estén en pending u overdue.
  * Afecta a todos por igual, incluidos préstamos Yego Pro (la restricción de no cobro automático lunes/martes solo aplica al retiro de dinero, no a la mora).
  */
 export const updateDailyLateFees = async () => {
-  logger.info('Actualizando mora diaria para todas las cuotas vencidas...');
+  logger.info('Actualizando mora diaria para cuotas vencidas (solo desembolso > ' + DISBURSEMENT_CUTOFF_DATE + ')...');
 
   try {
     const overdueResult = await query(`
@@ -26,9 +29,10 @@ export const updateDailyLateFees = async () => {
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE l.status IN ('active', 'defaulted')
+       AND l.disbursed_at::date > $1::date
        AND i.status IN ('pending', 'overdue')
        AND i.due_date < CURRENT_DATE
-       AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0`);
+       AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0`, [DISBURSEMENT_CUTOFF_DATE]);
 
     let updated = 0;
     for (const inst of overdueResult.rows) {
@@ -66,10 +70,11 @@ export const updateLateFeesForDriver = async (driverId) => {
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE l.driver_id = $1 AND l.status IN ('active', 'defaulted')
+       AND l.disbursed_at::date > $2::date
        AND i.status IN ('pending', 'overdue')
        AND i.due_date < CURRENT_DATE
        AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0`,
-    [driverId]
+    [driverId, DISBURSEMENT_CUTOFF_DATE]
   );
   if (overdueResult.rows.length === 0) return 0;
   for (const inst of overdueResult.rows) {
@@ -123,6 +128,11 @@ const getDueInstallmentsForAutoCharge = async (dayOfWeek, driverIdFilter = null)
       ? [statusFilter, PARK_ID_YEGO_PRO]
       : [statusFilter];
 
+  // Solo préstamos desembolsados después del 19 de enero (cobrar a los “mayores al 19 de enero”)
+  // Formato fecha YYYY-MM-DD (igual que first_payment_date y resto del sistema)
+  const disbursementCutoff = 'AND l.disbursed_at::date > $' + (params.length + 1) + '::date';
+  const paramsWithCutoff = [...params, DISBURSEMENT_CUTOFF_DATE];
+
   const result = await query(`
      SELECT
        i.id AS installment_id,
@@ -144,12 +154,13 @@ const getDueInstallmentsForAutoCharge = async (dayOfWeek, driverIdFilter = null)
      JOIN module_rapidin_drivers d ON d.id = l.driver_id
      JOIN module_rapidin_installments i ON i.loan_id = l.id
      WHERE l.status IN ('active', 'defaulted')
+       ${disbursementCutoff}
        AND i.status = $1
        AND ${dateCondition}
        AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0
        ${excludeYegoPro}
        ${driverFilter}
-     ORDER BY i.due_date ASC, i.installment_number ASC`, params);
+     ORDER BY i.due_date ASC, i.installment_number ASC`, paramsWithCutoff);
 
   return result.rows;
 };
@@ -190,8 +201,9 @@ const logAutoPaymentAttempt = async (inst, amountToCharge, amountCharged, status
 };
 
 /**
- * @param {number|null} forceDayOfWeek - 5 = pending, 2 = overdue
- * @param {string|null} driverIdFilter - UUID del conductor (solo ese)
+ * Ejecuta el cobro automático según el día: lunes = cuotas que vencen hoy (pending), martes = cuotas vencidas (overdue).
+ * @param {number|null} forceDayOfWeek - Si se pasa: 1 = lunes (pending), 2 = martes (overdue). Si null, usa el día actual (getDay()).
+ * @param {string|null} driverIdFilter - UUID del conductor para procesar solo ese conductor (ej. pruebas).
  */
 export const runDailyAutoCharge = async (forceDayOfWeek = null, driverIdFilter = null) => {
   const dayOfWeek = forceDayOfWeek !== null ? forceDayOfWeek : new Date().getDay();
@@ -214,6 +226,7 @@ export const runDailyAutoCharge = async (forceDayOfWeek = null, driverIdFilter =
 
   if (dayOfWeek === 1 || dayOfWeek === 2) {
     logger.info('Restricción activa: préstamos que pertenecen a Yego Pro excluidos del cobro automático (lunes y martes)');
+    logger.info(`Restricción activa: solo se cobra a préstamos con desembolso después del ${DISBURSEMENT_CUTOFF_DATE}`);
   }
   logger.info(`${installments.length} cuotas a procesar`);
 
@@ -360,7 +373,7 @@ const isDentroDeVentana = () => {
 
 /**
  * Cobro automático (a partir del 23):
- * - Lunes 7:00am (Lima): cuotas pending que vencen ese día
+ * - Lunes 7:00am y 7:20am (Lima): cuotas pending que vencen ese día
  * - Martes 7:00am y 12:00 (Lima): cuotas overdue (vencidas)
  * - Mora: diario 00:05. Antes del 23 no se ejecuta nada.
  */
@@ -370,7 +383,16 @@ export const startDailyAutoChargeJob = () => {
   // Lunes 7:00am - cobrar cuotas que vencen hoy
   cron.schedule('0 7 * * 1', async () => {
     if (!isDentroDeVentana()) return;
-    logger.info(`Iniciando job de cobro automático - Lunes 7:00am (cuotas que vencen hoy)${driverFilter ? ' [solo driver: ' + driverFilter + ']' : ''}`);
+    logger.info(`Iniciando job de cobro automático - Lunes 7:00 (cuotas que vencen hoy)${driverFilter ? ' [solo driver: ' + driverFilter + ']' : ''}`);
+    await runDailyAutoCharge(1, driverFilter);
+  }, {
+    timezone: 'America/Lima'
+  });
+
+  // Lunes 7:20am - segundo barrido cuotas que vencen hoy
+  cron.schedule('20 7 * * 1', async () => {
+    if (!isDentroDeVentana()) return;
+    logger.info(`Iniciando job de cobro automático - Lunes 7:20 (cuotas que vencen hoy)${driverFilter ? ' [solo driver: ' + driverFilter + ']' : ''}`);
     await runDailyAutoCharge(1, driverFilter);
   }, {
     timezone: 'America/Lima'
@@ -403,5 +425,5 @@ export const startDailyAutoChargeJob = () => {
     timezone: 'America/Lima'
   });
 
-  logger.info(`Job de cobro automático: activo a partir del 23. Lunes 7am (pending), Martes 7am y 12:00 (overdue); Mora: diario 00:05 (Lima)${driverFilter ? '; solo driver: ' + driverFilter : ''}`);
+  logger.info(`Job de cobro automático: activo a partir del 23. Lunes 7:00 y 7:20 (pending), Martes 7am y 12:00 (overdue); Mora: diario 00:05 (Lima)${driverFilter ? '; solo driver: ' + driverFilter : ''}`);
 };

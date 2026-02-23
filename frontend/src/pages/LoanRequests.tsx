@@ -18,6 +18,8 @@ interface LoanRequest {
   status: string;
   country: string;
   created_at: string;
+  approved_at?: string | null;
+  disbursed_at?: string | null;
 }
 
 export type LoanRequestsSearchState = {
@@ -369,7 +371,14 @@ const LoanRequests = () => {
                       <div className="flex items-center space-x-2 text-sm text-gray-600">
                         <Calendar className="w-4 h-4 text-gray-400" />
                         <span>
-                          {request.created_at ? formatDateUTC(request.created_at, 'es-PE') : 'N/A'}
+                          {(() => {
+                            const date = request.status === 'disbursed' && request.disbursed_at
+                              ? request.disbursed_at
+                              : (request.status === 'approved' || request.status === 'signed') && request.approved_at
+                                ? request.approved_at
+                                : request.created_at;
+                            return date ? formatDateUTC(date, 'es-PE') : 'N/A';
+                          })()}
                         </span>
                       </div>
                     </td>

@@ -1,9 +1,9 @@
 import crypto from 'crypto';
 import axios from 'axios';
 
-// Cookie y Park ID globales: se envían en el header de cada request a Yango (la API usa sesión por cookie).
-const COOKIE = 'i=x5tkbBS7C7HE+NXGcad3ZssQ3gf1F0rq356OWQvEx3ZB8N6sRw3Cgl6OxfwzvxG4EEjzwDu2xiGfC575M7+qz6ox3wc=; yandexuid=196877061764616562; yashr=2270601791764616562; yuidss=196877061764616562; ymex=2079976564.yrts.1764616564; receive-cookie-deprecation=1; gdpr=0; _ym_uid=1764616564116282218; _ym_d=1764616565; _qw_uid=1766084220529711702; _qw_d=1766084220; park_id=3c19c431aa6a4c5f9f7154273aa51822; Session_id=3:1770214431.5.0.1764616812843:WbD9Jg:9933.1.2:1|2223153146.0.2.0:3.3:1764616812|2220343194.-1.0.0:15.2:1467462.3:1766084274|60:11686106.964043.gC5FrbxsPT1hiVgsB3g4V8NxA7U; sessar=1.1615350.CiBOaCoQ6hx6dMN0hvtztDLkRqbrv9EMLiEyk8BmmjLgRA.HdF01kroXWosrW45oVwtkJCvA4DOEGwR4FRqyjfXj-c; sessionid2=3:1770214431.5.0.1764616812843:WbD9Jg:9933.1.2:1|2223153146.0.2.0:3.3:1764616812|2220343194.-1.0.0:15.2:1467462.3:1766084274|60:11686106.964043.fakesign0000000000000000000; yp=2085574431.udn.cDpnaW9tYXJvcnRlZ2E%3D#2081444274.multib.1; L=clF8RF5FUWJZUWYCZ0IJWmZzBVJxVwBWMR0tBA0cIBgaJykW.1770214431.1680357.349774.da9d41917796d20b7b38f5d694aaeb8e; yandex_login=giomarortega; _ym_isad=2; _ym_visorc=b; _yasc=2z1VOOd4RvyFxLC+28/TSsHT2xBhcko/dwXhYyCGMtk0lJ7+vh8diwboZ6NV8G+evFyC; bh=EjgiTm90KEE6QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjE0NCIsICJCcmF2ZSI7dj0iMTQ0IhoDeDg2IgkxNDQuMC4wLjAqAj8wOgciTGludXgiSgI2NFJIIk5vdChBOkJyYW5kIjt2PSI4LjAuMC4wIiwiQ2hyb21pdW0iO3Y9IjE0NC4wLjAuMCIsIkJyYXZlIjt2PSIxNDQuMC4wLjAiYIOgsswGahncyumIDvKst6UL+/rw5w3r//32D573zYcI';
-const PARK_ID = '08e20910d81d42658d4334d3f6d10ac0';
+// Cookie y Park ID: se leen de env (YANGO_FLEET_COOKIE, YANGO_FLEET_PARK_ID) para los cobros en Yango Fleet.
+const COOKIE = (process.env.YANGO_FLEET_COOKIE || '').replace(/^["']|["']$/g, '').trim();
+const PARK_ID = (process.env.YANGO_FLEET_PARK_ID || '').replace(/^["']|["']$/g, '').trim() || '08e20910d81d42658d4334d3f6d10ac0';
 
 /**
  * Withdraw (cobro) — igual que tu proxy: body + headers, X-Idempotency-Token aleatorio (UUID, misma longitud).

@@ -1,9 +1,11 @@
 import crypto from 'crypto';
 import axios from 'axios';
 
-// Cookie y Park ID: se leen de env (YANGO_FLEET_COOKIE, YANGO_FLEET_PARK_ID) para los cobros en Yango Fleet.
-const COOKIE = (process.env.YANGO_FLEET_COOKIE || '').replace(/^["']|["']$/g, '').trim();
-const PARK_ID = (process.env.YANGO_FLEET_PARK_ID || '').replace(/^["']|["']$/g, '').trim() || '08e20910d81d42658d4334d3f6d10ac0';
+// Cookie y Park ID. Dos cookies: cobro automático (Jhajaira) y pagar/recarga (carmenvargas).
+const trimCookie = (v) => (v || '').replace(/^["']|["']$/g, '').trim();
+const COOKIE_PAGAR = trimCookie(process.env.YANGO_FLEET_COOKIE);           // pagar / recarga (add)
+const COOKIE_COBRO = trimCookie(process.env.YANGO_FLEET_COOKIE_COBRO) || COOKIE_PAGAR; // cobro automático (withdraw + balance en job)
+const PARK_ID = trimCookie(process.env.YANGO_FLEET_PARK_ID) || '08e20910d81d42658d4334d3f6d10ac0';
 
 /**
  * Withdraw (cobro) — igual que tu proxy: body + headers, X-Idempotency-Token aleatorio (UUID, misma longitud).
@@ -21,7 +23,7 @@ export async function withdrawFromContractor(id, amount, description, cookieOver
   };
   const headers = {
     'Accept-Language': 'es-ES,es',
-    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : COOKIE.trim(),
+    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : COOKIE_COBRO,
     'X-Park-Id': (parkIdOverride && String(parkIdOverride).trim()) ? String(parkIdOverride).trim() : PARK_ID,
     'X-Idempotency-Token': xIdempotencyToken,
     'Content-Type': 'text/plain'
@@ -53,7 +55,7 @@ export async function addToContractor(id, amount, description, cookieOverride, p
   };
   const headers = {
     'Accept-Language': 'es-ES,es',
-    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : COOKIE.trim(),
+    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : COOKIE_PAGAR,
     'X-Park-Id': (parkIdOverride && String(parkIdOverride).trim()) ? String(parkIdOverride).trim() : PARK_ID,
     'X-Idempotency-Token': xIdempotencyToken,
     'Content-Type': 'text/plain'
@@ -69,14 +71,14 @@ export async function addToContractor(id, amount, description, cookieOverride, p
   }
 }
 
-/** Consulta saldo del conductor. Cookie y X-Park-Id van en headers (Yango exige Cookie para la sesión). */
-export async function getContractorBalance(contractorProfileId, parkId = null) {
+/** Consulta saldo del conductor. Por defecto usa cookie de cobro (job). cookieOverride opcional. */
+export async function getContractorBalance(contractorProfileId, parkId = null, cookieOverride = null) {
   const id = String(contractorProfileId || '').trim();
   if (!id) return { success: false, error: 'external_driver_id vacío' };
   const url = `https://fleet.yango.com/api/fleet/contractor-profiles-manager/v1/contractor-balances/by-pro-id?contractor_profile_id=${encodeURIComponent(id)}`;
   const headers = {
     'Accept-Language': 'es-ES,es',
-    'Cookie': COOKIE.trim(),       // global: sesión Yango
+    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : COOKIE_COBRO,
     'X-Park-Id': (parkId && String(parkId).trim()) ? String(parkId).trim() : PARK_ID,
     'Content-Type': 'application/json'
   };

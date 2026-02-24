@@ -13,8 +13,8 @@ const COBROS_TXT_DIR = path.join(__dirname, '..', 'logs', 'cobros-automaticos');
 /** Park ID de Yego Pro: lunes y martes no se hace cobro automático (retiro) a préstamos que pertenecen a Yego Pro. La mora sí les afecta igual que al resto. */
 const PARK_ID_YEGO_PRO = '64085dd85e124e2c808806f70d527ea8';
 
-/** Solo se cobran y se les aplica mora a préstamos con fecha de desembolso posterior a esta fecha (los “mayores al 19 de enero”). Los desembolsados on/before esta fecha se excluyen. */
-const DISBURSEMENT_CUTOFF_DATE = '2025-01-19';
+/** Solo se cobran y se les aplica mora a préstamos con desembolso posterior al 19 de febrero (los “mayores al 19 de febrero”). Los desembolsados on/before 19-feb no se consideran (no cobro ni mora). */
+const DISBURSEMENT_CUTOFF_DATE = '2026-02-19';
 
 /**
  * Actualiza la mora diaria para todas las cuotas vencidas (due_date < hoy), estén en pending u overdue.
@@ -128,7 +128,7 @@ const getDueInstallmentsForAutoCharge = async (dayOfWeek, driverIdFilter = null)
       ? [statusFilter, PARK_ID_YEGO_PRO]
       : [statusFilter];
 
-  // Solo préstamos desembolsados después del 19 de enero (cobrar a los “mayores al 19 de enero”)
+  // Solo préstamos desembolsados después del 19 de febrero (cobrar a los “mayores al 19 de febrero”)
   // Formato fecha YYYY-MM-DD (igual que first_payment_date y resto del sistema)
   const disbursementCutoff = 'AND l.disbursed_at::date > $' + (params.length + 1) + '::date';
   const paramsWithCutoff = [...params, DISBURSEMENT_CUTOFF_DATE];
@@ -226,7 +226,7 @@ export const runDailyAutoCharge = async (forceDayOfWeek = null, driverIdFilter =
 
   if (dayOfWeek === 1 || dayOfWeek === 2) {
     logger.info('Restricción activa: préstamos que pertenecen a Yego Pro excluidos del cobro automático (lunes y martes)');
-    logger.info(`Restricción activa: solo se cobra a préstamos con desembolso después del ${DISBURSEMENT_CUTOFF_DATE}`);
+    logger.info(`Restricción activa: solo se cobra a préstamos con desembolso posterior al ${DISBURSEMENT_CUTOFF_DATE}`);
   }
   logger.info(`${installments.length} cuotas a procesar`);
 

@@ -1,6 +1,6 @@
 import { query } from '../config/database.js';
 import { logger } from '../utils/logger.js';
-import { getPaymentPunctuality } from './calculationsService.js';
+import { getPaymentPunctuality, calculateCycle } from './calculationsService.js';
 
 export const registerPayment = async (data, userId) => {
   const { loan_id, amount, payment_date, payment_method, observations, waive_late_fee_installment_ids } = data;
@@ -315,13 +315,18 @@ export const checkLoanCompleted = async (loanId) => {
     const driverId = loanRow.rows[0]?.driver_id;
     if (driverId) {
       const punctuality = await getPaymentPunctuality(driverId);
+      let newCycle;
       if (punctuality < 0.4) {
-        await query(
-          'UPDATE module_rapidin_drivers SET cycle = 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
-          [driverId]
-        );
+        newCycle = 1;
         logger.info(`Driver ${driverId} puntualidad ${(punctuality * 100).toFixed(1)}% < 40%: ciclo actualizado a 1`);
+      } else {
+        newCycle = await calculateCycle(driverId);
       }
+      await query(
+        'UPDATE module_rapidin_drivers SET cycle = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        [newCycle, driverId]
+      );
+      logger.info(`Driver ${driverId}: ciclo actualizado a ${newCycle} tras préstamo completado`);
     }
     return;
   }

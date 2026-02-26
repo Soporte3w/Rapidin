@@ -129,7 +129,7 @@ const LoanRequests = () => {
         text: 'Pendiente'
       },
       approved: {
-        color: 'bg-green-100 text-green-800',
+        color: 'bg-purple-100 text-purple-800',
         icon: CheckCircle,
         text: 'Aprobado'
       },
@@ -137,11 +137,6 @@ const LoanRequests = () => {
         color: 'bg-red-100 text-red-800',
         icon: XCircle,
         text: 'Rechazado'
-      },
-      signed: {
-        color: 'bg-purple-100 text-purple-800',
-        icon: CheckCircle,
-        text: 'Firmado'
       },
       disbursed: {
         color: 'bg-green-100 text-green-800',
@@ -257,7 +252,6 @@ const LoanRequests = () => {
               <option value="pending">Pendiente</option>
               <option value="approved">Aprobado</option>
               <option value="rejected">Rechazado</option>
-              <option value="signed">Firmado</option>
               <option value="disbursed">Desembolsado</option>
               <option value="cancelled">Cancelado</option>
             </select>

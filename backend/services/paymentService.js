@@ -263,6 +263,18 @@ export const updateLoanBalance = async (loanId) => {
      WHERE id = $2`,
     [pendingBalance, loanId]
   );
+
+  // Si el préstamo está activo y tiene al menos una cuota vencida, pasarlo a defaulted (vencido)
+  const overdueRes = await query(
+    `SELECT 1 FROM module_rapidin_installments WHERE loan_id = $1 AND status = 'overdue' LIMIT 1`,
+    [loanId]
+  );
+  if (overdueRes.rows.length > 0) {
+    await query(
+      `UPDATE module_rapidin_loans SET status = 'defaulted', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'active'`,
+      [loanId]
+    );
+  }
 };
 
 /**

@@ -68,11 +68,11 @@ const Loans = () => {
   };
 
   const runDriverSearch = () => {
-    setFilters((prev) => ({ ...prev, driver: driverSearchInput.trim() }));
+    setFilters((prev) => ({ ...prev, driver: driverSearchInput.trim(), loan_id: '' }));
   };
 
   const runLoanIdSearch = () => {
-    setFilters((prev) => ({ ...prev, loan_id: loanIdSearchInput.trim() }));
+    setFilters((prev) => ({ ...prev, loan_id: loanIdSearchInput.trim(), driver: '' }));
   };
 
   const fetchLoans = async (page = pagination.page, limit = pagination.limit, isPaginationChange = false) => {

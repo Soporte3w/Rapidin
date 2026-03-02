@@ -110,6 +110,10 @@ export const getLoanRequests = async (filters = {}) => {
     SELECT r.*,
            COALESCE(r.cycle, 1) AS cycle,
            l.disbursed_amount AS disbursed_amount,
+           l.disbursed_at AS disbursed_at,
+           (CASE WHEN l.disbursed_at IS NOT NULL AND r.country = 'PE' THEN (l.disbursed_at AT TIME ZONE 'America/Lima')::date::text
+                 WHEN l.disbursed_at IS NOT NULL AND r.country = 'CO' THEN (l.disbursed_at AT TIME ZONE 'America/Bogota')::date::text
+                 WHEN l.disbursed_at IS NOT NULL THEN (l.disbursed_at AT TIME ZONE 'UTC')::date::text END) AS disbursed_at_display,
            d.dni, d.first_name as driver_first_name, d.last_name as driver_last_name,
            d.cycle AS driver_cycle,
            u.first_name as created_by_first_name
@@ -142,6 +146,17 @@ export const getLoanRequests = async (filters = {}) => {
     sql += ` AND (d.first_name ILIKE $${paramCount} OR d.last_name ILIKE $${paramCount} OR d.dni ILIKE $${paramCount})`;
     params.push(driverTerm);
     paramCount += 1;
+  }
+
+  if (filters.date_from && filters.date_to) {
+    const tz = filters.date_tz || 'UTC';
+    sql += ` AND (
+      ((r.created_at AT TIME ZONE $${paramCount})::date >= $${paramCount + 1} AND (r.created_at AT TIME ZONE $${paramCount})::date <= $${paramCount + 2})
+      OR (r.approved_at IS NOT NULL AND (r.approved_at AT TIME ZONE $${paramCount})::date >= $${paramCount + 1} AND (r.approved_at AT TIME ZONE $${paramCount})::date <= $${paramCount + 2})
+      OR (l.disbursed_at IS NOT NULL AND (l.disbursed_at AT TIME ZONE $${paramCount})::date >= $${paramCount + 1} AND (l.disbursed_at AT TIME ZONE $${paramCount})::date <= $${paramCount + 2})
+    )`;
+    params.push(tz, filters.date_from, filters.date_to);
+    paramCount += 3;
   }
 
   sql += ` ORDER BY r.created_at DESC`;
@@ -433,6 +448,15 @@ export const getLoans = async (filters = {}) => {
     sql += ` AND l.id::text ILIKE $${paramCount}`;
     params.push(loanIdTerm);
     paramCount += 1;
+  }
+
+  if (filters.date_from) {
+    sql += ` AND l.created_at::date >= $${paramCount++}`;
+    params.push(filters.date_from);
+  }
+  if (filters.date_to) {
+    sql += ` AND l.created_at::date <= $${paramCount++}`;
+    params.push(filters.date_to);
   }
 
   sql += ` ORDER BY l.created_at DESC`;

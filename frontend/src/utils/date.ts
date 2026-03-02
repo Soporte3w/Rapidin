@@ -26,6 +26,28 @@ export function formatDateTimeUTC(isoString: string | null | undefined, locale =
   });
 }
 
+/** Formatea solo la fecha en la zona horaria local del usuario (ej. 28 feb UTC → 27 feb en Perú). */
+export function formatDateLocal(isoString: string | null | undefined, locale = 'es-ES'): string {
+  if (!isoString) return '—';
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(locale, { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+/** Formatea fecha y hora en la zona horaria local del usuario (ej. 9:49 en Perú en vez de 14:49 UTC). */
+export function formatDateTimeLocal(isoString: string | null | undefined, locale = 'es-ES'): string {
+  if (!isoString) return '—';
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(locale, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export function formatDateShortUTC(isoString: string | null | undefined, locale = 'es-ES'): string {
   if (!isoString) return '—';
   const d = new Date(isoString);

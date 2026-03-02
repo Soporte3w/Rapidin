@@ -5,7 +5,7 @@ import api from '../services/api';
 import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
 import { formatCurrency, getCurrencyLabel } from '../utils/currency';
-import { formatDateTimeUTC } from '../utils/date';
+import { formatDateTimeLocal } from '../utils/date';
 
 const DOC_LABELS: Record<string, string> = {
   id_document: 'Foto DNI del conductor (parte frontal)',
@@ -420,7 +420,7 @@ const LoanRequestDetail = () => {
         text: 'Pendiente'
       },
       approved: {
-        color: 'bg-green-100 text-green-800',
+        color: 'bg-purple-100 text-purple-800',
         icon: CheckCircle,
         text: 'Aprobado'
       },
@@ -560,10 +560,13 @@ const LoanRequestDetail = () => {
             <DataRow label="Monto solicitado" value={formatCurrency(parseFloat(request.requested_amount || 0), request.country || 'PE')} highlight />
             <DataRow label="País" value={request.country || '—'} />
             <DataRow label="Estado" value="" custom={<div className="mt-0.5">{getStatusBadge(request.status)}</div>} />
-            <DataRow
-              label="Fecha"
-              value={formatDateTimeUTC(request.created_at)}
-            />
+            {(() => {
+              const purpose = parseRequestObservations(request).purpose;
+              return purpose ? <DataRow label="Propósito" value={purpose} /> : null;
+            })()}
+            <DataRow label="Fecha de creación" value={request.created_at ? formatDateTimeLocal(request.created_at, 'es-PE') : '—'} />
+            {request.approved_at && <DataRow label="Fecha de aprobación" value={formatDateTimeLocal(request.approved_at, 'es-PE')} />}
+            {request.disbursed_at && <DataRow label="Fecha de desembolso" value={formatDateTimeLocal(request.disbursed_at, 'es-PE')} />}
           </dl>
         </div>
 

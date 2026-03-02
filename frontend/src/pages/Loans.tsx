@@ -4,6 +4,7 @@ import api from '../services/api';
 import { Eye, FileText, DollarSign, AlertCircle, CheckCircle, XCircle, Copy, Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
+import { DateRangePicker } from '../components/DateRangePicker';
 
 interface Loan {
   id: string;
@@ -43,6 +44,8 @@ const Loans = () => {
     country: '',
     driver: isReturnFromDetail ? (searchState?.driver ?? '') : '',
     loan_id: isReturnFromDetail ? (searchState?.loan_id ?? '') : '',
+    date_from: '',
+    date_to: '',
   });
   const [driverSearchInput, setDriverSearchInput] = useState(initialDriver);
   const [loanIdSearchInput, setLoanIdSearchInput] = useState(initialLoanId);
@@ -90,6 +93,8 @@ const Loans = () => {
       if (filters.country) params.append('country', filters.country);
       if (filters.driver?.trim()) params.append('driver', filters.driver.trim());
       if (filters.loan_id?.trim()) params.append('loan_id', filters.loan_id.trim());
+      if (filters.date_from) params.append('date_from', filters.date_from);
+      if (filters.date_to) params.append('date_to', filters.date_to);
 
       const response = await api.get(`/loans?${params.toString()}`);
       let loansData: Loan[] = [];
@@ -299,6 +304,14 @@ const Loans = () => {
               <option value="PE">Perú</option>
               <option value="CO">Colombia</option>
             </select>
+          </div>
+          <div className="flex-1 min-w-[200px]">
+            <DateRangePicker
+              label="Fecha"
+              value={{ date_from: filters.date_from, date_to: filters.date_to }}
+              onChange={(r) => setFilters((f) => ({ ...f, date_from: r.date_from, date_to: r.date_to }))}
+              placeholder="Filtrar por fecha"
+            />
           </div>
         </div>
       </div>

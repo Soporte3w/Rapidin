@@ -4,7 +4,8 @@ import api from '../services/api';
 import { Eye, FileText, Calendar, AlertCircle, CheckCircle, Clock, XCircle, Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { formatCurrency } from '../utils/currency';
-import { formatDateUTC } from '../utils/date';
+import { formatDateLocal } from '../utils/date';
+import { DateRangePicker } from '../components/DateRangePicker';
 
 interface LoanRequest {
   id: string;
@@ -20,6 +21,8 @@ interface LoanRequest {
   created_at: string;
   approved_at?: string | null;
   disbursed_at?: string | null;
+  /** Fecha de desembolso en hora del país (ej. "2026-02-27") para mostrar en tabla */
+  disbursed_at_display?: string | null;
 }
 
 export type LoanRequestsSearchState = {
@@ -45,6 +48,8 @@ const LoanRequests = () => {
     status: isReturnFromDetail ? (searchState?.status ?? '') : '',
     country: isReturnFromDetail ? (searchState?.country ?? '') : '',
     driver: isReturnFromDetail ? (searchState?.driver ?? '') : '',
+    date_from: '',
+    date_to: '',
   });
   const [driverSearchInput, setDriverSearchInput] = useState(initialDriverInput);
   const [pagination, setPagination] = useState({ page: 1, limit: 5, total: 0, totalPages: 0 });
@@ -59,7 +64,7 @@ const LoanRequests = () => {
   }, [isReturnFromDetail, location.pathname]);
 
   useEffect(() => {
-    const key = `1-${filters.status}-${filters.country}-${(filters.driver ?? '').trim()}`;
+    const key = `1-${filters.status}-${filters.country}-${(filters.driver ?? '').trim()}-${filters.date_from}-${filters.date_to}`;
     if (lastFetchedKeyRef.current === key) return;
     lastFetchedKeyRef.current = key;
     setPagination((p) => ({ ...p, page: 1 }));
@@ -89,6 +94,8 @@ const LoanRequests = () => {
       if (filters.status) params.append('status', filters.status);
       if (filters.country) params.append('country', filters.country);
       if (filters.driver?.trim()) params.append('driver', filters.driver.trim());
+      if (filters.date_from) params.append('date_from', filters.date_from);
+      if (filters.date_to) params.append('date_to', filters.date_to);
 
       const response = await api.get(`/loan-requests?${params.toString()}`);
       let requestsData: LoanRequest[] = [];
@@ -272,6 +279,15 @@ const LoanRequests = () => {
               <option value="CO">Colombia</option>
             </select>
           </div>
+
+          <div className="flex-1 min-w-[200px]">
+            <DateRangePicker
+              label="Fecha"
+              value={{ date_from: filters.date_from, date_to: filters.date_to }}
+              onChange={(r) => setFilters((f) => ({ ...f, date_from: r.date_from, date_to: r.date_to }))}
+              placeholder="Filtrar por fecha"
+            />
+          </div>
         </div>
       </div>
 
@@ -366,12 +382,15 @@ const LoanRequests = () => {
                         <Calendar className="w-4 h-4 text-gray-400" />
                         <span>
                           {(() => {
-                            const date = request.status === 'disbursed' && request.disbursed_at
-                              ? request.disbursed_at
-                              : (request.status === 'approved' || request.status === 'signed') && request.approved_at
-                                ? request.approved_at
-                                : request.created_at;
-                            return date ? formatDateUTC(date, 'es-PE') : 'N/A';
+                            if (request.status === 'disbursed' && (request.disbursed_at_display || request.disbursed_at)) {
+                              return request.disbursed_at_display
+                                ? formatDateLocal(request.disbursed_at_display + 'T12:00:00', 'es-PE')
+                                : formatDateLocal(request.disbursed_at!, 'es-PE');
+                            }
+                            const date = (request.status === 'approved' || request.status === 'signed') && request.approved_at
+                              ? request.approved_at
+                              : request.created_at;
+                            return date ? formatDateLocal(date, 'es-PE') : 'N/A';
                           })()}
                         </span>
                       </div>

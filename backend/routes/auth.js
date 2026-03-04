@@ -50,7 +50,7 @@ router.post('/verify-otp', async (req, res) => {
         // NO limpiar el teléfono - debe llegar con el + desde el frontend
         const result = await verifyOTP(phone, code, country);
         return successResponse(res, result, 'Verificación exitosa');
-    } catch (error) {
+    } catch (error) { 
         logger.error('Error verificando OTP:', error);
         return errorResponse(res, error.message || 'Código inválido', 401);
     }

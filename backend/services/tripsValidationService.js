@@ -92,12 +92,8 @@ export async function checkMinimumTripsForLoanOffer(conductorId) {
   const monthNames = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
   if (!allowed) {
-    const msg =
-      countPrev < MIN_TRIPS_PER_MONTH && countPast < MIN_TRIPS_PER_MONTH
-        ? `Para solicitar un préstamo necesitas al menos ${MIN_TRIPS_PER_MONTH} viajes completados en cada uno de los dos meses anteriores. En ${monthNames[pastMonth]} ${pastYear} tienes ${countPast} y en ${monthNames[prevMonth]} ${prevYear} tienes ${countPrev}.`
-        : countPrev < MIN_TRIPS_PER_MONTH
-          ? `Necesitas al menos ${MIN_TRIPS_PER_MONTH} viajes completados en ${monthNames[prevMonth]} ${prevYear}. Tienes ${countPrev}.`
-          : `Necesitas al menos ${MIN_TRIPS_PER_MONTH} viajes completados en ${monthNames[pastMonth]} ${pastYear}. Tienes ${countPast}.`;
+    // Siempre mostrar los dos meses que se validan (anteriores al actual) y sus conteos, para que el conductor vea ambos.
+    const msg = `Para solicitar un préstamo necesitas al menos ${MIN_TRIPS_PER_MONTH} viajes completados en cada uno de los dos meses anteriores al actual. En ${monthNames[pastMonth]} ${pastYear} tienes ${countPast} y en ${monthNames[prevMonth]} ${prevYear} tienes ${countPrev}.`;
     return {
       allowed: false,
       message: msg,

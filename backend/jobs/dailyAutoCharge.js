@@ -439,9 +439,9 @@ const isDentroDeVentana = () => {
 
 /**
  * Cobro automático (a partir del 23):
- * - Lunes 7:00am (Lima): cuotas pending que vencen ese día
+ * - Lunes 7:00am (Lima): cuotas pending que vencen ese día + overdue
  * - Lunes 7:20am (Lima): reintento solo de los que quedaron en log del día con estado failed/partial
- * - Martes 7:00am y 12:00 (Lima): cuotas overdue (vencidas)
+ * - Martes 7:00 y 19:00 (Lima): solo cuotas vencidas (overdue)
  * - Mora: diario 00:05. Antes del 23 no se ejecuta nada.
  */
 export const startDailyAutoChargeJob = () => {
@@ -465,19 +465,19 @@ export const startDailyAutoChargeJob = () => {
     timezone: 'America/Lima'
   });
 
-  // Martes 7:00am - cobrar cuotas vencidas
+  // Martes 7:00am - cobrar solo cuotas vencidas (overdue)
   cron.schedule('0 7 * * 2', async () => {
     if (!isDentroDeVentana()) return;
-    logger.info(`Iniciando job de cobro automático - Martes 7:00am (cuotas vencidas/overdue)${driverFilter ? ' [solo driver: ' + driverFilter + ']' : ''}`);
+    logger.info(`Iniciando job de cobro automático - Martes 7:00 (solo vencidas/overdue)${driverFilter ? ' [solo driver: ' + driverFilter + ']' : ''}`);
     await runDailyAutoCharge(2, driverFilter);
   }, {
     timezone: 'America/Lima'
   });
 
-  // Martes 12:00 - segundo intento de cobro de cuotas vencidas
-  cron.schedule('0 12 * * 2', async () => {
+  // Martes 7:00pm - segundo intento de cobro de cuotas vencidas
+  cron.schedule('0 19 * * 2', async () => {
     if (!isDentroDeVentana()) return;
-    logger.info(`Iniciando job de cobro automático - Martes 12:00 (cuotas vencidas/overdue)${driverFilter ? ' [solo driver: ' + driverFilter + ']' : ''}`);
+    logger.info(`Iniciando job de cobro automático - Martes 19:00 (solo vencidas/overdue)${driverFilter ? ' [solo driver: ' + driverFilter + ']' : ''}`);
     await runDailyAutoCharge(2, driverFilter);
   }, {
     timezone: 'America/Lima'
@@ -492,5 +492,5 @@ export const startDailyAutoChargeJob = () => {
     timezone: 'America/Lima'
   });
 
-  logger.info(`Job de cobro automático: activo a partir del 23. Lunes 7:00 (pending), Lunes 7:20 (reintento log del día), Martes 7am y 12:00 (overdue); Mora: diario 00:05 (Lima)${driverFilter ? '; solo driver: ' + driverFilter : ''}`);
+  logger.info(`Job de cobro automático: activo a partir del 23. Lunes 7:00 (pending), Lunes 7:20 (reintento log del día), Martes 7:00 y 19:00 (solo vencidas); Mora: diario 00:05 (Lima)${driverFilter ? '; solo driver: ' + driverFilter : ''}`);
 };

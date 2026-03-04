@@ -32,6 +32,7 @@ router.post('/send-otp', async (req, res) => {
 
         await sendOTP(phone, country);
         return successResponse(res, { message: 'Código enviado exitosamente' }, 'Código enviado');
+
     } catch (error) {
         logger.error('Error enviando OTP:', error);
         return errorResponse(res, error.message || 'Error al enviar código', 500);

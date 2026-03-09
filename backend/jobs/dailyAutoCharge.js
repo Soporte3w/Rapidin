@@ -18,10 +18,10 @@ const DISBURSEMENT_CUTOFF_DATE = '2026-02-19';
 
 /**
  * Actualiza la mora diaria para todas las cuotas vencidas (due_date < hoy), estén en pending u overdue.
- * Afecta a todos por igual, incluidos préstamos Yego Pro (la restricción de no cobro automático lunes/martes solo aplica al retiro de dinero, no a la mora).
+ * Solo préstamos con desembolso >= 19-Feb (DISBURSEMENT_CUTOFF_DATE).
  */
 export const updateDailyLateFees = async () => {
-  logger.info('Actualizando mora diaria para cuotas vencidas (solo desembolso > ' + DISBURSEMENT_CUTOFF_DATE + ')...');
+  logger.info('Actualizando mora diaria para cuotas vencidas (desembolso >= ' + DISBURSEMENT_CUTOFF_DATE + ')...');
 
   try {
     const overdueResult = await query(`
@@ -29,9 +29,9 @@ export const updateDailyLateFees = async () => {
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE l.status IN ('active', 'defaulted')
-       AND l.disbursed_at::date > $1::date
+       AND l.disbursed_at::date >= $1::date
        AND i.status IN ('pending', 'overdue')
-       AND i.due_date < CURRENT_DATE
+       AND i.due_date::date <= CURRENT_DATE
        AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0`, [DISBURSEMENT_CUTOFF_DATE]);
 
     let updated = 0;
@@ -70,9 +70,9 @@ export const updateLateFeesForDriver = async (driverId) => {
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE l.driver_id = $1 AND l.status IN ('active', 'defaulted')
-       AND l.disbursed_at::date > $2::date
+       AND l.disbursed_at::date >= $2::date
        AND i.status IN ('pending', 'overdue')
-       AND i.due_date < CURRENT_DATE
+       AND i.due_date::date <= CURRENT_DATE
        AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0`,
     [driverId, DISBURSEMENT_CUTOFF_DATE]
   );
@@ -367,7 +367,7 @@ const processInstallmentsList = async (installments) => {
 
 /**
  * Reintento a las 7:20 (Lunes): cobra solo los que figuran en el log de hoy con estado failed o partial.
- * Así a las 7:20 se vuelve a intentar a los que no se pudo cobrar a las 7:00.
+ * Tras el reintento, marca como vencido (overdue) todo lo que no se cobró o se cobró parcialmente.
  */
 export const runRetryAutoChargeFromLog = async (driverIdFilter = null) => {
   logger.info(`Reintento de cobro automático (log del día: failed/partial)${driverIdFilter ? ' [solo driver: ' + driverIdFilter + ']' : ''}`);
@@ -381,6 +381,30 @@ export const runRetryAutoChargeFromLog = async (driverIdFilter = null) => {
 
   logger.info(`${installments.length} cuota(s) a reintentar (log del día con estado failed/partial)`);
   const result = await processInstallmentsList(installments);
+
+  // Tras el reintento: marcar como vencido (overdue) todo lo que siga con saldo pendiente (no cobrado o cobro parcial)
+  const loanIdsToUpdate = new Set();
+  for (const inst of installments) {
+    const row = await query(
+      `SELECT installment_amount, paid_amount, late_fee, status
+       FROM module_rapidin_installments WHERE id = $1`,
+      [inst.installment_id]
+    );
+    if (row.rows.length === 0) continue;
+    const r = row.rows[0];
+    const pending = (parseFloat(r.installment_amount) - parseFloat(r.paid_amount || 0)) + parseFloat(r.late_fee || 0);
+    if (pending > 0) {
+      await markInstallmentOverdueAndLateFee(inst.installment_id);
+      loanIdsToUpdate.add(inst.loan_id);
+    }
+  }
+  for (const loanId of loanIdsToUpdate) {
+    await updateLoanBalance(loanId);
+  }
+  if (loanIdsToUpdate.size > 0) {
+    logger.info(`Marcadas como vencidas ${loanIdsToUpdate.size} préstamo(s) con cuotas no cobradas o cobro parcial tras el reintento`);
+  }
+
   writeCobrosTxt(result.cobrosTxtLines);
   return result;
 };

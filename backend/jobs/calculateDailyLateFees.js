@@ -4,15 +4,16 @@ import { logger } from '../utils/logger.js';
 import { updateLoanBalance } from '../services/paymentService.js';
 
 async function runLateFeesUpdate() {
-  // Cuotas no pagadas y vencidas (pending u overdue): recalculamos mora cada día para que incremente
+  // Cuotas no pagadas y vencidas (pending u overdue): recalculamos mora cada día para que incremente.
+  // Incluye active y defaulted para que todos los préstamos con cuotas vencidas se actualicen.
   const installments = await query(
     `SELECT i.id, i.loan_id, i.due_date, i.installment_amount, i.paid_amount, i.status
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE i.status IN ('pending', 'overdue')
-       AND i.due_date < CURRENT_DATE
+       AND i.due_date::date <= CURRENT_DATE
        AND (i.paid_amount IS NULL OR i.paid_amount < i.installment_amount)
-       AND l.status = 'active'`
+       AND l.status IN ('active', 'defaulted')`
   );
 
   for (const installment of installments.rows) {

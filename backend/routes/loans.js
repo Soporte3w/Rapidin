@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../database/connection.js';
 import { getLoans, getLoanById, getInstallmentSchedule } from '../services/loanService.js';
+import { sendWhatsAppMessage } from '../services/authService.js';
 import { verifyToken } from '../middleware/auth.js';
 import { filterByCountry } from '../middleware/permissions.js';
 import { validateUUID } from '../middleware/validations.js';
@@ -77,6 +78,44 @@ router.get('/:id/schedule', validateUUID, async (req, res) => {
   } catch (error) {
     logger.error('Error obteniendo cronograma:', error);
     return errorResponse(res, 'Error obteniendo cronograma', 500);
+  }
+});
+
+router.post('/:id/send-whatsapp', validateUUID, async (req, res) => {
+  try {
+    const loan = await getLoanById(req.params.id);
+    if (!loan) {
+      return errorResponse(res, 'Préstamo no encontrado', 404);
+    }
+    if (req.allowedCountries && !req.allowedCountries.includes(loan.country)) {
+      return errorResponse(res, 'No tienes permisos para este préstamo', 403);
+    }
+    const rawPhone = loan.whatsapp_phone ?? loan.phone;
+    if (!rawPhone || !String(rawPhone).trim()) {
+      return errorResponse(res, 'El préstamo no tiene número de WhatsApp asociado', 400);
+    }
+    const digits = String(rawPhone).replace(/\D/g, '');
+    const country = loan.country || 'PE';
+    let phone = digits;
+    if (digits.length >= 10 && (digits.startsWith('51') || digits.startsWith('57'))) {
+      phone = digits;
+    } else if (country === 'PE' && digits.length === 9) {
+      phone = '51' + digits;
+    } else if (country === 'CO' && digits.length === 10) {
+      phone = '57' + digits;
+    }
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    if (!message) {
+      return errorResponse(res, 'El mensaje no puede estar vacío', 400);
+    }
+    const result = await sendWhatsAppMessage(phone, message);
+    if (!result.success) {
+      return errorResponse(res, result.error || 'Error al enviar WhatsApp', 400);
+    }
+    return successResponse(res, { sent: true }, 'Mensaje enviado por WhatsApp');
+  } catch (error) {
+    logger.error('Error enviando WhatsApp:', error);
+    return errorResponse(res, error.message || 'Error al enviar', 500);
   }
 });
 

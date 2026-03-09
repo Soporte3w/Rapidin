@@ -73,6 +73,47 @@ function normalizePhone(phone) {
     return digits ? `+${digits}` : phone.trim();
 }
 
+/**
+ * Envía un mensaje de texto por WhatsApp usando la API 3W (misma instancia que el OTP).
+ * @param {string} phone - Número con o sin + (se normaliza a +digits)
+ * @param {string} message - Texto a enviar
+ * @returns {Promise<{ success: boolean, error?: string }>}
+ */
+export const sendWhatsAppMessage = async (phone, message) => {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone || normalizedPhone === '+') {
+        return { success: false, error: 'Número de teléfono inválido' };
+    }
+    const phoneWithPlus = normalizedPhone.startsWith('+') ? normalizedPhone : `+${normalizedPhone}`;
+    const whatsappInstanceId = process.env.WHATSAPP_OTP_TOKEN || process.env.WHATSAPP_INSTANCE_ID;
+    if (!whatsappInstanceId) {
+        return { success: false, error: 'WHATSAPP_OTP_TOKEN no configurado' };
+    }
+    try {
+        const response = await fetch(`https://api-wsp.3w.pe/instances/${whatsappInstanceId}/messages/text`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${whatsappInstanceId}`,
+            },
+            body: JSON.stringify({
+                phone: phoneWithPlus,
+                message: message || ''
+            })
+        });
+        if (!response.ok) {
+            const text = await response.text();
+            logger.error(`API WhatsApp 3W error: ${response.status} ${text}`);
+            return { success: false, error: `Error al enviar: ${response.status}` };
+        }
+        logger.info(`WhatsApp enviado a ${phoneWithPlus}`);
+        return { success: true };
+    } catch (error) {
+        logger.error('Error enviando WhatsApp:', error);
+        return { success: false, error: error.message || 'Error al enviar' };
+    }
+};
+
 export const sendOTP = async (phone, country) => {
     const normalizedPhone = normalizePhone(phone);
     // LOG para debug - ver exactamente qué llega
@@ -118,7 +159,6 @@ export const sendOTP = async (phone, country) => {
         country,
         driverData: driver
     });
-
     // Enviar WhatsApp con el código usando el API de 3W
     const message = `Hola ${driver.first_name}! 👋\n\nTu código de verificación para Yego Rapidín es: *${code}*\n\nVálido por 1 minuto.\nNo compartas este código con nadie.`;
 

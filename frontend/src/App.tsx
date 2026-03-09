@@ -1,20 +1,20 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
-import Home from './pages/Home';
-import LandingPage from './pages/LandingPage';
-import LoanRequestPE from './pages/LoanRequestPE';
-import LoanRequestCO from './pages/LoanRequestCO';
-import GuarantorSignaturePublic from './pages/GuarantorSignaturePublic';
-import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import LoanRequests from './pages/LoanRequests';
-import LoanRequestDetail from './pages/LoanRequestDetail';
-import Loans from './pages/Loans';
-import LoanDetail from './pages/LoanDetail';
-import Payments from './pages/Payments';
-import Analysis from './pages/Analysis';
-import Settings from './pages/Settings';
-import Provisions from './pages/Provisions';
+import Home from './pages/public/Home';
+import LandingPage from './pages/public/LandingPage';
+import LoanRequestPE from './pages/public/LoanRequestPE';
+import LoanRequestCO from './pages/public/LoanRequestCO';
+import GuarantorSignaturePublic from './pages/public/GuarantorSignaturePublic';
+import Login from './pages/public/Login';
+import Dashboard from './pages/yegoRapidin/Dashboard';
+import LoanRequests from './pages/yegoRapidin/LoanRequests';
+import LoanRequestDetail from './pages/yegoRapidin/LoanRequestDetail';
+import Loans from './pages/yegoRapidin/Loans';
+import LoanDetail from './pages/yegoRapidin/LoanDetail';
+import Payments from './pages/yegoRapidin/Payments';
+import Analysis from './pages/yegoRapidin/Analysis';
+import Settings from './pages/yegoRapidin/Settings';
+import Provisions from './pages/yegoRapidin/Provisions';
 import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import DriverLayout from './components/DriverLayout';
@@ -27,7 +27,21 @@ import LoanBenefits from './pages/driver/LoanBenefits';
 import LoanOfferVerification from './pages/driver/LoanOfferVerification';
 import LoanRequestFlow from './pages/driver/LoanRequestFlow';
 import SelectFlota from './pages/driver/SelectFlota';
-import AdminNewLoanRequest from './pages/admin/AdminNewLoanRequest';
+import NewLoanRequest from './pages/yegoRapidin/NewLoanRequest';
+import YegoMiAutoDashboard from './pages/yegoMiAuto/YegoMiAutoDashboard';
+import YegoMiAutoFlotas from './pages/yegoMiAuto/YegoMiAutoFlotas';
+import YegoMiAutoConfig from './pages/yegoMiAuto/YegoMiAutoConfig';
+import YegoMiAutoAnalysis from './pages/yegoMiAuto/YegoMiAutoAnalysis';
+import YegoMiAutoPayments from './pages/yegoMiAuto/YegoMiAutoPayments';
+import YegoMiAutoLoans from './pages/yegoMiAuto/YegoMiAutoLoans';
+import YegoMiAutoNewRequest from './pages/yegoMiAuto/YegoMiAutoNewRequest';
+import YegoMiMotoDashboard from './pages/yegoMiMoto/YegoMiMotoDashboard';
+import YegoMiMotoFlotas from './pages/yegoMiMoto/YegoMiMotoFlotas';
+import YegoMiMotoConfig from './pages/yegoMiMoto/YegoMiMotoConfig';
+import YegoMiMotoAnalysis from './pages/yegoMiMoto/YegoMiMotoAnalysis';
+import YegoMiMotoPayments from './pages/yegoMiMoto/YegoMiMotoPayments';
+import YegoMiMotoLoans from './pages/yegoMiMoto/YegoMiMotoLoans';
+import YegoMiMotoNewRequest from './pages/yegoMiMoto/YegoMiMotoNewRequest';
 import { AuthProvider } from './contexts/AuthContext';
 
 function App() {
@@ -103,7 +117,8 @@ function App() {
               <Route path="profile" element={<DriverProfile />} />
             </Route>
             
-            {/* Admin routes */}
+            {/* Admin routes: redirect /admin a dashboard */}
+            <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />
             <Route
               path="/admin/dashboard"
               element={
@@ -129,7 +144,7 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Layout>
-                    <AdminNewLoanRequest />
+                    <NewLoanRequest />
                   </Layout>
                 </ProtectedRoute>
               }
@@ -204,6 +219,24 @@ function App() {
                 </ProtectedRoute>
               }
             />
+            {/* Yego mi auto (mismo Layout, menú distinto según ruta) */}
+            <Route path="/admin/yego-mi-auto" element={<Navigate to="/admin/yego-mi-auto/dashboard" replace />} />
+            <Route path="/admin/yego-mi-auto/dashboard" element={<ProtectedRoute><Layout><YegoMiAutoDashboard /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/flotas" element={<ProtectedRoute><Layout><YegoMiAutoFlotas /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/config" element={<ProtectedRoute><Layout><YegoMiAutoConfig /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/analysis" element={<ProtectedRoute><Layout><YegoMiAutoAnalysis /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/payments" element={<ProtectedRoute><Layout><YegoMiAutoPayments /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/loans" element={<ProtectedRoute><Layout><YegoMiAutoLoans /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/loan-requests/new" element={<ProtectedRoute><Layout><YegoMiAutoNewRequest /></Layout></ProtectedRoute>} />
+            {/* Yego mi moto */}
+            <Route path="/admin/yego-mi-moto" element={<Navigate to="/admin/yego-mi-moto/dashboard" replace />} />
+            <Route path="/admin/yego-mi-moto/dashboard" element={<ProtectedRoute><Layout><YegoMiMotoDashboard /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/flotas" element={<ProtectedRoute><Layout><YegoMiMotoFlotas /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/config" element={<ProtectedRoute><Layout><YegoMiMotoConfig /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/analysis" element={<ProtectedRoute><Layout><YegoMiMotoAnalysis /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/payments" element={<ProtectedRoute><Layout><YegoMiMotoPayments /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/loans" element={<ProtectedRoute><Layout><YegoMiMotoLoans /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/loan-requests/new" element={<ProtectedRoute><Layout><YegoMiMotoNewRequest /></Layout></ProtectedRoute>} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

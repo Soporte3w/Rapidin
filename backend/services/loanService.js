@@ -484,6 +484,7 @@ export const getLoanById = async (id) => {
     `SELECT l.*, 
             d.dni, d.first_name as driver_first_name, d.last_name as driver_last_name, d.phone, d.email,
             d.external_driver_id,
+            yd.phone AS whatsapp_phone,
             COALESCE((SELECT SUM(COALESCE(i.late_fee, 0)) FROM module_rapidin_installments i WHERE i.loan_id = l.id), 0)::numeric AS total_late_fee,
             (SELECT i.installment_number
              FROM module_rapidin_installments i
@@ -507,6 +508,7 @@ export const getLoanById = async (id) => {
              LIMIT 1) AS next_installment_id
      FROM module_rapidin_loans l
      LEFT JOIN module_rapidin_drivers d ON d.id = l.driver_id
+     LEFT JOIN drivers yd ON yd.driver_id::text = d.external_driver_id
      WHERE l.id = $1`,
     [id]
   );

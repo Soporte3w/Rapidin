@@ -118,16 +118,34 @@ export const createOrUpdateDriver = async (data) => {
   return result.rows[0];
 };
 
+/**
+ * Calcula el siguiente ciclo del conductor según préstamos cancelados (pagados).
+ * El ciclo no puede superar el máximo configurado en module_rapidin_cycle_config para su país,
+ * para que el monto máximo y la oferta sigan actualizándose según la configuración de ciclos.
+ */
 export const calculateCycle = async (driverId) => {
-  const result = await query(
+  const driverRow = await query(
+    'SELECT country FROM module_rapidin_drivers WHERE id = $1',
+    [driverId]
+  );
+  const country = driverRow.rows[0]?.country || 'PE';
+
+  const paidResult = await query(
     `SELECT COUNT(*) as total_paid_loans 
      FROM module_rapidin_loans 
      WHERE driver_id = $1 AND status = 'cancelled'`,
     [driverId]
   );
+  const paidLoans = parseInt(paidResult.rows[0].total_paid_loans) || 0;
+  const nextCycle = paidLoans + 1;
 
-  const paidLoans = parseInt(result.rows[0].total_paid_loans) || 0;
-  return Math.min(paidLoans + 1, 5);
+  const maxCycleResult = await query(
+    'SELECT COALESCE(MAX(cycle), 5) AS max_cycle FROM module_rapidin_cycle_config WHERE country = $1 AND active = true',
+    [country]
+  );
+  const maxCycle = Math.max(1, parseInt(maxCycleResult.rows[0]?.max_cycle, 10) || 5);
+
+  return Math.min(nextCycle, maxCycle);
 };
 
 /**
@@ -244,7 +262,7 @@ export const simulateLoanOptions = async (amount, country, cycle, conditions, op
   const i = (interestRate / 100);
   const minW = conditions?.min_weeks != null ? parseInt(conditions.min_weeks, 10) : 4;
   const maxW = conditions?.max_weeks != null ? parseInt(conditions.max_weeks, 10) : 24;
-  const defaultWeeks = cycle < 7 ? 5 : 3;
+  const defaultWeeks = minW; // según configuración de condiciones (min_weeks)
   let weeks = optionalWeeks != null ? parseInt(optionalWeeks, 10) : defaultWeeks;
   if (isNaN(weeks) || weeks < minW || weeks > maxW) {
     weeks = Math.max(minW, Math.min(maxW, defaultWeeks));

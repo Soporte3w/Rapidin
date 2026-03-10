@@ -25,7 +25,8 @@ export const updateDailyLateFees = async () => {
 
   try {
     const overdueResult = await query(`
-     SELECT i.id, i.loan_id, i.due_date, i.installment_amount, i.paid_amount, i.late_fee
+     SELECT i.id, i.loan_id, i.due_date, i.installment_amount, i.paid_amount, i.late_fee,
+            COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE l.status IN ('active', 'defaulted')
@@ -37,7 +38,9 @@ export const updateDailyLateFees = async () => {
     let updated = 0;
     for (const inst of overdueResult.rows) {
       const feeResult = await query('SELECT calculate_late_fee($1, CURRENT_DATE) as late_fee', [inst.id]);
-      const newLateFee = feeResult.rows[0]?.late_fee || 0;
+      const totalMora = parseFloat(feeResult.rows[0]?.late_fee || 0) || 0;
+      const paidLateFee = parseFloat(inst.paid_late_fee || 0) || 0;
+      const newLateFee = Math.max(0, totalMora - paidLateFee);
 
       await query(`
         UPDATE module_rapidin_installments
@@ -66,7 +69,7 @@ export const updateDailyLateFees = async () => {
  */
 export const updateLateFeesForDriver = async (driverId) => {
   const overdueResult = await query(`
-     SELECT i.id, i.loan_id
+     SELECT i.id, i.loan_id, COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE l.driver_id = $1 AND l.status IN ('active', 'defaulted')
@@ -79,7 +82,9 @@ export const updateLateFeesForDriver = async (driverId) => {
   if (overdueResult.rows.length === 0) return 0;
   for (const inst of overdueResult.rows) {
     const feeResult = await query('SELECT calculate_late_fee($1, CURRENT_DATE) as late_fee', [inst.id]);
-    const newLateFee = feeResult.rows[0]?.late_fee || 0;
+    const totalMora = parseFloat(feeResult.rows[0]?.late_fee || 0) || 0;
+    const paidLateFee = parseFloat(inst.paid_late_fee || 0) || 0;
+    const newLateFee = Math.max(0, totalMora - paidLateFee);
     await query(`
       UPDATE module_rapidin_installments
       SET late_fee = $1,
@@ -207,8 +212,14 @@ const getInstallmentsToRetryFromLog = async (driverIdFilter = null) => {
 };
 
 const markInstallmentOverdueAndLateFee = async (installmentId) => {
+  const row = await query(
+    'SELECT COALESCE(paid_late_fee, 0)::numeric AS paid_late_fee FROM module_rapidin_installments WHERE id = $1',
+    [installmentId]
+  );
+  const paidLateFee = parseFloat(row.rows[0]?.paid_late_fee || 0) || 0;
   const feeResult = await query('SELECT calculate_late_fee($1, CURRENT_DATE) as late_fee', [installmentId]);
-  const lateFee = feeResult.rows[0]?.late_fee || 0;
+  const totalMora = parseFloat(feeResult.rows[0]?.late_fee || 0) || 0;
+  const lateFee = Math.max(0, totalMora - paidLateFee);
 
   await query(`
      UPDATE module_rapidin_installments

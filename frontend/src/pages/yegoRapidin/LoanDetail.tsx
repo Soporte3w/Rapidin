@@ -97,12 +97,32 @@ const LoanDetail = () => {
 
   const overdueInstallments = useMemo(() => schedule.filter((i) => i.status === 'overdue'), [schedule]);
 
+  // Total mora pendiente = suma de late_fee de cada cuota (no sumar paid_late_fee para no duplicar)
+  const totalMoraPendiente = useMemo(() => {
+    return schedule.reduce((sum, i) => sum + Math.max(0, parseFloat(i.late_fee ?? 0)), 0);
+  }, [schedule]);
+
   const openWhatsAppModal = () => {
     const name = [loan?.driver_first_name, loan?.driver_last_name].filter(Boolean).join(' ') || 'Conductor';
     const count = overdueInstallments.length;
-    const defaultText = count > 0
-      ? `Hola ${name}, tienes ${count} cuota(s) vencida(s) en tu préstamo. Por favor regulariza tu situación lo antes posible. Gracias.`
-      : `Hola ${name}, te contactamos respecto a tu préstamo. Cualquier duda estamos a tu disposición.`;
+    const pref = loan?.country === 'PE' ? 'S/.' : loan?.country === 'CO' ? 'COP' : '';
+    let defaultText: string;
+    if (count > 0) {
+      const lineas = overdueInstallments.slice(0, 10).map((c) => {
+        const cuota = parseFloat(c.installment_amount || 0);
+        const mora = Math.max(0, parseFloat(c.late_fee ?? 0));
+        const total = cuota + mora;
+        const fecha = c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '';
+        if (mora > 0) {
+          return `• Cuota ${c.installment_number}: ${pref} ${cuota.toFixed(2)} + ${pref} ${mora.toFixed(2)} mora = ${pref} ${total.toFixed(2)} total (venció ${fecha})`;
+        }
+        return `• Cuota ${c.installment_number}: ${pref} ${total.toFixed(2)} (venció ${fecha})`;
+      });
+      const mas = count > 10 ? `\n• Y ${count - 10} cuota(s) más.` : '';
+      defaultText = `Hola ${name}, tienes ${count} cuota(s) vencida(s) en tu préstamo:\n\n${lineas.join('\n')}${mas}\n\nPor favor regulariza tu situación lo antes posible. Gracias.`;
+    } else {
+      defaultText = `Hola ${name}, te contactamos respecto a tu préstamo. Cualquier duda estamos a tu disposición.`;
+    }
     setWhatsAppMessage(defaultText);
     setShowWhatsAppModal(true);
   };
@@ -278,15 +298,21 @@ const LoanDetail = () => {
               </p>
             </div>
             <div>
-              <span className="text-xs font-semibold text-gray-600">Monto Total (a pagar):</span>
+              <span className="text-xs font-semibold text-gray-600">Monto Total del préstamo:</span>
               <p className="text-sm text-gray-900 mt-0.5 font-semibold">
-                {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {parseFloat(loan.pending_balance ?? loan.total_amount ?? 0).toFixed(2)}
+                {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {parseFloat(loan.total_amount ?? 0).toFixed(2)}
               </p>
             </div>
             <div>
               <span className="text-xs font-semibold text-gray-600">Saldo Pendiente:</span>
               <p className="text-sm text-red-600 mt-0.5 font-bold">
-                {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {parseFloat(loan.pending_balance || 0).toFixed(2)}
+                {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {parseFloat(loan.pending_balance ?? 0).toFixed(2)}
+              </p>
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-gray-600">Total mora pendiente:</span>
+              <p className="text-sm text-red-600 mt-0.5 font-semibold">
+                {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {totalMoraPendiente.toFixed(2)}
               </p>
             </div>
             <div>
@@ -365,9 +391,9 @@ const LoanDetail = () => {
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
                       {(() => {
-                        const totalPagado = parseFloat(installment.paid_amount || 0) + parseFloat(installment.paid_late_fee ?? 0);
-                        return totalPagado > 0
-                          ? `${loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} ${totalPagado.toFixed(2)}`
+                        const pagadoCuota = parseFloat(installment.paid_amount || 0);
+                        return pagadoCuota > 0
+                          ? `${loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} ${pagadoCuota.toFixed(2)}`
                           : (loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : '') + ' 0.00';
                       })()}
                     </td>
@@ -377,11 +403,12 @@ const LoanDetail = () => {
                     <td className="px-4 py-4 text-sm text-gray-900">
                       {(() => {
                         const pref = loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : '';
+                        // Usar solo late_fee como mora pendiente (backend ya envía el valor correcto). No sumar late_fee + paid_late_fee para no duplicar.
                         const pendiente = Math.max(0, parseFloat(installment.late_fee ?? 0));
                         const pagada = Math.max(0, parseFloat(installment.paid_late_fee ?? 0));
                         const cobrada = Math.max(0, Number((installment as { mora_cobrada?: number }).mora_cobrada ?? 0));
-                        const totalMora = pendiente + pagada + (installment.status === 'paid' ? cobrada : 0);
-                        if (totalMora === 0 && cobrada === 0) return <span>{pref} 0.00</span>;
+                        const hayMora = pendiente > 0 || pagada > 0 || cobrada > 0;
+                        if (!hayMora) return <span>{pref} 0.00</span>;
                         return (
                           <span className="block space-y-0.5">
                             {pendiente > 0 && (
@@ -393,8 +420,10 @@ const LoanDetail = () => {
                             {pagada > 0 && installment.status !== 'paid' && (
                               <span className="block text-amber-700 text-xs">{pref} {pagada.toFixed(2)} (pagada)</span>
                             )}
-                            {(pendiente > 0 || pagada > 0 || cobrada > 0) && (
-                              <span className="block text-xs font-semibold text-gray-700 border-t border-gray-200 pt-0.5 mt-0.5">Total mora: {pref} {(pendiente + pagada + cobrada).toFixed(2)}</span>
+                            {hayMora && (
+                              <span className="block text-xs font-semibold text-gray-700 border-t border-gray-200 pt-0.5 mt-0.5">
+                                Mora pendiente: {pref} {pendiente.toFixed(2)}
+                              </span>
                             )}
                           </span>
                         );
@@ -441,14 +470,30 @@ const LoanDetail = () => {
                 {overdueInstallments.length === 0 ? (
                   <p className="mt-1 text-gray-600 text-sm">No hay cuotas vencidas</p>
                 ) : (
-                  <ul className="mt-1 text-sm text-gray-700 space-y-1">
-                    {overdueInstallments.slice(0, 10).map((c) => (
-                      <li key={c.id}>
-                        Cuota {c.installment_number}: {loan?.country === 'PE' ? 'S/.' : loan?.country === 'CO' ? 'COP' : ''} {parseFloat(c.installment_amount || 0).toFixed(2)} — vence {c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '—'}
-                      </li>
-                    ))}
+                  <ul className="mt-2 space-y-2">
+                    {overdueInstallments.slice(0, 10).map((c) => {
+                      const pref = loan?.country === 'PE' ? 'S/.' : loan?.country === 'CO' ? 'COP' : '';
+                      const cuota = parseFloat(c.installment_amount || 0);
+                      const mora = Math.max(0, parseFloat(c.late_fee ?? 0));
+                      const total = cuota + mora;
+                      return (
+                        <li key={c.id} className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+                          <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5">
+                            <span className="font-semibold text-gray-700">Cuota {c.installment_number}</span>
+                            <span>Vence {c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '—'}</span>
+                          </div>
+                          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-sm">
+                            <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{pref} {cuota.toFixed(2)}</span></span>
+                            {mora > 0 && (
+                              <span><span className="text-gray-500">Mora:</span> <span className="font-medium text-red-600">{pref} {mora.toFixed(2)}</span></span>
+                            )}
+                            <span><span className="text-gray-500">Total:</span> <span className="font-semibold text-gray-900">{pref} {total.toFixed(2)}</span></span>
+                          </div>
+                        </li>
+                      );
+                    })}
                     {overdueInstallments.length > 10 && (
-                      <li className="text-gray-500">y {overdueInstallments.length - 10} más</li>
+                      <li className="text-sm text-gray-500 py-1">y {overdueInstallments.length - 10} cuota(s) más</li>
                     )}
                   </ul>
                 )}

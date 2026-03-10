@@ -518,11 +518,12 @@ export const getLoanById = async (id) => {
 };
 
 export const getInstallmentSchedule = async (loanId) => {
-  // Recalcular mora de cuotas vencidas de este préstamo para que la pantalla siempre muestre mora al día
+  // Recalcular mora de cuotas vencidas; mora pendiente = total calculada − paid_late_fee (igual que el job diario)
   const overdueForLoan = await query(
-    `SELECT i.id FROM module_rapidin_installments i
+    `SELECT i.id, COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee
+     FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
-     WHERE i.loan_id = $1 AND l.status = 'active'
+     WHERE i.loan_id = $1 AND l.status IN ('active', 'defaulted')
        AND i.status IN ('pending', 'overdue')
        AND i.due_date < CURRENT_DATE
        AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0`,
@@ -530,7 +531,9 @@ export const getInstallmentSchedule = async (loanId) => {
   );
   for (const row of overdueForLoan.rows) {
     const feeRes = await query('SELECT calculate_late_fee($1, CURRENT_DATE) as late_fee', [row.id]);
-    const newLateFee = Math.max(0, parseFloat(feeRes.rows[0]?.late_fee) || 0);
+    const totalMora = parseFloat(feeRes.rows[0]?.late_fee) || 0;
+    const paidLateFee = parseFloat(row.paid_late_fee || 0) || 0;
+    const newLateFee = Math.max(0, totalMora - paidLateFee);
     await query(
       `UPDATE module_rapidin_installments
        SET late_fee = $1, days_overdue = GREATEST(0, CURRENT_DATE - COALESCE(late_fee_base_date, due_date)), status = 'overdue', updated_at = CURRENT_TIMESTAMP

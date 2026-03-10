@@ -8,7 +8,7 @@ async function runLateFeesUpdate() {
   // Incluye active y defaulted para que todos los préstamos con cuotas vencidas se actualicen.
   const installments = await query(
     `SELECT i.id, i.loan_id, i.due_date, i.installment_amount, i.paid_amount, i.status,
-            COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee
+            COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee, i.late_fee_base_date
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE i.status IN ('pending', 'overdue')
@@ -17,9 +17,16 @@ async function runLateFeesUpdate() {
        AND l.status IN ('active', 'defaulted')`
   );
 
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
   for (const installment of installments.rows) {
-    const daysOverdue = Math.max(0, Math.floor((new Date() - new Date(installment.due_date)) / (1000 * 60 * 60 * 24)));
+    const baseDate = installment.late_fee_base_date
+      ? new Date(installment.late_fee_base_date)
+      : new Date(installment.due_date);
+    baseDate.setHours(0, 0, 0, 0);
+    const daysOverdue = Math.max(0, Math.floor((today - baseDate) / (1000 * 60 * 60 * 24)));
     const paidLateFee = parseFloat(installment.paid_late_fee || 0) || 0;
+    const hasBaseDate = installment.late_fee_base_date != null;
 
     let lateFee = 0;
     try {
@@ -28,8 +35,8 @@ async function runLateFeesUpdate() {
         [installment.id]
       );
       const totalMora = parseFloat(lateFeeResult.rows[0]?.late_fee) || 0;
-      // Mora pendiente = total calculada − lo ya pagado (para respetar paid_late_fee)
-      lateFee = Math.max(0, totalMora - paidLateFee);
+      // Si hay late_fee_base_date, la mora calculada es solo desde esa fecha → no restar paid_late_fee
+      lateFee = hasBaseDate ? totalMora : Math.max(0, totalMora - paidLateFee);
     } catch (err) {
       logger.warn(`Mora no calculada para cuota ${installment.id}, se marca vencida con mora 0:`, err.message);
     }

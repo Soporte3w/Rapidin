@@ -53,7 +53,7 @@ const Loans = () => {
   });
   const [driverSearchInput, setDriverSearchInput] = useState(initialDriver);
   const [loanIdSearchInput, setLoanIdSearchInput] = useState(initialLoanId);
-  const [pagination, setPagination] = useState({ page: 1, limit: 5, total: 0, totalPages: 0 });
+  const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0, totalPages: 0 });
   const [paginationLoading, setPaginationLoading] = useState(false);
   const PAGE_SIZES = [5, 10, 20, 50];
 

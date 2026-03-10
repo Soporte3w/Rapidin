@@ -66,6 +66,10 @@ const MIN_APPLIED = 0.01; // No aplicar ni registrar si el monto es menor (evita
 export const distributePayment = async (paymentId, loanId, totalAmount, strategy = 'by_date', waiveLateFeeInstallmentIds = []) => {
   const waiveSet = new Set(waiveLateFeeInstallmentIds);
 
+  const payRow = await query('SELECT payment_date FROM module_rapidin_payments WHERE id = $1', [paymentId]);
+  const paymentDateForBase = payRow.rows[0]?.payment_date ?? null;
+  const baseDateStr = paymentDateForBase ? new Date(paymentDateForBase).toISOString().slice(0, 10) : null;
+
   const installments = await query(
     `SELECT * FROM module_rapidin_installments 
      WHERE loan_id = $1 AND status IN ('pending', 'overdue') 
@@ -106,6 +110,7 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
 
       const appliedTotal = lateFeePaid + installmentPaid;
       if (appliedTotal >= MIN_APPLIED) {
+        const dateForPaid = baseDateStr || null;
         if (waiveMora) {
           await query(
             `UPDATE module_rapidin_installments 
@@ -113,9 +118,10 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
                  late_fee = 0,
                  late_fee_waived = true,
                  status = CASE WHEN (paid_amount + $1) >= installment_amount THEN 'paid' ELSE status END,
-                 paid_date = CASE WHEN (paid_amount + $1) >= installment_amount THEN CURRENT_DATE ELSE paid_date END
-             WHERE id = $2::uuid`,
-            [installmentPaid, String(installment.id)]
+                 paid_date = CASE WHEN (paid_amount + $1) >= installment_amount THEN COALESCE($2::date, CURRENT_DATE) ELSE paid_date END,
+                 late_fee_base_date = CASE WHEN (paid_amount + $1) >= installment_amount THEN NULL ELSE late_fee_base_date END
+             WHERE id = $3::uuid`,
+            [installmentPaid, dateForPaid, String(installment.id)]
           );
         } else {
           await query(
@@ -133,11 +139,11 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
                  paid_date = CASE 
                    WHEN (paid_amount + $2) >= installment_amount 
                      AND (COALESCE(late_fee, 0) - $1) <= 0
-                   THEN CURRENT_DATE 
+                   THEN COALESCE($4::date, CURRENT_DATE) 
                    ELSE paid_date 
                  END
              WHERE id = $3`,
-            [lateFeePaid, installmentPaid, installment.id]
+            [lateFeePaid, installmentPaid, installment.id, dateForPaid]
           );
         }
 
@@ -159,9 +165,9 @@ export const distributePayment = async (paymentId, loanId, totalAmount, strategy
               `UPDATE module_rapidin_installments 
                SET late_fee = 0, 
                    days_overdue = GREATEST(0, CURRENT_DATE - due_date),
-                   late_fee_base_date = CURRENT_DATE
+                   late_fee_base_date = COALESCE($2::date, CURRENT_DATE)
                WHERE id = $1`,
-              [installment.id]
+              [installment.id, baseDateStr]
             );
           }
         }

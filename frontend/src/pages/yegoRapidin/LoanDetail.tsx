@@ -160,11 +160,6 @@ const LoanDetail = () => {
         icon: AlertCircle,
         text: 'Vencido'
       },
-      partial: {
-        color: 'bg-blue-100 text-blue-800',
-        icon: Clock,
-        text: 'Parcial'
-      },
       active: {
         color: 'bg-green-100 text-green-800',
         icon: CheckCircle,
@@ -400,7 +395,9 @@ const LoanDetail = () => {
                       })()}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {installment.paid_date ? formatDateUTC(installment.paid_date, 'es-ES') : '—'}
+                      {(installment.paid_date || (installment as { last_payment_date?: string }).last_payment_date)
+                        ? formatDateUTC(installment.paid_date || (installment as { last_payment_date?: string }).last_payment_date, 'es-ES')
+                        : '—'}
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-900">
                       {(() => {

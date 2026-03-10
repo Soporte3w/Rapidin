@@ -518,9 +518,9 @@ export const getLoanById = async (id) => {
 };
 
 export const getInstallmentSchedule = async (loanId) => {
-  // Recalcular mora de cuotas vencidas; mora pendiente = total calculada − paid_late_fee (igual que el job diario)
+  // Recalcular mora de cuotas vencidas. Si hay late_fee_base_date (pago parcial), la mora calculada es solo desde esa fecha → no restar paid_late_fee.
   const overdueForLoan = await query(
-    `SELECT i.id, COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee
+    `SELECT i.id, COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee, i.late_fee_base_date
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE i.loan_id = $1 AND l.status IN ('active', 'defaulted')
@@ -533,7 +533,8 @@ export const getInstallmentSchedule = async (loanId) => {
     const feeRes = await query('SELECT calculate_late_fee($1, CURRENT_DATE) as late_fee', [row.id]);
     const totalMora = parseFloat(feeRes.rows[0]?.late_fee) || 0;
     const paidLateFee = parseFloat(row.paid_late_fee || 0) || 0;
-    const newLateFee = Math.max(0, totalMora - paidLateFee);
+    const hasBaseDate = row.late_fee_base_date != null;
+    const newLateFee = hasBaseDate ? totalMora : Math.max(0, totalMora - paidLateFee);
     await query(
       `UPDATE module_rapidin_installments
        SET late_fee = $1, days_overdue = GREATEST(0, CURRENT_DATE - COALESCE(late_fee_base_date, due_date)), status = 'overdue', updated_at = CURRENT_TIMESTAMP
@@ -566,6 +567,22 @@ export const getInstallmentSchedule = async (loanId) => {
     [loanId]
   );
 
+  const installmentIds = result.rows.map((r) => r.id);
+  let lastPaymentByInstallment = {};
+  if (installmentIds.length > 0) {
+    const dateRes = await query(
+      `SELECT pi.installment_id, MAX(p.payment_date)::text AS last_payment_date
+       FROM module_rapidin_payment_installments pi
+       JOIN module_rapidin_payments p ON p.id = pi.payment_id
+       WHERE pi.installment_id = ANY($1::uuid[])
+       GROUP BY pi.installment_id`,
+      [installmentIds]
+    );
+    dateRes.rows.forEach((row) => {
+      lastPaymentByInstallment[row.installment_id] = row.last_payment_date;
+    });
+  }
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const rows = result.rows.map((r) => {
@@ -584,7 +601,8 @@ export const getInstallmentSchedule = async (loanId) => {
     const moraCobrada = paid
       ? (paidLateFee > 0 ? paidLateFee : Math.max(0, totalPagado - (parseFloat(r.installment_amount) || 0)))
       : 0;
-    return { ...r, late_fee: lateFeeDisplay, paid_late_fee: paidLateFee, mora_cobrada: moraCobrada, status: effectiveStatus, total_pagado: totalPagado, total_a_cobrar: totalCobrar };
+    const lastPaymentDate = lastPaymentByInstallment[r.id] || null;
+    return { ...r, late_fee: lateFeeDisplay, paid_late_fee: paidLateFee, mora_cobrada: moraCobrada, status: effectiveStatus, total_pagado: totalPagado, total_a_cobrar: totalCobrar, last_payment_date: lastPaymentDate };
   });
   return rows;
 };

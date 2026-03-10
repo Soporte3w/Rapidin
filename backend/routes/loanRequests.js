@@ -99,21 +99,41 @@ router.get('/:id', validateUUID, async (req, res) => {
     let driver_licencia = null;
     let driver_partner_name = null;
 
-    // Flota: usar park_id del conductor de la solicitud (module_rapidin_drivers), que es la flota desde la que solicitó
+    const isValidLicense = (val) => {
+      if (val == null || typeof val !== 'string') return false;
+      const s = val.trim();
+      return s.length > 0 && s.length <= 30 && !/^DRIVERDRAFT/i.test(s);
+    };
+    const setLicencia = (raw) => {
+      const s = (raw != null ? String(raw).trim() : '') || null;
+      if (s && isValidLicense(s)) driver_licencia = s;
+    };
+
+    // Flota y licencia: conductor de la solicitud (module_rapidin_drivers) y, si hace falta, su fila en drivers (por external_driver_id)
     if (request.driver_id) {
       try {
         const rapidinDriver = await pool.query(
-          'SELECT park_id FROM module_rapidin_drivers WHERE id = $1 LIMIT 1',
+          'SELECT park_id, license, external_driver_id FROM module_rapidin_drivers WHERE id = $1 LIMIT 1',
           [request.driver_id]
         );
-        const parkId = rapidinDriver?.rows?.[0]?.park_id;
-        if (parkId) driver_partner_name = await getPartnerNameById(parkId);
+        const rd = rapidinDriver?.rows?.[0];
+        if (rd?.park_id) driver_partner_name = await getPartnerNameById(rd.park_id);
+        setLicencia(rd?.license);
+        // Si no hay licencia en Rapidín, usar la del mismo conductor en Yego (drivers.driver_id = external_driver_id), no por teléfono
+        if (driver_licencia == null && rd?.external_driver_id) {
+          const yegoDriver = await pool.query(
+            `SELECT license_number FROM drivers WHERE driver_id::text = $1 LIMIT 1`,
+            [String(rd.external_driver_id).trim()]
+          );
+          const yRow = yegoDriver?.rows?.[0];
+          setLicencia(yRow?.license_number);
+        }
       } catch (e) {
-        logger.error('Error resolviendo flota por driver_id:', e);
+        logger.error('Error resolviendo flota/licencia por driver_id:', e);
       }
     }
 
-    // Licencia: por teléfono en tabla drivers (work_status = 'working')
+    // Último recurso: licencia por teléfono en drivers (puede haber varios con el mismo teléfono; solo si no tenemos ya por conductor)
     if (request.phone && driver_licencia == null) {
       try {
         const driverRow = await pool.query(
@@ -121,10 +141,9 @@ router.get('/:id', validateUUID, async (req, res) => {
            WHERE phone = $1 AND work_status = 'working' LIMIT 1`,
           [request.phone]
         );
-        const row = driverRow?.rows?.[0];
-        if (row) driver_licencia = row.license_number ?? null;
+        setLicencia(driverRow?.rows?.[0]?.license_number);
       } catch (e) {
-        if (e.code !== '42703') logger.error('Error resolviendo licencia:', e);
+        if (e.code !== '42703') logger.error('Error resolviendo licencia por teléfono:', e);
       }
     }
 

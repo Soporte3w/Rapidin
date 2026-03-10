@@ -67,6 +67,7 @@ interface ScheduleInstallment {
   installment_amount: number;
   due_date: string;
   paid_amount?: number;
+  paid_late_fee?: number;
   paid_date?: string | null;
   status: string;
   late_fee?: number;
@@ -85,7 +86,7 @@ const Payments = () => {
   const [confirmApproveModal, setConfirmApproveModal] = useState<string | null>(null);
   const [rejectModal, setRejectModal] = useState<{ voucherId: string; reason: string } | null>(null);
   const [viewFileModal, setViewFileModal] = useState<{ url: string; type: string } | null>(null);
-  const [comprobantesFilter, setComprobantesFilter] = useState<'pending' | 'rejected'>('pending');
+  const [comprobantesFilter, setComprobantesFilter] = useState<'pending' | 'rejected' | 'approved'>('pending');
   const [paymentFilters, setPaymentFilters] = useState({ loan_id: '', country: (user?.country as string) || 'PE' });
   const [loanIdSearchInput, setLoanIdSearchInput] = useState('');
   const [pagination, setPagination] = useState({ page: 1, limit: 5, total: 0, totalPages: 0 });
@@ -588,7 +589,7 @@ const Payments = () => {
                         <td className="px-3 py-2 text-right text-gray-900">{currencyLabel} {Number(inst.installment_amount || 0).toFixed(2)}</td>
                         <td className="px-3 py-2 text-right text-amber-700">{currencyLabel} {mora.toFixed(2)}</td>
                         <td className="px-3 py-2 text-right text-gray-900" title={mora > 0 ? `Incluye cuota + mora (por días de atraso)` : undefined}>
-                          {currencyLabel} {Number(inst.paid_amount || 0).toFixed(2)}
+                          {currencyLabel} {(Number(inst.paid_amount || 0) + Number(inst.paid_late_fee || 0)).toFixed(2)}
                         </td>
                         <td className="px-3 py-2 text-center">
                           <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
@@ -976,7 +977,7 @@ const Payments = () => {
       {/* Tab: Comprobantes por validar */}
       {tab === 'comprobantes' && (
       <>
-        {/* Sub-tabs: Pendientes | Rechazados */}
+        {/* Sub-tabs: Pendientes | Aprobados | Rechazados */}
         <div className="flex gap-1 p-1 bg-gray-100 rounded-lg w-fit mb-4">
           <button
             type="button"
@@ -986,6 +987,15 @@ const Payments = () => {
             }`}
           >
             Pendientes
+          </button>
+          <button
+            type="button"
+            onClick={() => setComprobantesFilter('approved')}
+            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+              comprobantesFilter === 'approved' ? 'bg-white text-[#8B1A1A] shadow' : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Aprobados
           </button>
           <button
             type="button"
@@ -1009,12 +1019,14 @@ const Payments = () => {
         <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 text-center">
           <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-bold text-gray-900 mb-2">
-            {comprobantesFilter === 'rejected' ? 'No hay comprobantes rechazados' : 'No hay comprobantes'}
+            {comprobantesFilter === 'approved' ? 'No hay comprobantes aprobados' : comprobantesFilter === 'rejected' ? 'No hay comprobantes rechazados' : 'No hay comprobantes'}
           </h3>
           <p className="text-gray-600 text-sm">
-            {comprobantesFilter === 'rejected'
-              ? 'No se encontraron comprobantes rechazados.'
-              : 'No se encontraron comprobantes para validar.'}
+            {comprobantesFilter === 'approved'
+              ? 'No se encontraron comprobantes aprobados de conductores.'
+              : comprobantesFilter === 'rejected'
+                ? 'No se encontraron comprobantes rechazados.'
+                : 'No se encontraron comprobantes para validar.'}
           </p>
         </div>
       ) : (
@@ -1028,6 +1040,9 @@ const Payments = () => {
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Cuota(s)</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Monto</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Fecha pago</th>
+                  {comprobantesFilter === 'approved' && (
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Fecha aprobación</th>
+                  )}
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Estado</th>
                   {comprobantesFilter === 'rejected' && (
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Motivo rechazo</th>
@@ -1071,6 +1086,11 @@ const Payments = () => {
                     <td className="px-4 py-3 text-sm text-gray-700">
                       {v?.paymentDate ? formatDateUTC(v.paymentDate, 'es-ES') : '—'}
                     </td>
+                    {comprobantesFilter === 'approved' && (
+                      <td className="px-4 py-3 text-sm text-gray-700">
+                        {v?.reviewedAt ? formatDateUTC(v.reviewedAt, 'es-ES') : '—'}
+                      </td>
+                    )}
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
                         v?.status === 'pending' ? 'bg-amber-100 text-amber-800' :

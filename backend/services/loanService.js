@@ -557,6 +557,7 @@ export const getInstallmentSchedule = async (loanId) => {
        due_date, paid_date, paid_amount,
        GREATEST(0, COALESCE(late_fee, 0))::numeric AS late_fee,
        COALESCE(paid_late_fee, 0)::numeric AS paid_late_fee,
+       (COALESCE(paid_amount, 0) + COALESCE(paid_late_fee, 0))::numeric AS total_paid,
        COALESCE(late_fee_waived, false) AS late_fee_waived,
        days_overdue, status, created_at, updated_at
      FROM module_rapidin_installments 

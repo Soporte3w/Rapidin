@@ -392,8 +392,10 @@ const LoanDetail = () => {
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
                       {(() => {
                         const pagadoCuota = parseFloat(installment.paid_amount || 0);
-                        return pagadoCuota > 0
-                          ? `${loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} ${pagadoCuota.toFixed(2)}`
+                        const moraPagada = parseFloat(installment.paid_late_fee ?? 0);
+                        const totalPagado = pagadoCuota + moraPagada;
+                        return totalPagado > 0
+                          ? `${loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} ${totalPagado.toFixed(2)}`
                           : (loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : '') + ' 0.00';
                       })()}
                     </td>

@@ -150,7 +150,7 @@ export default function DriverVouchers() {
     }
   }, [expandedSection]);
 
-  // Rellenar monto pagado con la suma de cuotas + mora de las cuotas seleccionadas
+  // Total a pagar = suma de pendingAmount de las cuotas seleccionadas (pendingAmount ya incluye mora, no sumar lateFee de nuevo)
   useEffect(() => {
     if (selectedInstallments.length === 0) {
       setAmount('');
@@ -158,7 +158,7 @@ export default function DriverVouchers() {
     }
     const total = installments
       .filter(inst => selectedInstallments.includes(inst.id))
-      .reduce((sum, inst) => sum + (inst.pendingAmount ?? inst.amount ?? 0) + (inst.lateFee ?? 0), 0);
+      .reduce((sum, inst) => sum + (inst.pendingAmount ?? inst.amount ?? 0), 0);
     setAmount(total > 0 ? total.toFixed(2) : '');
   }, [selectedInstallments, installments]);
 

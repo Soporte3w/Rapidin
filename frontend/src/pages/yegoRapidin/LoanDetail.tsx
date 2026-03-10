@@ -22,6 +22,10 @@ type LoansSearchState = {
   loan_id?: string;
   driverSearchInput?: string;
   loanIdSearchInput?: string;
+  status?: string;
+  country?: string;
+  date_from?: string;
+  date_to?: string;
 };
 
 const LoanDetail = () => {
@@ -35,15 +39,20 @@ const LoanDetail = () => {
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
 
-  const getBackToLoansState = (): { fromLoanDetail: true; driver: string; loan_id: string; driverSearchInput: string; loanIdSearchInput: string } | undefined => {
+  const getBackToLoansState = (): (LoansSearchState & { fromLoanDetail: true }) | undefined => {
     const s = location.state as LoansSearchState | null;
     if (!s?.fromLoansSearch) return undefined;
     return {
       fromLoanDetail: true,
+      fromLoansSearch: true,
       driver: s.driver ?? '',
       loan_id: s.loan_id ?? '',
       driverSearchInput: s.driverSearchInput ?? s.driver ?? '',
       loanIdSearchInput: s.loanIdSearchInput ?? s.loan_id ?? '',
+      status: s.status ?? '',
+      country: s.country ?? '',
+      date_from: s.date_from ?? '',
+      date_to: s.date_to ?? '',
     };
   };
 

@@ -25,6 +25,10 @@ export type LoansSearchState = {
   loan_id?: string;
   driverSearchInput?: string;
   loanIdSearchInput?: string;
+  status?: string;
+  country?: string;
+  date_from?: string;
+  date_to?: string;
 };
 
 const Loans = () => {
@@ -40,12 +44,12 @@ const Loans = () => {
   const initialLoanId = isReturnFromDetail ? (searchState?.loanIdSearchInput ?? searchState?.loan_id ?? '') : '';
 
   const [filters, setFilters] = useState({
-    status: '',
-    country: '',
+    status: isReturnFromDetail ? (searchState?.status ?? '') : '',
+    country: isReturnFromDetail ? (searchState?.country ?? '') : '',
     driver: isReturnFromDetail ? (searchState?.driver ?? '') : '',
     loan_id: isReturnFromDetail ? (searchState?.loan_id ?? '') : '',
-    date_from: '',
-    date_to: '',
+    date_from: isReturnFromDetail ? (searchState?.date_from ?? '') : '',
+    date_to: isReturnFromDetail ? (searchState?.date_to ?? '') : '',
   });
   const [driverSearchInput, setDriverSearchInput] = useState(initialDriver);
   const [loanIdSearchInput, setLoanIdSearchInput] = useState(initialLoanId);
@@ -436,6 +440,10 @@ const Loans = () => {
                             loan_id: filters.loan_id,
                             driverSearchInput,
                             loanIdSearchInput,
+                            status: filters.status,
+                            country: filters.country,
+                            date_from: filters.date_from,
+                            date_to: filters.date_to,
                           },
                         })}
                         className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"

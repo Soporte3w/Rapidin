@@ -257,15 +257,18 @@ function buildScheduleFromFixedCuota(P, iPerPeriod, n, fixedCuota) {
   return schedule;
 }
 
+/** Número fijo de cuotas para el conductor (regla de negocio). El admin puede elegir otro número. */
+const EXACT_INSTALLMENTS = 5;
+
 export const simulateLoanOptions = async (amount, country, cycle, conditions, optionalWeeks = null) => {
   const interestRate = await getInterestRate(country, cycle);
   const i = (interestRate / 100);
   const minW = conditions?.min_weeks != null ? parseInt(conditions.min_weeks, 10) : 4;
   const maxW = conditions?.max_weeks != null ? parseInt(conditions.max_weeks, 10) : 24;
-  const defaultWeeks = minW; // según configuración de condiciones (min_weeks)
-  let weeks = optionalWeeks != null ? parseInt(optionalWeeks, 10) : defaultWeeks;
-  if (isNaN(weeks) || weeks < minW || weeks > maxW) {
-    weeks = Math.max(minW, Math.min(maxW, defaultWeeks));
+  let weeks = EXACT_INSTALLMENTS;
+  if (optionalWeeks != null && optionalWeeks !== '') {
+    const w = parseInt(optionalWeeks, 10);
+    if (!isNaN(w) && w >= 1 && w <= maxW) weeks = Math.max(minW, Math.min(maxW, w));
   }
 
   const cuotaFija = fixedInstallmentFormula(amount, i, weeks);
@@ -302,7 +305,7 @@ export const simulateLoanOptions = async (amount, country, cycle, conditions, op
 export const generateInstallmentSchedule = async (loanId, disbursedAmount, interestRatePercent, numberOfInstallments, firstPaymentDate) => {
   const P = parseFloat(disbursedAmount) || 0;
   const i = (parseFloat(interestRatePercent) || 0) / 100;
-  const n = Math.max(1, parseInt(numberOfInstallments, 10) || 1);
+  const n = Math.max(1, parseInt(numberOfInstallments, 10) || EXACT_INSTALLMENTS);
 
   const cuotaFija = fixedInstallmentFormula(P, i, n);
   const schedule = buildScheduleFromFixedCuota(P, i, n, cuotaFija);

@@ -849,7 +849,8 @@ router.post('/loan-request', uploadLoanDocFields, async (req, res) => {
           contact_relationship: contact_relationship || '',
           selected_option: selected_option ? parseInt(selected_option, 10) : null,
           number_of_weeks: number_of_weeks != null && number_of_weeks !== '' ? parseInt(number_of_weeks, 10) : null,
-          admin_selected_option: adminSelectedOption
+          admin_selected_option: adminSelectedOption,
+          createdByAdmin: true
         })
       },
       null,

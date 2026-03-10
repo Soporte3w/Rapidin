@@ -291,46 +291,45 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
     throw new Error('Solo se puede desembolsar una solicitud en estado Aprobado');
   }
 
-  let option = null;
   let observationsJson = {};
   try {
     if (request.observations) {
       observationsJson = typeof request.observations === 'string' ? JSON.parse(request.observations) : request.observations;
     }
   } catch (_) {}
-  option = observationsJson?.approvedOption || observationsJson?.admin_selected_option;
+
+  const driverResult = await query('SELECT * FROM module_rapidin_drivers WHERE id = $1', [request.driver_id]);
+  if (driverResult.rows.length === 0) throw new Error('Conductor no encontrado');
+  const driver = driverResult.rows[0];
+  const cycleFromDb = request.cycle ?? request.driver_cycle ?? driver?.cycle ?? 1;
+
+  const conditionsResult = await query(
+    'SELECT * FROM module_rapidin_loan_conditions WHERE country = $1 AND active = true ORDER BY version DESC LIMIT 1',
+    [request.country]
+  );
+  if (conditionsResult.rows.length === 0) throw new Error('No hay condiciones de préstamo configuradas');
+  const conditions = conditionsResult.rows[0];
+
+  const EXACT_INSTALLMENTS = 5;
+  const createdByAdmin = observationsJson?.createdByAdmin === true;
+
+  let option = observationsJson?.approvedOption || observationsJson?.admin_selected_option;
   if (option && option.weeks != null && option.weeklyInstallment != null) {
     option = { ...option, totalAmount: option.totalAmount ?? (option.weeklyInstallment * (option.weeks - 1) + (option.lastInstallment ?? option.weeklyInstallment)) };
+    if (!createdByAdmin && option.weeks !== EXACT_INSTALLMENTS) {
+      const sim = await simulateLoanOptions(parseFloat(request.requested_amount) || 0, request.country, cycleFromDb, conditions);
+      if (sim?.option) {
+        option = { ...option, ...sim.option, interestRate: sim.option.interestRate ?? option.interestRate };
+      } else {
+        option = { ...option, weeks: EXACT_INSTALLMENTS };
+      }
+    }
   } else {
-    option = null;
-  }
-
-  if (!option) {
-    const driver = await query('SELECT * FROM module_rapidin_drivers WHERE id = $1', [request.driver_id]);
-    if (driver.rows.length === 0) throw new Error('Conductor no encontrado');
-    const cycleFromDb = request.cycle ?? request.driver_cycle ?? driver.rows[0]?.cycle ?? 1;
-    const conditions = await query(
-      'SELECT * FROM module_rapidin_loan_conditions WHERE country = $1 AND active = true ORDER BY version DESC LIMIT 1',
-      [request.country]
-    );
-    if (conditions.rows.length === 0) throw new Error('No hay condiciones de préstamo configuradas');
-    const sim = await simulateLoanOptions(
-      parseFloat(request.requested_amount) || 0,
-      request.country,
-      cycleFromDb,
-      conditions.rows[0]
-    );
-    const simOption = sim?.option;
-    if (!simOption || simOption.weeks == null || simOption.weeklyInstallment == null) {
+    const sim = await simulateLoanOptions(parseFloat(request.requested_amount) || 0, request.country, cycleFromDb, conditions);
+    if (!sim?.option || sim.option.weeks == null || sim.option.weeklyInstallment == null) {
       throw new Error('No se pudo calcular la opción de préstamo. Verifique monto y condiciones.');
     }
-    option = {
-      weeks: simOption.weeks,
-      weeklyInstallment: simOption.weeklyInstallment,
-      lastInstallment: simOption.lastInstallment,
-      totalAmount: simOption.totalAmount,
-      interestRate: simOption.interestRate,
-    };
+    option = { ...sim.option };
   }
 
   const disbursementDate = new Date();
@@ -348,9 +347,6 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
     firstPaymentDateStr = `${firstPaymentDateObj.getFullYear()}-${String(firstPaymentDateObj.getMonth() + 1).padStart(2, '0')}-${String(firstPaymentDateObj.getDate()).padStart(2, '0')}`;
   }
 
-  const driver = await query('SELECT * FROM module_rapidin_drivers WHERE id = $1', [request.driver_id]);
-  if (driver.rows.length === 0) throw new Error('Conductor no encontrado');
-  const cycleFromDb = request.cycle ?? request.driver_cycle ?? driver.rows[0]?.cycle ?? 1;
   const interestRate = option.interestRate != null ? parseFloat(option.interestRate) : await getInterestRate(request.country, cycleFromDb);
 
   await query('BEGIN');

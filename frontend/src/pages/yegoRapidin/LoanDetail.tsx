@@ -3,8 +3,21 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, User, Banknote, Calendar, AlertCircle, FileText, CheckCircle, Clock, XCircle, X } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import api from '../../services/api';
-import { formatDateUTC } from '../../utils/date';
+import { formatDate } from '../../utils/date';
 import toast from 'react-hot-toast';
+
+/** Cuentas bancarias autorizadas para envío por WhatsApp (cobros / instrucciones de pago). */
+export const CUENTAS_BANCARIAS_WHATSAPP = `✅ Cuentas bancarias autorizadas – a nombre AJHLA SAC
+
+💚 INTERBANK
+🔹 Cuenta Corriente - Soles:
+Número de cuenta: 200-3007251767
+CCI: 003-200-003007251767-32
+
+🧡 BCP
+🔹 Cuenta Corriente - Soles:
+Número de cuenta: 193-7121711-0-73
+CCI: 002-19300712171107314`;
 
 /** Número para enlace wa.me: solo dígitos; si falta código de país se agrega (PE 51, CO 57). */
 function getWhatsAppPhone(phone: string | undefined, country: string): string {
@@ -112,14 +125,14 @@ const LoanDetail = () => {
         const cuota = parseFloat(c.installment_amount || 0);
         const mora = Math.max(0, parseFloat(c.late_fee ?? 0));
         const total = cuota + mora;
-        const fecha = c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '';
+        const fecha = c.due_date ? formatDate(c.due_date, 'es-ES') : '';
         if (mora > 0) {
           return `• Cuota ${c.installment_number}: ${pref} ${cuota.toFixed(2)} + ${pref} ${mora.toFixed(2)} mora = ${pref} ${total.toFixed(2)} total (venció ${fecha})`;
         }
         return `• Cuota ${c.installment_number}: ${pref} ${total.toFixed(2)} (venció ${fecha})`;
       });
       const mas = count > 10 ? `\n• Y ${count - 10} cuota(s) más.` : '';
-      defaultText = `Hola ${name}, tienes ${count} cuota(s) vencida(s) en tu préstamo:\n\n${lineas.join('\n')}${mas}\n\nPor favor regulariza tu situación lo antes posible. Gracias.`;
+      defaultText = `Hola ${name}, tienes ${count} cuota(s) vencida(s) en tu préstamo:\n\n${lineas.join('\n')}${mas}\n\nPor favor regulariza tu situación lo antes posible. Gracias.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
     } else {
       defaultText = `Hola ${name}, te contactamos respecto a tu préstamo. Cualquier duda estamos a tu disposición.`;
     }
@@ -382,7 +395,7 @@ const LoanDetail = () => {
                       {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {parseFloat(installment.installment_amount || 0).toFixed(2)}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {installment.due_date ? formatDateUTC(installment.due_date, 'es-ES') : 'N/A'}
+                      {installment.due_date ? formatDate(installment.due_date, 'es-ES') : 'N/A'}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
                       {(() => {
@@ -396,7 +409,7 @@ const LoanDetail = () => {
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
                       {(installment.paid_date || (installment as { last_payment_date?: string }).last_payment_date)
-                        ? formatDateUTC(installment.paid_date || (installment as { last_payment_date?: string }).last_payment_date, 'es-ES')
+                        ? formatDate(installment.paid_date || (installment as { last_payment_date?: string }).last_payment_date, 'es-ES')
                         : '—'}
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-900">
@@ -479,7 +492,7 @@ const LoanDetail = () => {
                         <li key={c.id} className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
                           <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5">
                             <span className="font-semibold text-gray-700">Cuota {c.installment_number}</span>
-                            <span>Vence {c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '—'}</span>
+                            <span>Vence {c.due_date ? formatDate(c.due_date, 'es-ES') : '—'}</span>
                           </div>
                           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-sm">
                             <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{pref} {cuota.toFixed(2)}</span></span>

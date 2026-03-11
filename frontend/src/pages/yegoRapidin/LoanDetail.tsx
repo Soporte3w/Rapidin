@@ -3,7 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, User, Banknote, Calendar, AlertCircle, FileText, CheckCircle, Clock, XCircle, X } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import api from '../../services/api';
-import { formatDate } from '../../utils/date';
+import { formatDateLocal as formatDate } from '../../utils/date';
 import toast from 'react-hot-toast';
 
 /** Cuentas bancarias autorizadas para envío por WhatsApp (cobros / instrucciones de pago). */

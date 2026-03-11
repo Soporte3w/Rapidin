@@ -1,7 +1,8 @@
 /**
- * Formatea fechas que vienen del API en UTC (ej. 2025-11-12T00:00:00.000Z)
- * usando timeZone: 'UTC' para que el día no cambie en zonas horarias como PE (UTC-5).
- * Sin esto, medianoche UTC se mostraría como el día anterior en local.
+ * Regla general del sistema: todas las fechas se muestran en hora local del usuario
+ * (ej. 10:00 en Perú, no 15:00 UTC). Usar formatDate, formatDateTime, formatDateShort.
+ *
+ * formatDateUTC / formatDateTimeUTC solo si se necesita explícitamente UTC.
  */
 const UTC = 'UTC';
 
@@ -26,7 +27,6 @@ export function formatDateTimeUTC(isoString: string | null | undefined, locale =
   });
 }
 
-/** Formatea solo la fecha en la zona horaria local del usuario (ej. 28 feb UTC → 27 feb en Perú). */
 export function formatDateLocal(isoString: string | null | undefined, locale = 'es-ES'): string {
   if (!isoString) return '—';
   const d = new Date(isoString);
@@ -34,7 +34,6 @@ export function formatDateLocal(isoString: string | null | undefined, locale = '
   return d.toLocaleDateString(locale, { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-/** Formatea fecha y hora en la zona horaria local del usuario (ej. 9:49 en Perú en vez de 14:49 UTC). */
 export function formatDateTimeLocal(isoString: string | null | undefined, locale = 'es-ES'): string {
   if (!isoString) return '—';
   const d = new Date(isoString);
@@ -48,9 +47,25 @@ export function formatDateTimeLocal(isoString: string | null | undefined, locale
   });
 }
 
+function formatDateShortLocal(isoString: string | null | undefined, locale = 'es-ES'): string {
+  if (!isoString) return '—';
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(locale, { dateStyle: 'short' });
+}
+
 export function formatDateShortUTC(isoString: string | null | undefined, locale = 'es-ES'): string {
   if (!isoString) return '—';
   const d = new Date(isoString);
   if (isNaN(d.getTime())) return '—';
   return d.toLocaleDateString(locale, { timeZone: UTC, dateStyle: 'short' });
 }
+
+/** Por defecto: fecha en hora local (todo el sistema). */
+export const formatDate = formatDateLocal;
+
+/** Por defecto: fecha y hora en hora local (todo el sistema). */
+export const formatDateTime = formatDateTimeLocal;
+
+/** Por defecto: fecha corta en hora local (todo el sistema). */
+export const formatDateShort = formatDateShortLocal;

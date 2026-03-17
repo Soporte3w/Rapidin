@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import api from '../../services/api';
 import { Plus, X, FileText, CreditCard, AlertCircle, Eye, CheckCircle, XCircle, Copy, Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { formatDateShortUTC, formatDateUTC } from '../../utils/date';
+import { formatDate, formatDateShort } from '../../utils/date';
 import toast from 'react-hot-toast';
 
 interface Payment {
@@ -145,42 +145,43 @@ const Payments = () => {
     api.get(`/loans/${loanId}`)
       .then((res) => {
         const data = res.data?.data ?? res.data;
-        if (data?.driver_first_name !== undefined || data?.driver_last_name !== undefined) {
-          const nextNumber = data.next_installment_number != null ? Number(data.next_installment_number) : undefined;
-          const nextAmount = data.next_installment_amount != null ? Number(data.next_installment_amount) : undefined;
-          const nextLateFee = data.next_installment_late_fee != null ? Number(data.next_installment_late_fee) : undefined;
-          const nextInstallmentId = data.next_installment_id ?? undefined;
-          const pendingBalance = data.pending_balance != null ? Number(data.pending_balance) : undefined;
-          const status = data.status;
-          const fullyPaid =
-            (nextAmount == null || nextAmount === 0) &&
-            (pendingBalance === 0 || pendingBalance == null || status === 'cancelled');
-          setLoanPreview({
-            driver_first_name: data.driver_first_name,
-            driver_last_name: data.driver_last_name,
-            next_installment_number: nextNumber,
-            next_installment_amount: nextAmount,
-            next_installment_late_fee: nextLateFee,
-            next_installment_id: nextInstallmentId,
-            pending_balance: pendingBalance,
-            status,
-            fully_paid: fullyPaid,
-          });
-          setChargeLateFee(true);
-          if (fullyPaid) {
-            setFormData((prev) => ({ ...prev, amount: '' }));
-          } else {
-            const totalDue = Number(nextAmount) || 0;
-            if (totalDue > 0) {
-              setFormData((prev) => ({ ...prev, amount: String(Number(totalDue.toFixed(2))) }));
-            } else if (pendingBalance != null && pendingBalance > 0) {
-              setFormData((prev) => ({ ...prev, amount: String(Number(Number(pendingBalance).toFixed(2))) }));
-            } else {
-              setFormData((prev) => ({ ...prev, amount: '' }));
-            }
-          }
-        } else {
+        const hasLoan = data?.driver_first_name !== undefined || data?.driver_last_name !== undefined;
+        if (!hasLoan) {
           setLoanPreview(null);
+          setLoanPreviewFetched(true);
+          return;
+        }
+        const sinMora = Number(data.next_installment_amount) || 0;
+        const mora = Number(data.next_installment_late_fee) || 0;
+        const conMora = Number(data.next_installment_total) > 0
+          ? Number(Number(data.next_installment_total).toFixed(2))
+          : mora > 0 ? Math.round((sinMora + mora) * 100) / 100 : sinMora;
+        const pendingBalance = data.pending_balance != null ? Number(data.pending_balance) : undefined;
+        const status = data.status;
+        const fullyPaid =
+          sinMora === 0 &&
+          (pendingBalance === 0 || pendingBalance == null || status === 'cancelled');
+
+        setLoanPreview({
+          driver_first_name: data.driver_first_name,
+          driver_last_name: data.driver_last_name,
+          next_installment_number: data.next_installment_number != null ? Number(data.next_installment_number) : undefined,
+          next_installment_amount: sinMora,
+          next_installment_late_fee: data.next_installment_late_fee != null ? Number(data.next_installment_late_fee) : undefined,
+          next_installment_id: data.next_installment_id ?? undefined,
+          pending_balance: pendingBalance,
+          status,
+          fully_paid: fullyPaid,
+        });
+        setChargeLateFee(true);
+        if (fullyPaid) {
+          setFormData((prev) => ({ ...prev, amount: '' }));
+        } else if (conMora > 0) {
+          setFormData((prev) => ({ ...prev, amount: String(conMora) }));
+        } else if (pendingBalance != null && pendingBalance > 0) {
+          setFormData((prev) => ({ ...prev, amount: String(Number(pendingBalance).toFixed(2)) }));
+        } else {
+          setFormData((prev) => ({ ...prev, amount: '' }));
         }
         setLoanPreviewFetched(true);
       })
@@ -584,7 +585,7 @@ const Payments = () => {
                       <tr key={inst.id} className={isPaid ? 'bg-green-50/60' : ''}>
                         <td className="px-3 py-2 font-medium text-gray-900">{inst.installment_number}</td>
                         <td className="px-3 py-2 text-gray-700">
-                          {inst.due_date ? formatDateUTC(inst.due_date, 'es-ES') : '—'}
+                          {inst.due_date ? formatDate(inst.due_date, 'es-ES') : '—'}
                         </td>
                         <td className="px-3 py-2 text-right text-gray-900">{currencyLabel} {Number(inst.installment_amount || 0).toFixed(2)}</td>
                         <td className="px-3 py-2 text-right text-amber-700">{currencyLabel} {mora.toFixed(2)}</td>
@@ -688,7 +689,7 @@ const Payments = () => {
                       </td>
                       <td className="px-4 py-4 whitespace-nowrap">
                         <div className="text-sm text-gray-900">
-                          {p?.payment_date ? formatDateUTC(p.payment_date, 'es-ES') : '—'}
+                          {p?.payment_date ? formatDate(p.payment_date, 'es-ES') : '—'}
                         </div>
                       </td>
                       <td className="px-4 py-4 whitespace-nowrap">
@@ -871,11 +872,9 @@ const Payments = () => {
               </div>
               <div>
                 <label htmlFor="amount" className="block text-xs font-semibold text-gray-900 mb-1.5">
-                  Monto {loanPreview?.next_installment_amount != null && Number(loanPreview.next_installment_amount) > 0 && (
-                    <span className="text-gray-500 font-normal">
-                      {loanPreview?.next_installment_number != null ? `(Cuota ${loanPreview.next_installment_number}) ` : ''}
-                
-                    </span>
+                  Monto
+                  {loanPreview?.next_installment_number != null && Number(loanPreview.next_installment_amount) > 0 && (
+                    <span className="text-gray-500 font-normal"> (Cuota {loanPreview.next_installment_number})</span>
                   )}
                 </label>
                 <input
@@ -890,30 +889,30 @@ const Payments = () => {
                   placeholder="0.00"
                 />
                 {loanPreview?.next_installment_late_fee != null && Number(loanPreview.next_installment_late_fee) > 0 && (
-                  <div className="mt-2 rounded-lg border border-amber-200/80 bg-gradient-to-br from-amber-50 to-orange-50/50 shadow-sm overflow-hidden">
-                    <div className="px-3 py-2 flex items-center justify-between border-b border-amber-200/60">
-                      <span className="text-xs font-medium text-amber-800">Mora de la cuota</span>
-                      <span className="text-sm font-semibold tabular-nums text-amber-900">{currencyLabel} {Number(loanPreview.next_installment_late_fee).toFixed(2)}</span>
+                  <div className="mt-2 rounded-lg border border-amber-200/80 bg-amber-50/80 overflow-hidden">
+                      <div className="px-3 py-2 flex items-center justify-between border-b border-amber-200/60">
+                        <span className="text-xs font-medium text-amber-800">Mora</span>
+                        <span className="text-sm font-semibold tabular-nums text-amber-900">{currencyLabel} {Number(loanPreview.next_installment_late_fee).toFixed(2)}</span>
+                      </div>
+                      <label className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-amber-100/50">
+                        <input
+                          type="checkbox"
+                          checked={chargeLateFee}
+                          onChange={(e) => {
+                            const incluir = e.target.checked;
+                            setChargeLateFee(incluir);
+                            const sinMora = Number(loanPreview?.next_installment_amount) || 0;
+                            const mora = Number(loanPreview?.next_installment_late_fee) || 0;
+                            setFormData((prev) => ({
+                              ...prev,
+                              amount: incluir ? String((sinMora + mora).toFixed(2)) : String(sinMora.toFixed(2)),
+                            }));
+                          }}
+                          className="w-3 h-3 rounded border-amber-500 text-red-600 focus:ring-amber-400"
+                        />
+                        <span className="text-xs text-amber-900/90">Incluir mora en el monto a registrar</span>
+                      </label>
                     </div>
-                    <label className="flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors hover:bg-amber-100/40 active:bg-amber-100/60">
-                      <input
-                        type="checkbox"
-                        checked={chargeLateFee}
-                        onChange={(e) => {
-                          const cobrar = e.target.checked;
-                          setChargeLateFee(cobrar);
-                          const total = Number(loanPreview?.next_installment_amount) || 0;
-                          const mora = Number(loanPreview?.next_installment_late_fee) || 0;
-                          setFormData((prev) => ({
-                            ...prev,
-                            amount: cobrar ? String(Number((total).toFixed(2))) : String(Number((total - mora).toFixed(2))),
-                          }));
-                        }}
-                        className="w-3 h-3 rounded border border-amber-500 bg-white text-red-600 focus:ring-2 focus:ring-amber-400 focus:ring-offset-1 cursor-pointer"
-                      />
-                      <span className="text-xs text-amber-900/90">Incluir mora en el pago</span>
-                    </label>
-                  </div>
                 )}
               </div>
               <div>
@@ -1084,11 +1083,11 @@ const Payments = () => {
                       S/. {v?.amount != null ? Number(v.amount).toFixed(2) : '0.00'}
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-700">
-                      {v?.paymentDate ? formatDateUTC(v.paymentDate, 'es-ES') : '—'}
+                      {v?.paymentDate ? formatDate(v.paymentDate, 'es-ES') : '—'}
                     </td>
                     {comprobantesFilter === 'approved' && (
                       <td className="px-4 py-3 text-sm text-gray-700">
-                        {v?.reviewedAt ? formatDateUTC(v.reviewedAt, 'es-ES') : '—'}
+                        {v?.reviewedAt ? formatDate(v.reviewedAt, 'es-ES') : '—'}
                       </td>
                     )}
                     <td className="px-4 py-3">
@@ -1260,7 +1259,7 @@ const Payments = () => {
                         ) : '—'}
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
-                        {row?.created_at ? formatDateShortUTC(row.created_at, 'es-ES') : '—'}
+                        {row?.created_at ? formatDateShort(row.created_at, 'es-ES') : '—'}
                       </td>
                       <td className="px-4 py-3 text-sm font-medium text-gray-900">
                         {[row?.driver_first_name, row?.driver_last_name].filter(Boolean).join(' ') || '—'}

@@ -13,18 +13,65 @@ import {
   Settings,
   LogOut,
   X,
-  Building2,
   Car,
   Bike,
 } from 'lucide-react';
 
 type AdminProduct = 'rapidin' | 'yego-mi-auto' | 'yego-mi-moto';
+type MenuItem = { text: string; icon: typeof LayoutDashboard; path: string };
+type MenuSection = { title: string; items: MenuItem[] };
 
-interface LayoutProps {
-  children: React.ReactNode;
-}
+const ADMIN_MENU: Record<AdminProduct, { newRequest: MenuItem; sections: MenuSection[]; subtitle: string; dashboardPath: string }> = {
+  rapidin: {
+    newRequest: { text: 'Nueva solicitud', icon: PlusCircle, path: '/admin/loan-requests/new' },
+    subtitle: 'Yego Rapidín',
+    dashboardPath: '/admin/dashboard',
+    sections: [
+      { title: 'Principal', items: [{ text: 'Dashboard', icon: LayoutDashboard, path: '/admin/dashboard' }] },
+      { title: 'Operación', items: [
+        { text: 'Solicitudes', icon: FileText, path: '/admin/loan-requests' },
+        { text: 'Préstamos', icon: Banknote, path: '/admin/loans' },
+        { text: 'Pagos', icon: CreditCard, path: '/admin/payments' },
+      ]},
+      { title: 'Reportes', items: [
+        { text: 'Análisis', icon: BarChart3, path: '/admin/analysis' },
+        { text: 'Provisiones', icon: TrendingUp, path: '/admin/provisions' },
+      ]},
+      { title: 'Sistema', items: [{ text: 'Configuración', icon: Settings, path: '/admin/settings' }] },
+    ],
+  },
+  'yego-mi-auto': {
+    newRequest: { text: 'Nueva solicitud Mi Auto', icon: PlusCircle, path: '/admin/yego-mi-auto/loan-requests/new' },
+    subtitle: 'Yego mi auto',
+    dashboardPath: '/admin/yego-mi-auto/dashboard',
+    sections: [
+      { title: 'Principal', items: [{ text: 'Dashboard', icon: LayoutDashboard, path: '/admin/yego-mi-auto/dashboard' }] },
+      { title: 'Operación', items: [
+        { text: 'Solicitudes', icon: FileText, path: '/admin/yego-mi-auto/requests' },
+        { text: 'Alquiler / Venta', icon: Banknote, path: '/admin/yego-mi-auto/rent-sale' },
+        { text: 'Pagos', icon: CreditCard, path: '/admin/yego-mi-auto/payments' },
+      ]},
+      { title: 'Reportes', items: [{ text: 'Análisis', icon: BarChart3, path: '/admin/yego-mi-auto/analysis' }] },
+      { title: 'Sistema', items: [{ text: 'Configuración', icon: Settings, path: '/admin/yego-mi-auto/config' }] },
+    ],
+  },
+  'yego-mi-moto': {
+    newRequest: { text: 'Nueva solicitud Mi Moto', icon: PlusCircle, path: '/admin/yego-mi-moto/loan-requests/new' },
+    subtitle: 'Yego mi moto',
+    dashboardPath: '/admin/yego-mi-moto/dashboard',
+    sections: [
+      { title: 'Principal', items: [{ text: 'Dashboard', icon: LayoutDashboard, path: '/admin/yego-mi-moto/dashboard' }] },
+      { title: 'Operación', items: [
+        { text: 'Préstamos', icon: Banknote, path: '/admin/yego-mi-moto/loans' },
+        { text: 'Pagos', icon: CreditCard, path: '/admin/yego-mi-moto/payments' },
+      ]},
+      { title: 'Reportes', items: [{ text: 'Análisis', icon: BarChart3, path: '/admin/yego-mi-moto/analysis' }] },
+      { title: 'Sistema', items: [{ text: 'Configuración', icon: Settings, path: '/admin/yego-mi-moto/config' }] },
+    ],
+  },
+};
 
-const Layout: React.FC<LayoutProps> = ({ children }) => {
+const Layout = ({ children }: { children: React.ReactNode }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -36,62 +83,18 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       ? 'yego-mi-auto'
       : 'rapidin';
 
-  const newRequestItemRapidin = { text: 'Nueva solicitud', icon: PlusCircle, path: '/admin/loan-requests/new' };
-  const menuItemsRapidin = [
-    { text: 'Dashboard', icon: LayoutDashboard, path: '/admin/dashboard' },
-    { text: 'Solicitudes', icon: FileText, path: '/admin/loan-requests' },
-    { text: 'Préstamos', icon: Banknote, path: '/admin/loans' },
-    { text: 'Pagos', icon: CreditCard, path: '/admin/payments' },
-    { text: 'Análisis', icon: BarChart3, path: '/admin/analysis' },
-    { text: 'Provisiones', icon: TrendingUp, path: '/admin/provisions' },
-    { text: 'Configuración', icon: Settings, path: '/admin/settings' },
-  ];
+  const { newRequest: newRequestItem, sections, subtitle: productSubtitle } = ADMIN_MENU[currentProduct];
 
-  const newRequestItemYegoMiAuto = { text: 'Nueva solicitud de Yego mi auto', icon: PlusCircle, path: '/admin/yego-mi-auto/loan-requests/new' };
-  const menuItemsYegoMiAuto = [
-    { text: 'Dashboard', icon: LayoutDashboard, path: '/admin/yego-mi-auto/dashboard' },
-    { text: 'Flotas', icon: Building2, path: '/admin/yego-mi-auto/flotas' },
-    { text: 'Configuración', icon: Settings, path: '/admin/yego-mi-auto/config' },
-    { text: 'Análisis', icon: BarChart3, path: '/admin/yego-mi-auto/analysis' },
-    { text: 'Pagos', icon: CreditCard, path: '/admin/yego-mi-auto/payments' },
-    { text: 'Préstamos', icon: Banknote, path: '/admin/yego-mi-auto/loans' },
-  ];
-
-  const newRequestItemYegoMiMoto = { text: 'Nueva solicitud de Yego mi moto', icon: PlusCircle, path: '/admin/yego-mi-moto/loan-requests/new' };
-  const menuItemsYegoMiMoto = [
-    { text: 'Dashboard', icon: LayoutDashboard, path: '/admin/yego-mi-moto/dashboard' },
-    { text: 'Flotas', icon: Building2, path: '/admin/yego-mi-moto/flotas' },
-    { text: 'Configuración', icon: Settings, path: '/admin/yego-mi-moto/config' },
-    { text: 'Análisis', icon: BarChart3, path: '/admin/yego-mi-moto/analysis' },
-    { text: 'Pagos', icon: CreditCard, path: '/admin/yego-mi-moto/payments' },
-    { text: 'Préstamos', icon: Banknote, path: '/admin/yego-mi-moto/loans' },
-  ];
-
-  const newRequestItem = currentProduct === 'rapidin' ? newRequestItemRapidin : currentProduct === 'yego-mi-auto' ? newRequestItemYegoMiAuto : newRequestItemYegoMiMoto;
-  const menuItems = currentProduct === 'rapidin' ? menuItemsRapidin : currentProduct === 'yego-mi-auto' ? menuItemsYegoMiAuto : menuItemsYegoMiMoto;
-
-  const handleDrawerToggle = () => {
-    setMobileOpen(!mobileOpen);
-  };
-
-  const handleLogout = () => {
-    logout();
-    navigate('/admin/login', { replace: true });
-  };
-
+  const handleDrawerToggle = () => setMobileOpen((o) => !o);
+  const handleLogout = () => { logout(); navigate('/admin/login', { replace: true }); };
   const handleProductSwitch = (product: AdminProduct) => {
-    setMobileOpen(false);
     if (product === currentProduct) return;
-    if (product === 'rapidin') navigate('/admin/dashboard');
-    if (product === 'yego-mi-auto') navigate('/admin/yego-mi-auto/dashboard');
-    if (product === 'yego-mi-moto') navigate('/admin/yego-mi-moto/dashboard');
+    setMobileOpen(false);
+    navigate(ADMIN_MENU[product].dashboardPath);
   };
-
-  const productSubtitle = currentProduct === 'rapidin' ? 'Yego Rapidín' : currentProduct === 'yego-mi-auto' ? 'Yego mi auto' : 'Yego mi moto';
 
   const sidebar = (
     <div className="flex flex-col h-full bg-white shadow-lg">
-      {/* Logo */}
       <div className="flex items-center justify-between p-4 border-b">
         <div className="flex items-center space-x-3 min-w-0">
           <div className="w-10 h-10 bg-gradient-to-br from-red-600 to-red-700 rounded-lg flex items-center justify-center flex-shrink-0">
@@ -110,9 +113,10 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         </button>
       </div>
 
-      {/* Navigation */}
       <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-        {/* Nueva solicitud arriba, separada del resto */}
+        <div className="px-2 pt-1 pb-1">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider text-left">— Menú —</p>
+        </div>
         <Link
           to={newRequestItem.path}
           onClick={() => setMobileOpen(false)}
@@ -125,33 +129,38 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           <PlusCircle className="w-5 h-5" />
           <span className="font-medium">{newRequestItem.text}</span>
         </Link>
-        <div className="my-2 border-t border-gray-200" />
-        {menuItems.map((item) => {
-          const Icon = item.icon;
-          const isNewRequestPage = location.pathname === '/admin/loan-requests/new';
-          const isActive = isNewRequestPage
-            ? false
-            : (location.pathname === item.path ||
-               (item.path !== '/admin/dashboard' && location.pathname.startsWith(item.path + '/')));
-          return (
-            <Link
-              key={item.text}
-              to={item.path}
-              onClick={() => setMobileOpen(false)}
-              className={`flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${
-                isActive
-                  ? 'bg-red-600 text-white'
-                  : 'text-gray-700 hover:bg-gray-100'
-              }`}
-            >
-              <Icon className="w-5 h-5" />
-              <span className="font-medium">{item.text}</span>
-            </Link>
-          );
-        })}
+        {sections.map((section) => (
+          <div key={section.title} className="pt-4">
+            <p className="px-2 pb-2 text-xs font-semibold text-gray-400 uppercase tracking-wider text-left">
+              — {section.title} —
+            </p>
+            <div className="space-y-0.5">
+              {section.items.map((item) => {
+                const Icon = item.icon;
+                const isNewRequest = location.pathname.includes('/loan-requests/new');
+                const isDashboard = item.path.endsWith('/dashboard');
+                const isActive = !isNewRequest && (location.pathname === item.path || (!isDashboard && location.pathname.startsWith(item.path + '/')));
+                return (
+                  <Link
+                    key={item.text}
+                    to={item.path}
+                    onClick={() => setMobileOpen(false)}
+                    className={`flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${
+                      isActive
+                        ? 'bg-red-600 text-white'
+                        : 'text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Icon className="w-5 h-5 flex-shrink-0" />
+                    <span className="font-medium">{item.text}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </nav>
 
-      {/* Logout */}
       <div className="p-4 border-t">
         <button
           onClick={handleLogout}
@@ -166,7 +175,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   return (
     <div className="flex h-screen bg-gray-50">
-      {/* Mobile sidebar backdrop */}
       {mobileOpen && (
         <div 
           className="fixed inset-0 bg-black bg-opacity-50 z-40 lg:hidden"
@@ -174,7 +182,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         />
       )}
 
-      {/* Sidebar */}
       <aside
         className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${
           mobileOpen ? 'translate-x-0' : '-translate-x-full'
@@ -183,9 +190,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         {sidebar}
       </aside>
 
-      {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0 lg:ml-64">
-        {/* Header */}
         <header className="bg-white shadow-sm sticky top-0 z-30">
           <div className="flex items-center justify-between gap-4 px-4 py-4 lg:px-8">
             <button
@@ -195,7 +200,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               <Menu className="w-6 h-6" />
             </button>
 
-            {/* Combo producto: Yego Rapidín | Yego mi auto | Yego mi moto */}
             <div className="flex rounded-lg bg-gray-100 p-1 flex-wrap gap-1">
               <button
                 type="button"
@@ -232,7 +236,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             <div className="flex-1 min-w-0" />
 
             <div className="flex items-center">
-              {/* User Account Info */}
               <div className="hidden md:flex items-center space-x-3">
                 <div className="flex flex-col min-w-0 text-right">
                   <p className="text-sm font-semibold text-gray-900 leading-tight">
@@ -248,11 +251,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           </div>
         </header>
 
-        {/* Page content */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
-          <div className="max-w-full">
-            {children}
-          </div>
+          <div className="max-w-full">{children}</div>
         </main>
       </div>
     </div>

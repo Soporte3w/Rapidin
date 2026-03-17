@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import Home from './pages/public/Home';
 import LandingPage from './pages/public/LandingPage';
@@ -26,6 +26,7 @@ import DriverVouchers from './pages/driver/DriverVouchers';
 import LoanBenefits from './pages/driver/LoanBenefits';
 import LoanOfferVerification from './pages/driver/LoanOfferVerification';
 import LoanRequestFlow from './pages/driver/LoanRequestFlow';
+import QuieroMiYegoAuto from './pages/driver/QuieroMiYegoAuto';
 import SelectFlota from './pages/driver/SelectFlota';
 import NewLoanRequest from './pages/yegoRapidin/NewLoanRequest';
 import YegoMiAutoDashboard from './pages/yegoMiAuto/YegoMiAutoDashboard';
@@ -34,7 +35,10 @@ import YegoMiAutoConfig from './pages/yegoMiAuto/YegoMiAutoConfig';
 import YegoMiAutoAnalysis from './pages/yegoMiAuto/YegoMiAutoAnalysis';
 import YegoMiAutoPayments from './pages/yegoMiAuto/YegoMiAutoPayments';
 import YegoMiAutoLoans from './pages/yegoMiAuto/YegoMiAutoLoans';
+import YegoMiAutoRentSaleDetail from './pages/yegoMiAuto/YegoMiAutoRentSaleDetail';
 import YegoMiAutoNewRequest from './pages/yegoMiAuto/YegoMiAutoNewRequest';
+import YegoMiAutoSolicitudes from './pages/yegoMiAuto/YegoMiAutoSolicitudes';
+import YegoMiAutoSolicitudDetail from './pages/yegoMiAuto/YegoMiAutoSolicitudDetail';
 import YegoMiMotoDashboard from './pages/yegoMiMoto/YegoMiMotoDashboard';
 import YegoMiMotoFlotas from './pages/yegoMiMoto/YegoMiMotoFlotas';
 import YegoMiMotoConfig from './pages/yegoMiMoto/YegoMiMotoConfig';
@@ -43,6 +47,11 @@ import YegoMiMotoPayments from './pages/yegoMiMoto/YegoMiMotoPayments';
 import YegoMiMotoLoans from './pages/yegoMiMoto/YegoMiMotoLoans';
 import YegoMiMotoNewRequest from './pages/yegoMiMoto/YegoMiMotoNewRequest';
 import { AuthProvider } from './contexts/AuthContext';
+
+function RedirectSolicitudToRequest() {
+  const { id } = useParams();
+  return <Navigate to={`/admin/yego-mi-auto/requests/${id}`} replace />;
+}
 
 function App() {
   return (
@@ -114,6 +123,7 @@ function App() {
               <Route path="loan-benefits" element={<LoanBenefits />} />
               <Route path="loan-offer-verification" element={<LoanOfferVerification />} />
               <Route path="loan-request-flow" element={<LoanRequestFlow />} />
+              <Route path="quiero-mi-auto" element={<QuieroMiYegoAuto />} />
               <Route path="profile" element={<DriverProfile />} />
             </Route>
             
@@ -223,10 +233,16 @@ function App() {
             <Route path="/admin/yego-mi-auto" element={<Navigate to="/admin/yego-mi-auto/dashboard" replace />} />
             <Route path="/admin/yego-mi-auto/dashboard" element={<ProtectedRoute><Layout><YegoMiAutoDashboard /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/flotas" element={<ProtectedRoute><Layout><YegoMiAutoFlotas /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/requests" element={<ProtectedRoute><Layout><YegoMiAutoSolicitudes /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/requests/:id" element={<ProtectedRoute><Layout><YegoMiAutoSolicitudDetail /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/solicitudes" element={<Navigate to="/admin/yego-mi-auto/requests" replace />} />
+            <Route path="/admin/yego-mi-auto/solicitudes/:id" element={<RedirectSolicitudToRequest />} />
             <Route path="/admin/yego-mi-auto/config" element={<ProtectedRoute><Layout><YegoMiAutoConfig /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/analysis" element={<ProtectedRoute><Layout><YegoMiAutoAnalysis /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/payments" element={<ProtectedRoute><Layout><YegoMiAutoPayments /></Layout></ProtectedRoute>} />
-            <Route path="/admin/yego-mi-auto/loans" element={<ProtectedRoute><Layout><YegoMiAutoLoans /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/rent-sale" element={<ProtectedRoute><Layout><YegoMiAutoLoans /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/rent-sale/:id" element={<ProtectedRoute><Layout><YegoMiAutoRentSaleDetail /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/loans" element={<Navigate to="/admin/yego-mi-auto/rent-sale" replace />} />
             <Route path="/admin/yego-mi-auto/loan-requests/new" element={<ProtectedRoute><Layout><YegoMiAutoNewRequest /></Layout></ProtectedRoute>} />
             {/* Yego mi moto */}
             <Route path="/admin/yego-mi-moto" element={<Navigate to="/admin/yego-mi-moto/dashboard" replace />} />

@@ -11,6 +11,7 @@ import { sanitizeBody, sanitizeQuery } from './middleware/sanitize.js';
 import { initializeJobs } from './jobs/index.js';
 import { initializeWebSocket } from './realtime/subscriber.js';
 import { initializeDatabaseListener } from './realtime/listener.js';
+import { loadProxiesFromUrlIfConfigured } from './services/proxyLoader.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const envFile = process.env.NODE_ENV === 'production'
@@ -88,6 +89,7 @@ import loanConditionsRoutes from './routes/loanConditions.js';
 import cycleConfigRoutes from './routes/cycleConfig.js';
 import interestRatesRoutes from './routes/interestRates.js';
 import adminLoanRequestRoutes from './routes/adminLoanRequest.js';
+import miautoRoutes from './routes/miauto.js';
 
 app.use('/api/auth', authRoutes); // authLimiter deshabilitado temporalmente
 app.use('/api/rapidin', rapidinRoutes); // publicLimiter deshabilitado temporalmente
@@ -112,6 +114,7 @@ app.use('/api/loan-conditions', loanConditionsRoutes);
 app.use('/api/cycle-config', cycleConfigRoutes);
 app.use('/api/interest-rates', interestRatesRoutes);
 app.use('/api/admin', adminLoanRequestRoutes);
+app.use('/api/miauto', miautoRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
@@ -122,6 +125,10 @@ const server = app.listen(PORT, () => {
   initializeJobs();
   initializeWebSocket(server);
   initializeDatabaseListener();
+
+  loadProxiesFromUrlIfConfigured()
+    .then((ok) => { if (ok) logger.info('Proxies cargados desde YANGO_PROXIES_URL'); })
+    .catch((err) => logger.warn('Proxies: no se pudo cargar desde URL', err?.message));
 });
 
 export default app;

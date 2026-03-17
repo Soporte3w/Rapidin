@@ -13,8 +13,8 @@ export default function DriverLayout() {
         onClose={() => setSidebarOpen(false)} 
       />
 
-      {/* Main content */}
-      <div className="lg:pl-64">
+      {/* Main content - padding según ancho del sidebar */}
+      <div className="lg:pl-72">
         <DriverHeader onMenuClick={() => setSidebarOpen(true)} />
 
         {/* Page content */}

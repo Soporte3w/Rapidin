@@ -58,6 +58,7 @@ export default function DriverProfile() {
             park_id: d.park_id ?? null
           });
           setEmail(d.email ?? '');
+          updateUser({ email: d.email ?? undefined, license: d.license ?? undefined });
         }
       } catch (_) {
         setProfileData(null);

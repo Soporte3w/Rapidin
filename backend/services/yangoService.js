@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import axios from 'axios';
+import { getNextProxyConfig, hasProxies } from './proxyLoader.js';
 
 // Cookie y Park ID. Dos cookies: cobro automático (Jhajaira) y pagar/recarga (carmenvargas).
 const trimCookie = (v) => (v || '').replace(/^["']|["']$/g, '').trim();
@@ -7,9 +8,38 @@ const COOKIE_PAGAR = trimCookie(process.env.YANGO_FLEET_COOKIE);           // pa
 const COOKIE_COBRO = trimCookie(process.env.YANGO_FLEET_COOKIE_COBRO) || COOKIE_PAGAR; // cobro automático (withdraw + balance en job)
 const PARK_ID = trimCookie(process.env.YANGO_FLEET_PARK_ID) || '08e20910d81d42658d4334d3f6d10ac0';
 
+const MAX_PROXY_RETRIES = 5;
+
+function isRateLimitError(error) {
+  if (error.response && error.response.status === 429) return true;
+  const msg = (error.response?.data?.message || error.message || '').toString();
+  return /too many requests/i.test(msg);
+}
+
 /**
- * Withdraw (cobro) — igual que tu proxy: body + headers, X-Idempotency-Token aleatorio (UUID, misma longitud).
- * cookieOverride y parkIdOverride opcionales (si no se pasan, se usan COOKIE y PARK_ID).
+ * POST con reintento usando otro proxy si hay rate limit (429 / Too many requests).
+ */
+async function postWithProxyRetry(url, body, headers) {
+  let lastError;
+  for (let attempt = 0; attempt < MAX_PROXY_RETRIES; attempt++) {
+    const config = { headers, ...getNextProxyConfig() };
+    try {
+      const res = await axios.post(url, body || {}, config);
+      return res;
+    } catch (error) {
+      lastError = error;
+      if (attempt < MAX_PROXY_RETRIES - 1 && hasProxies() && isRateLimitError(error)) {
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Withdraw (cobro) — body + headers, X-Idempotency-Token. Usa proxy y reintenta con otro si hay rate limit.
  */
 export async function withdrawFromContractor(id, amount, description, cookieOverride, parkIdOverride) {
   const xIdempotencyToken = crypto.randomUUID();
@@ -29,7 +59,7 @@ export async function withdrawFromContractor(id, amount, description, cookieOver
     'Content-Type': 'text/plain'
   };
   try {
-    const response = await axios.post('https://fleet.yango.com/api/v1/quickbar/transaction/withdraw', body, { headers });
+    const response = await postWithProxyRetry('https://fleet.yango.com/api/v1/quickbar/transaction/withdraw', body, headers);
     return { success: true, data: response.data };
   } catch (error) {
     if (error.response) {
@@ -61,7 +91,7 @@ export async function addToContractor(id, amount, description, cookieOverride, p
     'Content-Type': 'text/plain'
   };
   try {
-    const response = await axios.post('https://fleet.yango.com/api/v1/quickbar/transaction/add', body, { headers });
+    const response = await postWithProxyRetry('https://fleet.yango.com/api/v1/quickbar/transaction/add', body, headers);
     return { success: true, data: response.data };
   } catch (error) {
     if (error.response) {
@@ -83,7 +113,7 @@ export async function getContractorBalance(contractorProfileId, parkId = null, c
     'Content-Type': 'application/json'
   };
   try {
-    const res = await axios.post(url, {}, { headers });
+    const res = await postWithProxyRetry(url, {}, headers);
     const contractors = res.data?.contractors || [];
     const c = contractors.find(x => x?.contractor_profile_id === id) || contractors[0];
     if (!c) return { success: false, error: 'Conductor no encontrado' };
@@ -91,6 +121,44 @@ export async function getContractorBalance(contractorProfileId, parkId = null, c
     return { success: true, balance: Number.isFinite(balance) ? balance : 0, full_name: c.full_name };
   } catch (error) {
     if (error.response) return { success: false, error: error.response.status === 403 ? '403 cookie expirada' : `Error ${error.response.status}` };
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Driver income (Mi Auto): viajes e ingresos por rango de fechas.
+ * POST fleet.yango.com/api/v1/cards/driver/income con date_from, date_to, driver_id.
+ * dateFrom/dateTo: ISO con timezone -05:00 (ej. 2026-03-02T00:00:00-05:00, 2026-03-08T23:00:00-05:00).
+ */
+export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null, cookieOverride = null) {
+  const id = String(driverId || '').trim();
+  if (!id) return { success: false, error: 'driver_id vacío' };
+  const url = 'https://fleet.yango.com/api/v1/cards/driver/income';
+  const body = {
+    date_from: dateFrom || '',
+    date_to: dateTo || '',
+    driver_id: id
+  };
+  const headers = {
+    'Accept-Language': 'es-ES,es',
+    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : COOKIE_COBRO,
+    'X-Park-Id': (parkId && String(parkId).trim()) ? String(parkId).trim() : PARK_ID,
+    'Content-Type': 'application/json'
+  };
+  try {
+    const res = await postWithProxyRetry(url, body, headers);
+    const countCompleted = res.data?.orders?.count_completed != null ? Number(res.data.orders.count_completed) : 0;
+    const partnerFees = res.data?.balances?.partner_fees != null ? parseFloat(res.data.balances.partner_fees) : 0;
+    return {
+      success: true,
+      count_completed: countCompleted,
+      partner_fees: Number.isFinite(partnerFees) ? partnerFees : 0,
+      raw: res.data
+    };
+  } catch (error) {
+    if (error.response) {
+      return { success: false, error: error.response.status === 403 ? '403 cookie expirada' : `Error ${error.response.status}`, message: error.response.data?.message || error.response.data };
+    }
     return { success: false, error: error.message };
   }
 }

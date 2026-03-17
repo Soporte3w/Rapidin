@@ -5,7 +5,8 @@ import {
   PlusCircle,
   User,
   LogOut,
-  X
+  X,
+  Car
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -24,11 +25,24 @@ export default function DriverSidebar({ isOpen, onClose }: DriverSidebarProps) {
     navigate('/driver/login', { replace: true });
   };
 
-  const navigation = [
-    { name: 'Mi Perfil', href: '/driver/profile', icon: User },
-    { name: 'Resumen', href: '/driver/resumen', icon: LayoutDashboard },
-    { name: 'Mis Préstamos', href: '/driver/loans', icon: FileText },
-    { name: 'Nueva Solicitud', href: '/driver/new-loan', icon: PlusCircle },
+  type MenuItem = { name: string; href: string; icon: typeof LayoutDashboard };
+  type MenuSection = { title: string; items: MenuItem[] };
+
+  // Opción "Quiero mi Yego Auto" oculta hasta que se habilite (no visible en sección driver)
+  const SHOW_MI_AUTO = false;
+
+  const sections: MenuSection[] = [
+    { title: 'Principal', items: [
+      { name: 'Resumen', href: '/driver/resumen', icon: LayoutDashboard },
+      { name: 'Mi Perfil', href: '/driver/profile', icon: User },
+    ]},
+    { title: 'Préstamos', items: [
+      { name: 'Nueva Solicitud', href: '/driver/new-loan', icon: PlusCircle },
+      { name: 'Mis Préstamos', href: '/driver/loans', icon: FileText },
+    ]},
+    ...(SHOW_MI_AUTO ? [{ title: 'Mi Auto', items: [
+      { name: '¡Quiero mi Yego Auto!', href: '/driver/quiero-mi-auto', icon: Car },
+    ]}] : []),
   ];
 
   return (
@@ -42,9 +56,9 @@ export default function DriverSidebar({ isOpen, onClose }: DriverSidebarProps) {
         />
       )}
 
-      {/* Sidebar: drawer en móvil, fijo en desktop */}
+      {/* Sidebar: drawer en móvil, fijo en desktop (un poco más ancho) */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-[280px] max-w-[85vw] lg:w-64 lg:max-w-none bg-white shadow-xl lg:shadow-lg transform transition-transform duration-300 ease-out lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 w-[300px] max-w-[85vw] lg:w-72 lg:max-w-none bg-white shadow-xl lg:shadow-lg transform transition-transform duration-300 ease-out lg:translate-x-0 ${
           isOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
@@ -69,31 +83,39 @@ export default function DriverSidebar({ isOpen, onClose }: DriverSidebarProps) {
             </button>
           </div>
 
-          {/* Navegación - ítems más altos en móvil para tocar mejor */}
-          <nav className="flex-1 p-3 sm:p-4 space-y-1 overflow-y-auto">
-            {navigation.map((item) => {
-              let isActive = location.pathname === item.href;
-              if (item.href === '/driver/new-loan') {
-                isActive = location.pathname === '/driver/new-loan' ||
-                  location.pathname.startsWith('/driver/loan-');
-              }
-              const Icon = item.icon;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  onClick={onClose}
-                  className={`flex items-center gap-3 px-4 py-3.5 min-h-[48px] lg:min-h-0 lg:py-3 rounded-xl lg:rounded-lg transition-colors touch-manipulation active:scale-[0.98] ${
-                    isActive
-                      ? 'bg-[#8B1A1A] text-white'
-                      : 'text-gray-700 hover:bg-gray-100 active:bg-gray-100'
-                  }`}
-                >
-                  <Icon className="w-5 h-5 flex-shrink-0" />
-                  <span className="font-medium text-left">{item.name}</span>
-                </Link>
-              );
-            })}
+          {/* Navegación por secciones */}
+          <nav className="flex-1 overflow-y-auto p-4">
+            {sections.map((section) => (
+              <div key={section.title} className="pt-4">
+                <p className="px-2 pb-2 text-xs font-semibold text-gray-400 uppercase tracking-wider text-left">
+                  — {section.title} —
+                </p>
+                <div className="space-y-0.5">
+                  {section.items.map((item) => {
+                    let isActive = location.pathname === item.href;
+                    if (item.href === '/driver/new-loan') {
+                      isActive = location.pathname === '/driver/new-loan' || location.pathname.startsWith('/driver/loan-');
+                    }
+                    const Icon = item.icon;
+                    return (
+                      <Link
+                        key={item.name}
+                        to={item.href}
+                        onClick={onClose}
+                        className={`flex items-center gap-3 px-4 py-3.5 min-h-[48px] lg:min-h-0 lg:py-3 rounded-xl lg:rounded-lg transition-colors touch-manipulation active:scale-[0.98] ${
+                          isActive
+                            ? 'bg-[#8B1A1A] text-white'
+                            : 'text-gray-700 hover:bg-gray-100 active:bg-gray-100'
+                        }`}
+                      >
+                        <Icon className="w-5 h-5 flex-shrink-0" />
+                        <span className="font-medium">{item.name}</span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </nav>
 
           {/* Cerrar sesión - área táctil amplia en móvil */}

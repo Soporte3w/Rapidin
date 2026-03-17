@@ -167,6 +167,7 @@ const LandingPage = () => {
           const f = flotas[0];
           setStoredSession({
             ...session,
+            user: session.user,
             selectedParkId: f.park_id || undefined,
             selectedExternalDriverId: f.driver_id || undefined,
             selectedRapidinDriverId: (f as { rapidin_driver_id?: string | null }).rapidin_driver_id ?? undefined,

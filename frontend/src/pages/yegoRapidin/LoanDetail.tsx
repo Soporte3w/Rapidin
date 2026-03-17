@@ -3,7 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, User, Banknote, Calendar, AlertCircle, FileText, CheckCircle, Clock, XCircle, X } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import api from '../../services/api';
-import { formatDateLocal as formatDate } from '../../utils/date';
+import { formatDateUTC } from '../../utils/date';
 import toast from 'react-hot-toast';
 
 /** Cuentas bancarias autorizadas para envío por WhatsApp (cobros / instrucciones de pago). */
@@ -125,7 +125,7 @@ const LoanDetail = () => {
         const cuota = parseFloat(c.installment_amount || 0);
         const mora = Math.max(0, parseFloat(c.late_fee ?? 0));
         const total = cuota + mora;
-        const fecha = c.due_date ? formatDate(c.due_date, 'es-ES') : '';
+        const fecha = c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '';
         if (mora > 0) {
           return `• Cuota ${c.installment_number}: ${pref} ${cuota.toFixed(2)} + ${pref} ${mora.toFixed(2)} mora = ${pref} ${total.toFixed(2)} total (venció ${fecha})`;
         }
@@ -395,7 +395,7 @@ const LoanDetail = () => {
                       {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {parseFloat(installment.installment_amount || 0).toFixed(2)}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {installment.due_date ? formatDate(installment.due_date, 'es-ES') : 'N/A'}
+                      {installment.due_date ? formatDateUTC(installment.due_date, 'es-ES') : 'N/A'}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
                       {(() => {
@@ -409,7 +409,7 @@ const LoanDetail = () => {
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
                       {(installment.paid_date || (installment as { last_payment_date?: string }).last_payment_date)
-                        ? formatDate(installment.paid_date || (installment as { last_payment_date?: string }).last_payment_date, 'es-ES')
+                        ? formatDateUTC(installment.paid_date || (installment as { last_payment_date?: string }).last_payment_date, 'es-ES')
                         : '—'}
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-900">
@@ -426,10 +426,10 @@ const LoanDetail = () => {
                             {pendiente > 0 && (
                               <span className="block text-red-600 font-medium">{pref} {pendiente.toFixed(2)} <span className="text-xs font-normal text-red-500">(pendiente)</span></span>
                             )}
-                            {installment.status === 'paid' && cobrada > 0 && (
+                            {(cobrada > 0) && (
                               <span className="block text-amber-700 font-medium">{pref} {cobrada.toFixed(2)} <span className="text-xs font-normal">(cobrada)</span></span>
                             )}
-                            {pagada > 0 && installment.status !== 'paid' && (
+                            {pagada > 0 && cobrada === 0 && (
                               <span className="block text-amber-700 text-xs">{pref} {pagada.toFixed(2)} (pagada)</span>
                             )}
                             {hayMora && (
@@ -492,7 +492,7 @@ const LoanDetail = () => {
                         <li key={c.id} className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
                           <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5">
                             <span className="font-semibold text-gray-700">Cuota {c.installment_number}</span>
-                            <span>Vence {c.due_date ? formatDate(c.due_date, 'es-ES') : '—'}</span>
+                            <span>Vence {c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '—'}</span>
                           </div>
                           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-sm">
                             <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{pref} {cuota.toFixed(2)}</span></span>

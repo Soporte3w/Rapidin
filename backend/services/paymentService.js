@@ -39,8 +39,10 @@ export const registerPayment = async (data, userId) => {
   }
 };
 
-/** Registra un pago por cobro automático (job diario, sin usuario). */
-export const registerPaymentAuto = async (loanId, amount, paymentDate) => {
+/** Registra un pago por cobro automático (job diario, sin usuario).
+ * Si se pasa targetInstallmentId, el monto se aplica solo a esa cuota (la que se cobró); si no, se reparte por fecha.
+ */
+export const registerPaymentAuto = async (loanId, amount, paymentDate, targetInstallmentId = null) => {
   await query('BEGIN');
   try {
     const paymentResult = await query(
@@ -51,7 +53,7 @@ export const registerPaymentAuto = async (loanId, amount, paymentDate) => {
       [loanId, amount, paymentDate]
     );
     const payment = paymentResult.rows[0];
-    await distributePayment(payment.id, loanId, amount, 'by_date');
+    await distributePayment(payment.id, loanId, amount, 'by_date', [], targetInstallmentId);
     await query('COMMIT');
     return payment;
   } catch (error) {
@@ -63,23 +65,34 @@ export const registerPaymentAuto = async (loanId, amount, paymentDate) => {
 const ROUND_CENTS = (v) => Math.round((v) * 100) / 100;
 const MIN_APPLIED = 0.01; // No aplicar ni registrar si el monto es menor (evita errores de punto flotante)
 
-export const distributePayment = async (paymentId, loanId, totalAmount, strategy = 'by_date', waiveLateFeeInstallmentIds = []) => {
+export const distributePayment = async (paymentId, loanId, totalAmount, strategy = 'by_date', waiveLateFeeInstallmentIds = [], targetInstallmentId = null) => {
   const waiveSet = new Set(waiveLateFeeInstallmentIds);
 
   const payRow = await query('SELECT payment_date FROM module_rapidin_payments WHERE id = $1', [paymentId]);
   const paymentDateForBase = payRow.rows[0]?.payment_date ?? null;
   const baseDateStr = paymentDateForBase ? new Date(paymentDateForBase).toISOString().slice(0, 10) : null;
 
-  const installments = await query(
-    `SELECT * FROM module_rapidin_installments 
-     WHERE loan_id = $1 AND status IN ('pending', 'overdue') 
-       AND ((installment_amount - COALESCE(paid_amount, 0)) > 0 OR COALESCE(late_fee, 0) > 0)
-     ORDER BY due_date ASC, installment_number ASC`,
-    [loanId]
-  );
+  let installments;
+  if (targetInstallmentId) {
+    installments = await query(
+      `SELECT * FROM module_rapidin_installments 
+       WHERE loan_id = $1 AND id = $2
+         AND ((installment_amount - COALESCE(paid_amount, 0)) > 0 OR COALESCE(late_fee, 0) > 0)
+       ORDER BY due_date ASC, installment_number ASC`,
+      [loanId, targetInstallmentId]
+    );
+  } else {
+    installments = await query(
+      `SELECT * FROM module_rapidin_installments 
+       WHERE loan_id = $1 AND status IN ('pending', 'overdue') 
+         AND ((installment_amount - COALESCE(paid_amount, 0)) > 0 OR COALESCE(late_fee, 0) > 0)
+       ORDER BY due_date ASC, installment_number ASC`,
+      [loanId]
+    );
+  }
 
   if (installments.rows.length === 0) {
-    throw new Error('No hay cuotas pendientes para este préstamo');
+    throw new Error(targetInstallmentId ? 'Cuota no encontrada o sin saldo pendiente' : 'No hay cuotas pendientes para este préstamo');
   }
 
   let remainingAmount = ROUND_CENTS(totalAmount);

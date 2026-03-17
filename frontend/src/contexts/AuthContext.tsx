@@ -17,6 +17,8 @@ interface User {
   country: string;
   document_number?: string;
   document_type?: string;
+  /** Licencia del conductor (desde perfil / module_rapidin_drivers.license) */
+  license?: string;
   rating?: number;
   account_balance?: number;
   has_active_loan?: boolean;

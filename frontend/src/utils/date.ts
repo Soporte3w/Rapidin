@@ -47,6 +47,21 @@ export function formatDateTimeLocal(isoString: string | null | undefined, locale
   });
 }
 
+/** Fecha y hora en hora local con formato 12 h (a. m. / p. m.). */
+export function formatDateTimeLocal12h(isoString: string | null | undefined, locale = 'es-ES'): string {
+  if (!isoString) return '—';
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(locale, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
 function formatDateShortLocal(isoString: string | null | undefined, locale = 'es-ES'): string {
   if (!isoString) return '—';
   const d = new Date(isoString);
@@ -69,3 +84,9 @@ export const formatDateTime = formatDateTimeLocal;
 
 /** Por defecto: fecha corta en hora local (todo el sistema). */
 export const formatDateShort = formatDateShortLocal;
+
+/** Si la cadena incluye 'T' usa fecha+hora en 12 h (a. m. / p. m.); si no, solo fecha (local). */
+export function formatDateFlex(isoString: string | null | undefined, locale = 'es-ES'): string {
+  if (!isoString) return '—';
+  return String(isoString).includes('T') ? formatDateTimeLocal12h(isoString, locale) : formatDateLocal(isoString, locale);
+}

@@ -1,6 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { PlusCircle, Trash2, X, Settings as SettingsIcon, Car, ImagePlus, ChevronDown, ChevronRight, ChevronLeft, ListOrdered, Search } from 'lucide-react';
+import { PlusCircle, Trash2, X, Settings as SettingsIcon, Car, ImagePlus, ChevronDown, ChevronRight, ChevronLeft, ListOrdered, Search, DollarSign } from 'lucide-react';
+import api from '../../services/api';
+import toast from 'react-hot-toast';
 
 /** Moneda de la cuota inicial */
 export type MonedaInicial = 'USD' | 'PEN';
@@ -20,8 +22,9 @@ export interface VehiculoCronograma {
 /** Moneda del bono mi auto por fila */
 export type BonoAutoMoneda = 'USD' | 'PEN';
 
-/** Fila del cronograma: viajes, bono auto (con moneda), y cuota semanal por cada carro */
+/** Fila del cronograma: viajes (intervalo ej. "0 - 119"), bono auto (con moneda), y cuota semanal por cada carro */
 export interface CronogramaRule {
+  /** Intervalo de viajes, ej: "0 - 119" = entre 0 y 119 viajes usan este bono y estas cuotas por carro */
   viajes: string;
   bono_auto: number;
   /** Moneda del bono: USD ($) o PEN (S/.) */
@@ -36,6 +39,8 @@ export interface Cronograma {
   name: string;
   country: string;
   active: boolean;
+  /** Tasa de interés por mora (ej. 0.05 = 5%). Interés por día = (cuota_semanal * tasa) / 7 */
+  tasa_interes_mora?: number;
   vehicles: VehiculoCronograma[];
   rules: CronogramaRule[];
 }
@@ -68,22 +73,66 @@ function getCountryBadgeClass(country: string): string {
   return 'bg-gray-100 text-gray-600';
 }
 
+/** Parsea "viajes" (ej: "0 - 119", "400+") a intervalo [min, max]. Usado para saber qué fila aplica según número de viajes. */
+export function parseViajesInterval(viajesStr: string): { min: number; max: number } | null {
+  if (!viajesStr || typeof viajesStr !== 'string') return null;
+  const s = viajesStr.trim();
+  if (!s) return null;
+  const plusMatch = s.match(/^(\d+)\s*\+$/);
+  if (plusMatch) {
+    const min = parseInt(plusMatch[1], 10);
+    if (Number.isNaN(min) || min < 0) return null;
+    return { min, max: Infinity };
+  }
+  const parts = s.split(/\s*-\s*/).map((p) => p.trim());
+  if (parts.length >= 2) {
+    const min = parseInt(parts[0], 10);
+    const max = parseInt(parts[1], 10);
+    if (!Number.isNaN(min) && !Number.isNaN(max) && min >= 0 && max >= min) return { min, max };
+  }
+  const single = parseInt(s, 10);
+  if (!Number.isNaN(single) && single >= 0) return { min: single, max: single };
+  return null;
+}
+
+/** Devuelve la regla cuyo intervalo de viajes contiene a numViajes (bono auto y cuotas por carro aplican). */
+export function getRuleForTripCount(rules: CronogramaRule[], numViajes: number): CronogramaRule | null {
+  if (!Array.isArray(rules) || rules.length === 0 || numViajes == null || numViajes < 0) return null;
+  const n = Number(numViajes);
+  if (Number.isNaN(n)) return null;
+  for (const rule of rules) {
+    const interval = parseViajesInterval(rule.viajes);
+    if (!interval) continue;
+    if (n >= interval.min && n <= interval.max) return rule;
+  }
+  return null;
+}
+
 export default function YegoMiAutoConfig() {
   const [cronogramas, setCronogramas] = useState<Cronograma[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<Omit<Cronograma, 'id'>>({
     name: '',
     country: 'PE',
     active: true,
+    tasa_interes_mora: 0,
     vehicles: [{ ...createEmptyVehicle() }],
     rules: [],
   });
   const [modalSectionOpen, setModalSectionOpen] = useState<'carros' | 'filas' | null>(null);
+  const [modalViewOnly, setModalViewOnly] = useState(true);
+  const isViewMode = Boolean(editingId && modalViewOnly);
   const [isModalEntering, setIsModalEntering] = useState(false);
   const [isModalClosing, setIsModalClosing] = useState(false);
   const [searchName, setSearchName] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [tipoCambioPE, setTipoCambioPE] = useState<string>('');
+  const [tipoCambioCO, setTipoCambioCO] = useState<string>('');
+  const [loadingTipoCambio, setLoadingTipoCambio] = useState(true);
+  const [savingTipoCambio, setSavingTipoCambio] = useState<string | null>(null);
 
   const PAGE_SIZE = 8;
 
@@ -99,6 +148,90 @@ export default function YegoMiAutoConfig() {
     const start = (page - 1) * PAGE_SIZE;
     return filteredCronogramas.slice(start, start + PAGE_SIZE);
   }, [filteredCronogramas, currentPage, totalPages]);
+
+  const fetchCronogramas = useCallback(async () => {
+    try {
+      setLoading(true);
+      const res = await api.get('/miauto/cronogramas');
+      const data = res.data?.data ?? res.data;
+      setCronogramas(Array.isArray(data) ? data : []);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error al cargar cronogramas');
+      setCronogramas([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const fetchTiposCambio = useCallback(async () => {
+    try {
+      setLoadingTipoCambio(true);
+      const res = await api.get('/miauto/tipo-cambio/all');
+      const list = res.data?.data ?? res.data ?? [];
+      const arr = Array.isArray(list) ? list : [];
+      const pe = arr.find((r: { country: string }) => r.country === 'PE');
+      const co = arr.find((r: { country: string }) => r.country === 'CO');
+      setTipoCambioPE(pe?.valor_usd_a_local != null ? String(pe.valor_usd_a_local) : '');
+      setTipoCambioCO(co?.valor_usd_a_local != null ? String(co.valor_usd_a_local) : '');
+    } catch {
+      setTipoCambioPE('');
+      setTipoCambioCO('');
+    } finally {
+      setLoadingTipoCambio(false);
+    }
+  }, []);
+
+  const initialFetchDone = useRef(false);
+  useEffect(() => {
+    if (initialFetchDone.current) return;
+    initialFetchDone.current = true;
+    setLoading(true);
+    setLoadingTipoCambio(true);
+    Promise.all([api.get('/miauto/cronogramas'), api.get('/miauto/tipo-cambio/all')])
+      .then(([resCron, resTc]) => {
+        const data = resCron.data?.data ?? resCron.data;
+        setCronogramas(Array.isArray(data) ? data : []);
+        const list = resTc.data?.data ?? resTc.data ?? [];
+        const arr = Array.isArray(list) ? list : [];
+        const pe = arr.find((r: { country: string }) => r.country === 'PE');
+        const co = arr.find((r: { country: string }) => r.country === 'CO');
+        setTipoCambioPE(pe?.valor_usd_a_local != null ? String(pe.valor_usd_a_local) : '');
+        setTipoCambioCO(co?.valor_usd_a_local != null ? String(co.valor_usd_a_local) : '');
+      })
+      .catch((e: any) => {
+        toast.error(e.response?.data?.message || 'Error al cargar');
+        setCronogramas([]);
+        setTipoCambioPE('');
+        setTipoCambioCO('');
+      })
+      .finally(() => {
+        setLoading(false);
+        setLoadingTipoCambio(false);
+      });
+  }, []);
+
+  const saveTipoCambio = useCallback(async (country: 'PE' | 'CO') => {
+    const valor = country === 'PE' ? tipoCambioPE : tipoCambioCO;
+    const num = parseFloat(valor);
+    if (Number.isNaN(num) || num < 0) {
+      toast.error('Ingresa un valor numérico válido');
+      return;
+    }
+    try {
+      setSavingTipoCambio(country);
+      await api.put('/miauto/tipo-cambio', {
+        country,
+        valor_usd_a_local: num,
+        moneda_local: country === 'PE' ? 'PEN' : 'COP',
+      });
+      toast.success('Tipo de cambio actualizado');
+      await fetchTiposCambio();
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error al guardar');
+    } finally {
+      setSavingTipoCambio(null);
+    }
+  }, [tipoCambioPE, tipoCambioCO, fetchTiposCambio]);
 
   useEffect(() => {
     setCurrentPage((p) => Math.min(p, Math.max(1, Math.ceil(filteredCronogramas.length / PAGE_SIZE)) || 1));
@@ -116,10 +249,12 @@ export default function YegoMiAutoConfig() {
 
   const openNew = () => {
     setEditingId(null);
+    setModalViewOnly(false);
     setForm({
       name: '',
       country: 'PE',
       active: true,
+      tasa_interes_mora: 0,
       vehicles: [createEmptyVehicle()],
       rules: [createEmptyRule(1)],
     });
@@ -127,6 +262,7 @@ export default function YegoMiAutoConfig() {
   };
 
   const openEdit = (c: Cronograma) => {
+    setModalViewOnly(true);
     setEditingId(c.id);
     const vehicles = (c.vehicles?.length ? c.vehicles : [createEmptyVehicle()]).map((v) => ({
       ...v,
@@ -148,7 +284,7 @@ export default function YegoMiAutoConfig() {
           };
         })
       : [createEmptyRule(vehicles.length)];
-    setForm({ name: c.name, country: c.country, active: c.active, vehicles, rules });
+    setForm({ name: c.name, country: c.country, active: c.active, tasa_interes_mora: c.tasa_interes_mora ?? 0, vehicles, rules });
     setModalOpen(true);
   };
 
@@ -156,6 +292,7 @@ export default function YegoMiAutoConfig() {
     setModalOpen(false);
     setEditingId(null);
     setModalSectionOpen(null);
+    setModalViewOnly(true);
     setIsModalClosing(false);
   };
 
@@ -168,18 +305,44 @@ export default function YegoMiAutoConfig() {
     setModalSectionOpen((prev) => (prev === section ? null : section));
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!form.name.trim()) return;
-    if (editingId) {
-      setCronogramas((prev) => prev.map((c) => (c.id === editingId ? { ...form, id: c.id } : c)));
-    } else {
-      setCronogramas((prev) => [...prev, { ...form, id: generateId() }]);
+    setSaving(true);
+    try {
+      const payload = {
+        name: form.name.trim(),
+        country: form.country,
+        active: form.active,
+        tasa_interes_mora: typeof form.tasa_interes_mora === 'number' ? form.tasa_interes_mora : 0,
+        vehicles: form.vehicles,
+        rules: form.rules,
+      };
+      if (editingId) {
+        await api.put(`/miauto/cronogramas/${editingId}`, payload);
+        toast.success('Cronograma actualizado');
+      } else {
+        await api.post('/miauto/cronogramas', payload);
+        toast.success('Cronograma creado');
+      }
+      await fetchCronogramas();
+      closeModal();
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error al guardar cronograma');
+    } finally {
+      setSaving(false);
     }
-    closeModal();
   };
 
-  const toggleCronogramaActive = (id: string) => {
-    setCronogramas((prev) => prev.map((c) => (c.id === id ? { ...c, active: !c.active } : c)));
+  const toggleCronogramaActive = async (id: string) => {
+    try {
+      const res = await api.patch(`/miauto/cronogramas/${id}/toggle-active`);
+      const updated = res.data?.data ?? res.data;
+      if (updated) {
+        setCronogramas((prev) => prev.map((c) => (c.id === id ? { ...updated } : c)));
+      }
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error al cambiar estado');
+    }
   };
 
   const addVehicle = () => {
@@ -361,8 +524,78 @@ export default function YegoMiAutoConfig() {
       </div>
 
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-2">
+          <DollarSign className="w-5 h-5 text-[#8B1A1A]" />
+          <h2 className="text-base font-semibold text-gray-900">Valor del dólar (tipo de cambio)</h2>
+        </div>
         <div className="p-4 sm:p-6">
-          {cronogramas.length === 0 ? (
+          {loadingTipoCambio ? (
+            <div className="flex justify-center py-4">
+              <div className="animate-spin rounded-full h-8 w-8 border-2 border-red-600 border-t-transparent" />
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="p-4 rounded-xl border border-gray-200 bg-gray-50/50">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Perú (PE)</label>
+                <p className="text-xs text-gray-500 mb-1">1 USD =</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={tipoCambioPE}
+                    onChange={(e) => setTipoCambioPE(e.target.value)}
+                    className="w-28 rounded-lg border border-gray-300 px-3 py-2 text-sm [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    placeholder="3.75"
+                  />
+                  <span className="text-sm font-medium text-gray-600">S/. (PEN)</span>
+                  <button
+                    type="button"
+                    onClick={() => saveTipoCambio('PE')}
+                    disabled={savingTipoCambio === 'PE'}
+                    className="px-4 py-2 bg-[#8B1A1A] text-white rounded-lg text-sm font-medium hover:bg-[#6B1515] disabled:opacity-50"
+                  >
+                    {savingTipoCambio === 'PE' ? 'Guardando...' : 'Guardar'}
+                  </button>
+                </div>
+              </div>
+              <div className="p-4 rounded-xl border border-gray-200 bg-gray-50/50">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Colombia (CO)</label>
+                <p className="text-xs text-gray-500 mb-1">1 USD =</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={tipoCambioCO}
+                    onChange={(e) => setTipoCambioCO(e.target.value)}
+                    className="w-28 rounded-lg border border-gray-300 px-3 py-2 text-sm [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    placeholder="4100"
+                  />
+                  <span className="text-sm font-medium text-gray-600">COP</span>
+                  <button
+                    type="button"
+                    onClick={() => saveTipoCambio('CO')}
+                    disabled={savingTipoCambio === 'CO'}
+                    className="px-4 py-2 bg-[#8B1A1A] text-white rounded-lg text-sm font-medium hover:bg-[#6B1515] disabled:opacity-50"
+                  >
+                    {savingTipoCambio === 'CO' ? 'Guardando...' : 'Guardar'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          <p className="text-xs text-gray-500 mt-3">Se usa para mostrar el equivalente en moneda local cuando los montos del cronograma están en USD.</p>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+        <div className="p-4 sm:p-6">
+          {loading ? (
+            <div className="py-12 flex justify-center">
+              <div className="animate-spin rounded-full h-10 w-10 border-2 border-red-600 border-t-transparent" />
+            </div>
+          ) : cronogramas.length === 0 ? (
             <div className="py-8 text-center">
               <h3 className="text-lg font-semibold text-gray-800 mb-2">No hay cronogramas</h3>
               <p className="text-gray-500 max-w-sm mx-auto">Crea tu primer cronograma para definir viajes, bono mi auto y cuotas por carro.</p>
@@ -508,10 +741,31 @@ export default function YegoMiAutoConfig() {
             >
             {/* Header del modal */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gray-50/80 flex-shrink-0">
-              <h2 className="text-xl font-bold text-gray-900">{editingId ? 'Editar cronograma' : 'Incluir cronograma'}</h2>
-              <button type="button" onClick={closeModal} className="p-2 text-gray-500 hover:bg-gray-200 hover:text-gray-700 rounded-lg transition-colors" aria-label="Cerrar">
-                <X className="w-5 h-5" />
-              </button>
+              <h2 className="text-xl font-bold text-gray-900">
+                {isViewMode ? 'Ver detalle' : editingId ? 'Editar cronograma' : 'Incluir cronograma'}
+              </h2>
+              <div className="flex items-center gap-2">
+                {isViewMode ? (
+                  <button
+                    type="button"
+                    onClick={() => setModalViewOnly(false)}
+                    className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors"
+                  >
+                    Editar
+                  </button>
+                ) : editingId ? (
+                  <button
+                    type="button"
+                    onClick={() => setModalViewOnly(true)}
+                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    Ver detalle
+                  </button>
+                ) : null}
+                <button type="button" onClick={closeModal} className="p-2 text-gray-500 hover:bg-gray-200 hover:text-gray-700 rounded-lg transition-colors" aria-label="Cerrar">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             <div className="p-6 overflow-y-auto space-y-6">
@@ -523,7 +777,8 @@ export default function YegoMiAutoConfig() {
                     type="text"
                     value={form.name}
                     onChange={(e) => setForm((f) => ({ ...f, name: e.target.value.toUpperCase() }))}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                    readOnly={isViewMode}
+                    className={`w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isViewMode ? 'bg-gray-50 cursor-default' : ''}`}
                     placeholder="Ej. Cronograma 2025 - II"
                   />
                 </div>
@@ -532,7 +787,8 @@ export default function YegoMiAutoConfig() {
                   <select
                     value={form.country}
                     onChange={(e) => setForm((f) => ({ ...f, country: e.target.value }))}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                    disabled={isViewMode}
+                    className={`w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isViewMode ? 'bg-gray-50 cursor-default' : ''}`}
                   >
                     <option value="PE">PE</option>
                     <option value="CO">CO</option>
@@ -545,9 +801,35 @@ export default function YegoMiAutoConfig() {
                   id="active"
                   checked={form.active}
                   onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))}
+                  disabled={isViewMode}
                   className="rounded border-gray-300 text-red-600 focus:ring-red-500 w-4 h-4"
                 />
                 <label htmlFor="active" className="text-sm font-medium text-gray-700">Activo</label>
+              </div>
+
+              {/* Interés por mora (pago semanal en lunes) */}
+              <div className="border border-gray-200 rounded-xl p-4 bg-gray-50/50">
+                <h4 className="text-sm font-medium text-gray-800 mb-2">Interés por mora (pago semanal en lunes)</h4>
+                <div className="mb-2">
+                  <label htmlFor="tasa_interes_mora" className="block text-sm text-gray-600 mb-1">Tasa de interés (%)</label>
+                  <input
+                    id="tasa_interes_mora"
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={((form.tasa_interes_mora ?? 0) * 100).toString()}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      setForm((f) => ({ ...f, tasa_interes_mora: Number.isNaN(v) || v < 0 ? 0 : v / 100 }));
+                    }}
+                    disabled={isViewMode}
+                    className={`w-24 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 ${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50 cursor-default' : ''}`}
+                  />
+                </div>
+                <p className="text-xs text-gray-500 mb-1">
+                  Si el conductor no paga la cuota semanal completa el lunes, se aplica este interés por cada día de atraso.
+                </p>
+                <p className="text-xs text-gray-600 font-medium">Fórmula: Interés por día = (Cuota semanal × Tasa) / 7</p>
               </div>
 
               {/* Sección: Carros ofrecidos (acordeón) */}
@@ -578,14 +860,16 @@ export default function YegoMiAutoConfig() {
                   <div className="p-5 pt-3 border-t border-gray-100">
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
                       <p className="text-sm text-gray-600">Añade los carros con foto, inicial y cuotas semanales.</p>
-                      <button
-                        type="button"
-                        onClick={addVehicle}
-                        className="shrink-0 inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors shadow-sm"
-                      >
-                        <Car className="w-4 h-4" />
-                        Añadir carro
-                      </button>
+                      {!isViewMode && (
+                        <button
+                          type="button"
+                          onClick={addVehicle}
+                          className="shrink-0 inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors shadow-sm"
+                        >
+                          <Car className="w-4 h-4" />
+                          Añadir carro
+                        </button>
+                      )}
                     </div>
                     <div className="flex gap-5 overflow-x-auto pb-2 scroll-smooth">
                   {form.vehicles.map((v, i) => (
@@ -614,16 +898,21 @@ export default function YegoMiAutoConfig() {
                                 Soltar aquí
                               </span>
                             )}
-                            <button
-                              type="button"
-                              onClick={() => updateVehicle(i, 'image', undefined)}
-                              className="absolute top-1 right-1 w-7 h-7 bg-white/95 backdrop-blur-sm border border-gray-200 text-gray-500 rounded-lg flex items-center justify-center shadow-sm hover:bg-red-50 hover:border-red-200 hover:text-red-600 transition-colors z-10"
-                              title="Quitar foto"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
+                            {!isViewMode && (
+                              <button
+                                type="button"
+                                onClick={() => updateVehicle(i, 'image', undefined)}
+                                className="absolute top-1 right-1 w-7 h-7 bg-white/95 backdrop-blur-sm border border-gray-200 text-gray-500 rounded-lg flex items-center justify-center shadow-sm hover:bg-red-50 hover:border-red-200 hover:text-red-600 transition-colors z-10"
+                                title="Quitar foto"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                           </div>
                         ) : (
+                          isViewMode ? (
+                            <div className="w-24 h-24 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-200 text-gray-400 text-xs">Sin foto</div>
+                          ) : (
                           <label
                             className={`w-24 h-24 flex flex-col items-center justify-center rounded-xl border-2 border-dashed cursor-pointer transition-all ${
                               dragOverPhotoIndex === i
@@ -644,8 +933,9 @@ export default function YegoMiAutoConfig() {
                               </>
                             )}
                           </label>
+                          )
                         )}
-                        {v.image && (
+                        {v.image && !isViewMode && (
                           <label className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 hover:text-red-600 cursor-pointer transition-colors">
                             <ImagePlus className="w-3.5 h-3.5" />
                             Cambiar foto
@@ -660,7 +950,8 @@ export default function YegoMiAutoConfig() {
                             type="text"
                             value={v.name ?? ''}
                             onChange={(e) => updateVehicle(i, 'name', e.target.value)}
-                            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-shadow"
+                            readOnly={isViewMode}
+                            className={`w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-shadow ${isViewMode ? 'bg-gray-50 cursor-default' : ''}`}
                             placeholder="Ej. Kia Soluto 2026"
                           />
                         </div>
@@ -671,7 +962,8 @@ export default function YegoMiAutoConfig() {
                               <select
                                 value={v.inicial_moneda ?? 'USD'}
                                 onChange={(e) => updateVehicle(i, 'inicial_moneda', e.target.value as MonedaInicial)}
-                                className="w-12 pl-2 pr-1 py-2 text-sm font-medium border-0 border-r border-gray-200 rounded-l-lg bg-transparent focus:ring-0 cursor-pointer text-gray-700"
+                                disabled={isViewMode}
+                                className={`w-12 pl-2 pr-1 py-2 text-sm font-medium border-0 border-r border-gray-200 rounded-l-lg bg-transparent focus:ring-0 cursor-pointer text-gray-700 ${isViewMode ? 'cursor-default' : ''}`}
                                 title="Moneda"
                               >
                                 <option value="USD">$</option>
@@ -681,10 +973,11 @@ export default function YegoMiAutoConfig() {
                                 type="number"
                                 min={0}
                                 step={v.inicial_moneda === 'PEN' ? 0.01 : 1}
-                                value={v.inicial || ''}
+                                value={v.inicial != null ? v.inicial : ''}
                                 onChange={(e) => updateVehicle(i, 'inicial', Number(e.target.value) || 0)}
                                 onWheel={(e) => e.currentTarget.blur()}
-                                className={`flex-1 min-w-0 px-3 py-2 text-sm bg-transparent border-0 rounded-r-lg focus:ring-0 focus:outline-none placeholder-gray-400${INPUT_NUMBER_CLASS}`}
+                                readOnly={isViewMode}
+                                className={`flex-1 min-w-0 px-3 py-2 text-sm bg-transparent border-0 rounded-r-lg focus:ring-0 focus:outline-none placeholder-gray-400${INPUT_NUMBER_CLASS} ${isViewMode ? 'cursor-default' : ''}`}
                                 placeholder={v.inicial_moneda === 'USD' ? '1000' : '3500'}
                               />
                             </div>
@@ -693,17 +986,18 @@ export default function YegoMiAutoConfig() {
                             <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">Cuotas</label>
                             <input
                               type="number"
-                              min={1}
-                              value={v.cuotas_semanales != null && v.cuotas_semanales !== 0 ? v.cuotas_semanales : ''}
+                              min={0}
+                              value={v.cuotas_semanales != null ? v.cuotas_semanales : ''}
                               onChange={(e) => updateVehicle(i, 'cuotas_semanales', Number(e.target.value) || 0)}
                               onWheel={(e) => e.currentTarget.blur()}
-                              className={`w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-shadow${INPUT_NUMBER_CLASS}`}
+                              readOnly={isViewMode}
+                              className={`w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-shadow${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50 cursor-default' : ''}`}
                               placeholder="264"
                             />
                           </div>
                         </div>
                       </div>
-                      {form.vehicles.length > 1 && (
+                      {form.vehicles.length > 1 && !isViewMode && (
                         <button
                           type="button"
                           onClick={() => removeVehicle(i)}
@@ -749,19 +1043,20 @@ export default function YegoMiAutoConfig() {
                   <div className="min-h-0 overflow-hidden">
                   <div className="p-4 pt-2 border-t border-gray-100">
                     <div className="flex items-center justify-between gap-3 mb-3">
-                      <p className="text-xs text-gray-500">Tramos de viajes, bono mi auto ($ o S/.) y cuota semanal por cada carro.</p>
-                      <button type="button" onClick={addRule} className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700">
-                        + Añadir fila
-                      </button>
+                      {!isViewMode && (
+                        <button type="button" onClick={addRule} className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700">
+                          + Añadir fila
+                        </button>
+                      )}
                     </div>
                     <div className="border border-gray-200 rounded-xl overflow-hidden overflow-x-auto bg-white">
-                      <table className="w-full text-sm" style={{ minWidth: 360 }}>
+                      <table className="w-full text-sm table-fixed" style={{ minWidth: 360 }}>
                         <thead>
                           <tr className="bg-gray-100 border-b border-gray-200">
-                            <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-36">Viajes</th>
-                            <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-28">Bono mi auto</th>
+                            <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-[7rem]">Viajes</th>
+                            <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-[7rem]">Bono mi auto</th>
                             {form.vehicles.map((v, i) => (
-                              <th key={v.id} className="text-left py-2.5 px-2 font-semibold text-gray-700 w-28 min-w-0" title={v.name || `Carro ${i + 1}`}>
+                              <th key={v.id} className="text-left py-2.5 px-2 font-semibold text-gray-700 w-[7rem]" title={v.name || `Carro ${i + 1}`}>
                                 <span className="block truncate text-gray-800">{v.name || `Carro ${i + 1}`}</span>
                               </th>
                             ))}
@@ -771,21 +1066,23 @@ export default function YegoMiAutoConfig() {
                         <tbody>
                           {form.rules.map((r, ri) => (
                             <tr key={ri} className="border-b border-gray-100 last:border-0 hover:bg-gray-50/50">
-                              <td className="py-2 px-2 align-top">
+                              <td className="py-2 px-2 align-top w-[7rem]">
                                 <input
                                   type="text"
                                   value={r.viajes}
                                   onChange={(e) => updateRule(ri, 'viajes', e.target.value)}
-                                  className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500"
-                                  placeholder="180, 150, 0-119"
+                                  readOnly={isViewMode}
+                                  className={`w-full rounded border border-gray-300 px-1.5 py-1 text-xs focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 box-border ${isViewMode ? 'bg-gray-50 cursor-default' : ''}`}
+                                  placeholder="0 - 119"
                                 />
                               </td>
-                              <td className="py-2 px-2 align-top">
-                                <div className="flex w-full rounded border border-gray-300 bg-white focus-within:border-red-500 focus-within:ring-1 focus-within:ring-red-500">
+                              <td className="py-2 px-2 align-top w-[7rem]">
+                                <div className="flex w-full rounded border border-gray-300 bg-white focus-within:border-red-500 focus-within:ring-1 focus-within:ring-red-500 min-w-0 box-border">
                                   <select
                                     value={r.bono_auto_moneda ?? 'PEN'}
                                     onChange={(e) => updateRule(ri, 'bono_auto_moneda', e.target.value as BonoAutoMoneda)}
-                                    className="shrink-0 flex items-center px-2 py-1.5 text-sm text-gray-700 border-r border-gray-200 bg-gray-50 rounded-l focus:ring-0 focus:outline-none cursor-pointer"
+                                    disabled={isViewMode}
+                                    className={`shrink-0 flex items-center px-1.5 py-1 text-xs text-gray-700 border-r border-gray-200 bg-gray-50 rounded-l focus:ring-0 focus:outline-none cursor-pointer ${isViewMode ? 'cursor-default' : ''}`}
                                     title="Moneda bono mi auto"
                                   >
                                     <option value="USD">$</option>
@@ -795,7 +1092,7 @@ export default function YegoMiAutoConfig() {
                                     type="number"
                                     min={0}
                                     step={0.01}
-                                    value={r.bono_auto != null && r.bono_auto !== 0 ? r.bono_auto : ''}
+                                    value={r.bono_auto != null ? r.bono_auto : ''}
                                     onChange={(e) => {
                                       const raw = e.target.value;
                                       const sanitized = sanitizeDecimalInput(raw);
@@ -806,7 +1103,8 @@ export default function YegoMiAutoConfig() {
                                     onPaste={(e) => handleDecimalPaste(e, (n) => updateRule(ri, 'bono_auto', n))}
                                     onWheel={(e) => e.currentTarget.blur()}
                                     placeholder="0"
-                                    className={`flex-1 min-w-0 px-2 py-1.5 text-sm border-0 rounded-r bg-transparent focus:outline-none focus:ring-0${INPUT_NUMBER_CLASS}`}
+                                    readOnly={isViewMode}
+                                    className={`flex-1 min-w-0 w-0 px-1.5 py-1 text-xs border-0 rounded-r bg-transparent focus:outline-none focus:ring-0${INPUT_NUMBER_CLASS} ${isViewMode ? 'cursor-default' : ''}`}
                                   />
                                 </div>
                               </td>
@@ -814,12 +1112,13 @@ export default function YegoMiAutoConfig() {
                                 const val = (r.cuotas_por_vehiculo || [])[vi] ?? 0;
                                 const moneda = (r.cuota_moneda_por_vehiculo || [])[vi] ?? 'PEN';
                                 return (
-                                  <td key={vi} className="py-2 px-2 align-top">
-                                    <div className="flex w-full rounded border border-gray-300 bg-white focus-within:border-red-500 focus-within:ring-1 focus-within:ring-red-500">
+                                  <td key={vi} className="py-2 px-2 align-top w-[7rem]">
+                                    <div className="flex w-full rounded border border-gray-300 bg-white focus-within:border-red-500 focus-within:ring-1 focus-within:ring-red-500 min-w-0 box-border">
                                       <select
                                         value={moneda}
                                         onChange={(e) => updateRuleCuotaMoneda(ri, vi, e.target.value as BonoAutoMoneda)}
-                                        className="shrink-0 flex items-center px-2 py-1.5 text-sm text-gray-700 border-r border-gray-200 bg-gray-50 rounded-l focus:ring-0 focus:outline-none cursor-pointer"
+                                        disabled={isViewMode}
+                                        className={`shrink-0 flex items-center px-1.5 py-1 text-xs text-gray-700 border-r border-gray-200 bg-gray-50 rounded-l focus:ring-0 focus:outline-none cursor-pointer ${isViewMode ? 'cursor-default' : ''}`}
                                         title="Moneda cuota"
                                       >
                                         <option value="USD">$</option>
@@ -829,7 +1128,7 @@ export default function YegoMiAutoConfig() {
                                         type="number"
                                         min={0}
                                         step={0.01}
-                                        value={val != null && val !== 0 ? val : ''}
+                                        value={val != null ? val : ''}
                                         onChange={(e) => {
                                           const raw = e.target.value;
                                           const sanitized = sanitizeDecimalInput(raw);
@@ -840,21 +1139,24 @@ export default function YegoMiAutoConfig() {
                                         onPaste={(e) => handleDecimalPaste(e, (n) => updateRuleCuota(ri, vi, n))}
                                         onWheel={(e) => e.currentTarget.blur()}
                                         placeholder="0"
-                                        className={`flex-1 min-w-0 px-2 py-1.5 text-sm border-0 rounded-r bg-transparent focus:outline-none focus:ring-0${INPUT_NUMBER_CLASS}`}
+                                        readOnly={isViewMode}
+                                        className={`flex-1 min-w-0 w-0 px-1.5 py-1 text-xs border-0 rounded-r bg-transparent focus:outline-none focus:ring-0${INPUT_NUMBER_CLASS} ${isViewMode ? 'cursor-default' : ''}`}
                                       />
                                     </div>
                                   </td>
                                 );
                               })}
                               <td className="py-2 px-2 align-top text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => removeRule(ri)}
-                                  className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
-                                  title="Quitar fila"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
+                                {!isViewMode && (
+                                  <button
+                                    type="button"
+                                    onClick={() => removeRule(ri)}
+                                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                                    title="Quitar fila"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
                               </td>
                             </tr>
                           ))}
@@ -869,17 +1171,25 @@ export default function YegoMiAutoConfig() {
 
             {/* Footer del modal */}
             <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-white flex-shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.08)]">
-              <button type="button" onClick={closeModal} className="px-5 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 font-medium transition-colors">
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={!form.name.trim()}
-                className="px-5 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors"
-              >
-                {editingId ? 'Guardar' : 'Crear'}
-              </button>
+              {isViewMode ? (
+                <button type="button" onClick={closeModal} className="px-5 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 font-medium transition-colors">
+                  Cerrar
+                </button>
+              ) : (
+                <>
+                  <button type="button" onClick={closeModal} className="px-5 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 font-medium transition-colors">
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSave}
+                    disabled={!form.name.trim() || saving}
+                    className="px-5 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors"
+                  >
+                    {saving ? 'Guardando...' : editingId ? 'Guardar' : 'Crear'}
+                  </button>
+                </>
+              )}
             </div>
             </div>
           </div>

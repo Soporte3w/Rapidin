@@ -475,6 +475,7 @@ export const getLoans = async (filters = {}) => {
   return result.rows;
 };
 
+/** next_installment_amount = solo cuota pendiente (sin mora). next_installment_late_fee = mora. next_installment_total = cuota + mora. */
 export const getLoanById = async (id) => {
   const result = await query(
     `SELECT l.*, 
@@ -487,7 +488,7 @@ export const getLoanById = async (id) => {
              WHERE i.loan_id = l.id AND i.status IN ('pending', 'overdue')
              ORDER BY i.due_date ASC, i.installment_number ASC
              LIMIT 1) AS next_installment_number,
-            (SELECT (i.installment_amount - COALESCE(i.paid_amount, 0)) + COALESCE(i.late_fee, 0)
+            (SELECT (i.installment_amount - COALESCE(i.paid_amount, 0))
              FROM module_rapidin_installments i
              WHERE i.loan_id = l.id AND i.status IN ('pending', 'overdue')
              ORDER BY i.due_date ASC, i.installment_number ASC
@@ -511,9 +512,12 @@ export const getLoanById = async (id) => {
 
   const row = result.rows[0];
   if (!row) return null;
-  if (row.next_installment_amount != null) row.next_installment_amount = parseFloat(row.next_installment_amount);
-  if (row.next_installment_late_fee != null) row.next_installment_late_fee = parseFloat(row.next_installment_late_fee);
-  if (row.total_late_fee != null) row.total_late_fee = parseFloat(row.total_late_fee);
+  row.next_installment_amount = row.next_installment_amount != null ? parseFloat(row.next_installment_amount) : null;
+  row.next_installment_late_fee = row.next_installment_late_fee != null ? parseFloat(row.next_installment_late_fee) : null;
+  row.total_late_fee = row.total_late_fee != null ? parseFloat(row.total_late_fee) : null;
+  if (row.next_installment_amount != null && row.next_installment_late_fee != null) {
+    row.next_installment_total = Math.round((row.next_installment_amount + row.next_installment_late_fee) * 100) / 100;
+  }
   return row;
 };
 

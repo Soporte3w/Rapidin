@@ -26,7 +26,8 @@ export const updateDailyLateFees = async () => {
   try {
     const overdueResult = await query(`
      SELECT i.id, i.loan_id, i.due_date, i.installment_amount, i.paid_amount, i.late_fee,
-            COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee
+            COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee,
+            i.late_fee_base_date
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE l.status IN ('active', 'defaulted')
@@ -70,7 +71,7 @@ export const updateDailyLateFees = async () => {
  */
 export const updateLateFeesForDriver = async (driverId) => {
   const overdueResult = await query(`
-     SELECT i.id, i.loan_id, COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee
+     SELECT i.id, i.loan_id, COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee, i.late_fee_base_date
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE l.driver_id = $1 AND l.status IN ('active', 'defaulted')
@@ -273,13 +274,23 @@ const writeCobrosTxt = (cobrosTxtLines) => {
   }
 };
 
+/** Pausa entre cobros al mismo conductor (segundos) para evitar "Too many requests" de la API de flota. */
+const DELAY_SAME_DRIVER_SEC = 2;
+
 /** Procesa una lista de cuotas (cobro automático): retira saldo, registra pago, log. Retorna { success, partial, failed, cobrosTxtLines }. */
 const processInstallmentsList = async (installments) => {
   let success = 0, partial = 0, failed = 0;
   const cobrosTxtLines = [];
+  let lastDriverId = null;
 
   for (const inst of installments) {
     try {
+      // Pausa si la cuota anterior era del mismo conductor (evita Too many requests)
+      if (lastDriverId === inst.driver_id) {
+        await new Promise((r) => setTimeout(r, DELAY_SAME_DRIVER_SEC * 1000));
+      }
+      lastDriverId = inst.driver_id;
+
       const driverName = `${inst.driver_first_name} ${inst.driver_last_name}`;
 
       // Total a cobrar = cuota pendiente + mora (si no cobramos con mora, la perderíamos)
@@ -353,7 +364,7 @@ const processInstallmentsList = async (installments) => {
         continue;
       }
 
-      const paymentResult = await registerPaymentAuto(inst.loan_id, amountToCharge, new Date());
+      const paymentResult = await registerPaymentAuto(inst.loan_id, amountToCharge, new Date(), inst.installment_id);
 
       if (amountToCharge >= pendingAmount) {
         logger.info(`✅ Cobro completo de ${driverName}: S/ ${amountToCharge.toFixed(2)} (cuota + mora)`);
@@ -382,6 +393,8 @@ const processInstallmentsList = async (installments) => {
 
 /**
  * Reintento a las 7:20 (Lunes): cobra solo los que figuran en el log de hoy con estado failed o partial.
+ * Las cuotas se ordenan por préstamo y por número de cuota (1, 2, 3…) para cobrar en orden.
+ * Entre dos cobros del mismo conductor se espera DELAY_SAME_DRIVER_SEC para evitar "Too many requests" de la API de flota.
  * Tras el reintento, marca como vencido (overdue) todo lo que no se cobró o se cobró parcialmente.
  */
 export const runRetryAutoChargeFromLog = async (driverIdFilter = null) => {
@@ -393,6 +406,15 @@ export const runRetryAutoChargeFromLog = async (driverIdFilter = null) => {
     logger.info('No hay cuotas para reintentar hoy (ningún registro en log con estado no cobrado/failed/partial con fecha de hoy)');
     return { success: 0, partial: 0, failed: 0 };
   }
+
+  // Ordenar por préstamo y luego por cuota (1, 2, 3…) para cobrar siempre en orden y reducir "Too many requests" al mismo conductor
+  installments.sort((a, b) => {
+    if (a.loan_id !== b.loan_id) return a.loan_id.localeCompare(b.loan_id);
+    const dA = new Date(a.due_date).getTime();
+    const dB = new Date(b.due_date).getTime();
+    if (dA !== dB) return dA - dB;
+    return (a.installment_number || 0) - (b.installment_number || 0);
+  });
 
   logger.info(`${installments.length} cuota(s) a reintentar (log del día con estado failed/partial)`);
   const result = await processInstallmentsList(installments);

@@ -22,7 +22,7 @@ import api from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { getStoredRapidinDriverId, getStoredSelectedParkId, getStoredFlotaName, persistDriverContextFromResponse } from '../../utils/authStorage';
 import { formatCurrency, getCurrencyLabel } from '../../utils/currency';
-import { formatDateUTC } from '../../utils/date';
+import { formatDate } from '../../utils/date';
 import toast from 'react-hot-toast';
 
 interface Loan {
@@ -181,12 +181,12 @@ export default function DriverLoans() {
       const rows = list.map((row) => [
         row.installment_number,
         Number(row.installment_amount).toFixed(2),
-        row.due_date ? formatDateUTC(row.due_date, 'es-PE') : '',
+        row.due_date ? formatDate(row.due_date, 'es-PE') : '',
         Number(row.late_fee ?? 0).toFixed(2),
         Number(row.paid_late_fee ?? 0).toFixed(2),
         row.status === 'paid' ? 'Pagada' : row.status === 'overdue' ? 'Vencida' : 'Pendiente',
         (Number(row.paid_amount ?? 0) + Number(row.paid_late_fee ?? 0)) > 0 ? (Number(row.paid_amount ?? 0) + Number(row.paid_late_fee ?? 0)).toFixed(2) : '',
-        row.paid_date ? formatDateUTC(row.paid_date, 'es-PE') : ''
+        row.paid_date ? formatDate(row.paid_date, 'es-PE') : ''
       ]);
       const csvContent = [headers.join(','), ...rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))].join('\n');
       const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8' });
@@ -349,7 +349,7 @@ export default function DriverLoans() {
                 ) : (
                   <>
                     Tu solicitud por <strong>{formatCurrency(pendingRequest.requestedAmount, country)}</strong> fue enviada el{' '}
-                    {formatDateUTC(pendingRequest.createdAt, 'es-PE')}.
+                    {formatDate(pendingRequest.createdAt, 'es-PE')}.
                     Aparecerá aquí cuando sea aprobada y desembolsada.
                   </>
                 )}
@@ -403,7 +403,7 @@ export default function DriverLoans() {
                     <p className="text-lg font-bold text-gray-900">{formatCurrency(loan.amount, country)}</p>
                     <p className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
                       <Calendar className="w-3.5 h-3.5" />
-                      {formatDateUTC(loan.date, 'es-PE')}
+                      {formatDate(loan.date, 'es-PE')}
                     </p>
                   </div>
                   {getStatusBadge(loan.status)}
@@ -521,7 +521,7 @@ export default function DriverLoans() {
                       <td className="px-4 py-4 whitespace-nowrap">
                         <div className="flex items-center gap-2 text-sm text-gray-900">
                           <Calendar className="w-4 h-4 text-gray-500 flex-shrink-0" />
-                          {formatDateUTC(loan.date, 'es-PE')}
+                          {formatDate(loan.date, 'es-PE')}
                         </div>
                       </td>
                       <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -697,7 +697,7 @@ export default function DriverLoans() {
                         Rechazada
                       </span>
                     </div>
-                    <p className="text-xs text-gray-500 mb-2">{formatDateUTC(req.createdAt, 'es-PE')}</p>
+                    <p className="text-xs text-gray-500 mb-2">{formatDate(req.createdAt, 'es-PE')}</p>
                     <p className="text-sm text-gray-900">
                       {req.rejectionReason ? <span className="text-red-900">{req.rejectionReason}</span> : <span className="text-gray-500">No se indicó motivo.</span>}
                     </p>
@@ -751,7 +751,7 @@ export default function DriverLoans() {
                             </span>
                           </td>
                           <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                            {formatDateUTC(req.createdAt, 'es-PE')}
+                            {formatDate(req.createdAt, 'es-PE')}
                           </td>
                           <td className="px-4 py-4 text-sm text-gray-900 max-w-md">
                             {req.rejectionReason ? (
@@ -877,7 +877,7 @@ export default function DriverLoans() {
                 <div className="bg-gray-50 rounded-lg p-2.5 sm:p-3">
                   <p className="text-xs text-gray-500 font-semibold uppercase">Fecha</p>
                   <p className="text-xs sm:text-sm font-medium text-gray-900">
-                    {formatDateUTC(selectedLoan.date, 'es-PE')}
+                    {formatDate(selectedLoan.date, 'es-PE')}
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-2.5 sm:p-3">
@@ -918,7 +918,7 @@ export default function DriverLoans() {
                           <td className="px-2 py-2 font-medium text-gray-900">{row.installment_number}</td>
                           <td className="px-2 py-2 text-gray-700">{formatCurrency(Number(row.installment_amount), country)}</td>
                           <td className="px-2 py-2 text-gray-700">
-                            {row.due_date ? formatDateUTC(row.due_date, 'es-PE') : '—'}
+                            {row.due_date ? formatDate(row.due_date, 'es-PE') : '—'}
                           </td>
                           <td className="px-2 py-2 text-gray-700">
                             {row.status === 'pending' && Number(row.late_fee ?? 0) === 0 && Number(row.paid_late_fee ?? 0) === 0 && Number(row.mora_cobrada ?? 0) === 0 ? (
@@ -965,7 +965,7 @@ export default function DriverLoans() {
                             })()}
                           </td>
                           <td className="px-2 py-2 text-gray-600">
-                            {row.paid_date ? formatDateUTC(row.paid_date, 'es-PE') : '—'}
+                            {row.paid_date ? formatDate(row.paid_date, 'es-PE') : '—'}
                           </td>
                         </tr>
                       ))}

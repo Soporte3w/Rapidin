@@ -150,7 +150,7 @@ export const sendOTP = async (phone, country) => {
     // Generar código de 6 dígitos
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + 60 * 1000; // 1 minuto
-
+console.log('code', code);
     // Guardar código (clave normalizada para que verifyOTP lo encuentre)
     otpStore.set(normalizedPhone, {
         code,
@@ -230,14 +230,14 @@ export const verifyOTP = async (phone, code, country) => {
     try {
         driverResult = await query(
             `SELECT car_id, driver_id, phone, license_country, first_name, last_name, park_id,
-                    document_number, document_type, work_status, rating, account_balance
+                    document_number, document_type, license_number, work_status, rating, account_balance
              FROM drivers 
              WHERE phone = $1 AND work_status = 'working'
              ORDER BY park_id NULLS LAST`,
             [normalizedPhone]
         );
     } catch (e) {
-        if (e.code === '42703' || (e.message && e.message.includes('document_type'))) {
+        if (e.code === '42703' || (e.message && e.message.includes('document_type')) || (e.message && e.message.includes('license_number'))) {
             driverResult = await query(
                 `SELECT car_id, driver_id, phone, license_country, first_name, last_name, park_id,
                         document_number, work_status, rating, account_balance
@@ -246,7 +246,10 @@ export const verifyOTP = async (phone, code, country) => {
                  ORDER BY park_id NULLS LAST`,
                 [normalizedPhone]
             );
-            if (driverResult.rows.length > 0) driverResult.rows[0].document_type = null;
+            if (driverResult.rows.length > 0) {
+                driverResult.rows[0].document_type = null;
+                driverResult.rows[0].license_number = null;
+            }
         } else throw e;
     }
 
@@ -372,26 +375,42 @@ export const verifyOTP = async (phone, code, country) => {
     const driverId = driver.driver_id != null ? String(driver.driver_id) : null;
     const carId = driver.car_id != null ? String(driver.car_id) : null;
 
-    // Devolver el id (UUID) de module_rapidin_drivers si el número ya está registrado — para localStorage
+    // Devolver el id (UUID) de module_rapidin_drivers y email/license/dni para sesión (formularios como Quiero Mi Yego Auto)
     // En BD el phone puede estar como "970180035" (9 dígitos) o "+51970180035"; comparar también por últimos 9 dígitos
     let rapidin_driver_id = null;
+    let emailFromRapidin = null;
+    let licenseFromRapidin = null;
+    let dniFromRapidin = null;
     try {
         const phoneForDb = normalizePhoneForDb(user.phone, countryCode);
         const digitsOnly = (user.phone || '').toString().replace(/\D/g, '');
         const last9 = phoneDigitsForRapidinMatch(user.phone, countryCode);
         const rapidinRow = await query(
-            `SELECT id FROM module_rapidin_drivers
+            `SELECT id, email, license, dni FROM module_rapidin_drivers
              WHERE country = $1
                AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
              LIMIT 1`,
             [countryCode, phoneForDb, user.phone, digitsOnly, last9]
         );
         if (rapidinRow.rows.length > 0) {
-            rapidin_driver_id = rapidinRow.rows[0].id != null ? String(rapidinRow.rows[0].id) : null;
+            const r = rapidinRow.rows[0];
+            rapidin_driver_id = r.id != null ? String(r.id) : null;
+            if (r.email != null && String(r.email).trim() !== '') emailFromRapidin = String(r.email).trim();
+            if (r.license != null && String(r.license).trim() !== '') licenseFromRapidin = String(r.license).trim();
+            if (r.dni != null && String(r.dni).trim() !== '') dniFromRapidin = String(r.dni).trim();
         }
     } catch (e) {
         logger.warn('No se pudo buscar id de module_rapidin_drivers al login:', e.message);
     }
+
+    const documentNumber = (user.document_number != null && String(user.document_number).trim() !== '')
+        ? user.document_number
+        : dniFromRapidin;
+    const licenseFromDrivers = (driver.license_number != null && String(driver.license_number).trim() !== '')
+        ? String(driver.license_number).trim()
+        : null;
+    const finalLicense = licenseFromRapidin || licenseFromDrivers;
+    const finalEmail = emailFromRapidin || null;
 
     return {
         token,
@@ -401,14 +420,14 @@ export const verifyOTP = async (phone, code, country) => {
             last_name: user.last_name,
             role: user.role,
             country: user.country,
-            document_number: user.document_number,
-            document_type: user.document_type,
+            document_number: documentNumber != null ? documentNumber : user.document_number,
             rating: user.rating,
             has_active_loan: user.has_active_loan,
-            active_loan: activeLoan,
             driver_id: driverId,
             car_id: carId,
-            rapidin_driver_id: rapidin_driver_id
+            rapidin_driver_id: rapidin_driver_id,
+            email: finalEmail || undefined,
+            license: finalLicense || undefined
         },
         flotas,
         rapidin_driver_id: rapidin_driver_id

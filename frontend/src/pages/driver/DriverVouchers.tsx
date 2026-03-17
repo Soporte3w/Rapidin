@@ -17,7 +17,7 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
 import { formatCurrency, getCurrencyLabel } from '../../utils/currency';
-import { formatDateUTC } from '../../utils/date';
+import { formatDate } from '../../utils/date';
 import toast from 'react-hot-toast';
 
 interface Voucher {
@@ -395,8 +395,8 @@ export default function DriverVouchers() {
                   {payments.map((p) => {
                     const isVoucher = p.payment_method === 'voucher';
                     const isPending = p.is_pending === true;
-                    const dateStr = p.payment_date ? formatDateUTC(p.payment_date, 'es-PE') : '—';
-                    const createdStr = p.created_at ? formatDateUTC(p.created_at, 'es-PE') : '—';
+                    const dateStr = p.payment_date ? formatDate(p.payment_date, 'es-PE') : '—';
+                    const createdStr = p.created_at ? formatDate(p.created_at, 'es-PE') : '—';
                     return (
                       <div key={p.id} className="p-4 sm:p-5">
                         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
@@ -424,7 +424,7 @@ export default function DriverVouchers() {
                               </div>
                               <div>
                                 <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Fecha pago</p>
-                                <p className="mt-0.5 text-sm text-gray-900">{p.payment_date ? formatDateUTC(p.payment_date, 'es-PE') : '—'}</p>
+                                <p className="mt-0.5 text-sm text-gray-900">{p.payment_date ? formatDate(p.payment_date, 'es-PE') : '—'}</p>
                               </div>
                         <div>
                           <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Cuotas</p>
@@ -596,7 +596,7 @@ export default function DriverVouchers() {
                             <div className="flex-1 min-w-0">
                               <p className="font-semibold text-gray-900 text-sm truncate">
                                 Cuota {installment.installmentNumber}
-                                <span className="font-normal text-gray-500 ml-1">· Vence: {formatDateUTC(installment.dueDate, 'es-PE')}</span>
+                                <span className="font-normal text-gray-500 ml-1">· Vence: {formatDate(installment.dueDate, 'es-PE')}</span>
                               </p>
                               <p className="text-xs text-gray-600 mt-0.5">A pagar: <span className="font-medium text-gray-900">{formatCurrency(installment.installmentPending ?? (installment.pendingAmount - (installment.lateFee ?? 0)), country)}</span></p>
                               <p className={`text-xs ${Number(installment.lateFee ?? 0) > 0 ? 'text-red-600 font-medium' : 'text-gray-500'}`}>

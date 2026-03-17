@@ -72,13 +72,13 @@ const VintageAnalysis: React.FC<VintageAnalysisProps> = ({ country }) => {
     <div className="space-y-4">
       <div className="bg-gray-50 rounded-lg border border-gray-200 p-4">
         <div className="flex flex-col sm:flex-row gap-3">
-          <div className="flex-1 max-w-xs">
+          <div className="w-fit min-w-[200px] max-w-[280px]">
             <label className="block text-xs font-semibold text-gray-900 mb-1.5">Mes de cohort (desembolso)</label>
             <input
               type="month"
               value={cohortMonth}
               onChange={(e) => setCohortMonth(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
             />
           </div>
           <div className="flex items-end">

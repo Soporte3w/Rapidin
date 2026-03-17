@@ -1,14 +1,17 @@
 import { useState, useEffect } from 'react';
-import { RefreshCw } from 'lucide-react';
 import api from '../../../services/api';
+import { DateRangePicker } from '../../../components/DateRangePicker';
 
 interface PaymentBehaviorProps {
   country: string;
 }
 
+const defaultStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+const defaultEnd = new Date().toISOString().split('T')[0];
+
 const PaymentBehavior: React.FC<PaymentBehaviorProps> = ({ country }) => {
-  const [startDate, setStartDate] = useState(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
-  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
+  const [dateFrom, setDateFrom] = useState(defaultStart);
+  const [dateTo, setDateTo] = useState(defaultEnd);
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -19,8 +22,10 @@ const PaymentBehavior: React.FC<PaymentBehaviorProps> = ({ country }) => {
     setLoading(true);
     setError('');
     try {
+      const start_date = dateFrom || defaultStart;
+      const end_date = dateTo || defaultEnd;
       const response = await api.get('/analysis/payment-behavior', {
-        params: { country, start_date: startDate, end_date: endDate },
+        params: { country, start_date, end_date },
       });
       const raw = response.data?.data ?? response.data;
       setData(Array.isArray(raw) ? raw : []);
@@ -35,43 +40,22 @@ const PaymentBehavior: React.FC<PaymentBehaviorProps> = ({ country }) => {
 
   useEffect(() => {
     fetchAnalysis();
-  }, [country]);
+  }, [country, dateFrom, dateTo]);
 
   const totalCuotas = data.reduce((s, r) => s + Number(r.total_installments || 0), 0);
 
   return (
     <div className="space-y-4">
       <div className="bg-gray-50 rounded-lg border border-gray-200 p-4">
-        <div className="flex flex-col sm:flex-row gap-3">
-          <div className="flex-1">
-            <label className="block text-xs font-semibold text-gray-900 mb-1.5">Fecha Inicio (vencimiento cuota)</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
-            />
-          </div>
-          <div className="flex-1">
-            <label className="block text-xs font-semibold text-gray-900 mb-1.5">Fecha Fin</label>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
-            />
-          </div>
-          <div className="flex items-end">
-            <button
-              onClick={fetchAnalysis}
-              disabled={loading}
-              className="bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white font-semibold py-2 px-5 rounded-lg transition-all shadow-md flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm whitespace-nowrap"
-            >
-              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-              Actualizar
-            </button>
-          </div>
-        </div>
+        <DateRangePicker
+          label="Fecha (vencimiento cuota)"
+          value={{ date_from: dateFrom, date_to: dateTo }}
+          onChange={(r) => {
+            setDateFrom(r.date_from);
+            setDateTo(r.date_to);
+          }}
+          placeholder="Filtrar por fecha"
+        />
       </div>
 
       {error && (

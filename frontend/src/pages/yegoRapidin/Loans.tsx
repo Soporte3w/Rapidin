@@ -21,6 +21,7 @@ interface Loan {
 
 export type LoansSearchState = {
   fromLoanDetail?: boolean;
+  fromLoansSearch?: boolean;
   driver?: string;
   loan_id?: string;
   driverSearchInput?: string;
@@ -29,6 +30,8 @@ export type LoansSearchState = {
   country?: string;
   date_from?: string;
   date_to?: string;
+  page?: number;
+  limit?: number;
 };
 
 const Loans = () => {
@@ -53,18 +56,29 @@ const Loans = () => {
   });
   const [driverSearchInput, setDriverSearchInput] = useState(initialDriver);
   const [loanIdSearchInput, setLoanIdSearchInput] = useState(initialLoanId);
-  const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0, totalPages: 0 });
+  const [pagination, setPagination] = useState({
+    page: isReturnFromDetail && searchState?.page != null ? searchState.page : 1,
+    limit: isReturnFromDetail && searchState?.limit != null ? searchState.limit : 10,
+    total: 0,
+    totalPages: 0,
+  });
   const [paginationLoading, setPaginationLoading] = useState(false);
   const PAGE_SIZES = [5, 10, 20, 50];
 
-  // Limpiar state de navegación al volver del detalle para que un refresh no restaure
+  // Al volver del detalle: restaurar página (ej. 2) y limpiar state para que un refresh no restaure
   useEffect(() => {
     if (isReturnFromDetail) {
-      window.history.replaceState({}, document.title, location.pathname);
+      const page = searchState?.page ?? 1;
+      const limit = searchState?.limit ?? 10;
+      setPagination((p) => ({ ...p, page, limit }));
+      fetchLoans(page, limit, true);
+      navigate(location.pathname, { replace: true, state: {} });
     }
-  }, [isReturnFromDetail, location.pathname]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
+    if (isReturnFromDetail) return;
     setPagination((p) => ({ ...p, page: 1 }));
     fetchLoans(1, pagination.limit, true);
   }, [filters]);
@@ -444,6 +458,8 @@ const Loans = () => {
                             country: filters.country,
                             date_from: filters.date_from,
                             date_to: filters.date_to,
+                            page: pagination.page,
+                            limit: pagination.limit,
                           },
                         })}
                         className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"

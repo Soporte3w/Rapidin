@@ -414,9 +414,11 @@ export const getLoans = async (filters = {}) => {
     SELECT l.*, 
            d.dni, d.first_name as driver_first_name, d.last_name as driver_last_name,
            d.external_driver_id,
+           r.observations AS request_observations,
            COALESCE((SELECT SUM(COALESCE(i.late_fee, 0)) FROM module_rapidin_installments i WHERE i.loan_id = l.id), 0)::numeric AS total_late_fee
     FROM module_rapidin_loans l
     LEFT JOIN module_rapidin_drivers d ON d.id = l.driver_id
+    LEFT JOIN module_rapidin_loan_requests r ON r.id = l.request_id
     WHERE 1=1
   `;
   const params = [];
@@ -482,6 +484,7 @@ export const getLoanById = async (id) => {
             d.dni, d.first_name as driver_first_name, d.last_name as driver_last_name, d.phone, d.email,
             d.external_driver_id,
             yd.phone AS whatsapp_phone,
+            r.observations AS request_observations,
             COALESCE((SELECT SUM(COALESCE(i.late_fee, 0)) FROM module_rapidin_installments i WHERE i.loan_id = l.id), 0)::numeric AS total_late_fee,
             (SELECT i.installment_number
              FROM module_rapidin_installments i
@@ -506,6 +509,7 @@ export const getLoanById = async (id) => {
      FROM module_rapidin_loans l
      LEFT JOIN module_rapidin_drivers d ON d.id = l.driver_id
      LEFT JOIN drivers yd ON yd.driver_id::text = d.external_driver_id
+     LEFT JOIN module_rapidin_loan_requests r ON r.id = l.request_id
      WHERE l.id = $1`,
     [id]
   );

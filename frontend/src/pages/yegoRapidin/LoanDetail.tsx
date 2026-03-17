@@ -39,6 +39,8 @@ type LoansSearchState = {
   country?: string;
   date_from?: string;
   date_to?: string;
+  page?: number;
+  limit?: number;
 };
 
 const LoanDetail = () => {
@@ -66,6 +68,8 @@ const LoanDetail = () => {
       country: s.country ?? '',
       date_from: s.date_from ?? '',
       date_to: s.date_to ?? '',
+      page: s.page ?? 1,
+      limit: s.limit ?? 10,
     };
   };
 
@@ -322,6 +326,15 @@ const LoanDetail = () => {
               <p className="text-sm text-red-600 mt-0.5 font-semibold">
                 {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {totalMoraPendiente.toFixed(2)}
               </p>
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-gray-600">Por qué pidió el dinero:</span>
+              <p className="text-sm text-gray-900 mt-0.5">{(() => {
+                try {
+                  const obs = loan.request_observations ? (typeof loan.request_observations === 'string' ? JSON.parse(loan.request_observations) : loan.request_observations) : {};
+                  return (obs?.purpose && String(obs.purpose).trim()) || '—';
+                } catch { return '—'; }
+              })()}</p>
             </div>
             <div>
               <span className="text-xs font-semibold text-gray-600">Tasa de Interés:</span>

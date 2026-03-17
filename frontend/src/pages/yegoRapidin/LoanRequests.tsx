@@ -31,6 +31,10 @@ export type LoanRequestsSearchState = {
   driverSearchInput?: string;
   status?: string;
   country?: string;
+  date_from?: string;
+  date_to?: string;
+  page?: number;
+  limit?: number;
 };
 
 const LoanRequests = () => {
@@ -48,22 +52,34 @@ const LoanRequests = () => {
     status: isReturnFromDetail ? (searchState?.status ?? '') : '',
     country: isReturnFromDetail ? (searchState?.country ?? '') : '',
     driver: isReturnFromDetail ? (searchState?.driver ?? '') : '',
-    date_from: '',
-    date_to: '',
+    date_from: isReturnFromDetail ? (searchState?.date_from ?? '') : '',
+    date_to: isReturnFromDetail ? (searchState?.date_to ?? '') : '',
   });
   const [driverSearchInput, setDriverSearchInput] = useState(initialDriverInput);
-  const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0, totalPages: 0 });
+  const [pagination, setPagination] = useState({
+    page: isReturnFromDetail && searchState?.page != null ? searchState.page : 1,
+    limit: isReturnFromDetail && searchState?.limit != null ? searchState.limit : 10,
+    total: 0,
+    totalPages: 0,
+  });
   const [paginationLoading, setPaginationLoading] = useState(false);
   const PAGE_SIZES = [5, 10, 20, 50];
   const lastFetchedKeyRef = useRef<string | null>(null);
 
+  // Al volver del detalle: restaurar página (ej. 2) y limpiar state
   useEffect(() => {
     if (isReturnFromDetail) {
-      window.history.replaceState({}, document.title, location.pathname);
+      const page = searchState?.page ?? 1;
+      const limit = searchState?.limit ?? 10;
+      setPagination((p) => ({ ...p, page, limit }));
+      fetchRequests(page, limit, true);
+      navigate(location.pathname, { replace: true, state: {} });
     }
-  }, [isReturnFromDetail, location.pathname]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
+    if (isReturnFromDetail) return;
     const key = `1-${filters.status}-${filters.country}-${(filters.driver ?? '').trim()}-${filters.date_from}-${filters.date_to}`;
     if (lastFetchedKeyRef.current === key) return;
     lastFetchedKeyRef.current = key;
@@ -404,6 +420,10 @@ const LoanRequests = () => {
                             driverSearchInput,
                             status: filters.status,
                             country: filters.country,
+                            date_from: filters.date_from,
+                            date_to: filters.date_to,
+                            page: pagination.page,
+                            limit: pagination.limit,
                           },
                         })}
                         className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"

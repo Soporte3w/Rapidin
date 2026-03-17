@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   format,
   addMonths,
@@ -55,7 +56,10 @@ export function DateRangePicker({ label = 'Fecha', value, onChange, placeholder 
   });
   const [tempStart, setTempStart] = useState<Date | null>(null);
   const [tempEnd, setTempEnd] = useState<Date | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -66,9 +70,26 @@ export function DateRangePicker({ label = 'Fecha', value, onChange, placeholder 
     setTempEnd(value.date_to ? new Date(value.date_to + 'T12:00:00') : null);
   }, [open, value.date_from, value.date_to]);
 
+  useLayoutEffect(() => {
+    if (!open || !buttonRef.current) {
+      setDropdownPosition(null);
+      return;
+    }
+    const rect = buttonRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const dropdownHeight = 300;
+    const openAbove = spaceBelow < dropdownHeight && rect.top > dropdownHeight;
+    setDropdownPosition({
+      top: openAbove ? rect.top - dropdownHeight - 4 : rect.bottom + 4,
+      left: rect.left,
+    });
+  }, [open]);
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (boxRef.current?.contains(target) || dropdownRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -125,13 +146,14 @@ export function DateRangePicker({ label = 'Fecha', value, onChange, placeholder 
   const weekDays = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
 
   return (
-    <div className={`relative ${className}`} ref={boxRef}>
+    <div className={`relative w-fit min-w-[200px] max-w-[280px] ${className}`} ref={boxRef}>
       {label && (
         <label className="block text-xs font-semibold text-gray-900 mb-1.5">
           {label}
         </label>
       )}
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
         className={`w-full flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-lg bg-white text-left text-sm focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none ${inputClassName}`}
@@ -143,33 +165,37 @@ export function DateRangePicker({ label = 'Fecha', value, onChange, placeholder 
         <ChevronDown className={`w-4 h-4 text-gray-500 ml-auto flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
-      {open && (
-        <div className="absolute left-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-4 min-w-[280px]">
-          <div className="flex items-center justify-between mb-3">
+      {open && dropdownPosition && createPortal(
+        <div
+          ref={dropdownRef}
+          className="fixed z-[9999] bg-white border border-gray-200 rounded-lg shadow-lg p-2.5 min-w-[220px]"
+          style={{ top: dropdownPosition.top, left: dropdownPosition.left }}
+        >
+          <div className="flex items-center justify-between mb-1.5">
             <button
               type="button"
               onClick={() => setViewMonth((m) => subMonths(m, 1))}
-              className="p-1.5 rounded hover:bg-gray-100 text-gray-600"
+              className="p-1 rounded hover:bg-gray-100 text-gray-600 text-sm"
               aria-label="Mes anterior"
             >
               ←
             </button>
-            <span className="text-sm font-semibold text-gray-900 capitalize">
+            <span className="text-xs font-semibold text-gray-900 capitalize">
               {format(viewMonth, 'MMM yyyy', { locale: es })}
             </span>
             <button
               type="button"
               onClick={() => setViewMonth((m) => addMonths(m, 1))}
-              className="p-1.5 rounded hover:bg-gray-100 text-gray-600"
+              className="p-1 rounded hover:bg-gray-100 text-gray-600 text-sm"
               aria-label="Mes siguiente"
             >
               →
             </button>
           </div>
 
-          <div className="grid grid-cols-7 gap-0.5 mb-3">
+          <div className="grid grid-cols-7 gap-0.5 mb-1.5">
             {weekDays.map((d, i) => (
-              <div key={i} className="text-center text-xs font-medium text-gray-500 py-1">
+              <div key={i} className="text-center text-[10px] font-medium text-gray-500 py-0.5">
                 {d}
               </div>
             ))}
@@ -188,7 +214,7 @@ export function DateRangePicker({ label = 'Fecha', value, onChange, placeholder 
                   type="button"
                   onClick={() => handleDayClick(day)}
                   className={`
-                    w-8 h-8 rounded-full text-sm
+                    w-6 h-6 rounded-full text-xs
                     ${!inMonth ? 'text-gray-300' : 'text-gray-900'}
                     ${isSelected ? 'bg-[#8B1A1A] text-white hover:bg-[#6B1515]' : inMonth ? 'hover:bg-red-50' : ''}
                   `}
@@ -199,37 +225,38 @@ export function DateRangePicker({ label = 'Fecha', value, onChange, placeholder 
             })}
           </div>
 
-          <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-3">
+          <div className="flex flex-wrap gap-1.5 border-t border-gray-100 pt-2">
             <button
               type="button"
               onClick={() => handleQuick(thisWeekStart, thisWeekEnd)}
-              className="px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+              className="px-2 py-1 text-[10px] font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200"
             >
               Esta semana
             </button>
             <button
               type="button"
               onClick={() => handleQuick(lastWeekStart, lastWeekEnd)}
-              className="px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+              className="px-2 py-1 text-[10px] font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200"
             >
               La semana pasada
             </button>
             <button
               type="button"
               onClick={() => handleQuick(thisMonthStart, thisMonthEnd)}
-              className="px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+              className="px-2 py-1 text-[10px] font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200"
             >
               Este mes
             </button>
             <button
               type="button"
               onClick={() => handleQuick(lastMonthStart, lastMonthEnd)}
-              className="px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+              className="px-2 py-1 text-[10px] font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200"
             >
               El mes pasado
             </button>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '../../services/api';
-import { Plus, X, FileText, CreditCard, AlertCircle, Eye, CheckCircle, XCircle, Copy, Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { Plus, X, FileText, CreditCard, AlertCircle, Eye, CheckCircle, XCircle, Copy, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { formatDate, formatDateShort } from '../../utils/date';
+import { formatDate, formatDateTimeLocal } from '../../utils/date';
+import { DateRangePicker } from '../../components/DateRangePicker';
 import toast from 'react-hot-toast';
 
 interface Payment {
@@ -87,11 +88,15 @@ const Payments = () => {
   const [rejectModal, setRejectModal] = useState<{ voucherId: string; reason: string } | null>(null);
   const [viewFileModal, setViewFileModal] = useState<{ url: string; type: string } | null>(null);
   const [comprobantesFilter, setComprobantesFilter] = useState<'pending' | 'rejected' | 'approved'>('pending');
-  const [paymentFilters, setPaymentFilters] = useState({ loan_id: '', country: (user?.country as string) || 'PE' });
+  const [paymentFilters, setPaymentFilters] = useState({
+    loan_id: '',
+    country: (user?.country as string) || 'PE',
+    date_from: '',
+    date_to: '',
+  });
   const [loanIdSearchInput, setLoanIdSearchInput] = useState('');
   const [pagination, setPagination] = useState({ page: 1, limit: 5, total: 0, totalPages: 0 });
   const [paginationLoading, setPaginationLoading] = useState(false);
-  const PAGE_SIZES = [5, 10, 20, 50];
   const [formData, setFormData] = useState({
     loan_id: '',
     amount: '',
@@ -259,6 +264,13 @@ const Payments = () => {
     if (tab === 'pagos-automaticos') fetchAutoLog(1);
   }, [tab]);
 
+  // Filtros de pagos automáticos: buscar al cambiar (sin esperar al botón), con debounce para no disparar en cada tecla
+  useEffect(() => {
+    if (tab !== 'pagos-automaticos') return;
+    const t = setTimeout(() => fetchAutoLog(1), 400);
+    return () => clearTimeout(t);
+  }, [autoLogFilters.date_from, autoLogFilters.date_to, autoLogFilters.driver, autoLogFilters.status, tab]);
+
   const runLoanIdSearch = () => {
     const value = loanIdSearchInput.trim();
     setPaymentFilters((prev) => ({ ...prev, loan_id: value }));
@@ -305,6 +317,8 @@ const Payments = () => {
       params.append('limit', String(limit));
       if (paymentFilters.country) params.append('country', paymentFilters.country);
       if (paymentFilters.loan_id.trim()) params.append('loan_id', paymentFilters.loan_id.trim());
+      if (paymentFilters.date_from) params.append('date_from', paymentFilters.date_from);
+      if (paymentFilters.date_to) params.append('date_to', paymentFilters.date_to);
       const response = await api.get(`/payments?${params.toString()}`);
       let paymentsData: Payment[] = [];
       let total = 0;
@@ -504,9 +518,16 @@ const Payments = () => {
       {/* Tab: Pagos */}
       {tab === 'pagos' && (
       <>
-      {/* Filtro: ID préstamo */}
+      {/* Filtros: Fecha, País, ID préstamo */}
       <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 mb-4">
+        <h3 className="text-sm font-semibold text-gray-900 mb-3">Filtros</h3>
         <div className="flex flex-wrap items-end gap-4">
+          <DateRangePicker
+            label="Fecha"
+            value={{ date_from: paymentFilters.date_from, date_to: paymentFilters.date_to }}
+            onChange={(r) => setPaymentFilters((f) => ({ ...f, date_from: r.date_from, date_to: r.date_to }))}
+            placeholder="Filtrar por fecha"
+          />
           <div className="w-full max-w-md">
             <label htmlFor="loan_id_filter" className="block text-xs font-semibold text-gray-900 mb-1.5">
               Buscar por ID de préstamo
@@ -611,14 +632,12 @@ const Payments = () => {
 
       {/* Lista de pagos con paginación */}
       {safePayments.length === 0 && !loading ? (
-        <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 lg:p-12 text-center">
-          <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-6">
-            <FileText className="w-10 h-10 text-gray-400" />
-          </div>
-          <h3 className="text-xl lg:text-2xl font-bold text-gray-900 mb-2">
+        <div className="bg-white rounded-xl shadow border border-gray-200 p-8 text-center">
+          <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-bold text-gray-900 mb-2">
             {paymentFilters.loan_id ? 'No hay pagos para este préstamo' : 'No hay pagos disponibles'}
           </h3>
-          <p className="text-gray-600 mb-6 text-base">
+          <p className="text-gray-600 text-sm mb-4">
             {paymentFilters.loan_id
               ? 'No se encontraron pagos con el ID indicado. Revisa el ID o quita el filtro.'
               : 'No se encontraron pagos registrados'}
@@ -634,66 +653,50 @@ const Payments = () => {
           )}
         </div>
       ) : (
-        <div className="space-y-4">
-          <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden relative">
-            {paginationLoading && (
-              <div className="absolute inset-0 bg-white/60 z-10 flex items-center justify-center rounded-xl">
-                <div className="animate-spin rounded-full h-10 w-10 border-2 border-red-600 border-t-transparent" />
-              </div>
-            )}
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                      Préstamo
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                      Monto
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                      Fecha
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                      Tipo de pago
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                      Referencia
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {safePayments.filter(Boolean).map((payment, idx) => {
-                    const p = payment as Payment;
-                    return (
-                    <tr key={p?.id ?? `pay-${idx}`} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-4 whitespace-nowrap">
+        <div className={`bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden transition-opacity ${paginationLoading ? 'opacity-60' : ''}`}>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[800px]">
+              <thead className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Préstamo</th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-gray-700 uppercase">Monto</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Fecha</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Tipo de pago</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Referencia</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {safePayments.filter(Boolean).map((payment, idx) => {
+                  const p = payment as Payment;
+                  return (
+                    <tr key={p?.id ?? `pay-${idx}`} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 text-sm text-gray-600 font-mono">
                         {p?.loan_id != null ? (
                           <button
                             type="button"
                             onClick={() => handleCopyId(String(p.loan_id), 'ID préstamo copiado')}
-                            className="flex items-center gap-2 text-sm font-medium text-gray-900 hover:text-red-600 transition-colors group"
+                            className="flex items-center gap-1.5 group cursor-pointer hover:text-red-600 transition-colors text-left"
                             title="Click para copiar ID"
                           >
-                            <span>{String(p.loan_id).slice(0, 8)}...</span>
-                            <Copy className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                            <span>{String(p.loan_id).slice(0, 8)}…</span>
+                            <Copy className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
                           </button>
                         ) : (
-                          <div className="text-sm font-medium text-gray-900">N/A</div>
+                          <span className="text-gray-500">—</span>
                         )}
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap">
-                        <div className="text-sm font-semibold text-gray-900">
-                          {currencyLabel} {(p?.amount != null ? Number(p.amount) : 0).toFixed(2)}
-                        </div>
+                      <td className="px-4 py-3 text-sm text-center tabular-nums font-medium text-gray-900">
+                        {currencyLabel} {(p?.amount != null ? Number(p.amount) : 0).toFixed(2)}
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-900">
-                          {p?.payment_date ? formatDate(p.payment_date, 'es-ES') : '—'}
-                        </div>
+                      <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
+                        {p?.created_at
+                          ? formatDateTimeLocal(p.created_at, 'es-ES')
+                          : p?.payment_date
+                            ? formatDate(p.payment_date, 'es-ES')
+                            : '—'}
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
                           p?.payment_method === 'voucher'
                             ? 'bg-blue-100 text-blue-800'
                             : 'bg-gray-100 text-gray-800'
@@ -701,107 +704,40 @@ const Payments = () => {
                           {p?.payment_method === 'voucher' ? 'Comprobante (conductor)' : 'Oficina / Manual'}
                         </span>
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-600 max-w-[140px] truncate" title={p?.reference || undefined}>
-                          {p?.reference ?? 'N/A'}
-                        </div>
+                      <td className="px-4 py-3 text-sm text-gray-600 max-w-[220px]" title={p?.reference || undefined}>
+                        {p?.reference ? (String(p.reference).length > 50 ? String(p.reference).slice(0, 50) + '…' : p.reference) : '—'}
                       </td>
                     </tr>
-                  );})}
-                </tbody>
-              </table>
-            </div>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-
-          {/* Paginación */}
           {pagination.total > 0 && (
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 pb-2">
-              <div className="flex flex-wrap items-center gap-3 order-2 sm:order-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium text-gray-500">Por página:</span>
-                  <select
-                    value={pagination.limit}
-                    onChange={(e) => {
-                      const newLimit = Number(e.target.value);
-                      setPagination((p) => ({ ...p, limit: newLimit, page: 1 }));
-                      fetchPayments(1, newLimit, true);
-                    }}
-                    className="text-sm border border-gray-300 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:ring-2 focus:ring-red-500 focus:border-red-600"
-                  >
-                    {PAGE_SIZES.map((n) => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 order-1 sm:order-2">
-                <button
-                  type="button"
-                  onClick={() => goToPage(1)}
-                  disabled={pagination.page <= 1 || loading || paginationLoading}
-                  className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  aria-label="Primera página"
-                >
-                  <ChevronsLeft className="w-4 h-4" />
-                </button>
+            <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200">
+              <span className="text-xs text-gray-500">
+                Total: {pagination.total} registro(s)
+                {paginationLoading && <span className="ml-2 text-red-600">Cargando...</span>}
+              </span>
+              <div className="flex items-center gap-1">
                 <button
                   type="button"
                   onClick={() => goToPage(pagination.page - 1)}
-                  disabled={pagination.page <= 1 || loading || paginationLoading}
-                  className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  disabled={pagination.page <= 1 || paginationLoading}
+                  className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50"
                   aria-label="Página anterior"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
-                {pagination.totalPages > 1 && (
-                  <div className="flex items-center gap-1">
-                    {Array.from({ length: Math.min(5, pagination.totalPages) }, (_, i) => {
-                      let pageNum: number;
-                      if (pagination.totalPages <= 5) {
-                        pageNum = i + 1;
-                      } else if (pagination.page <= 3) {
-                        pageNum = i + 1;
-                      } else if (pagination.page >= pagination.totalPages - 2) {
-                        pageNum = pagination.totalPages - 4 + i;
-                      } else {
-                        pageNum = pagination.page - 2 + i;
-                      }
-                      const isActive = pagination.page === pageNum;
-                      return (
-                        <button
-                          key={pageNum}
-                          type="button"
-                          onClick={() => goToPage(pageNum)}
-                          disabled={loading || paginationLoading}
-                          className={`min-w-[2.25rem] w-9 h-9 flex items-center justify-center rounded-full text-sm font-semibold transition-colors ${
-                            isActive
-                              ? 'bg-red-600 text-white border-2 border-red-600'
-                              : 'border-2 border-red-600 text-red-600 hover:bg-red-50'
-                          }`}
-                        >
-                          {pageNum}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+                <span className="text-sm text-gray-700 px-2">Pág. {pagination.page} de {pagination.totalPages || 1}</span>
                 <button
                   type="button"
                   onClick={() => goToPage(pagination.page + 1)}
-                  disabled={pagination.page >= pagination.totalPages || loading || paginationLoading}
-                  className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  disabled={pagination.page >= pagination.totalPages || paginationLoading}
+                  className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50"
                   aria-label="Página siguiente"
                 >
                   <ChevronRight className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => goToPage(pagination.totalPages || 1)}
-                  disabled={pagination.page >= pagination.totalPages || loading || paginationLoading}
-                  className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  aria-label="Última página"
-                >
-                  <ChevronsRight className="w-4 h-4" />
                 </button>
               </div>
             </div>
@@ -1165,24 +1101,12 @@ const Payments = () => {
         <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
           <h3 className="text-sm font-semibold text-gray-900 mb-3">Filtros</h3>
           <div className="flex flex-wrap items-end gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-gray-700 mb-1">Fecha desde</label>
-              <input
-                type="date"
-                value={autoLogFilters.date_from}
-                onChange={(e) => setAutoLogFilters((f) => ({ ...f, date_from: e.target.value }))}
-                className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-full min-w-[140px]"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-700 mb-1">Fecha hasta</label>
-              <input
-                type="date"
-                value={autoLogFilters.date_to}
-                onChange={(e) => setAutoLogFilters((f) => ({ ...f, date_to: e.target.value }))}
-                className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-full min-w-[140px]"
-              />
-            </div>
+            <DateRangePicker
+              label="Fecha"
+              value={{ date_from: autoLogFilters.date_from, date_to: autoLogFilters.date_to }}
+              onChange={(r) => setAutoLogFilters((f) => ({ ...f, date_from: r.date_from, date_to: r.date_to }))}
+              placeholder="Filtrar por fecha"
+            />
             <div>
               <label className="block text-xs font-semibold text-gray-700 mb-1">Conductor</label>
               <input
@@ -1259,7 +1183,7 @@ const Payments = () => {
                         ) : '—'}
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
-                        {row?.created_at ? formatDateShort(row.created_at, 'es-ES') : '—'}
+                        {row?.created_at ? formatDateTimeLocal(row.created_at, 'es-ES') : '—'}
                       </td>
                       <td className="px-4 py-3 text-sm font-medium text-gray-900">
                         {[row?.driver_first_name, row?.driver_last_name].filter(Boolean).join(' ') || '—'}

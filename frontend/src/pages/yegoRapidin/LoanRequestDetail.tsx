@@ -207,6 +207,10 @@ type LoanRequestsSearchState = {
   driverSearchInput?: string;
   status?: string;
   country?: string;
+  date_from?: string;
+  date_to?: string;
+  page?: number;
+  limit?: number;
 };
 
 const LoanRequestDetail = () => {
@@ -224,6 +228,10 @@ const LoanRequestDetail = () => {
       driverSearchInput: s.driverSearchInput ?? s.driver ?? '',
       status: s.status ?? '',
       country: s.country ?? '',
+      date_from: s.date_from ?? '',
+      date_to: s.date_to ?? '',
+      page: s.page ?? 1,
+      limit: s.limit ?? 10,
     };
   };
   const [request, setRequest] = useState<any>(null);

@@ -4,6 +4,7 @@ import path from 'path';
 import pool from '../database/connection.js';
 import { getLoanRequests, getLoanRequestById, rejectLoanRequest, getLoanByRequestId, getInstallmentSchedule } from '../services/loanService.js';
 import { getDocumentsByRequestId, getDocumentByIdAndRequestId } from '../services/documentService.js';
+import { sendWhatsAppMessage } from '../services/authService.js';
 import { getPartnerNameById } from '../services/partnersService.js';
 import { verifyToken, verifyRole } from '../middleware/auth.js';
 import { filterByCountry } from '../middleware/permissions.js';
@@ -189,6 +190,48 @@ router.post('/:id/reject', validateUUID, verifyRole('analyst', 'approver', 'admi
   } catch (error) {
     logger.error('Error rechazando solicitud:', error);
     return errorResponse(res, error.message, 400);
+  }
+});
+
+/** Enviar mensaje al conductor por WhatsApp (solicitud desembolsada: ej. cuenta bancaria equivocada) */
+router.post('/:id/send-message', validateUUID, verifyRole('analyst', 'approver', 'admin'), async (req, res) => {
+  try {
+    const request = await getLoanRequestById(req.params.id);
+    if (!request) {
+      return errorResponse(res, 'Solicitud no encontrada', 404);
+    }
+    if (req.allowedCountries && !req.allowedCountries.includes(request.country)) {
+      return errorResponse(res, 'No tienes permisos para esta solicitud', 403);
+    }
+    if (!['approved', 'disbursed'].includes(request.status)) {
+      return errorResponse(res, 'Solo se puede enviar mensaje para solicitudes aprobadas o desembolsadas', 400);
+    }
+    const rawPhone = request.phone;
+    if (!rawPhone || !String(rawPhone).trim()) {
+      return errorResponse(res, 'La solicitud no tiene teléfono del conductor', 400);
+    }
+    const message = typeof req.body.message === 'string' ? req.body.message.trim() : '';
+    if (!message) {
+      return errorResponse(res, 'El mensaje no puede estar vacío', 400);
+    }
+    const digits = String(rawPhone).replace(/\D/g, '');
+    const country = request.country || 'PE';
+    let phone = digits;
+    if (digits.length >= 10 && (digits.startsWith('51') || digits.startsWith('57'))) {
+      phone = digits;
+    } else if (country === 'PE' && digits.length === 9) {
+      phone = '51' + digits;
+    } else if (country === 'CO' && digits.length === 10) {
+      phone = '57' + digits;
+    }
+    const result = await sendWhatsAppMessage(phone, message);
+    if (!result.success) {
+      return errorResponse(res, result.error || 'Error al enviar WhatsApp', 400);
+    }
+    return successResponse(res, { sent: true }, 'Mensaje enviado por Rapidín');
+  } catch (error) {
+    logger.error('Error enviando mensaje solicitud:', error);
+    return errorResponse(res, error.message || 'Error al enviar', 500);
   }
 });
 

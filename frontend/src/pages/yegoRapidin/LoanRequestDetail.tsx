@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, User, FileText, Calculator, CheckCircle, AlertCircle, Copy, Clock, XCircle, Image as ImageIcon, CreditCard, Loader2, RefreshCw } from 'lucide-react';
+import { ArrowLeft, User, FileText, Calculator, CheckCircle, AlertCircle, Copy, Clock, XCircle, Image as ImageIcon, CreditCard, Loader2, RefreshCw, MessageCircle } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../contexts/AuthContext';
@@ -238,6 +238,9 @@ const LoanRequestDetail = () => {
   const [loading, setLoading] = useState(true);
   const [simulationOptions, setSimulationOptions] = useState<any>(null);
   const [showRejectForm, setShowRejectForm] = useState(false);
+  const [showRejectDisbursedModal, setShowRejectDisbursedModal] = useState(false);
+  const [rapidinMessage, setRapidinMessage] = useState('');
+  const [loadingSendMessage, setLoadingSendMessage] = useState(false);
   const [showConfirmApproveModal, setShowConfirmApproveModal] = useState(false);
   const [showConfirmDisburseModal, setShowConfirmDisburseModal] = useState(false);
   const [showConfirmDisburseBankModal, setShowConfirmDisburseBankModal] = useState(false);
@@ -404,6 +407,74 @@ const LoanRequestDetail = () => {
     }
   };
 
+  const handleConfirmRejectWithChannels = async () => {
+    const reason = rejectReason.trim();
+    if (!reason) {
+      toast.error('Indica el motivo del rechazo');
+      return;
+    }
+    setLoadingSendMessage(true);
+    try {
+      await sendMessageViaRapidin(reason);
+      const waLink = request ? getWhatsAppLink(request.phone, reason) : null;
+      if (waLink) window.open(waLink, '_blank');
+      await handleRejectSubmit();
+    } catch {
+      // sendMessageViaRapidin o handleRejectSubmit ya muestran toast
+    } finally {
+      setLoadingSendMessage(false);
+    }
+  };
+
+  const getWhatsAppLink = (phone: string, prefillText?: string) => {
+    if (!phone || !String(phone).trim()) return null;
+    const digits = String(phone).replace(/\D/g, '');
+    const country = request?.country || 'PE';
+    let num = digits;
+    if (digits.length >= 10 && (digits.startsWith('51') || digits.startsWith('57'))) num = digits;
+    else if (country === 'PE' && digits.length === 9) num = '51' + digits;
+    else if (country === 'CO' && digits.length === 10) num = '57' + digits;
+    const base = `https://wa.me/${num}`;
+    if (prefillText && prefillText.trim()) return `${base}?text=${encodeURIComponent(prefillText.trim())}`;
+    return base;
+  };
+
+  const sendMessageViaRapidin = async (message: string) => {
+    const msg = message.trim();
+    if (!msg) {
+      toast.error('Escribe el mensaje a enviar');
+      return;
+    }
+    if (!id) return;
+    setLoadingSendMessage(true);
+    try {
+      await api.post(`/loan-requests/${id}/send-message`, { message: msg });
+      toast.success('Mensaje enviado por Rapidín');
+    } catch (error: any) {
+      toast.error(error.response?.data?.message || 'Error al enviar el mensaje');
+      throw error;
+    } finally {
+      setLoadingSendMessage(false);
+    }
+  };
+
+  const handleContactDisbursed = async () => {
+    const msg = rapidinMessage.trim();
+    if (!msg) {
+      toast.error('Escribe el mensaje');
+      return;
+    }
+    try {
+      await sendMessageViaRapidin(msg);
+      const waLink = request ? getWhatsAppLink(request.phone, msg) : null;
+      if (waLink) window.open(waLink, '_blank');
+      setRapidinMessage('');
+      setShowRejectDisbursedModal(false);
+    } catch {
+      // sendMessageViaRapidin ya muestra toast
+    }
+  };
+
   const handleCopyId = async (requestId: string) => {
     try {
       await navigator.clipboard.writeText(requestId);
@@ -436,11 +507,6 @@ const LoanRequestDetail = () => {
         color: 'bg-red-100 text-red-800',
         icon: XCircle,
         text: 'Rechazado'
-      },
-      signed: {
-        color: 'bg-purple-100 text-purple-800',
-        icon: CheckCircle,
-        text: 'Firmado'
       },
       disbursed: {
         color: 'bg-green-100 text-green-800',
@@ -793,25 +859,60 @@ const LoanRequestDetail = () => {
             <p className="text-sm text-gray-600 mb-4">
               La solicitud está aprobada. Realice el desembolso para generar el préstamo y el cronograma de cuotas (lunes a sábado; los domingos no se puede desembolsar).
             </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowRejectForm(true)}
+                className="px-5 py-2.5 text-sm font-semibold text-gray-700 bg-white border-2 border-gray-300 hover:border-gray-400 rounded-lg flex items-center gap-2"
+              >
+                <XCircle className="h-4 w-4" />
+                Rechazar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const obs = parseRequestObservations(request);
+                  const isBank = obs.deposit_type === 'bank';
+                  if (isBank) {
+                    setShowConfirmDisburseBankModal(true);
+                    return;
+                  }
+                  setDisburseAmount(String(parseFloat(request?.requested_amount || '0') || ''));
+                  setDisburseComment('');
+                  setRechargeSuccess(false);
+                  setShowConfirmDisburseModal(true);
+                }}
+                disabled={loadingDisburse || isSunday}
+                className="bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white font-semibold py-2.5 px-6 rounded-lg transition-all shadow-md flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loadingDisburse ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
+                {loadingDisburse ? 'Procesando...' : isSunday ? 'Desembolsar (no disponible domingos)' : 'Desembolsar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Desembolsado: contactar conductor (ej. cuenta equivocada) */}
+      {request.status === 'disbursed' && (
+        <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+          <div className="border-b border-gray-200 px-4 py-3 bg-amber-50">
+            <div className="flex items-center gap-2">
+              <MessageCircle className="h-5 w-5 text-amber-600" />
+              <h2 className="text-base font-semibold text-gray-900">Contactar al conductor</h2>
+            </div>
+          </div>
+          <div className="p-4">
+            <p className="text-sm text-gray-600 mb-4">
+              Si puede que se haya equivocado de cuenta bancaria, envía un mensaje por WhatsApp y Rapidín.
+            </p>
             <button
               type="button"
-              onClick={() => {
-                const obs = parseRequestObservations(request);
-                const isBank = obs.deposit_type === 'bank';
-                if (isBank) {
-                  setShowConfirmDisburseBankModal(true);
-                  return;
-                }
-                setDisburseAmount(String(parseFloat(request?.requested_amount || '0') || ''));
-                setDisburseComment('');
-                setRechargeSuccess(false);
-                setShowConfirmDisburseModal(true);
-              }}
-              disabled={loadingDisburse || isSunday}
-              className="bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white font-semibold py-2.5 px-6 rounded-lg transition-all shadow-md flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={() => { setRapidinMessage(''); setShowRejectDisbursedModal(true); }}
+              className="px-5 py-2.5 text-sm font-semibold text-gray-700 bg-white border-2 border-amber-400 hover:border-amber-500 rounded-lg flex items-center gap-2 transition-colors"
             >
-              {loadingDisburse ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
-              {loadingDisburse ? 'Procesando...' : isSunday ? 'Desembolsar (no disponible domingos)' : 'Desembolsar'}
+              <MessageCircle className="h-4 w-4" />
+              Contactar (WhatsApp y Rapidín)
             </button>
           </div>
         </div>
@@ -1070,28 +1171,35 @@ const LoanRequestDetail = () => {
       )}
 
       {/* Modal confirmar rechazo */}
-      {showRejectForm && (
+      {showRejectForm && request && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => { setShowRejectForm(false); setRejectReason(''); }}>
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2 mb-4">
-              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
                 <XCircle className="h-5 w-5 text-red-600" />
               </div>
               <h3 className="text-lg font-semibold text-gray-900">Rechazar solicitud</h3>
             </div>
-            <p className="text-sm text-gray-600 mb-3">
-              Rechazarás esta solicitud como <span className="font-semibold text-gray-900">{currentUserName}</span>. 
-              Quedará registrado quién la rechazó. Indica el motivo (el conductor podrá verlo).
+            <p className="text-sm text-gray-600 mb-4">
+              Rechazarás esta solicitud como <span className="font-semibold text-gray-900">{currentUserName}</span>. Quedará registrado quién la rechazó.
             </p>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Motivo del rechazo</label>
             <textarea
               value={rejectReason}
               onChange={(e) => setRejectReason(e.target.value)}
               placeholder="Escribe el motivo del rechazo..."
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 resize-none"
-              rows={4}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 resize-none mb-4"
+              rows={3}
               autoFocus
             />
-            <div className="flex justify-end gap-2 mt-4">
+
+            <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200">
+              <p className="text-sm font-medium text-amber-800">
+                Este mensaje se enviará por WhatsApp y por Rapidín al confirmar el rechazo.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-gray-200">
               <button
                 type="button"
                 onClick={() => { setShowRejectForm(false); setRejectReason(''); }}
@@ -1101,11 +1209,60 @@ const LoanRequestDetail = () => {
               </button>
               <button
                 type="button"
-                onClick={handleRejectSubmit}
-                className="px-4 py-2 text-sm font-semibold text-white bg-gray-700 hover:bg-gray-800 rounded-lg flex items-center gap-2"
+                onClick={handleConfirmRejectWithChannels}
+                disabled={!rejectReason.trim() || loadingSendMessage}
+                className="px-4 py-2 text-sm font-semibold text-white bg-gray-700 hover:bg-gray-800 rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <XCircle className="h-4 w-4" />
-                Confirmar rechazo
+                {loadingSendMessage ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
+                {loadingSendMessage ? 'Enviando...' : 'Confirmar rechazo'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal desembolsado: contactar (WhatsApp + Rapidín) */}
+      {showRejectDisbursedModal && request && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => { setShowRejectDisbursedModal(false); setRapidinMessage(''); }}>
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
+                <MessageCircle className="h-5 w-5 text-amber-600" />
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900">Contactar al conductor</h3>
+            </div>
+            <p className="text-sm text-gray-600 mb-4">
+              Si puede que se haya equivocado de cuenta bancaria, escribe el mensaje. Se enviará por WhatsApp y por Rapidín.
+            </p>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Mensaje</label>
+            <textarea
+              value={rapidinMessage}
+              onChange={(e) => setRapidinMessage(e.target.value)}
+              placeholder="Escribe el mensaje..."
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-500 resize-none mb-4"
+              rows={3}
+            />
+            <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200">
+              <p className="text-sm font-medium text-amber-800">
+                Este mensaje se enviará por WhatsApp y por Rapidín.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => { setShowRejectDisbursedModal(false); setRapidinMessage(''); }}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
+              >
+                Cerrar
+              </button>
+              <button
+                type="button"
+                onClick={handleContactDisbursed}
+                disabled={!rapidinMessage.trim() || loadingSendMessage}
+                className="px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loadingSendMessage ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageCircle className="h-4 w-4" />}
+                {loadingSendMessage ? 'Enviando...' : 'Enviar'}
               </button>
             </div>
           </div>

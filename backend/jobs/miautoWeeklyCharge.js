@@ -51,13 +51,13 @@ function getLastWeekRange() {
 }
 
 /**
- * Job de cobro semanal: lunes 1:00 AM.
- * 1) Obtiene income de la semana pasada por conductor.
- * 2) Crea/actualiza cuota semanal.
+ * Job de cobro semanal: lunes 2:00 AM.
+ * 1) Obtiene income de la semana pasada por conductor (lunes 00:00 a domingo 23:59).
+ * 2) Crea/actualiza cuota semanal (amount_due = max(0, cuota - bono - 83.33% partner_fees)).
  * 3) Cobra cuotas pendientes/overdue (orden por due_date ASC).
  */
 async function runWeeklyCharge() {
-  logger.info('Mi Auto: iniciando job de cobro semanal (lunes 1:00 AM)');
+  logger.info('Mi Auto: iniciando job de cobro semanal (lunes 2:00 AM)');
   try {
     const { weekStartDate, dateFrom, dateTo } = getLastWeekRange();
     const solicitudes = await getSolicitudesParaCobroSemanal();
@@ -117,6 +117,6 @@ async function runDailyMora() {
 
 export function startMiautoWeeklyChargeJob() {
   cron.schedule('0 1 * * *', runDailyMora, { timezone: TIMEZONE });
-  cron.schedule('0 1 * * 1', runWeeklyCharge, { timezone: TIMEZONE });
-  logger.info('Mi Auto jobs: mora diaria 1:00 AM, cobro semanal lunes 1:00 AM (America/Lima)');
+  cron.schedule('0 2 * * 1', runWeeklyCharge, { timezone: TIMEZONE });
+  logger.info('Mi Auto jobs: mora diaria 1:00 AM, cobro semanal lunes 2:00 AM (America/Lima)');
 }

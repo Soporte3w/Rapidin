@@ -7,7 +7,8 @@
   "scripts": {
     "start": "NODE_ENV=production node index.js",
     "dev": "NODE_ENV=development nodemon index.js",
-    "migrate": "node database/migrate.js"
+    "migrate": "node database/migrate.js",
+    "import-miauto-placas": "node scripts/import-miauto-placas-from-excel.js"
   },
   "keywords": [
     "rapidin",

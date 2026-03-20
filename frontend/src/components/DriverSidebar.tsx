@@ -10,6 +10,9 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
+/** Sección Yego Mi Auto en conductor: desactivada por mientras. true = muestra menú y permite ruta /driver/quiero-mi-auto */
+export const DRIVER_MI_AUTO_ENABLED = true;
+
 interface DriverSidebarProps {
   isOpen: boolean;
   onClose: () => void;
@@ -28,8 +31,7 @@ export default function DriverSidebar({ isOpen, onClose }: DriverSidebarProps) {
   type MenuItem = { name: string; href: string; icon: typeof LayoutDashboard };
   type MenuSection = { title: string; items: MenuItem[] };
 
-  // Opción "Quiero mi Yego Auto" oculta hasta que se habilite (no visible en sección driver)
-  const SHOW_MI_AUTO = false;
+  const SHOW_MI_AUTO = DRIVER_MI_AUTO_ENABLED;
 
   const sections: MenuSection[] = [
     { title: 'Principal', items: [

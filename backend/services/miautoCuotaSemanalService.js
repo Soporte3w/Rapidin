@@ -40,10 +40,11 @@ export async function getSolicitudesParaCobroSemanal() {
  */
 export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, cronogramaVehiculoId, weekStartDate, incomeResult) {
   const { count_completed: numViajes = 0, partner_fees: partnerFeesRaw = 0 } = incomeResult;
-  const partnerFees83 = round2(Number(partnerFeesRaw) * PARTNER_FEES_PCT);
+  const partnerFeesRawRounded = round2(Number(partnerFeesRaw) || 0);
+  const partnerFees83 = round2(partnerFeesRawRounded * PARTNER_FEES_PCT);
 
   const cronograma = await getCronogramaById(cronogramaId);
-  if (!cronograma || !cronograma.rules || cronograma.rules.length === 0) {
+  if (!cronograma?.rules?.length) {
     logger.warn(`Cronograma ${cronogramaId} sin rules para solicitud ${solicitudId}`);
     return null;
   }
@@ -60,8 +61,12 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
   const cuotaSemanal = vehicleIndex >= 0 && cuotasPorVehiculo[vehicleIndex] != null
     ? round2(parseFloat(cuotasPorVehiculo[vehicleIndex]) || 0)
     : 0;
+  const monedasPorVehiculo = rule.cuota_moneda_por_vehiculo || [];
+  const moneda = vehicleIndex >= 0 && monedasPorVehiculo[vehicleIndex] === 'USD' ? 'USD' : 'PEN';
   const bonoAuto = round2(parseFloat(rule.bono_auto) || 0);
-  const amountDue = round2(Math.max(0, cuotaSemanal - bonoAuto));
+  const amountDue = round2(Math.max(0, (cuotaSemanal - bonoAuto) - partnerFees83));
+  const pctComision = round2(Number(parseFloat(rule.pct_comision) || 0));
+  const cobroSaldo = round2(parseFloat(rule.cobro_saldo) || 0);
 
   const existing = await query(
     'SELECT id FROM module_miauto_cuota_semanal WHERE solicitud_id = $1 AND week_start_date = $2',
@@ -71,9 +76,9 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
   if (existing.rows.length > 0) {
     await query(
       `UPDATE module_miauto_cuota_semanal
-       SET num_viajes = $1, partner_fees_raw = $2, partner_fees_83 = $3, bono_auto = $4, cuota_semanal = $5, amount_due = $6, updated_at = CURRENT_TIMESTAMP
-       WHERE solicitud_id = $7 AND week_start_date = $8`,
-      [numViajes, partnerFeesRaw, partnerFees83, bonoAuto, cuotaSemanal, amountDue, solicitudId, weekStartDate]
+       SET num_viajes = $1, partner_fees_raw = $2, partner_fees_83 = $3, bono_auto = $4, cuota_semanal = $5, amount_due = $6, moneda = $7, pct_comision = $8, cobro_saldo = $9, updated_at = CURRENT_TIMESTAMP
+       WHERE solicitud_id = $10 AND week_start_date = $11`,
+      [numViajes, partnerFeesRawRounded, partnerFees83, bonoAuto, cuotaSemanal, amountDue, moneda, pctComision, cobroSaldo, solicitudId, weekStartDate]
     );
     return existing.rows[0].id;
   }
@@ -106,10 +111,10 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
 
   const ins = await query(
     `INSERT INTO module_miauto_cuota_semanal
-     (solicitud_id, week_start_date, due_date, num_viajes, partner_fees_raw, partner_fees_83, bono_auto, cuota_semanal, amount_due, paid_amount, status)
-     VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     (solicitud_id, week_start_date, due_date, num_viajes, partner_fees_raw, partner_fees_83, bono_auto, cuota_semanal, amount_due, paid_amount, status, moneda, pct_comision, cobro_saldo)
+     VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING id`,
-    [solicitudId, weekStartDate, numViajes, partnerFeesRaw, partnerFees83, bonoAuto, cuotaSemanal, amountDue, paidAmountInsert, statusInsert]
+    [solicitudId, weekStartDate, numViajes, partnerFeesRawRounded, partnerFees83, bonoAuto, cuotaSemanal, amountDue, paidAmountInsert, statusInsert, moneda, pctComision, cobroSaldo]
   );
   return ins.rows[0]?.id || null;
 }
@@ -131,13 +136,13 @@ export async function updateMoraDiaria() {
   let updated = 0;
   for (const row of res.rows || []) {
     const cronograma = await getCronogramaById(row.cronograma_id);
-    const tasa = cronograma ? (parseFloat(cronograma.tasa_interes_mora) || 0) : 0;
+    const tasa = round2(parseFloat(cronograma?.tasa_interes_mora) || 0);
     const dueDate = new Date(row.due_date);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     dueDate.setHours(0, 0, 0, 0);
     const daysOverdue = Math.max(0, Math.floor((today - dueDate) / (24 * 60 * 60 * 1000)));
-    const baseCuota = parseFloat(row.cuota_semanal) || parseFloat(row.amount_due) || 0;
+    const baseCuota = round2(parseFloat(row.cuota_semanal) || parseFloat(row.amount_due) || 0);
     const lateFee = round2(tasa > 0 && baseCuota > 0 ? (baseCuota * tasa) / 7 * daysOverdue : 0);
 
     await query(
@@ -173,27 +178,35 @@ export function calcularRacha(cuotas) {
  */
 export async function getCuotasSemanalesBySolicitud(solicitudId) {
   const res = await query(
-    `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, created_at, updated_at
+    `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, moneda, pct_comision, cobro_saldo, created_at, updated_at
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1 ORDER BY due_date ASC`,
     [solicitudId]
   );
-  return (res.rows || []).map((r) => ({
-    id: r.id,
-    solicitud_id: r.solicitud_id,
-    week_start_date: r.week_start_date,
-    due_date: r.due_date,
-    num_viajes: r.num_viajes,
-    bono_auto: round2(parseFloat(r.bono_auto) || 0),
-    cuota_semanal: round2(parseFloat(r.cuota_semanal) || 0),
-    amount_due: round2(parseFloat(r.amount_due) || 0),
-    paid_amount: round2(parseFloat(r.paid_amount) || 0),
-    late_fee: round2(parseFloat(r.late_fee) || 0),
-    status: r.status,
-    pending_total: round2((parseFloat(r.amount_due) || 0) + (parseFloat(r.late_fee) || 0) - (parseFloat(r.paid_amount) || 0)),
-    created_at: r.created_at,
-    updated_at: r.updated_at,
-  }));
+  return (res.rows || []).map((r) => {
+    const amount_due = round2(parseFloat(r.amount_due) || 0);
+    const paid_amount = round2(parseFloat(r.paid_amount) || 0);
+    const late_fee = round2(parseFloat(r.late_fee) || 0);
+    return {
+      id: r.id,
+      solicitud_id: r.solicitud_id,
+      week_start_date: r.week_start_date,
+      due_date: r.due_date,
+      num_viajes: r.num_viajes,
+      bono_auto: round2(parseFloat(r.bono_auto) || 0),
+      cuota_semanal: round2(parseFloat(r.cuota_semanal) || 0),
+      amount_due,
+      paid_amount,
+      late_fee,
+      status: r.status,
+      moneda: r.moneda === 'USD' ? 'USD' : 'PEN',
+      pct_comision: round2(Number(parseFloat(r.pct_comision) || 0)),
+      cobro_saldo: round2(parseFloat(r.cobro_saldo) || 0),
+      pending_total: round2(amount_due + late_fee - paid_amount),
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    };
+  });
 }
 
 /**
@@ -234,17 +247,14 @@ export async function getCuotasToCharge() {
 }
 
 /**
- * Procesa el cobro de una cuota: saldo fleet, withdraw, actualizar paid_amount.
- * Retorna { success, partial, failed, reason }.
- * La vista de detalle (GET /solicitudes/:id/cuotas-semanales) lee de la misma tabla;
- * si en un listado sale "Cobro completo" pero en detalle no se ve pagado: refrescar
- * la pestaña o reabrir el detalle; si persiste, revisar logs por si el UPDATE falló tras el withdraw.
+ * Procesa el cobro de una cuota: consulta saldo fleet, withdraw, actualiza paid_amount.
+ * Retorna { success, partial, failed, reason?, amountCharged? }.
  */
 export async function processCobroCuota(cuotaRow, cookieOverride = null, parkIdOverride = null) {
   const driverName = [cuotaRow.first_name, cuotaRow.last_name].filter(Boolean).join(' ').trim() || 'Conductor';
-  const amountDue = parseFloat(cuotaRow.amount_due) || 0;
-  const paid = parseFloat(cuotaRow.paid_amount) || 0;
-  const lateFee = parseFloat(cuotaRow.late_fee) || 0;
+  const amountDue = round2(parseFloat(cuotaRow.amount_due) || 0);
+  const paid = round2(parseFloat(cuotaRow.paid_amount) || 0);
+  const lateFee = round2(parseFloat(cuotaRow.late_fee) || 0);
   const pendingAmount = round2(amountDue + lateFee - paid);
 
   if (pendingAmount <= 0) {
@@ -276,7 +286,7 @@ export async function processCobroCuota(cuotaRow, cookieOverride = null, parkIdO
     return { success: false, partial: false, failed: true, reason: balanceResult.error };
   }
 
-  const balance = balanceResult.balance || 0;
+  const balance = round2(Number(balanceResult.balance) || 0);
   if (balance <= 0) {
     return { success: false, partial: false, failed: true, reason: 'Sin saldo disponible' };
   }

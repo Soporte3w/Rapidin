@@ -27,6 +27,7 @@ import LoanBenefits from './pages/driver/LoanBenefits';
 import LoanOfferVerification from './pages/driver/LoanOfferVerification';
 import LoanRequestFlow from './pages/driver/LoanRequestFlow';
 import QuieroMiYegoAuto from './pages/driver/QuieroMiYegoAuto';
+import { DRIVER_MI_AUTO_ENABLED } from './components/DriverSidebar';
 import SelectFlota from './pages/driver/SelectFlota';
 import NewLoanRequest from './pages/yegoRapidin/NewLoanRequest';
 import YegoMiAutoDashboard from './pages/yegoMiAuto/YegoMiAutoDashboard';
@@ -123,7 +124,7 @@ function App() {
               <Route path="loan-benefits" element={<LoanBenefits />} />
               <Route path="loan-offer-verification" element={<LoanOfferVerification />} />
               <Route path="loan-request-flow" element={<LoanRequestFlow />} />
-              <Route path="quiero-mi-auto" element={<QuieroMiYegoAuto />} />
+              <Route path="quiero-mi-auto" element={DRIVER_MI_AUTO_ENABLED ? <QuieroMiYegoAuto /> : <Navigate to="/driver/resumen" replace />} />
               <Route path="profile" element={<DriverProfile />} />
             </Route>
             

@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import api from '../../services/api';
-import { Car, FileText, Check, ShieldCheck, Phone, Mail, ChevronDown, ChevronRight, ChevronUp, Upload, XCircle, X, Info, CreditCard, AlertCircle, ChevronLeft, ChevronsLeft, ChevronsRight, ExternalLink } from 'lucide-react';
+import { Car, FileText, Check, ShieldCheck, Phone, Mail, ChevronDown, ChevronRight, ChevronUp, Upload, XCircle, X, Info, CreditCard, AlertCircle, ExternalLink } from 'lucide-react';
+import { TablePaginationBar } from '../../components/TablePaginationBar';
+import { useTablePagination } from '../../hooks/useTablePagination';
+import { labelOtrosGastoStatus, type ComprobanteOtrosGastos, type MiautoOtrosGastoRow } from '../../utils/miautoOtrosGastos';
 import { getStoredSession, getStoredRapidinDriverId, getStoredSelectedParkId } from '../../utils/authStorage';
 import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
@@ -34,7 +37,6 @@ const STATUS_CLASS: Record<string, string> = {
 
 const MAX_REAGENDOS = 2;
 const STATUS_LABEL_ACTIVE: Record<string, string> = { pendiente: 'Pendiente', citado: 'Cita agendada', aprobado: 'Aprobado' };
-const PAGE_SIZES_CUOTAS = [5, 10, 20, 50];
 
 const INPUT_BASE =
   'w-full pl-9 pr-3 py-2.5 border rounded-lg bg-white text-gray-900 placeholder:text-gray-400 focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A]';
@@ -107,10 +109,15 @@ interface Solicitud {
   cronograma_vehiculo_id?: string | null;
   pago_tipo?: 'completo' | 'parcial' | null;
   pago_estado?: 'pendiente' | 'completo' | null;
-  cronograma?: { id: string; name: string; tasa_interes_mora?: number } | null;
+  cronograma?: { id: string; name: string; tasa_interes_mora?: number; bono_tiempo_activo?: boolean } | null;
   cronograma_vehiculo?: { id: string; name: string; inicial: number; inicial_moneda: string; cuotas_semanales: number; image?: string } | null;
   comprobantes_pago?: { id: string; file_name: string; file_path: string; monto?: number; created_at: string; estado?: 'pendiente' | 'validado' | 'rechazado'; validado?: boolean; rechazado?: boolean; rechazo_razon?: string | null }[];
+  /** Total validado de la cuota inicial (incluye comprobantes de cuota inicial + otros gastos validados). Viene del backend. */
+  total_validado?: number | null;
   fecha_inicio_cobro_semanal?: string | null;
+  /** Placa del vehículo entregado (tras generar Yego Mi Auto en admin). */
+  placa_asignada?: string | null;
+  otros_gastos?: { id: string; week_index: number; due_date: string; amount_due: number; paid_amount: number; status: string }[];
 }
 
 interface CuotaSemanal {
@@ -125,6 +132,12 @@ interface CuotaSemanal {
   late_fee: number;
   status: string;
   pending_total: number;
+  /** Moneda de la fila del cronograma que aplica a esta cuota (PEN | USD). */
+  moneda?: string;
+  /** Snapshot % comisión de la fila del cronograma */
+  pct_comision?: number;
+  /** Snapshot cobro del saldo */
+  cobro_saldo?: number;
 }
 
 interface ComprobanteCuotaSemanal {
@@ -172,7 +185,7 @@ function AprobadoBlock({
   getComprobanteUrl: (path: string | undefined) => string;
   onRefetchSolicitudes?: () => void;
   tipoCambio?: { valor_usd_a_local: number; moneda_local: string } | null;
-  cuotasData?: { cuotas: CuotaSemanal[]; comprobantes: ComprobanteCuotaSemanal[]; racha: number | null; cuotas_semanales_bonificadas?: number } | null;
+  cuotasData?: { cuotas: CuotaSemanal[]; comprobantes: ComprobanteCuotaSemanal[]; racha: number | null; cuotas_semanales_bonificadas?: number; comprobantesOtrosGastos?: ComprobanteOtrosGastos[]; otrosGastos?: MiautoOtrosGastoRow[] } | null;
   cuotasLoading?: boolean;
   onInvalidateCuotas?: (solicitudId: string) => void;
 }) {
@@ -180,6 +193,7 @@ function AprobadoBlock({
   const [comprobantePreview, setComprobantePreview] = useState<{ url: string; fileName: string; isImage: boolean } | null>(null);
   const [comprobantesInicialAbierto, setComprobantesInicialAbierto] = useState(false);
   const [tabActiva, setTabActiva] = useState<'informacion' | 'cronogramas-pagos'>('informacion');
+  const [subTabCronogramaDriver, setSubTabCronogramaDriver] = useState<'semanales' | 'otros_gastos'>('semanales');
   const comprobantesSliderRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cuotasSemanales = cuotasData?.cuotas ?? [];
@@ -187,16 +201,21 @@ function AprobadoBlock({
   const bonoAplicado = cuotasData?.cuotas_semanales_bonificadas ?? 0;
   const loadingCuotas = cuotasLoading ?? false;
   const comprobantesCuotaSemanal = cuotasData?.comprobantes ?? [];
+  const comprobantesOtrosGastos = cuotasData?.comprobantesOtrosGastos ?? [];
   const [historialAbiertoPorCuota, setHistorialAbiertoPorCuota] = useState<string | null>(null);
   const [uploadCuotaLoading, setUploadCuotaLoading] = useState<string | null>(null);
-  const [cuotaMoneda, setCuotaMoneda] = useState<Record<string, string>>({});
   const [fileParaSubir, setFileParaSubir] = useState<File | null>(null);
   const [fileCuotaPreview, setFileCuotaPreview] = useState<{ cuotaId: string; file: File } | null>(null);
   const fileCuotaRefs = useRef<Record<string, HTMLInputElement | null>>({});
-  const [cuotasPage, setCuotasPage] = useState(1);
-  const [cuotasLimit, setCuotasLimit] = useState(10);
+  const [uploadOgLoading, setUploadOgLoading] = useState<string | null>(null);
+  const [fileOgPreview, setFileOgPreview] = useState<{ otrosGastosId: string; file: File } | null>(null);
+  const [historialAbiertoPorOg, setHistorialAbiertoPorOg] = useState<string | null>(null);
+  /** Moneda elegida por el conductor al subir comprobante de otros gastos (puede pagar en soles o dólares) */
+  const [monedaOgPorFila, setMonedaOgPorFila] = useState<Record<string, 'PEN' | 'USD'>>({});
+  const fileOgRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const previewInicial = useFilePreview(fileParaSubir);
   const previewCuotaFile = useFilePreview(fileCuotaPreview?.file ?? null);
+  const previewOgFile = useFilePreview(fileOgPreview?.file ?? null);
   const cronograma = solicitud.cronograma;
   const vehiculo = solicitud.cronograma_vehiculo;
   const getEstado = (cp: { estado?: string; validado?: boolean; rechazado?: boolean }): 'pendiente' | 'validado' | 'rechazado' => {
@@ -208,11 +227,14 @@ function AprobadoBlock({
   const comprobantes = solicitud.comprobantes_pago ?? [];
   const pagoTipoLabel = solicitud.pago_tipo === 'parcial' ? 'Pago parcial' : solicitud.pago_tipo === 'completo' ? 'Pago completo' : null;
   const cuotaInicial = round2(vehiculo?.inicial != null ? Number(vehiculo.inicial) : 0);
-  const totalValidado = round2(
-    comprobantes
-      .filter((cp) => getEstado(cp) === 'validado' && cp.monto != null)
-      .reduce((sum: number, cp: { monto?: number }) => sum + Number(cp.monto), 0)
-  );
+  const totalValidado =
+    solicitud.total_validado != null
+      ? round2(Number(solicitud.total_validado))
+      : round2(
+          comprobantes
+            .filter((cp) => getEstado(cp) === 'validado' && cp.monto != null)
+            .reduce((sum: number, cp: { monto?: number }) => sum + Number(cp.monto), 0)
+        );
   const falta = Math.max(0, round2(cuotaInicial - totalValidado));
   const progreso = cuotaInicial > 0 ? Math.min(100, (totalValidado / cuotaInicial) * 100) : 0;
   // Si la cuota inicial está pagada/completa, no se muestra "Subir comprobante" ni barra de progreso.
@@ -265,7 +287,7 @@ function AprobadoBlock({
   const handleUploadComprobanteCuota = async (cuotaId: string, file: File) => {
     const cuota = cuotasSemanales.find((x) => x.id === cuotaId);
     const monto = cuota ? String((cuota.amount_due + (cuota.late_fee ?? 0)).toFixed(2)) : '';
-    const moneda = (cuotaMoneda[cuotaId] || 'PEN').toUpperCase() === 'PEN' ? 'PEN' : 'USD';
+    const moneda = (cuota?.moneda === 'USD' ? 'USD' : 'PEN') as 'PEN' | 'USD';
     if (!monto || Number.isNaN(parseFloat(monto)) || parseFloat(monto) <= 0) {
       toast.error('No se pudo obtener el monto de la cuota');
       return;
@@ -314,15 +336,59 @@ function AprobadoBlock({
     return m;
   }, [comprobantesCuotaSemanal]);
 
-  const totalCuotasPages = Math.max(1, Math.ceil(cuotasSemanales.length / cuotasLimit));
-  const paginatedCuotas = useMemo(() => {
-    const start = (cuotasPage - 1) * cuotasLimit;
-    return cuotasSemanales.slice(start, start + cuotasLimit);
-  }, [cuotasSemanales, cuotasPage, cuotasLimit]);
+  const comprobantesByOtrosGastosId = useMemo(() => {
+    const m: Record<string, ComprobanteOtrosGastos[]> = {};
+    for (const c of comprobantesOtrosGastos) {
+      const id = c.otros_gastos_id;
+      if (!m[id]) m[id] = [];
+      m[id].push(c);
+    }
+    return m;
+  }, [comprobantesOtrosGastos]);
 
-  useEffect(() => {
-    if (totalCuotasPages > 0 && cuotasPage > totalCuotasPages) setCuotasPage(totalCuotasPages);
-  }, [totalCuotasPages, cuotasPage]);
+  const monedaOtrosGastos = (vehiculo?.inicial_moneda === 'USD' ? 'USD' : 'PEN') as 'PEN' | 'USD';
+
+  const handleUploadComprobanteOtrosGastos = async (otrosGastosId: string, file: File) => {
+    const og = otrosGastosRows.find((o: { id: string }) => o.id === otrosGastosId);
+    const monto = og ? String(Number((og as { amount_due: number }).amount_due).toFixed(2)) : '';
+    const moneda = monedaOgPorFila[otrosGastosId] ?? monedaOtrosGastos;
+    if (!monto || Number.isNaN(parseFloat(monto)) || parseFloat(monto) <= 0) {
+      toast.error('No se pudo obtener el monto de la cuota');
+      return;
+    }
+    setUploadOgLoading(otrosGastosId);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('monto', monto);
+      fd.append('moneda', moneda);
+      await api.post(`/miauto/solicitudes/${solicitud.id}/otros-gastos/${otrosGastosId}/comprobantes`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      toast.success('Comprobante subido. Un admin lo validará.');
+      onInvalidateCuotas?.(solicitud.id);
+      onRefetchSolicitudes?.();
+      setHistorialAbiertoPorOg(otrosGastosId);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error al subir comprobante');
+    } finally {
+      setUploadOgLoading(null);
+      setFileOgPreview((prev) => (prev?.otrosGastosId === otrosGastosId ? null : prev));
+    }
+  };
+
+  const getEstadoCompOg = (cp: ComprobanteOtrosGastos): 'pendiente' | 'validado' | 'rechazado' => {
+    const e = (cp.estado || '').toLowerCase();
+    if (e === 'validado' || e === 'rechazado') return e;
+    return 'pendiente';
+  };
+
+  const cuotasPg = useTablePagination(cuotasSemanales);
+  const otrosGastosRows = useMemo(
+    () => (Array.isArray(cuotasData?.otrosGastos) ? cuotasData.otrosGastos : Array.isArray(solicitud.otros_gastos) ? solicitud.otros_gastos : []),
+    [cuotasData?.otrosGastos, solicitud.otros_gastos]
+  );
+  const otrosPg = useTablePagination(otrosGastosRows);
 
   const getEstadoComp = (cp: ComprobanteCuotaSemanal): 'pendiente' | 'validado' | 'rechazado' => {
     const e = (cp.estado || '').toLowerCase();
@@ -379,6 +445,11 @@ function AprobadoBlock({
               )}
               <div className="min-w-0 flex-1">
                 <h4 className="font-semibold text-gray-900">{vehiculo.name}</h4>
+                {solicitud.placa_asignada ? (
+                  <p className="text-sm font-mono font-medium text-gray-800 mt-0.5">
+                    Placa: {solicitud.placa_asignada}
+                  </p>
+                ) : null}
                 <p className="text-sm text-gray-600 mt-1">
                   Cuota inicial: {vehiculo.inicial_moneda === 'PEN' ? 'S/.' : '$'} {Number(vehiculo.inicial).toFixed(2)} · {vehiculo.cuotas_semanales} cuotas/semana
                 </p>
@@ -433,7 +504,7 @@ function AprobadoBlock({
               )}
             </div>
           )}
-          {cuotaInicial > 0 && !pagoInicialCompleto && (
+          {cuotaInicial > 0 && !pagoInicialCompleto && !solicitud.fecha_inicio_cobro_semanal && (
             <div>
               <h4 className="text-sm font-semibold text-gray-900 mb-2">Subir comprobante de pago (cuota inicial)</h4>
               <div className="flex flex-wrap items-end gap-3">
@@ -505,7 +576,7 @@ function AprobadoBlock({
               </div>
             </div>
           )}
-          {cuotaInicial > 0 && !pagoInicialCompleto && (
+          {cuotaInicial > 0 && !pagoInicialCompleto && (!solicitud.fecha_inicio_cobro_semanal || comprobantes.length > 0) && (
             <div>
               <h4 className="text-sm font-semibold text-gray-900 mb-2">Comprobantes subidos</h4>
               {comprobantes.length > 0 ? comprobantesSliderEl : (
@@ -518,12 +589,39 @@ function AprobadoBlock({
 
           {tabActiva === 'cronogramas-pagos' && (
             <div className="space-y-4">
-          {solicitud.fecha_inicio_cobro_semanal && !loadingCuotas && cuotasSemanales.length > 0 && (() => {
+          {solicitud.fecha_inicio_cobro_semanal && (
+            <div className="flex border-b border-gray-200 gap-1 -mt-1 mb-1">
+              <button
+                type="button"
+                onClick={() => setSubTabCronogramaDriver('semanales')}
+                className={`px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+                  subTabCronogramaDriver === 'semanales'
+                    ? 'border-[#8B1A1A] text-[#8B1A1A] bg-white'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Cronograma semanal
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubTabCronogramaDriver('otros_gastos')}
+                className={`px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+                  subTabCronogramaDriver === 'otros_gastos'
+                    ? 'border-[#8B1A1A] text-[#8B1A1A] bg-white'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Otros gastos
+              </button>
+            </div>
+          )}
+          {solicitud.fecha_inicio_cobro_semanal && subTabCronogramaDriver === 'semanales' && !loadingCuotas && cuotasSemanales.length > 0 && (() => {
             const cuotasPagadas = cuotasSemanales.filter((c) => c.status === 'paid' || c.status === 'bonificada').length;
             const vencidas = cuotasSemanales.filter((c) => c.status === 'overdue').length;
             const totalPagado = round2(cuotasSemanales.reduce((s, c) => s + (c.paid_amount ?? 0), 0));
             const planTotal = Math.max(vehiculo?.cuotas_semanales ?? 0, cuotasSemanales.length) || cuotasSemanales.length;
-            const racha = rachaFromBackend ?? (() => {
+            const bonoTiempoActivo = solicitud.cronograma?.bono_tiempo_activo === true;
+            const racha = bonoTiempoActivo ? (rachaFromBackend ?? (() => {
               const tieneVencida = cuotasSemanales.some((c) => (c.status || '').toLowerCase() === 'overdue');
               if (tieneVencida) return 0;
               const ordenadas = [...cuotasSemanales].sort((a, b) => new Date(a.due_date).getTime() - new Date(b.due_date).getTime());
@@ -533,27 +631,31 @@ function AprobadoBlock({
                 else break;
               }
               return n;
-            })();
+            })()) : null;
             return (
               <div className="rounded-xl border border-gray-200 bg-gray-50/80 p-4 space-y-3">
                 <h4 className="text-sm font-semibold text-gray-900">Resumen de tus cuotas</h4>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 text-sm">
+                <div className={`grid gap-3 text-sm ${bonoTiempoActivo ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-5' : 'grid-cols-2 sm:grid-cols-3'}`}>
                   <div>
                     <p className="text-xs text-gray-500">Cuotas pagadas</p>
                     <p className="font-bold text-gray-900">{cuotasPagadas} <span className="font-normal text-gray-600">/ {planTotal}</span></p>
                   </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Racha (cuotas seguidas al día)</p>
-                    <p className="font-bold text-green-700">
-                      {racha}
-                      {racha === 3 && <span className="text-xs font-normal text-amber-700"> (¡beneficio cerca! 1 más)</span>}
-                      {racha >= 4 && <span className="text-xs font-normal text-green-700"> (¡condición cumplida!)</span>}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Bono tiempo aplicado</p>
-                    <p className="font-bold text-[#8B1A1A]">{bonoAplicado}</p>
-                  </div>
+                  {bonoTiempoActivo && (
+                    <div>
+                      <p className="text-xs text-gray-500">Racha (cuotas seguidas al día)</p>
+                      <p className="font-bold text-green-700">
+                        {racha ?? '—'}
+                        {racha === 3 && <span className="text-xs font-normal text-amber-700"> (¡beneficio cerca! 1 más)</span>}
+                        {racha != null && racha >= 4 && <span className="text-xs font-normal text-green-700"> (¡condición cumplida!)</span>}
+                      </p>
+                    </div>
+                  )}
+                  {bonoTiempoActivo && (
+                    <div>
+                      <p className="text-xs text-gray-500">Bono tiempo aplicado</p>
+                      <p className="font-bold text-[#8B1A1A]">{bonoAplicado}</p>
+                    </div>
+                  )}
                   <div>
                     <p className="text-xs text-gray-500">Vencidas</p>
                     <p className={`font-bold ${vencidas > 0 ? 'text-red-600' : 'text-gray-700'}`}>{vencidas}</p>
@@ -563,16 +665,16 @@ function AprobadoBlock({
                     <p className="font-bold text-green-700">S/. {totalPagado.toFixed(2)}</p>
                   </div>
                 </div>
-                {bonoAplicado >= 1 && (
+                {bonoTiempoActivo && bonoAplicado >= 1 && (
                   <p className="text-xs text-gray-600">Has ganado <strong>{bonoAplicado}</strong> cuota{bonoAplicado !== 1 ? 's' : ''} bonificada{bonoAplicado !== 1 ? 's' : ''}.</p>
                 )}
-                {racha === 3 && (
+                {bonoTiempoActivo && racha === 3 && (
                   <p className="text-xs text-amber-700">Paga 1 cuota más al día y se te bonificará 1 cuota.</p>
                 )}
               </div>
             );
           })()}
-          {solicitud.fecha_inicio_cobro_semanal && (
+          {solicitud.fecha_inicio_cobro_semanal && subTabCronogramaDriver === 'semanales' && (
             <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-4">
               <h4 className="text-sm font-semibold text-gray-900 mb-2">Mis cuotas semanales</h4>
               <p className="text-xs text-gray-600 mb-3">
@@ -594,6 +696,8 @@ function AprobadoBlock({
                         <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Vence</th>
                         <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Cuota completa</th>
                         <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Viajes - B.A</th>
+                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide text-right">% comisión</th>
+                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide text-right">Cobro del saldo</th>
                         <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Cuota a pagar</th>
                         <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">
                           Mora{solicitud.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0 ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}%)` : ''}
@@ -605,11 +709,13 @@ function AprobadoBlock({
                       </tr>
                     </thead>
                     <tbody>
-                      {paginatedCuotas.map((c, index) => {
-                        const numeroSemana = (cuotasPage - 1) * cuotasLimit + index + 1;
+                      {cuotasPg.paginatedItems.map((c, index) => {
+                        const numeroSemana = (cuotasPg.page - 1) * cuotasPg.limit + index + 1;
                         const pendiente = c.pending_total > 0;
                         const comps = comprobantesByCuotaId[c.id] ?? [];
                         const abierto = historialAbiertoPorCuota === c.id;
+                        const symCuota =
+                          (c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda) === 'USD' ? '$' : 'S/.';
                         return (
                           <Fragment key={c.id}>
                             <tr className="border-b border-gray-100">
@@ -618,15 +724,23 @@ function AprobadoBlock({
                                 <span className="block text-xs text-gray-500 mt-0.5">{formatDateFlex(c.week_start_date)}</span>
                               </td>
                               <td className="py-2 pr-2 text-gray-700">{formatDateFlex(c.due_date)}</td>
-                              <td className="py-2 pr-2 font-medium">S/. {(c.amount_due ?? 0).toFixed(2)}</td>
+                              <td className="py-2 pr-2 font-medium">{symCuota} {(c.amount_due ?? 0).toFixed(2)}</td>
                               <td className="py-2 pr-2 text-gray-700 text-xs whitespace-nowrap">
                                 {c.num_viajes != null && c.bono_auto != null
-                                  ? `${c.num_viajes} — S/. ${(c.bono_auto).toFixed(2)}`
+                                  ? `${c.num_viajes} — ${symCuota} ${(c.bono_auto).toFixed(2)}`
                                   : c.num_viajes != null
                                     ? String(c.num_viajes)
                                     : c.bono_auto != null
-                                      ? `S/. ${(c.bono_auto).toFixed(2)}`
+                                      ? `${symCuota} ${(c.bono_auto).toFixed(2)}`
                                       : '—'}
+                              </td>
+                              <td className="py-2 pr-2 text-gray-700 text-xs text-right tabular-nums">
+                                {c.pct_comision != null && !Number.isNaN(Number(c.pct_comision))
+                                  ? `${Number(c.pct_comision).toFixed(1)}%`
+                                  : '—'}
+                              </td>
+                              <td className="py-2 pr-2 text-gray-700 text-xs text-right tabular-nums">
+                                {symCuota} {(c.cobro_saldo ?? 0).toFixed(2)}
                               </td>
                               <td className="py-2 pr-2 font-medium">S/. {(Math.max(0, c.pending_total ?? (c.amount_due + (c.late_fee ?? 0) - (c.paid_amount ?? 0)))).toFixed(2)}</td>
                               <td className="py-2 pr-2 text-red-600 font-medium">S/. {(c.late_fee ?? 0).toFixed(2)}</td>
@@ -654,10 +768,10 @@ function AprobadoBlock({
                                   {pendiente && (
                                     <>
                                       <select
-                                        value={cuotaMoneda[c.id] ?? 'PEN'}
-                                        onChange={(e) => setCuotaMoneda((prev) => ({ ...prev, [c.id]: e.target.value }))}
-                                        disabled={uploadCuotaLoading === c.id}
-                                        className="px-2 py-1.5 border border-gray-200 rounded bg-gray-50 text-gray-700 text-xs focus:bg-white focus:border-[#8B1A1A]/40 disabled:opacity-60 disabled:cursor-not-allowed"
+                                        value={c.moneda === 'USD' ? 'USD' : 'PEN'}
+                                        disabled
+                                        className="px-2 py-1.5 border border-gray-200 rounded bg-gray-100 text-gray-700 text-xs cursor-not-allowed"
+                                        title="Moneda de la fila del cronograma (Configuración) que aplica a esta cuota: soles o dólares según lo definido ahí"
                                       >
                                         <option value="PEN">S/.</option>
                                         <option value="USD">USD</option>
@@ -730,7 +844,7 @@ function AprobadoBlock({
                             </tr>
                             {comps.length > 0 && (
                               <tr className="border-b border-gray-100">
-                                <td colSpan={10} className="p-0 align-top">
+                                <td colSpan={12} className="p-0 align-top">
                                   <div
                                     className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
                                     style={{ maxHeight: abierto ? 1400 : 0, opacity: abierto ? 1 : 0 }}
@@ -842,93 +956,222 @@ function AprobadoBlock({
                   </table>
                 </div>
                 {cuotasSemanales.length > 0 && (
-                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-2 py-3 border-t border-gray-200 mt-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium text-gray-500">Por página:</span>
-                      <select
-                        value={cuotasLimit}
-                        onChange={(e) => {
-                          setCuotasLimit(Number(e.target.value));
-                          setCuotasPage(1);
-                        }}
-                        className="text-sm border border-gray-300 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A]"
-                      >
-                        {PAGE_SIZES_CUOTAS.map((n) => (
-                          <option key={n} value={n}>{n}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setCuotasPage(1)}
-                        disabled={cuotasPage <= 1}
-                        className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-[#8B1A1A] text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                        aria-label="Primera página"
-                      >
-                        <ChevronsLeft className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCuotasPage((p) => Math.max(1, p - 1))}
-                        disabled={cuotasPage <= 1}
-                        className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-[#8B1A1A] text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                        aria-label="Página anterior"
-                      >
-                        <ChevronLeft className="w-4 h-4" />
-                      </button>
-                      {totalCuotasPages > 1 && (
-                        <div className="flex items-center gap-1">
-                          {Array.from({ length: Math.min(5, totalCuotasPages) }, (_, i) => {
-                            let pageNum: number;
-                            if (totalCuotasPages <= 5) pageNum = i + 1;
-                            else if (cuotasPage <= 3) pageNum = i + 1;
-                            else if (cuotasPage >= totalCuotasPages - 2) pageNum = totalCuotasPages - 4 + i;
-                            else pageNum = cuotasPage - 2 + i;
-                            const isActive = cuotasPage === pageNum;
-                            return (
-                              <button
-                                key={pageNum}
-                                type="button"
-                                onClick={() => setCuotasPage(pageNum)}
-                                className={`min-w-[2.25rem] w-9 h-9 flex items-center justify-center rounded-full text-sm font-semibold transition-colors ${
-                                  isActive ? 'bg-[#8B1A1A] text-white border-2 border-[#8B1A1A]' : 'border-2 border-[#8B1A1A] text-[#8B1A1A] hover:bg-red-50'
-                                }`}
-                              >
-                                {pageNum}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setCuotasPage((p) => Math.min(totalCuotasPages, p + 1))}
-                        disabled={cuotasPage >= totalCuotasPages}
-                        className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-[#8B1A1A] text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                        aria-label="Página siguiente"
-                      >
-                        <ChevronRight className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCuotasPage(totalCuotasPages)}
-                        disabled={cuotasPage >= totalCuotasPages}
-                        className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-[#8B1A1A] text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                        aria-label="Última página"
-                      >
-                        <ChevronsRight className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
+                  <TablePaginationBar
+                    page={cuotasPg.page}
+                    setPage={cuotasPg.setPage}
+                    totalPages={cuotasPg.totalPages}
+                    limit={cuotasPg.limit}
+                    setLimit={cuotasPg.setLimit}
+                    pageSizes={cuotasPg.pageSizes}
+                  />
                 )}
                 </>
               )}
-              <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50/70 px-3 py-2">
-                <p className="text-xs text-gray-700">
-                  Beneficio: si pagas 4 cuotas consecutivas a tiempo, se te bonifica 1 cuota semanal del total.
-                </p>
-              </div>
+              {solicitud.cronograma?.bono_tiempo_activo === true && (
+                <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50/70 px-3 py-2">
+                  <p className="text-xs text-gray-700">
+                    Beneficio: si pagas 4 cuotas consecutivas a tiempo, se te bonifica 1 cuota semanal del total.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+          {solicitud.fecha_inicio_cobro_semanal && subTabCronogramaDriver === 'otros_gastos' && (
+            <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-4">
+              <h4 className="text-sm font-semibold text-gray-900 mb-2">Otros gastos</h4>
+              <p className="text-xs text-gray-600 mb-3">
+                Lo que falta de la cuota inicial repartido en cuotas semanales; vencen en <strong>lunes</strong>, la primera en el <strong>primer lunes desde la semana 2</strong> del plan. Sube tu comprobante por cuota.
+              </p>
+              {otrosGastosRows.length > 0 ? (
+                <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-gray-500 border-b border-gray-100">
+                        <th className="pb-2 pr-2">Semana</th>
+                        <th className="pb-2 pr-2">Vencimiento</th>
+                        <th className="pb-2 pr-2">Monto</th>
+                        <th className="pb-2 pr-2">Pagado</th>
+                        <th className="pb-2 pr-2">Estado</th>
+                        <th className="pb-2">Comprobante</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {otrosPg.paginatedItems.map((og: { id: string; week_index: number; due_date: string; amount_due: number; paid_amount: number; status: string }) => {
+                        const pendienteOg = og.status !== 'paid';
+                        const compsOg = comprobantesByOtrosGastosId[og.id] ?? [];
+                        const abiertoOg = historialAbiertoPorOg === og.id;
+                        const tieneCompPendienteOg = compsOg.some((cp: { estado?: string }) => (cp.estado || '').toLowerCase() === 'pendiente');
+                        return (
+                          <Fragment key={og.id}>
+                            <tr className="border-b border-gray-50">
+                              <td className="py-1.5 pr-2">{og.week_index}</td>
+                              <td className="py-1.5 pr-2">{formatDateFlex(og.due_date)}</td>
+                              <td className="py-1.5 pr-2">
+                                {monedaSimbolo}{Number(og.amount_due).toFixed(2)}
+                              </td>
+                              <td className="py-1.5 pr-2">
+                                {monedaSimbolo}{Number(og.paid_amount).toFixed(2)}
+                              </td>
+                              <td className="py-1.5 capitalize text-gray-600">{labelOtrosGastoStatus(og.status)}</td>
+                              <td className="py-1.5 pr-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {pendienteOg && (
+                                    <>
+                                      <select
+                                        value={monedaOgPorFila[og.id] ?? monedaOtrosGastos}
+                                        onChange={(e) => setMonedaOgPorFila((prev) => ({ ...prev, [og.id]: e.target.value as 'PEN' | 'USD' }))}
+                                        disabled={tieneCompPendienteOg}
+                                        className={`px-2 py-1.5 border border-gray-200 rounded text-xs text-gray-800 ${tieneCompPendienteOg ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'}`}
+                                        title={tieneCompPendienteOg ? 'Espera a que se apruebe o rechace tu comprobante' : 'Elige si pagaste en soles o dólares'}
+                                      >
+                                        <option value="PEN">S/.</option>
+                                        <option value="USD">USD</option>
+                                      </select>
+                                      <input
+                                        ref={(el) => { fileOgRefs.current[og.id] = el; }}
+                                        type="file"
+                                        accept=".pdf,image/*"
+                                        className="hidden"
+                                        disabled={tieneCompPendienteOg}
+                                        onChange={(e) => {
+                                          const f = e.target.files?.[0];
+                                          if (f) setFileOgPreview({ otrosGastosId: og.id, file: f });
+                                          e.target.value = '';
+                                        }}
+                                      />
+                                      <button
+                                        type="button"
+                                        disabled={uploadOgLoading === og.id || (fileOgPreview?.otrosGastosId === og.id) || tieneCompPendienteOg}
+                                        onClick={() => fileOgRefs.current[og.id]?.click()}
+                                        className="inline-flex items-center gap-1 px-2 py-1 border border-[#8B1A1A] text-[#8B1A1A] rounded text-xs font-medium hover:bg-red-50 disabled:opacity-50"
+                                        title={tieneCompPendienteOg ? 'Espera a que se apruebe o rechace tu comprobante' : undefined}
+                                      >
+                                        <Upload className="w-3 h-3" />
+                                        Elegir archivo
+                                      </button>
+                                      {fileOgPreview?.otrosGastosId === og.id && (
+                                        <>
+                                          <span className="relative inline-block flex-shrink-0">
+                                            {previewOgFile ? (
+                                              <img src={previewOgFile} alt="Vista previa" className="w-8 h-8 object-cover rounded border border-gray-200" />
+                                            ) : (
+                                              <span className="w-8 h-8 rounded border border-gray-200 bg-gray-50 flex items-center justify-center">
+                                                <FileText className="w-4 h-4 text-gray-400" />
+                                              </span>
+                                            )}
+                                            <button
+                                              type="button"
+                                              disabled={uploadOgLoading === og.id}
+                                              onClick={() => setFileOgPreview((prev) => (prev?.otrosGastosId === og.id ? null : prev))}
+                                              className="absolute top-0 right-0 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 shadow -translate-y-1/2 translate-x-1/2"
+                                              aria-label="Quitar archivo"
+                                            >
+                                              <X className="w-2.5 h-2.5" />
+                                            </button>
+                                          </span>
+                                          <button
+                                            type="button"
+                                            disabled={uploadOgLoading === og.id}
+                                            onClick={() => handleUploadComprobanteOtrosGastos(og.id, fileOgPreview!.file)}
+                                            className="inline-flex items-center gap-1 px-2 py-1 bg-[#8B1A1A] text-white rounded text-xs font-medium disabled:opacity-50"
+                                          >
+                                            {uploadOgLoading === og.id ? 'Enviando...' : 'Pagar cuota'}
+                                          </button>
+                                        </>
+                                      )}
+                                    </>
+                                  )}
+                                  {compsOg.length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setHistorialAbiertoPorOg(abiertoOg ? null : og.id)}
+                                      className="inline-flex items-center gap-1 text-xs font-medium text-[#8B1A1A] hover:underline"
+                                    >
+                                      {abiertoOg ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                      {abiertoOg ? 'Ocultar historial' : `Historial (${compsOg.length})`}
+                                    </button>
+                                  )}
+                                  {!pendienteOg && compsOg.length === 0 && <span className="text-gray-400">—</span>}
+                                </div>
+                              </td>
+                            </tr>
+                            {compsOg.length > 0 && (
+                              <tr className="border-b border-gray-50">
+                                <td colSpan={6} className="p-0 align-top">
+                                  <div
+                                    className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
+                                    style={{ maxHeight: abiertoOg ? 800 : 0, opacity: abiertoOg ? 1 : 0 }}
+                                  >
+                                    <div className="px-4 py-3 bg-gray-50/80 border-t border-gray-200">
+                                      <div className="flex items-center gap-2 mb-3">
+                                        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-[#8B1A1A]/10">
+                                          <FileText className="w-4 h-4 text-[#8B1A1A]" />
+                                        </div>
+                                        <div>
+                                          <h4 className="text-sm font-semibold text-gray-900">Comprobantes — Semana {og.week_index}</h4>
+                                          <p className="text-xs text-gray-500">{formatDateFlex(og.due_date)}</p>
+                                        </div>
+                                      </div>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                                        {compsOg.map((cp, compIdx) => {
+                                          const estadoOg = getEstadoCompOg(cp);
+                                          const sym = cp.moneda === 'USD' ? '$' : 'S/.';
+                                          const url = getComprobanteUrl(cp.file_path);
+                                          const isImage = cp.file_path && !/\.pdf$/i.test(cp.file_name || '') && /\.(jpe?g|png|gif|webp)$/i.test(cp.file_name || '');
+                                          const cardBg = estadoOg === 'validado' ? 'bg-green-50/90 border-green-200' : estadoOg === 'rechazado' ? 'bg-red-50/90 border-red-200' : 'bg-amber-50/90 border-amber-200';
+                                          const labelEstado = estadoOg === 'validado' ? 'Verificado' : estadoOg === 'rechazado' ? 'Rechazado' : 'En revisión';
+                                          return (
+                                            <div key={cp.id} className={`rounded-xl border-2 p-3 ${cardBg}`}>
+                                              <div className="flex gap-3">
+                                                <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center overflow-hidden">
+                                                  {cp.file_path && isImage ? (
+                                                    <img src={url} alt="" className="w-full h-full object-cover" />
+                                                  ) : (
+                                                    <FileText className="w-6 h-6 text-gray-500" />
+                                                  )}
+                                                </div>
+                                                <div className="min-w-0 flex-1">
+                                                  <p className="text-sm font-semibold text-gray-900">Comprobante {compIdx + 1}</p>
+                                                  <p className="text-xs text-gray-600">{cp.monto != null ? `${sym} ${Number(cp.monto).toFixed(2)}` : '—'}</p>
+                                                  <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium mt-1 ${estadoOg === 'validado' ? 'bg-green-100 text-green-800' : estadoOg === 'rechazado' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
+                                                    {labelEstado}
+                                                  </span>
+                                                </div>
+                                              </div>
+                                              {cp.file_path && (
+                                                <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-2 text-xs font-medium text-[#8B1A1A] hover:underline">
+                                                  <ExternalLink className="w-3.5 h-3.5" />
+                                                  Ver comprobante
+                                                </a>
+                                              )}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <TablePaginationBar
+                  page={otrosPg.page}
+                  setPage={otrosPg.setPage}
+                  totalPages={otrosPg.totalPages}
+                  limit={otrosPg.limit}
+                  setLimit={otrosPg.setLimit}
+                  pageSizes={otrosPg.pageSizes}
+                />
+                </>
+              ) : (
+                <p className="text-sm text-gray-500">No hay cuotas de otros gastos para esta solicitud (plan con pago completo de cuota inicial).</p>
+              )}
             </div>
           )}
             </div>
@@ -1010,7 +1253,7 @@ function QuieroMiYegoAuto() {
   const [uploadComprobanteLoading, setUploadComprobanteLoading] = useState<string | null>(null);
   const initialFetchInFlight = useRef(false);
   const [tipoCambioByCountry, setTipoCambioByCountry] = useState<Record<string, { valor_usd_a_local: number; moneda_local: string } | null>>({});
-  type CuotasCacheEntry = { cuotas: CuotaSemanal[]; comprobantes: ComprobanteCuotaSemanal[]; racha: number | null; cuotas_semanales_bonificadas?: number };
+  type CuotasCacheEntry = { cuotas: CuotaSemanal[]; comprobantes: ComprobanteCuotaSemanal[]; racha: number | null; cuotas_semanales_bonificadas?: number; comprobantesOtrosGastos?: ComprobanteOtrosGastos[] };
   const [cuotasCache, setCuotasCache] = useState<Record<string, CuotasCacheEntry>>({});
   const [cuotasLoadingId, setCuotasLoadingId] = useState<string | null>(null);
 
@@ -1157,9 +1400,11 @@ function QuieroMiYegoAuto() {
   const fetchCuotasForSolicitud = useCallback(async (solicitudId: string) => {
     setCuotasLoadingId(solicitudId);
     try {
-      const [resCuotas, resComp] = await Promise.all([
+      const [resCuotas, resComp, resCompOg, resOtrosGastos] = await Promise.all([
         api.get(`/miauto/solicitudes/${solicitudId}/cuotas-semanales`),
         api.get(`/miauto/solicitudes/${solicitudId}/comprobantes-cuota-semanal`).catch(() => ({ data: [] })),
+        api.get(`/miauto/solicitudes/${solicitudId}/comprobantes-otros-gastos`).catch(() => ({ data: [] })),
+        api.get(`/miauto/solicitudes/${solicitudId}/otros-gastos`).catch(() => ({ data: [] })),
       ]);
       const body = resCuotas?.data ?? {};
       const inner = body.data ?? body;
@@ -1173,12 +1418,16 @@ function QuieroMiYegoAuto() {
       const bonoAplicado = typeof bonoFromApi === 'number' && Number.isFinite(bonoFromApi) ? Math.max(0, Math.floor(bonoFromApi)) : 0;
       const comp = resComp?.data?.data ?? resComp?.data ?? [];
       const comprobantes = Array.isArray(comp) ? comp : [];
+      const compOg = resCompOg?.data?.data ?? resCompOg?.data ?? [];
+      const comprobantesOtrosGastos = Array.isArray(compOg) ? compOg : [];
+      const ogRaw = resOtrosGastos?.data?.data ?? resOtrosGastos?.data ?? [];
+      const otrosGastos = Array.isArray(ogRaw) ? ogRaw : [];
       setCuotasCache((prev) => ({
         ...prev,
-        [solicitudId]: { cuotas, comprobantes, racha: rachaVal, cuotas_semanales_bonificadas: bonoAplicado },
+        [solicitudId]: { cuotas, comprobantes, racha: rachaVal, cuotas_semanales_bonificadas: bonoAplicado, comprobantesOtrosGastos, otrosGastos },
       }));
     } catch {
-      setCuotasCache((prev) => ({ ...prev, [solicitudId]: { cuotas: [], comprobantes: [], racha: null, cuotas_semanales_bonificadas: 0 } }));
+      setCuotasCache((prev) => ({ ...prev, [solicitudId]: { cuotas: [], comprobantes: [], racha: null, cuotas_semanales_bonificadas: 0, comprobantesOtrosGastos: [], otrosGastos: [] } }));
     } finally {
       setCuotasLoadingId(null);
     }

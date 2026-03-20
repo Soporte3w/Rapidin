@@ -1,14 +1,91 @@
 import { query } from '../config/database.js';
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helpers.js';
 import { ensureCuotaSemanalForWeek } from './miautoCuotaSemanalService.js';
+import { getTotalValidado } from './miautoComprobantePagoService.js';
+import { ensureOtroGastoForWeek, listBySolicitud as listOtrosGastosBySolicitud, listBySolicitudIds as listOtrosGastosBySolicitudIds } from './miautoOtrosGastosService.js';
 import { logger } from '../utils/logger.js';
 
+const MINIMO_USD_PARCIAL = 500;
+
 const MAX_REAGENDOS = 2;
+
+/** Park_id de Yego Mi Auto: para consultar conductores en tabla drivers por teléfono. */
+const MIAUTO_PARK_ID = 'fafd623109d740f8a1f15af7c3dd86c6';
+
+/**
+ * Normaliza teléfono para match en drivers: con/sin +51, solo dígitos, últimos 9.
+ * Perú: 987654321, 51987654321, +51987654321, 051987654321 → { digits, last9, with51 }.
+ */
+function normalizePhoneForDriversMatch(phone) {
+  if (phone == null || String(phone).trim() === '') return { digits: '', last9: '', with51: '' };
+  const digits = String(phone).replace(/\D/g, '');
+  if (digits.length < 9) return { digits, last9: '', with51: '' };
+  const last9 = digits.slice(-9);
+  const with51 = digits.length === 9 ? `51${last9}` : digits.startsWith('51') ? digits : `51${last9}`;
+  return { digits: digits.length >= 9 ? digits : '', last9, with51 };
+}
+
+/**
+ * Busca nombre y licencia en tabla drivers por park_id Mi Auto y teléfono normalizado.
+ * Devuelve { names: { digits|last9 -> string }, licenses: { digits|last9 -> string } }.
+ */
+async function getDriverInfoByPhones(parkId, phones) {
+  const empty = { names: {}, licenses: {} };
+  if (!parkId || !Array.isArray(phones) || phones.length === 0) return empty;
+  const variants = new Set();
+  for (const p of phones) {
+    const { digits, last9, with51 } = normalizePhoneForDriversMatch(p);
+    if (last9) variants.add(last9);
+    if (digits) variants.add(digits);
+    if (with51) variants.add(with51);
+  }
+  const arr = [...variants];
+  if (arr.length === 0) return empty;
+  const last9Arr = arr.filter((s) => s.length === 9);
+  const res = await query(
+    `SELECT first_name, last_name,
+            license_number,
+            REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') AS phone_digits
+     FROM drivers
+     WHERE park_id = $1 AND work_status = 'working'
+       AND (
+         REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = ANY($2::text[])
+         OR RIGHT(REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g'), 9) = ANY($3::text[])
+       )`,
+    [parkId, arr, last9Arr.length ? last9Arr : ['']]
+  );
+  const names = {};
+  const licenses = {};
+  for (const r of res.rows || []) {
+    const name = [r.first_name, r.last_name].filter(Boolean).map(String).join(' ').trim();
+    const lic =
+      r.license_number != null && String(r.license_number).trim() !== ''
+        ? String(r.license_number).trim()
+        : null;
+    const dig = (r.phone_digits || '').replace(/\D/g, '');
+    if (!dig) continue;
+    if (name) {
+      names[dig] = name;
+      if (dig.length >= 9) names[dig.slice(-9)] = name;
+    }
+    if (lic) {
+      licenses[dig] = lic;
+      if (dig.length >= 9) licenses[dig.slice(-9)] = lic;
+    }
+  }
+  return { names, licenses };
+}
 
 function trimOrUndefined(x) {
   if (x == null) return undefined;
   const s = String(x).trim();
   return s === '' ? undefined : s;
+}
+
+/** Normaliza placa para almacenamiento (mayúsculas, sin espacios internos). */
+export function normalizePlacaAsignada(value) {
+  if (value == null) return '';
+  return String(value).trim().toUpperCase().replace(/\s+/g, '');
 }
 
 function normalizeAppsToCodes(apps) {
@@ -110,9 +187,9 @@ export const listSolicitudes = async (filters = {}) => {
 
   const selectFields = forDriver
     ? `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.country, s.pago_tipo, s.pago_estado, s.fecha_inicio_cobro_semanal,
-            s.appointment_date, s.reagendo_count, s.observations, s.rejection_reason, s.withdrawn_at, s.withdrawal_reason,
+            s.placa_asignada, s.appointment_date, s.reagendo_count, s.observations, s.rejection_reason, s.withdrawn_at, s.withdrawal_reason,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
-            c.name AS cronograma_name, c.tasa_interes_mora AS cronograma_tasa_interes_mora,
+            c.name AS cronograma_name, c.tasa_interes_mora AS cronograma_tasa_interes_mora, c.bono_tiempo_activo AS cronograma_bono_tiempo_activo,
             v.name AS vehiculo_name, v.inicial AS vehiculo_inicial, v.inicial_moneda AS vehiculo_inicial_moneda, v.cuotas_semanales AS vehiculo_cuotas_semanales, v.image AS vehiculo_image`
     : `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name`;
@@ -127,9 +204,11 @@ export const listSolicitudes = async (filters = {}) => {
 
   let comprobantesBySolicitud = {};
   let citasBySolicitud = {};
+  let otrosGastosBySolicitud = {};
+  let totalValidadoBySolicitud = {};
   if (forDriver && dataResult.rows.length > 0) {
     const ids = dataResult.rows.map((r) => r.id);
-    const [compRes, citasRes] = await Promise.all([
+    const [compRes, citasRes, otrosGastosMap, ...totalsList] = await Promise.all([
       query(
         'SELECT solicitud_id, id, monto, file_name, file_path, created_at, estado, validated_at, validated_by, rechazado_at, rechazo_razon, rechazado_by FROM module_miauto_comprobante_pago WHERE solicitud_id = ANY($1::uuid[]) ORDER BY created_at ASC',
         [ids]
@@ -138,6 +217,8 @@ export const listSolicitudes = async (filters = {}) => {
         'SELECT solicitud_id, id, tipo, appointment_date, created_at, resultado FROM module_miauto_solicitud_cita WHERE solicitud_id = ANY($1::uuid[]) ORDER BY created_at ASC',
         [ids]
       ),
+      listOtrosGastosBySolicitudIds(ids),
+      ...ids.map((id) => getTotalValidado(id)),
     ]);
     for (const row of compRes.rows || []) {
       if (!comprobantesBySolicitud[row.solicitud_id]) comprobantesBySolicitud[row.solicitud_id] = [];
@@ -147,16 +228,36 @@ export const listSolicitudes = async (filters = {}) => {
       if (!citasBySolicitud[row.solicitud_id]) citasBySolicitud[row.solicitud_id] = [];
       citasBySolicitud[row.solicitud_id].push(row);
     }
+    otrosGastosBySolicitud = otrosGastosMap;
+    ids.forEach((id, i) => {
+      const t = totalsList[i];
+      if (t) totalValidadoBySolicitud[id] = { total: t.total, totalUsd: t.totalUsd };
+    });
   }
 
+  const nameFromRapidinList = (r) => [r.driver_first_name, r.driver_last_name].filter(Boolean).map(String).join(' ').trim() || null;
+  const phonesForLookupList = dataResult.rows
+    .filter((r) => (!nameFromRapidinList(r) && r.phone) || (r.phone && (!r.license_number || String(r.license_number).trim() === '')))
+    .map((r) => r.phone);
+  const driverInfoList = await getDriverInfoByPhones(MIAUTO_PARK_ID, phonesForLookupList);
+
   const rows = dataResult.rows.map((r) => {
-    const driverName = [r.driver_first_name, r.driver_last_name].filter(Boolean).map(String).join(' ').trim() || null;
+    let driverName = nameFromRapidinList(r);
+    if (!driverName && r.phone) {
+      const { digits, last9 } = normalizePhoneForDriversMatch(r.phone);
+      driverName = driverInfoList.names[digits] || driverInfoList.names[last9] || null;
+    }
+    let licenseNum = r.license_number != null && String(r.license_number).trim() !== '' ? String(r.license_number).trim() : null;
+    if (!licenseNum && r.phone) {
+      const { digits, last9 } = normalizePhoneForDriversMatch(r.phone);
+      licenseNum = driverInfoList.licenses[digits] || driverInfoList.licenses[last9] || null;
+    }
     const out = {
       id: r.id,
       dni: r.dni,
       phone: r.phone || undefined,
       email: r.email || undefined,
-      license_number: r.license_number,
+      license_number: licenseNum || undefined,
       status: r.status,
       created_at: r.created_at,
       driver_name: driverName || undefined,
@@ -166,6 +267,7 @@ export const listSolicitudes = async (filters = {}) => {
       out.pago_tipo = r.pago_tipo || undefined;
       out.pago_estado = r.pago_estado || undefined;
       out.fecha_inicio_cobro_semanal = r.fecha_inicio_cobro_semanal || undefined;
+      out.placa_asignada = r.placa_asignada != null && String(r.placa_asignada).trim() !== '' ? String(r.placa_asignada).trim() : undefined;
       out.appointment_date = r.appointment_date || undefined;
       out.reagendo_count = r.reagendo_count != null ? parseInt(r.reagendo_count, 10) : 0;
       out.observations = r.observations != null ? String(r.observations).trim() || undefined : undefined;
@@ -174,12 +276,18 @@ export const listSolicitudes = async (filters = {}) => {
       out.withdrawal_reason = r.withdrawal_reason != null ? String(r.withdrawal_reason).trim() || undefined : undefined;
       out.citas_historial = citasBySolicitud[r.id] || [];
       out.cronograma = r.cronograma_name != null
-        ? { name: r.cronograma_name, tasa_interes_mora: r.cronograma_tasa_interes_mora != null ? parseFloat(r.cronograma_tasa_interes_mora) : 0 }
+        ? { name: r.cronograma_name, tasa_interes_mora: r.cronograma_tasa_interes_mora != null ? parseFloat(r.cronograma_tasa_interes_mora) : 0, bono_tiempo_activo: !!r.cronograma_bono_tiempo_activo }
         : undefined;
       out.cronograma_vehiculo = r.vehiculo_name != null || r.vehiculo_inicial != null
         ? { name: r.vehiculo_name, inicial: r.vehiculo_inicial != null ? parseFloat(r.vehiculo_inicial) : 0, inicial_moneda: r.vehiculo_inicial_moneda || 'USD', cuotas_semanales: r.vehiculo_cuotas_semanales != null ? parseInt(r.vehiculo_cuotas_semanales, 10) || 0 : 0, image: r.vehiculo_image }
         : undefined;
       out.comprobantes_pago = comprobantesBySolicitud[r.id] || [];
+      out.otros_gastos = otrosGastosBySolicitud[r.id] || [];
+      const tv = totalValidadoBySolicitud[r.id];
+      if (tv) {
+        out.total_validado = tv.total;
+        out.total_validado_usd = tv.totalUsd;
+      }
     }
     return out;
   });
@@ -187,14 +295,14 @@ export const listSolicitudes = async (filters = {}) => {
 };
 
 /**
- * Listado para sección Alquiler / Venta: solicitudes con Yego Mi Auto generado (fecha_inicio_cobro_semanal).
+ * Listado para sección Alquiler / Venta: mismas solicitudes que en Solicitudes (mismo criterio, sin filtrar por fecha_inicio).
  * Incluye resumen de cuotas: total, pagadas, vencidas, total pagado.
  */
 export const listAlquilerVenta = async (filters = {}) => {
   const { country, page = 1, limit = 20 } = filters;
   const params = [];
   let n = 1;
-  let where = ' WHERE s.fecha_inicio_cobro_semanal IS NOT NULL ';
+  let where = ' WHERE 1=1 ';
   if (country) {
     where += ` AND s.country = $${n}`;
     params.push(country);
@@ -210,7 +318,7 @@ export const listAlquilerVenta = async (filters = {}) => {
   const total = countResult.rows[0]?.total ?? 0;
 
   const dataResult = await query(
-    `SELECT s.id, s.dni, s.phone, s.email, s.status, s.created_at, s.fecha_inicio_cobro_semanal,
+    `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.fecha_inicio_cobro_semanal, s.placa_asignada,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
             c.name AS cronograma_name, v.name AS vehiculo_name, v.cuotas_semanales AS vehiculo_cuotas_semanales
      FROM module_miauto_solicitud s
@@ -218,7 +326,7 @@ export const listAlquilerVenta = async (filters = {}) => {
      LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id
      LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id
      ${where}
-     ORDER BY s.fecha_inicio_cobro_semanal DESC, s.created_at DESC
+     ORDER BY s.fecha_inicio_cobro_semanal DESC NULLS LAST, s.created_at DESC
      LIMIT $${n} OFFSET $${n + 1}`,
     [...params, limitNum, offset]
   );
@@ -247,8 +355,23 @@ export const listAlquilerVenta = async (filters = {}) => {
     }
   }
 
+  const nameFromRapidin = (r) => [r.driver_first_name, r.driver_last_name].filter(Boolean).map(String).join(' ').trim() || null;
+  const phonesForLookup = rows
+    .filter((r) => (!nameFromRapidin(r) && r.phone) || (r.phone && (!r.license_number || String(r.license_number).trim() === '')))
+    .map((r) => r.phone);
+  const driverInfoAv = await getDriverInfoByPhones(MIAUTO_PARK_ID, phonesForLookup);
+
   const data = rows.map((r) => {
-    const driverName = [r.driver_first_name, r.driver_last_name].filter(Boolean).map(String).join(' ').trim() || null;
+    let driverName = nameFromRapidin(r);
+    if (!driverName && r.phone) {
+      const { digits, last9 } = normalizePhoneForDriversMatch(r.phone);
+      driverName = driverInfoAv.names[digits] || driverInfoAv.names[last9] || null;
+    }
+    let licenseNum = r.license_number != null && String(r.license_number).trim() !== '' ? String(r.license_number).trim() : null;
+    if (!licenseNum && r.phone) {
+      const { digits, last9 } = normalizePhoneForDriversMatch(r.phone);
+      licenseNum = driverInfoAv.licenses[digits] || driverInfoAv.licenses[last9] || null;
+    }
     const summary = cuotaSummaryBySolicitud[r.id] || { total_cuotas: 0, cuotas_pagadas: 0, cuotas_vencidas: 0, total_pagado: 0 };
     const cuotasPlan = r.vehiculo_cuotas_semanales != null ? parseInt(r.vehiculo_cuotas_semanales, 10) || 0 : 0;
     return {
@@ -256,9 +379,11 @@ export const listAlquilerVenta = async (filters = {}) => {
       dni: r.dni,
       phone: r.phone || undefined,
       email: r.email || undefined,
+      license_number: licenseNum || undefined,
       status: r.status,
       created_at: r.created_at,
       fecha_inicio_cobro_semanal: r.fecha_inicio_cobro_semanal,
+      placa_asignada: r.placa_asignada != null && String(r.placa_asignada).trim() !== '' ? String(r.placa_asignada).trim() : undefined,
       driver_name: driverName || undefined,
       cronograma_name: r.cronograma_name || undefined,
       vehiculo_name: r.vehiculo_name || undefined,
@@ -277,7 +402,7 @@ export const getSolicitudById = async (id) => {
     `SELECT id, country, dni, phone, email, license_number, description,
             status, rejection_reason, cited_at, cited_by, appointment_date, reagendo_count,
             reviewed_at, reviewed_by, withdrawn_at, withdrawal_reason, observations, created_at, updated_at, rapidin_driver_id,
-            cronograma_id, cronograma_vehiculo_id, pago_tipo, pago_estado, fecha_inicio_cobro_semanal,
+            cronograma_id, cronograma_vehiculo_id, pago_tipo, pago_estado, fecha_inicio_cobro_semanal, placa_asignada,
             COALESCE(apps_trabajadas, '[]'::jsonb) AS apps_trabajadas
      FROM module_miauto_solicitud WHERE id = $1`,
     [id]
@@ -291,9 +416,9 @@ export const getSolicitudById = async (id) => {
   row.citas_historial = citasRes.rows || [];
 
   if (row.cronograma_id) {
-    const cronoRes = await query('SELECT id, name, country, active, tasa_interes_mora FROM module_miauto_cronograma WHERE id = $1', [row.cronograma_id]);
+    const cronoRes = await query('SELECT id, name, country, active, tasa_interes_mora, bono_tiempo_activo FROM module_miauto_cronograma WHERE id = $1', [row.cronograma_id]);
     const crono = cronoRes.rows[0];
-    row.cronograma = crono ? { id: crono.id, name: crono.name, country: crono.country, active: crono.active, tasa_interes_mora: crono.tasa_interes_mora != null ? parseFloat(crono.tasa_interes_mora) : 0 } : null;
+    row.cronograma = crono ? { id: crono.id, name: crono.name, country: crono.country, active: crono.active, tasa_interes_mora: crono.tasa_interes_mora != null ? parseFloat(crono.tasa_interes_mora) : 0, bono_tiempo_activo: !!crono.bono_tiempo_activo } : null;
   } else {
     row.cronograma = null;
   }
@@ -308,13 +433,31 @@ export const getSolicitudById = async (id) => {
   const compRes = await query('SELECT id, monto, file_name, file_path, created_at, estado, validated_at, validated_by, rechazado_at, rechazo_razon, rechazado_by FROM module_miauto_comprobante_pago WHERE solicitud_id = $1 ORDER BY created_at ASC', [id]);
   row.comprobantes_pago = compRes.rows || [];
 
+  row.otros_gastos = await listOtrosGastosBySolicitud(id);
+
+  const { total: totalValidado, totalUsd: totalValidadoUsd } = await getTotalValidado(id);
+  row.total_validado = totalValidado;
+  row.total_validado_usd = totalValidadoUsd;
+
+  let licenseNumber = row.license_number;
+  if ((!licenseNumber || String(licenseNumber).trim() === '') && row.phone) {
+    const { licenses } = await getDriverInfoByPhones(MIAUTO_PARK_ID, [row.phone]);
+    const { digits, last9 } = normalizePhoneForDriversMatch(row.phone);
+    const fromDrv = licenses[digits] || licenses[last9];
+    if (fromDrv) licenseNumber = fromDrv;
+  }
+
   // Devolver objeto plano para que cronograma y cronograma_vehiculo se serialicen correctamente en la respuesta API
   return {
     ...row,
+    license_number: licenseNumber,
     cronograma: row.cronograma,
     cronograma_vehiculo: row.cronograma_vehiculo,
     citas_historial: row.citas_historial,
     comprobantes_pago: row.comprobantes_pago,
+    otros_gastos: row.otros_gastos,
+    total_validado: row.total_validado,
+    total_validado_usd: row.total_validado_usd,
     apps: row.apps,
   };
 };
@@ -446,6 +589,24 @@ export const updateSolicitud = async (id, data, userId = null) => {
     params.push(data.fecha_inicio_cobro_semanal);
     n += 1;
   }
+  if (data.placa_asignada !== undefined) {
+    const p = data.placa_asignada == null || String(data.placa_asignada).trim() === ''
+      ? null
+      : normalizePlacaAsignada(data.placa_asignada);
+    updates.push(`placa_asignada = $${n}`);
+    params.push(p);
+    n += 1;
+  }
+  if (data.otros_gastos_saldo_total !== undefined) {
+    updates.push(`otros_gastos_saldo_total = $${n}`);
+    params.push(data.otros_gastos_saldo_total);
+    n += 1;
+  }
+  if (data.otros_gastos_num_cuotas !== undefined) {
+    updates.push(`otros_gastos_num_cuotas = $${n}`);
+    params.push(data.otros_gastos_num_cuotas);
+    n += 1;
+  }
   if (updates.length === 0) return getSolicitudById(id);
   params.push(id);
   await query(
@@ -539,31 +700,46 @@ export const noVinoRechazar = async (id, userId = null) => {
 };
 
 /**
- * Generar Yego Mi Auto: setea fecha_inicio_cobro_semanal (primer lunes de cobro).
- * Solo si status aprobado, pago_estado completo, cronograma_id y cronograma_vehiculo_id presentes.
- * Lunes a miércoles → primer lunes = próximo lunes; jueves a sábado → primer lunes = lunes de la semana siguiente.
+ * Generar Yego Mi Auto: setea fecha_inicio_cobro_semanal al día de generación y crea la primera cuota con vencimiento ese mismo día.
+ * Permitido si: aprobado, cronograma/vehículo asignados, y (pago_estado completo O pago parcial con al menos 500 USD validados).
+ * Con pago parcial: crea 26 cuotas "otros gastos" (saldo pendiente); vencimientos en lunes desde semana 2 del plan.
  */
-export const generarYegoMiAuto = async (id) => {
+export const generarYegoMiAuto = async (id, options = {}) => {
   const row = await query(
-    'SELECT id, status, pago_estado, cronograma_id, cronograma_vehiculo_id, fecha_inicio_cobro_semanal FROM module_miauto_solicitud WHERE id = $1',
+    'SELECT id, status, pago_estado, pago_tipo, cronograma_id, cronograma_vehiculo_id, fecha_inicio_cobro_semanal FROM module_miauto_solicitud WHERE id = $1',
     [id]
   );
   if (row.rows.length === 0) return null;
   const s = row.rows[0];
-  if (s.status !== 'aprobado' || s.pago_estado !== 'completo' || !s.cronograma_id || !s.cronograma_vehiculo_id) {
-    throw new Error('Solo se puede generar Yego Mi Auto cuando la solicitud está aprobada, con pago completo y cronograma/vehículo asignados');
+  if (s.fecha_inicio_cobro_semanal) {
+    throw new Error('Yego Mi Auto ya fue generado para esta solicitud');
   }
-  const today = new Date();
-  const dayOfWeek = today.getDay();
-  const daysUntilNextMonday = dayOfWeek === 0 ? 1 : dayOfWeek === 1 ? 7 : 8 - dayOfWeek;
-  const nextMonday = new Date(today);
-  nextMonday.setDate(today.getDate() + daysUntilNextMonday);
-  nextMonday.setHours(0, 0, 0, 0);
-  const firstMonday = dayOfWeek >= 4 && dayOfWeek <= 6 ? new Date(nextMonday.getTime() + 7 * 24 * 60 * 60 * 1000) : nextMonday;
-  const dateStr = firstMonday.toISOString().slice(0, 10);
-  const updated = await updateSolicitud(id, { fecha_inicio_cobro_semanal: dateStr });
+  if (s.status !== 'aprobado' || !s.cronograma_id || !s.cronograma_vehiculo_id) {
+    throw new Error('Solo se puede generar Yego Mi Auto cuando la solicitud está aprobada y tiene cronograma/vehículo asignados');
+  }
 
-  // Crear la primera cuota semanal de inmediato (el job solo crea cuotas cada lunes; así el usuario ve la cuota al instante).
+  const placaRaw = options.placa_asignada != null ? options.placa_asignada : '';
+  const placa = normalizePlacaAsignada(placaRaw);
+  if (!placa) {
+    throw new Error('Debe indicar la placa asignada del vehículo para generar Yego Mi Auto');
+  }
+
+  const pagoCompleto = s.pago_estado === 'completo';
+  if (!pagoCompleto) {
+    if (s.pago_tipo !== 'parcial') {
+      throw new Error('Se requiere pago completo o pago parcial con al menos 500 USD validados para generar Yego Mi Auto');
+    }
+    const { totalUsd } = await getTotalValidado(id);
+    if (totalUsd < MINIMO_USD_PARCIAL) {
+      throw new Error(`Con pago parcial se requieren al menos ${MINIMO_USD_PARCIAL} USD validados para generar Yego Mi Auto`);
+    }
+  }
+
+  const today = new Date();
+  const dateStr = today.toISOString().slice(0, 10);
+  const updated = await updateSolicitud(id, { fecha_inicio_cobro_semanal: dateStr, placa_asignada: placa });
+
+  // Primera cuota semanal: due_date = hoy.
   try {
     await ensureCuotaSemanalForWeek(
       id,
@@ -574,6 +750,33 @@ export const generarYegoMiAuto = async (id) => {
     );
   } catch (err) {
     logger.warn('Mi Auto: no se pudo crear la primera cuota al generar Yego Mi Auto:', err.message);
+  }
+
+  // Pago parcial: guardar saldo y N en solicitud; crear solo la fila de semana 2 (resto se crea lazy al listar).
+  if (!pagoCompleto && s.pago_tipo === 'parcial') {
+    const veh = await query(
+      'SELECT inicial FROM module_miauto_cronograma_vehiculo WHERE id = $1',
+      [s.cronograma_vehiculo_id]
+    );
+    const inicial = veh.rows[0] ? parseFloat(veh.rows[0].inicial) || 0 : 0;
+    const { total } = await getTotalValidado(id);
+    const saldo = Math.max(0, inicial - total);
+    if (saldo > 0) {
+      try {
+        const crono = await query(
+          'SELECT COALESCE(NULLIF(cuotas_otros_gastos, 0), 26) AS n FROM module_miauto_cronograma WHERE id = $1',
+          [s.cronograma_id]
+        );
+        const numCuotas = crono.rows[0] ? parseInt(crono.rows[0].n, 10) || 26 : 26;
+        await updateSolicitud(id, {
+          otros_gastos_saldo_total: saldo,
+          otros_gastos_num_cuotas: numCuotas,
+        });
+        await ensureOtroGastoForWeek(id, 2);
+      } catch (err) {
+        logger.warn('Mi Auto: no se pudieron configurar/crear cuota de otros gastos:', err.message);
+      }
+    }
   }
 
   return updated;

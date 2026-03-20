@@ -117,17 +117,28 @@ function contarRachaConsecutiva(rows) {
   return racha;
 }
 
+const MIN_VIAJES_BONO_TIEMPO = 120;
+
 /**
- * Si hay 4+ cuotas consecutivas (desde la más antigua) pagadas/bonificadas sin mora,
- * concede 1 bonificación por cada bloque completo de 4 (4→1, 8→2, etc.).
- * Las bonificaciones se aplican a las ÚLTIMAS cuotas del plan (261 → cuota 261, 260, etc.).
- * Como las cuotas se crean cada lunes, no marcamos ninguna cuota aquí: solo subimos el contador
- * cuotas_semanales_bonificadas. Al crear cada cuota en ensureCuotaSemanalForWeek, si esa semana
- * es una de las últimas N (N = contador), se crea ya con status 'bonificada'.
+ * Solo concede bono por 4 pagos consecutivos a tiempo cuando el cronograma tiene bono_tiempo_activo.
+ * En ese caso, las 4 semanas del bloque deben tener >= 120 viajes cada una.
+ * Si bono_tiempo_activo es false, esta regla no se aplica (no se otorga bonificación).
  */
 async function tryGrantBenefit4Consecutive(solicitudId) {
+  const sol = await query(
+    'SELECT cuotas_semanales_bonificadas, cronograma_id FROM module_miauto_solicitud WHERE id = $1',
+    [solicitudId]
+  );
+  const cronogramaId = sol.rows[0]?.cronograma_id;
+  if (!cronogramaId) return;
+  const crono = await query(
+    'SELECT bono_tiempo_activo FROM module_miauto_cronograma WHERE id = $1',
+    [cronogramaId]
+  );
+  if (!crono.rows[0] || !crono.rows[0].bono_tiempo_activo) return;
+
   const cuotas = await query(
-    `SELECT id, due_date, amount_due, paid_amount, late_fee, status
+    `SELECT id, due_date, amount_due, paid_amount, late_fee, status, num_viajes
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1
      ORDER BY due_date ASC`,
@@ -137,10 +148,10 @@ async function tryGrantBenefit4Consecutive(solicitudId) {
   const racha = contarRachaConsecutiva(rows);
   if (racha < 4) return;
 
-  const sol = await query(
-    'SELECT cuotas_semanales_bonificadas FROM module_miauto_solicitud WHERE id = $1',
-    [solicitudId]
-  );
+  const primerasCuatro = rows.slice(0, 4);
+  const todasCon120 = primerasCuatro.every((r) => (Number(r.num_viajes) || 0) >= MIN_VIAJES_BONO_TIEMPO);
+  if (!todasCon120) return;
+
   const current = (sol.rows[0] && parseInt(sol.rows[0].cuotas_semanales_bonificadas, 10)) || 0;
   const deservedBonuses = Math.floor(racha / 4);
   const toGrant = Math.max(0, deservedBonuses - current);

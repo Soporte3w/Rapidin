@@ -16,6 +16,8 @@ interface AlquilerVentaItem {
   email?: string;
   cronograma_name?: string;
   vehiculo_name?: string;
+  placa_asignada?: string;
+  license_number?: string;
   /** Total de cuotas del plan (del vehículo en el cronograma) */
   cuotas_semanales_plan?: number;
   total_cuotas: number;
@@ -189,8 +191,10 @@ export default function YegoMiAutoLoans() {
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Conductor</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">DNI</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Licencia</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Cronograma</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Vehículo</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Placa</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Inicio cobro</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Cuotas</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Vencidas</th>
@@ -203,8 +207,10 @@ export default function YegoMiAutoLoans() {
                   <tr key={row.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">{conductorDisplay(row)}</td>
                     <td className="px-4 py-3 text-sm text-gray-700">{row.dni}</td>
+                    <td className="px-4 py-3 text-sm font-mono text-gray-800">{row.license_number || '—'}</td>
                     <td className="px-4 py-3 text-sm text-gray-700">{row.cronograma_name || '—'}</td>
                     <td className="px-4 py-3 text-sm text-gray-700">{row.vehiculo_name || '—'}</td>
+                    <td className="px-4 py-3 text-sm font-mono text-gray-800">{row.placa_asignada || '—'}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">
                       {row.fecha_inicio_cobro_semanal ? formatDate(row.fecha_inicio_cobro_semanal, 'es-ES') : '—'}
                     </td>

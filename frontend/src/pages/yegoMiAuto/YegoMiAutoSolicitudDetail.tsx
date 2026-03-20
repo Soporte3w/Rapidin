@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
 import {
   ArrowLeft,
@@ -14,6 +15,7 @@ import {
   CheckCircle,
   Pencil,
   Calculator,
+  Loader2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { formatDateFlex } from '../../utils/date';
@@ -119,6 +121,8 @@ function validateCitadoDate(date: string, time: string): string | null {
 export default function YegoMiAutoSolicitudDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const userName = [user?.first_name, user?.last_name].filter(Boolean).join(' ').trim() || user?.email || 'Usuario';
   const [solicitud, setSolicitud] = useState<any>(null);
   const [adjuntos, setAdjuntos] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -145,6 +149,7 @@ export default function YegoMiAutoSolicitudDetail() {
   const [rechazandoComprobanteId, setRechazandoComprobanteId] = useState<string | null>(null);
   const [tipoCambio, setTipoCambio] = useState<{ valor_usd_a_local: number; moneda_local: string } | null>(null);
   const [showSimularCuotasModal, setShowSimularCuotasModal] = useState(false);
+  const [placaParaGenerar, setPlacaParaGenerar] = useState('');
 
   const fetchDetail = useCallback(async (silent = false) => {
     if (!id) return;
@@ -157,7 +162,8 @@ export default function YegoMiAutoSolicitudDetail() {
         api.get(`/miauto/solicitudes/${id}`),
         api.get(`/miauto/solicitudes/${id}/adjuntos`),
       ]);
-      setSolicitud(resSol.data?.data ?? resSol.data);
+      const sol = resSol.data?.data ?? resSol.data;
+      setSolicitud(sol);
       setAdjuntos(Array.isArray(resAdj.data?.data) ? resAdj.data.data : resAdj.data ?? []);
     } catch (e: any) {
       const msg = e.response?.data?.message || 'Error al cargar la solicitud';
@@ -172,6 +178,12 @@ export default function YegoMiAutoSolicitudDetail() {
   useEffect(() => {
     fetchDetail();
   }, [fetchDetail]);
+
+  useEffect(() => {
+    if (showSimularCuotasModal && solicitud) {
+      setPlacaParaGenerar(solicitud.placa_asignada ? String(solicitud.placa_asignada) : '');
+    }
+  }, [showSimularCuotasModal, solicitud?.id, solicitud?.placa_asignada]);
 
   const fetchedCronogramaTipoCambioKey = useRef({ status: '', country: '' });
   useEffect(() => {
@@ -300,19 +312,6 @@ export default function YegoMiAutoSolicitudDetail() {
     }
   };
 
-  const handleMarcarPagoCompleto = async () => {
-    try {
-      setActionLoading(true);
-      await api.patch(`/miauto/solicitudes/${id}`, { pago_estado: 'completo' });
-      toast.success('Pago marcado como completo');
-      await fetchDetail(true);
-    } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Error al actualizar');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
   const handleValidarComprobante = async (comprobanteId: string, data: { monto: number; moneda: 'PEN' | 'USD' }) => {
     if (!id) return;
     try {
@@ -390,11 +389,13 @@ export default function YegoMiAutoSolicitudDetail() {
     solicitud.citas_historial.length > 0 &&
     (solicitud.citas_historial[solicitud.citas_historial.length - 1] as { resultado?: string })?.resultado === 'llego';
 
+  const [showAprobarModal, setShowAprobarModal] = useState(false);
   const handleAprobar = async () => {
     try {
       setActionLoading(true);
+      setShowAprobarModal(false);
       await api.patch(`/miauto/solicitudes/${id}`, { status: 'aprobado' });
-      toast.success('Solicitud aprobada.');
+      toast.success('Solicitud aprobada. Se ha registrado quién la aprobó.');
       await fetchDetail(true);
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al aprobar');
@@ -565,7 +566,12 @@ export default function YegoMiAutoSolicitudDetail() {
               </section>
               <section className="space-y-2 pb-4 border-b border-gray-100">
                 <h3 className={SECTION_HEADING}>Licencia</h3>
-                <div><dt className="text-gray-500">Descripción</dt><dd>{solicitud.license_number || solicitud.description || '—'}</dd></div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                  <div><dt className="text-gray-500">N° licencia</dt><dd className="font-mono">{solicitud.license_number || '—'}</dd></div>
+                  {solicitud.description ? (
+                    <div className="col-span-2"><dt className="text-gray-500">Descripción</dt><dd>{solicitud.description}</dd></div>
+                  ) : null}
+                </div>
               </section>
               <section className="space-y-2 pb-4 border-b border-gray-100">
                 <h3 className={SECTION_HEADING}>Apps en las que ha trabajado</h3>
@@ -675,7 +681,7 @@ export default function YegoMiAutoSolicitudDetail() {
               )}
               {ultimaCitaLlego && (
                 <>
-                  <button type="button" onClick={handleAprobar} disabled={actionLoading} className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium disabled:opacity-50 whitespace-nowrap">
+                  <button type="button" onClick={() => setShowAprobarModal(true)} disabled={actionLoading} className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium disabled:opacity-50 whitespace-nowrap">
                     <CheckCircle className="w-4 h-4 flex-shrink-0" /> Aprobar
                   </button>
                   <button type="button" onClick={() => setShowDesistirModal(true)} disabled={actionLoading} className="inline-flex items-center justify-center gap-1.5 px-3 py-2 border border-gray-500 text-gray-700 rounded-lg hover:bg-gray-50 text-sm font-medium disabled:opacity-50 whitespace-nowrap">
@@ -698,7 +704,7 @@ export default function YegoMiAutoSolicitudDetail() {
                   <X className="w-4 h-4 flex-shrink-0" /> No llegó
                 </button>
               )}
-              {solicitud.status === 'aprobado' && solicitud.pago_estado === 'completo' && solicitud.cronograma_vehiculo && (
+              {solicitud.status === 'aprobado' && solicitud.cronograma_vehiculo && (solicitud.pago_estado === 'completo' || (solicitud.pago_tipo === 'parcial' && (solicitud.total_validado_usd ?? 0) >= 500)) && (
                 <button type="button" onClick={() => setShowSimularCuotasModal(true)} className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] text-sm font-medium whitespace-nowrap">
                   <Calculator className="w-4 h-4 flex-shrink-0" /> Simular cuotas
                 </button>
@@ -708,27 +714,29 @@ export default function YegoMiAutoSolicitudDetail() {
 
           {showSimularCuotasModal && solicitud?.cronograma_vehiculo && createPortal(
             <div
-              className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-[9999]"
-              onClick={() => setShowSimularCuotasModal(false)}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[9999]"
+              onClick={() => { if (!actionLoading) setShowSimularCuotasModal(false); }}
               role="dialog"
               aria-modal="true"
               aria-label="Simulación de cuotas"
             >
-              <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-                <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gradient-to-r from-[#8B1A1A]/5 to-transparent">
-                  <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-                    <Calculator className="w-5 h-5 text-[#8B1A1A]" />
+              <div className="bg-white rounded-2xl shadow-2xl ring-1 ring-black/5 max-w-lg w-full flex flex-col" onClick={(e) => e.stopPropagation()}>
+                <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-[#8B1A1A]/8 via-[#8B1A1A]/4 to-transparent">
+                  <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2.5">
+                    <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-[#8B1A1A]/10">
+                      <Calculator className="w-5 h-5 text-[#8B1A1A]" />
+                    </span>
                     Simulación de cuotas
                   </h3>
-                  <button type="button" onClick={() => setShowSimularCuotasModal(false)} className="p-2 rounded-lg hover:bg-gray-100 text-gray-500" aria-label="Cerrar">
+                  <button type="button" onClick={() => setShowSimularCuotasModal(false)} disabled={actionLoading} className="p-2 rounded-lg hover:bg-gray-100 text-gray-500 hover:text-gray-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent" aria-label="Cerrar">
                     <X className="w-5 h-5" />
                   </button>
                 </div>
-                <div className="p-6 overflow-y-auto space-y-5">
-                  <p className="text-sm text-gray-600">
-                    Resumen del plan de pago según el <strong>cronograma y vehículo</strong> asignados a esta solicitud.
+                <div className="p-6 space-y-5">
+                  <p className="text-sm text-gray-600 leading-relaxed">
+                    Resumen del plan de pago según el <strong className="text-gray-800">cronograma y vehículo</strong> asignados a esta solicitud.
                   </p>
-                  <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-4 space-y-3">
+                  <div className="rounded-xl border border-gray-200 bg-gray-50/80 p-5 space-y-4 shadow-sm">
                     <div>
                       <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Cronograma</p>
                       <p className="text-base font-semibold text-gray-900">{solicitud.cronograma?.name || '—'}</p>
@@ -737,17 +745,59 @@ export default function YegoMiAutoSolicitudDetail() {
                       <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Vehículo / plan</p>
                       <p className="text-base font-semibold text-gray-900">{solicitud.cronograma_vehiculo?.name || '—'}</p>
                     </div>
-                    <div className="pt-2 border-t border-gray-200">
-                      <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1">Cuota inicial (ya pagada)</p>
-                      <p className="text-lg font-bold text-green-700">
+                    <div className="pt-1.5 border-t border-gray-200">
+                      <p className="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">
+                        {solicitud.pago_estado === 'completo' ? 'Cuota inicial (ya pagada)' : 'Cuota inicial del plan'}
+                      </p>
+                      <p className={`text-base font-bold ${solicitud.pago_estado === 'completo' ? 'text-green-700' : 'text-gray-900'}`}>
                         {solicitud.cronograma_vehiculo?.inicial_moneda === 'PEN' ? 'S/.' : '$'}{' '}
                         {Number(solicitud.cronograma_vehiculo?.inicial ?? 0).toFixed(2)}
+                        {solicitud.cronograma_vehiculo?.inicial_moneda === 'USD' && <span className="text-xs font-normal text-gray-500 ml-1">USD</span>}
                       </p>
                       {solicitud.cronograma_vehiculo?.inicial_moneda === 'USD' && tipoCambio?.valor_usd_a_local && (
-                        <p className="text-xs text-gray-500 mt-0.5">
+                        <p className="text-[11px] text-gray-500 mt-0.5">
                           Equiv. {tipoCambio.moneda_local === 'COP' ? 'COP' : 'S/.'}{' '}
                           {(Number(solicitud.cronograma_vehiculo?.inicial ?? 0) * tipoCambio.valor_usd_a_local).toFixed(2)}
                         </p>
+                      )}
+                      {solicitud.pago_estado !== 'completo' && (
+                        <>
+                          <p className="text-xs mt-1.5 text-gray-700">
+                            <span className="font-medium text-gray-500">Pagado (validado):</span>{' '}
+                            {(solicitud.total_validado_usd != null && solicitud.total_validado_usd > 0) ? (
+                              <span className="font-semibold text-green-700">{Number(solicitud.total_validado_usd).toFixed(2)} USD</span>
+                            ) : (
+                              <span className="font-semibold text-green-700">
+                                {solicitud.cronograma_vehiculo?.inicial_moneda === 'PEN' ? 'S/.' : '$'}{' '}
+                                {Number(solicitud.total_validado ?? 0).toFixed(2)}
+                                {solicitud.cronograma_vehiculo?.inicial_moneda === 'PEN' && tipoCambio?.valor_usd_a_local && (
+                                  <span className="text-gray-600 font-normal"> (equiv. ~{(Number(solicitud.total_validado ?? 0) / tipoCambio.valor_usd_a_local).toFixed(2)} USD)</span>
+                                )}
+                              </span>
+                            )}
+                          </p>
+                          {(() => {
+                            const total = Number(solicitud.cronograma_vehiculo?.inicial ?? 0);
+                            const validado = Number(solicitud.total_validado ?? 0);
+                            const validadoUsd = solicitud.total_validado_usd != null ? Number(solicitud.total_validado_usd) : null;
+                            const falta = solicitud.cronograma_vehiculo?.inicial_moneda === 'USD'
+                              ? (validadoUsd != null ? total - validadoUsd : total - validado)
+                              : total - validado;
+                            if (falta <= 0) return null;
+                            return (
+                              <p className="text-xs mt-0.5 text-gray-700">
+                                <span className="font-medium text-gray-500">Falta por pagar:</span>{' '}
+                                <span className="font-semibold text-amber-700">
+                                  {solicitud.cronograma_vehiculo?.inicial_moneda === 'USD' ? (
+                                    <>{falta.toFixed(2)} USD</>
+                                  ) : (
+                                    <>S/. {falta.toFixed(2)}{tipoCambio?.valor_usd_a_local ? ` (equiv. ~${(falta / tipoCambio.valor_usd_a_local).toFixed(2)} USD)` : ''}</>
+                                  )}
+                                </span>
+                              </p>
+                            );
+                          })()}
+                        </>
                       )}
                     </div>
                     <div className="pt-2 border-t border-gray-200">
@@ -760,22 +810,60 @@ export default function YegoMiAutoSolicitudDetail() {
                       </p>
                     </div>
                   </div>
-                  <div className="rounded-xl bg-amber-50 border border-amber-200 p-4">
-                    <p className="text-sm text-amber-800">
-                      <strong>Nota:</strong> Esta es una simulación informativa con los datos del plan elegido. La cuota inicial ya fue completada. Las cuotas semanales se cobrarán según lo acordado con el conductor.
+                  <div className="rounded-xl bg-amber-50/90 border border-amber-100 p-4">
+                    <p className="text-xs text-amber-900/90 leading-relaxed">
+                      {solicitud.pago_estado !== 'completo' && (solicitud.pago_tipo === 'parcial' || (solicitud.total_validado_usd ?? 0) >= 500) ? (
+                        <>
+                          <strong className="text-amber-900">Nota:</strong> simulación informativa. Si al generar Yego Mi Auto aún <strong>falta saldo</strong> de la cuota inicial, ese monto se repartirá en <strong>26 cuotas</strong> en &quot;Otros gastos&quot;, con vencimientos en <strong>lunes</strong> desde la <strong>semana 2</strong> del plan. La primera cuota del plan semanal vence el mismo día de la generación.
+                        </>
+                      ) : solicitud.pago_tipo === 'parcial' && solicitud.pago_estado === 'completo' ? (
+                        <>
+                          <strong className="text-amber-900">Nota:</strong> Cuota inicial completada. Al generar Yego Mi Auto no se crearán cuotas de &quot;Otros gastos&quot; (no hay saldo pendiente de la inicial).
+                        </>
+                      ) : (
+                        <>
+                          <strong className="text-amber-900">Nota:</strong> Esta es una simulación informativa con los datos del plan elegido. La cuota inicial ya fue completada. Las cuotas semanales se cobrarán según lo acordado con el conductor.
+                        </>
+                      )}
                     </p>
                   </div>
                   {solicitud.fecha_inicio_cobro_semanal ? (
-                    <div className="rounded-xl bg-green-50 border border-green-200 p-4">
-                      <p className="text-sm text-green-800">
-                        Cobro semanal iniciado desde el <strong>{formatDateFlex(solicitud.fecha_inicio_cobro_semanal)}</strong>.
+                    <div className="rounded-xl bg-green-50/90 border border-green-100 p-4 space-y-1">
+                      <p className="text-sm text-green-800/90 leading-relaxed">
+                        Cobro semanal iniciado desde el <strong className="text-green-900">{formatDateFlex(solicitud.fecha_inicio_cobro_semanal)}</strong>.
                       </p>
+                      {solicitud.placa_asignada ? (
+                        <p className="text-sm text-green-800/90">
+                          Placa asignada: <strong className="text-green-900 font-mono tracking-wide">{solicitud.placa_asignada}</strong>
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {!solicitud.fecha_inicio_cobro_semanal ? (
+                    <div className="rounded-xl border border-gray-200 bg-white p-4 space-y-2">
+                      <label htmlFor="placa-yego-mi-auto" className="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">
+                        Placa asignada (vehículo entregado)
+                      </label>
+                      <p className="text-xs text-gray-500">
+                        Modelo: <span className="font-medium text-gray-700">{solicitud.cronograma_vehiculo?.name || '—'}</span>
+                      </p>
+                      <input
+                        id="placa-yego-mi-auto"
+                        type="text"
+                        autoComplete="off"
+                        value={placaParaGenerar}
+                        onChange={(e) => setPlacaParaGenerar(e.target.value.toUpperCase())}
+                        placeholder="Ej. ABC123"
+                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-gray-900 font-mono tracking-wide placeholder:text-gray-400 focus:ring-2 focus:ring-[#8B1A1A]/30 focus:border-[#8B1A1A] outline-none"
+                        maxLength={20}
+                        disabled={actionLoading}
+                      />
                     </div>
                   ) : null}
                 </div>
-                <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex flex-col sm:flex-row gap-2">
+                <div className="px-6 py-5 border-t border-gray-100 bg-gray-50/80 flex flex-col sm:flex-row gap-3">
                   {solicitud.fecha_inicio_cobro_semanal ? (
-                    <button type="button" onClick={() => setShowSimularCuotasModal(false)} className="w-full px-4 py-2.5 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] font-medium">
+                    <button type="button" onClick={() => setShowSimularCuotasModal(false)} className="w-full px-4 py-3 bg-[#8B1A1A] text-white rounded-xl hover:bg-[#6B1515] font-medium transition-colors shadow-sm">
                       Entendido
                     </button>
                   ) : (
@@ -784,9 +872,14 @@ export default function YegoMiAutoSolicitudDetail() {
                         type="button"
                         disabled={actionLoading}
                         onClick={async () => {
+                          const placa = placaParaGenerar.trim();
+                          if (!placa) {
+                            toast.error('Indica la placa asignada del vehículo');
+                            return;
+                          }
                           try {
                             setActionLoading(true);
-                            await api.patch(`/miauto/solicitudes/${id}/generar-yego-mi-auto`);
+                            await api.patch(`/miauto/solicitudes/${id}/generar-yego-mi-auto`, { placa_asignada: placa });
                             toast.success('Yego Mi Auto generado; cobro semanal iniciado');
                             setShowSimularCuotasModal(false);
                             await fetchDetail(true);
@@ -796,11 +889,18 @@ export default function YegoMiAutoSolicitudDetail() {
                             setActionLoading(false);
                           }
                         }}
-                        className="flex-1 px-4 py-2.5 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] font-medium disabled:opacity-50"
+                        className="flex-1 px-4 py-3 bg-[#8B1A1A] text-white rounded-xl hover:bg-[#6B1515] font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm inline-flex items-center justify-center gap-2"
                       >
-                        Generar Yego Mi Auto
+                        {actionLoading ? (
+                          <>
+                            <Loader2 className="w-5 h-5 animate-spin flex-shrink-0" aria-hidden />
+                            <span>Generando…</span>
+                          </>
+                        ) : (
+                          'Generar Yego Mi Auto'
+                        )}
                       </button>
-                      <button type="button" onClick={() => setShowSimularCuotasModal(false)} className="px-4 py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
+                      <button type="button" onClick={() => setShowSimularCuotasModal(false)} disabled={actionLoading} className="px-4 py-3 border border-gray-200 text-gray-700 rounded-xl hover:bg-white hover:border-gray-300 font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                         Cerrar
                       </button>
                     </>
@@ -829,7 +929,6 @@ export default function YegoMiAutoSolicitudDetail() {
               setPagoSectionOpen={setPagoSectionOpen}
               actionLoading={actionLoading}
               onGuardarCronogramaPago={handleGuardarCronogramaPago}
-              onMarcarPagoCompleto={handleMarcarPagoCompleto}
               onValidarComprobante={handleValidarComprobante}
               onRechazarComprobante={handleRechazarComprobante}
               onAgregarComprobante={handleAgregarComprobante}
@@ -1063,6 +1162,27 @@ export default function YegoMiAutoSolicitudDetail() {
               <div className="flex gap-2 mt-6">
                 <button type="button" onClick={() => { setModalEditarCita(false); setEditCitaDate(''); setEditCitaTime('09:00'); }} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg">Cancelar</button>
                 <button type="button" onClick={handleEditarCita} disabled={actionLoading || !editCitaDate?.trim() || !editCitaTime?.trim()} className="flex-1 px-4 py-2 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] disabled:opacity-50">Guardar</button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {showAprobarModal &&
+        createPortal(
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style={{ zIndex: 9999 }} role="dialog" aria-modal="true" aria-label="Confirmar aprobación">
+            <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-lg font-bold text-gray-900 mb-2">Confirmar aprobación</h3>
+              <p className="text-sm text-gray-600 mb-4">
+                ¿Aprobar esta solicitud? Se registrará que <strong>{userName}</strong> realizó la aprobación.
+              </p>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setShowAprobarModal(false)} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">
+                  Cancelar
+                </button>
+                <button type="button" onClick={handleAprobar} disabled={actionLoading} className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50">
+                  Sí, aprobar
+                </button>
               </div>
             </div>
           </div>,

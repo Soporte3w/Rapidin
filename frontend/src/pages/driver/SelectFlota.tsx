@@ -15,19 +15,16 @@ export default function SelectFlota() {
   const location = useLocation();
   const flotas: FlotaItem[] = (location.state as { flotas?: FlotaItem[] })?.flotas || [];
 
-  // Validar llegada por URL o atrás/adelante: sin flotas en state y sin flota ya elegida → login
-  if (flotas.length === 0) {
-    const hasPark = !!getStoredSelectedParkId();
-    if (hasPark) {
-      navigate('/driver/resumen', { replace: true });
-    } else {
-      navigate('/driver/login', { replace: true });
-    }
-    return null;
-  }
-
-  // Bloquear uso de atrás/adelante del navegador: mantener siempre en esta pantalla hasta elegir flota
+  // Sin flotas en state (URL directa, atrás/adelante): redirigir — debe ir en efecto, no en render
   useEffect(() => {
+    if (flotas.length !== 0) return;
+    const hasPark = !!getStoredSelectedParkId();
+    navigate(hasPark ? '/driver/resumen' : '/driver/login', { replace: true });
+  }, [flotas.length, navigate]);
+
+  // Bloquear atrás/adelante solo cuando hay lista de flotas (pantalla de elección)
+  useEffect(() => {
+    if (flotas.length === 0) return;
     const path = window.location.pathname + window.location.search;
     window.history.pushState(null, '', path);
 
@@ -36,7 +33,11 @@ export default function SelectFlota() {
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [flotas.length]);
+
+  if (flotas.length === 0) {
+    return null;
+  }
 
   const handleSelect = (f: FlotaItem) => {
     // Guardar el id de ese conductor en esa flota (rapidin_driver_id = id en module_rapidin_drivers)

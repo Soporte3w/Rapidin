@@ -2,9 +2,12 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { ArrowLeft, FileText, Banknote, Calendar, User, Car, TrendingUp, Copy, Check, ExternalLink, X, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronDown, AlertCircle, Award } from 'lucide-react';
+import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, Copy, Check, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateTime } from '../../utils/date';
+import { TablePaginationBar } from '../../components/TablePaginationBar';
+import { useTablePagination } from '../../hooks/useTablePagination';
+import { labelOtrosGastoStatus, type MiautoOtrosGastoRow, type ComprobanteOtrosGastos } from '../../utils/miautoOtrosGastos';
 
 function getAdjuntoUrl(filePath: string | undefined): string {
   if (!filePath) return '';
@@ -24,6 +27,11 @@ interface CuotaSemanal {
   late_fee: number;
   status: string;
   pending_total?: number;
+  moneda?: string;
+  /** Snapshot % comisión de la fila del cronograma */
+  pct_comision?: number;
+  /** Snapshot cobro del saldo */
+  cobro_saldo?: number;
 }
 
 interface SolicitudSummary {
@@ -33,8 +41,10 @@ interface SolicitudSummary {
   email?: string;
   status: string;
   fecha_inicio_cobro_semanal?: string;
-  cronograma?: { id: string; name: string; tasa_interes_mora?: number } | null;
-  cronograma_vehiculo?: { id: string; name: string; cuotas_semanales?: number } | null;
+  placa_asignada?: string;
+  cronograma?: { id: string; name: string; tasa_interes_mora?: number; bono_tiempo_activo?: boolean } | null;
+  cronograma_vehiculo?: { id: string; name: string; cuotas_semanales?: number; inicial_moneda?: string } | null;
+  otros_gastos?: MiautoOtrosGastoRow[];
 }
 
 interface ComprobanteCuotaSemanal {
@@ -68,8 +78,6 @@ const STATUS_PILL: Record<string, string> = {
   bonificada: 'bg-emerald-100 text-emerald-800',
 };
 
-const PAGE_SIZES_CRONO = [5, 10, 20, 50];
-
 function driverDisplay(sol: SolicitudSummary | null, driverNameFromState?: string): string {
   if (driverNameFromState) return driverNameFromState;
   if (!sol) return '—';
@@ -85,6 +93,7 @@ function ComprobantePagoActions({
   onValidar,
   onRechazar,
   montoMaximo,
+  defaultMoneda = 'PEN',
 }: {
   comprobanteId: string;
   validando: boolean;
@@ -92,9 +101,11 @@ function ComprobantePagoActions({
   onValidar: (id: string, monto: number, moneda: 'PEN' | 'USD') => void;
   onRechazar: (id: string, motivo: string) => void;
   montoMaximo?: number;
+  defaultMoneda?: 'PEN' | 'USD';
 }) {
   const [monto, setMonto] = useState('');
-  const [moneda, setMoneda] = useState<'PEN' | 'USD'>('PEN');
+  const [moneda, setMoneda] = useState<'PEN' | 'USD'>(defaultMoneda);
+  const sym = moneda === 'USD' ? '$' : 'S/.';
   const handleValidar = () => {
     const n = parseFloat(monto);
     if (Number.isNaN(n) || n <= 0) {
@@ -102,7 +113,7 @@ function ComprobantePagoActions({
       return;
     }
     if (montoMaximo != null && montoMaximo > 0 && n > montoMaximo) {
-      toast.error(`El monto no puede superar lo que falta por pagar (S/. ${montoMaximo.toFixed(2)})`);
+      toast.error(`El monto no puede superar lo que falta por pagar (${sym} ${montoMaximo.toFixed(2)})`);
       return;
     }
     onValidar(comprobanteId, n, moneda);
@@ -112,7 +123,7 @@ function ComprobantePagoActions({
     if (motivo === null) return;
     onRechazar(comprobanteId, motivo.trim());
   };
-  const placeholder = montoMaximo != null && montoMaximo > 0 ? `Máx. S/. ${montoMaximo.toFixed(2)}` : 'Monto';
+  const placeholder = montoMaximo != null && montoMaximo > 0 ? `Máx. ${sym} ${montoMaximo.toFixed(2)}` : 'Monto';
   return (
     <span className="flex flex-wrap items-center gap-1">
       <input
@@ -168,11 +179,14 @@ export default function YegoMiAutoRentSaleDetail() {
   const [idCopied, setIdCopied] = useState(false);
   const [validandoCompId, setValidandoCompId] = useState<string | null>(null);
   const [rechazandoCompId, setRechazandoCompId] = useState<string | null>(null);
-  const [cronogramaPage, setCronogramaPage] = useState(1);
-  const [cronogramaLimit, setCronogramaLimit] = useState(10);
   const [comprobantesSemanaAbierta, setComprobantesSemanaAbierta] = useState<Record<string, boolean>>({});
+  const [comprobantesOtrosGastos, setComprobantesOtrosGastos] = useState<ComprobanteOtrosGastos[]>([]);
+  const [comprobantesOtrosAbierto, setComprobantesOtrosAbierto] = useState<Record<string, boolean>>({});
+  const [validandoCompOgId, setValidandoCompOgId] = useState<string | null>(null);
+  const [rechazandoCompOgId, setRechazandoCompOgId] = useState<string | null>(null);
   const [racha, setRacha] = useState<number | null>(null);
   const [bonoAplicado, setBonoAplicado] = useState<number>(0);
+  const [tabCronograma, setTabCronograma] = useState<'semanales' | 'otros_gastos'>('semanales');
 
   const toggleComprobantesSemana = useCallback((cuotaId: string) => {
     setComprobantesSemanaAbierta((prev) => ({ ...prev, [cuotaId]: !prev[cuotaId] }));
@@ -192,10 +206,11 @@ export default function YegoMiAutoRentSaleDetail() {
     try {
       setLoading(true);
       setError('');
-      const [resSol, resCuotas, resComp] = await Promise.all([
+      const [resSol, resCuotas, resComp, resCompOg] = await Promise.all([
         api.get(`/miauto/solicitudes/${id}`),
         api.get(`/miauto/solicitudes/${id}/cuotas-semanales`),
         api.get(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal`).catch(() => ({ data: [] })),
+        api.get(`/miauto/solicitudes/${id}/comprobantes-otros-gastos`).catch(() => ({ data: [] })),
       ]);
       const sol = resSol.data?.data ?? resSol.data;
       const bodyCuotas = resCuotas.data ?? {};
@@ -203,11 +218,13 @@ export default function YegoMiAutoRentSaleDetail() {
       const raw = inner?.data ?? inner;
       const c = Array.isArray(raw) ? raw : (raw?.data ?? []);
       const comp = resComp.data?.data ?? resComp.data ?? [];
+      const compOg = resCompOg.data?.data ?? resCompOg.data ?? [];
       const rachaNum = typeof inner?.racha === 'number' ? Math.max(0, Math.floor(inner.racha)) : (typeof inner?.racha === 'string' ? parseInt(inner.racha, 10) : null);
       const bonoNum = typeof inner?.cuotas_semanales_bonificadas === 'number' ? Math.max(0, Math.floor(inner.cuotas_semanales_bonificadas)) : 0;
       setSolicitud(sol || null);
       setCuotas(Array.isArray(c) ? c : []);
       setComprobantesPagos(Array.isArray(comp) ? comp : []);
+      setComprobantesOtrosGastos(Array.isArray(compOg) ? compOg : []);
       setRacha(Number.isFinite(rachaNum) ? rachaNum : null);
       setBonoAplicado(Number.isFinite(bonoNum) ? bonoNum : 0);
     } catch (e: any) {
@@ -215,6 +232,7 @@ export default function YegoMiAutoRentSaleDetail() {
       setSolicitud(null);
       setCuotas([]);
       setComprobantesPagos([]);
+      setComprobantesOtrosGastos([]);
       setRacha(null);
       setBonoAplicado(0);
     } finally {
@@ -250,33 +268,56 @@ export default function YegoMiAutoRentSaleDetail() {
     }
   };
 
+  const handleValidarComprobanteOg = async (comprobanteId: string, monto: number, moneda: 'PEN' | 'USD') => {
+    if (!id) return;
+    try {
+      setValidandoCompOgId(comprobanteId);
+      await api.patch(`/miauto/solicitudes/${id}/comprobantes-otros-gastos/${comprobanteId}/validar`, { monto, moneda });
+      toast.success('Comprobante validado');
+      await fetchDetail();
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error al validar');
+    } finally {
+      setValidandoCompOgId(null);
+    }
+  };
+
+  const handleRechazarComprobanteOg = async (comprobanteId: string, motivo: string) => {
+    if (!id) return;
+    try {
+      setRechazandoCompOgId(comprobanteId);
+      await api.patch(`/miauto/solicitudes/${id}/comprobantes-otros-gastos/${comprobanteId}/rechazar`, { motivo: motivo.trim() });
+      toast.success('Comprobante rechazado');
+      await fetchDetail();
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error al rechazar');
+    } finally {
+      setRechazandoCompOgId(null);
+    }
+  };
+
+  const toggleComprobantesOtros = useCallback((otrosGastosId: string) => {
+    setComprobantesOtrosAbierto((prev) => ({ ...prev, [otrosGastosId]: !prev[otrosGastosId] }));
+  }, []);
+
   useEffect(() => {
     fetchDetail();
-  }, [fetchDetail]);
-
-  // Refrescar al volver a la pestaña para ver cobros recientes (job semanal, pago manual, etc.)
-  useEffect(() => {
-    const onFocus = () => fetchDetail();
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
   }, [fetchDetail]);
 
   const totalCuotas = cuotas.length;
   const cuotasPagadas = cuotas.filter((c) => c.status === 'paid' || c.status === 'bonificada').length;
   const cuotasVencidas = cuotas.filter((c) => c.status === 'overdue').length;
   const totalPagado = cuotas.reduce((sum, c) => sum + (c.paid_amount || 0), 0);
-  const totalPendiente = cuotas.reduce((sum, c) => sum + (c.pending_total || 0), 0);
+  /** Monto vencido: saldo pendiente solo de las cuotas con estado vencido */
+  const totalVencido = cuotas.filter((c) => c.status === 'overdue').reduce((sum, c) => sum + (c.pending_total || 0), 0);
   const planCuotas = solicitud?.cronograma_vehiculo?.cuotas_semanales ?? totalCuotas;
 
-  const totalCronogramaPages = Math.max(1, Math.ceil(cuotas.length / cronogramaLimit));
-  const paginatedCronograma = useMemo(() => {
-    const start = (cronogramaPage - 1) * cronogramaLimit;
-    return cuotas.slice(start, start + cronogramaLimit);
-  }, [cuotas, cronogramaPage, cronogramaLimit]);
-
-  useEffect(() => {
-    if (totalCronogramaPages > 0 && cronogramaPage > totalCronogramaPages) setCronogramaPage(totalCronogramaPages);
-  }, [totalCronogramaPages, cronogramaPage]);
+  const cronPg = useTablePagination(cuotas);
+  const otrosGastosRows = useMemo(
+    () => (Array.isArray(solicitud?.otros_gastos) ? solicitud.otros_gastos : []),
+    [solicitud?.otros_gastos]
+  );
+  const otrosPg = useTablePagination(otrosGastosRows);
 
   /** Agrupar comprobantes por cuota (semana) para mostrar "Semana 2 (2 comprobantes)" cuando hay pagos parciales */
   const comprobantesPorSemana = useMemo(() => {
@@ -294,6 +335,17 @@ export default function YegoMiAutoRentSaleDetail() {
         comprobantes: byCuota[c.id] ?? [],
       }));
   }, [comprobantesPagos, cuotas]);
+
+  /** Comprobantes de otros gastos agrupados por otros_gastos_id */
+  const comprobantesPorOtrosGastos = useMemo(() => {
+    const byOg: Record<string, ComprobanteOtrosGastos[]> = {};
+    for (const comp of comprobantesOtrosGastos) {
+      const id = comp.otros_gastos_id;
+      if (!byOg[id]) byOg[id] = [];
+      byOg[id].push(comp);
+    }
+    return byOg;
+  }, [comprobantesOtrosGastos]);
 
   if (loading) {
     return (
@@ -364,64 +416,85 @@ export default function YegoMiAutoRentSaleDetail() {
       </div>
 
       {/* Métricas KPI */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-        <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-gray-600 text-sm mb-1">
-            <Calendar className="w-4 h-4" />
-            <span>Cuotas</span>
+      {(() => {
+        const bonoTiempoActivo = solicitud?.cronograma?.bono_tiempo_activo === true;
+        return (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+              <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+                <div className="flex items-center gap-2 text-gray-600 text-sm mb-1">
+                  <Calendar className="w-4 h-4" />
+                  <span>Cuotas</span>
+                </div>
+                <p className="text-xl font-bold text-gray-900">
+                  {cuotasPagadas} / {planCuotas || totalCuotas}
+                </p>
+                <p className="text-xs text-gray-500">pagadas del plan</p>
+              </div>
+              <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+                <div className="flex items-center gap-2 text-gray-600 text-sm mb-1">
+                  <TrendingUp className="w-4 h-4" />
+                  <span>Vencidas</span>
+                </div>
+                <p className={`text-xl font-bold ${cuotasVencidas > 0 ? 'text-red-600' : 'text-gray-900'}`}>
+                  {cuotasVencidas}
+                </p>
+              </div>
+              <div className="bg-white rounded-lg border border-green-100 p-4 shadow-sm">
+                <div className="flex items-center gap-2 text-green-700 text-sm mb-1">
+                  <Banknote className="w-4 h-4" />
+                  <span>Total pagado</span>
+                </div>
+                <p className="text-xl font-bold text-green-800">
+                  {solicitud?.cronograma_vehiculo?.inicial_moneda === 'USD' ? '$' : 'S/.'} {totalPagado.toFixed(2)}
+                </p>
+              </div>
+              <div className="bg-white rounded-lg border border-red-100 p-4 shadow-sm">
+                <div className="flex items-center gap-2 text-red-700 text-sm mb-1">
+                  <Banknote className="w-4 h-4" />
+                  <span>Vencido</span>
+                </div>
+                <p className={`text-xl font-bold ${totalVencido > 0 ? 'text-red-600' : 'text-gray-900'}`}>
+                  {solicitud?.cronograma_vehiculo?.inicial_moneda === 'USD' ? '$' : 'S/.'} {totalVencido.toFixed(2)}
+                </p>
+                <p className="text-xs text-gray-500">saldo en cuotas vencidas</p>
+              </div>
+              {bonoTiempoActivo && (
+                <>
+                  <div className="bg-white rounded-lg border border-green-100 p-4 shadow-sm">
+                    <div className="flex items-center gap-2 text-green-700 text-sm mb-1">
+                      <TrendingUp className="w-4 h-4" />
+                      <span>Racha</span>
+                    </div>
+                    <p className="text-xl font-bold text-green-800">{racha ?? '—'}</p>
+                    <p className="text-xs text-gray-500">cuotas seguidas al día</p>
+                  </div>
+                  <div className="bg-white rounded-lg border border-[#8B1A1A]/20 p-4 shadow-sm">
+                    <div className="flex items-center gap-2 text-[#8B1A1A] text-sm mb-1">
+                      <Award className="w-4 h-4" />
+                      <span>Bono tiempo</span>
+                    </div>
+                    <p className="text-xl font-bold text-[#8B1A1A]">{bonoAplicado}</p>
+                    <p className="text-xs text-gray-500">
+                      {bonoAplicado >= 1 ? `${bonoAplicado} cuota${bonoAplicado !== 1 ? 's' : ''} bonificada${bonoAplicado !== 1 ? 's' : ''}` : 'aplicado'}
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+            {bonoTiempoActivo && (
+              <p className="text-xs text-gray-500 px-1">
+                Bono tiempo: 1 cuota bonificada por cada 4 pagos consecutivos a tiempo; en cada una de esas 4 semanas el conductor debe tener al menos 120 viajes.
+              </p>
+            )}
           </div>
-          <p className="text-xl font-bold text-gray-900">
-            {cuotasPagadas} / {planCuotas || totalCuotas}
-          </p>
-          <p className="text-xs text-gray-500">pagadas del plan</p>
-        </div>
-        <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-gray-600 text-sm mb-1">
-            <TrendingUp className="w-4 h-4" />
-            <span>Vencidas</span>
-          </div>
-          <p className={`text-xl font-bold ${cuotasVencidas > 0 ? 'text-red-600' : 'text-gray-900'}`}>
-            {cuotasVencidas}
-          </p>
-        </div>
-        <div className="bg-white rounded-lg border border-green-100 p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-green-700 text-sm mb-1">
-            <Banknote className="w-4 h-4" />
-            <span>Total pagado</span>
-          </div>
-          <p className="text-xl font-bold text-green-800">S/. {totalPagado.toFixed(2)}</p>
-        </div>
-        <div className="bg-white rounded-lg border border-amber-100 p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-amber-700 text-sm mb-1">
-            <Banknote className="w-4 h-4" />
-            <span>Pendiente</span>
-          </div>
-          <p className="text-xl font-bold text-amber-800">S/. {totalPendiente.toFixed(2)}</p>
-        </div>
-        <div className="bg-white rounded-lg border border-green-100 p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-green-700 text-sm mb-1">
-            <TrendingUp className="w-4 h-4" />
-            <span>Racha</span>
-          </div>
-          <p className="text-xl font-bold text-green-800">{racha ?? '—'}</p>
-          <p className="text-xs text-gray-500">cuotas seguidas al día</p>
-        </div>
-        <div className="bg-white rounded-lg border border-[#8B1A1A]/20 p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-[#8B1A1A] text-sm mb-1">
-            <Award className="w-4 h-4" />
-            <span>Bono tiempo</span>
-          </div>
-          <p className="text-xl font-bold text-[#8B1A1A]">{bonoAplicado}</p>
-          <p className="text-xs text-gray-500">
-            {bonoAplicado >= 1 ? `${bonoAplicado} cuota${bonoAplicado !== 1 ? 's' : ''} bonificada${bonoAplicado !== 1 ? 's' : ''}` : 'aplicado'}
-          </p>
-        </div>
-      </div>
+        );
+      })()}
 
       {/* Datos del contrato */}
       <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
         <h2 className="text-sm font-semibold text-[#8B1A1A] uppercase tracking-wide mb-3">Datos del contrato</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 text-sm">
           <div className="flex items-center gap-2">
             <User className="w-4 h-4 text-gray-400" />
             <div>
@@ -444,6 +517,13 @@ export default function YegoMiAutoRentSaleDetail() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Tag className="w-4 h-4 text-gray-400" />
+            <div>
+              <span className="text-gray-500 block">Placa</span>
+              <span className="font-medium text-gray-900 font-mono tracking-wide">{solicitud.placa_asignada || '—'}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
             <Calendar className="w-4 h-4 text-gray-400" />
             <div>
               <span className="text-gray-500 block">Inicio cobro</span>
@@ -457,11 +537,39 @@ export default function YegoMiAutoRentSaleDetail() {
         </div>
       </div>
 
-      {/* Cronograma total */}
+      {/* Cronograma semanal + Otros gastos (pestañas) */}
       <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-        <h2 className="text-sm font-semibold text-[#8B1A1A] uppercase tracking-wide px-4 py-3 border-b border-gray-200">
-          Cronograma semanal
-        </h2>
+        <div className="flex border-b border-gray-200 px-2 sm:px-3 gap-0.5" role="tablist" aria-label="Cronograma y otros gastos">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tabCronograma === 'semanales'}
+            onClick={() => setTabCronograma('semanales')}
+            className={`px-3 sm:px-4 py-3 text-xs sm:text-sm font-semibold uppercase tracking-wide border-b-2 -mb-px transition-colors ${
+              tabCronograma === 'semanales'
+                ? 'border-[#8B1A1A] text-[#8B1A1A]'
+                : 'border-transparent text-gray-500 hover:text-gray-800'
+            }`}
+          >
+            Cronograma semanal
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tabCronograma === 'otros_gastos'}
+            onClick={() => setTabCronograma('otros_gastos')}
+            className={`px-3 sm:px-4 py-3 text-xs sm:text-sm font-semibold uppercase tracking-wide border-b-2 -mb-px transition-colors ${
+              tabCronograma === 'otros_gastos'
+                ? 'border-[#8B1A1A] text-[#8B1A1A]'
+                : 'border-transparent text-gray-500 hover:text-gray-800'
+            }`}
+          >
+            Otros gastos
+          </button>
+        </div>
+
+        {tabCronograma === 'semanales' && (
+        <>
         {cuotas.length === 0 ? (
           <div className="px-4 py-8 text-center text-gray-500 text-sm">
             Aún no hay cuotas generadas para este contrato.
@@ -476,6 +584,8 @@ export default function YegoMiAutoRentSaleDetail() {
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Vence</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Cuota completa</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Viajes - B.A</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">% comisión</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Cobro del saldo</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Cuota a pagar</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">
                     Mora{solicitud?.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0 ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}% interés)` : ''}
@@ -486,11 +596,12 @@ export default function YegoMiAutoRentSaleDetail() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {paginatedCronograma.map((c, index) => {
-                  const numeroSemana = (cronogramaPage - 1) * cronogramaLimit + index + 1;
+                {cronPg.paginatedItems.map((c, index) => {
+                  const numeroSemana = (cronPg.page - 1) * cronPg.limit + index + 1;
                   const pendingTotal = Math.max(0, c.pending_total ?? ((c.amount_due ?? 0) + (c.late_fee ?? 0) - (c.paid_amount ?? 0)));
                   const comps = comprobantesPorSemana.find((p) => p.cuota.id === c.id)?.comprobantes ?? [];
                   const abierto = comprobantesSemanaAbierta[c.id] === true;
+                  const symCuota = (c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda) === 'USD' ? '$' : 'S/.';
                   return (
                   <Fragment key={c.id}>
                   <tr className="hover:bg-gray-50">
@@ -499,44 +610,52 @@ export default function YegoMiAutoRentSaleDetail() {
                         <button
                           type="button"
                           onClick={() => toggleComprobantesSemana(c.id)}
-                          className="inline-flex items-center gap-1.5 text-left hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-[#8B1A1A]/30 rounded"
+                          className="inline-flex items-center gap-1.5 text-left text-gray-800 hover:text-gray-900"
                         >
-                          {abierto ? <ChevronDown className="w-4 h-4 text-[#8B1A1A] flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-[#8B1A1A] flex-shrink-0" />}
-                          <span className="font-semibold text-[#8B1A1A]">Semana {numeroSemana}</span>
+                          {abierto ? <ChevronDown className="w-4 h-4 text-gray-600 flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-gray-600 flex-shrink-0" />}
+                          <span className="font-semibold">Semana {numeroSemana}</span>
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600">
                             {comps.length} comprobante{comps.length !== 1 ? 's' : ''}
                           </span>
                         </button>
                       ) : (
-                        <span className="font-semibold text-[#8B1A1A]">Semana {numeroSemana}</span>
+                        <span className="font-semibold text-gray-900">Semana {numeroSemana}</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-700">
                       {c.due_date ? formatDate(c.due_date, 'es-ES') : (c.week_start_date ? formatDate(c.week_start_date, 'es-ES') : '—')}
                     </td>
                     <td className="px-4 py-3 text-sm text-right font-medium text-gray-900">
-                      S/. {(c.amount_due ?? 0).toFixed(2)}
+                      {symCuota} {(c.amount_due ?? 0).toFixed(2)}
                     </td>
                     <td className="px-4 py-3 text-sm text-right text-gray-700 text-xs whitespace-nowrap">
                       {c.num_viajes != null && c.bono_auto != null
-                        ? `${c.num_viajes} — S/. ${(c.bono_auto).toFixed(2)}`
+                        ? `${c.num_viajes} — ${symCuota} ${(c.bono_auto).toFixed(2)}`
                         : c.num_viajes != null
                           ? String(c.num_viajes)
                           : c.bono_auto != null
-                            ? `S/. ${(c.bono_auto).toFixed(2)}`
+                            ? `${symCuota} ${(c.bono_auto).toFixed(2)}`
                             : '—'}
                     </td>
+                    <td className="px-4 py-3 text-sm text-right text-gray-700 tabular-nums">
+                      {c.pct_comision != null && !Number.isNaN(Number(c.pct_comision))
+                        ? `${Number(c.pct_comision).toFixed(1)}%`
+                        : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-right text-gray-700 tabular-nums">
+                      {symCuota} {(c.cobro_saldo ?? 0).toFixed(2)}
+                    </td>
                     <td className="px-4 py-3 text-sm text-right font-medium text-gray-900">
-                      S/. {pendingTotal.toFixed(2)}
+                      {symCuota} {pendingTotal.toFixed(2)}
                     </td>
                     <td className="px-4 py-3 text-sm text-right text-red-600 font-medium">
-                      S/. {(c.late_fee ?? 0).toFixed(2)}
+                      {symCuota} {(c.late_fee ?? 0).toFixed(2)}
                     </td>
                     <td className="px-4 py-3 text-sm text-right font-medium text-gray-900">
-                      S/. {((c.amount_due ?? 0) + (c.late_fee ?? 0)).toFixed(2)}
+                      {symCuota} {((c.amount_due ?? 0) + (c.late_fee ?? 0)).toFixed(2)}
                     </td>
                     <td className="px-4 py-3 text-sm text-right text-green-700">
-                      S/. {(c.paid_amount ?? 0).toFixed(2)}
+                      {symCuota} {(c.paid_amount ?? 0).toFixed(2)}
                     </td>
                     <td className="px-4 py-3 text-center">
                       <div className="flex flex-col gap-0.5 items-center">
@@ -556,7 +675,7 @@ export default function YegoMiAutoRentSaleDetail() {
                   </tr>
                   {comps.length > 0 && (
                     <tr className="border-b border-gray-100">
-                      <td colSpan={9} className="p-0 align-top">
+                      <td colSpan={11} className="p-0 align-top">
                         <div
                           className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
                           style={{ maxHeight: abierto ? 1400 : 0, opacity: abierto ? 1 : 0 }}
@@ -588,7 +707,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                 const url = comp.file_path ? (comp.file_path.startsWith('http') ? comp.file_path : getAdjuntoUrl(comp.file_path)) : '';
                                 const isImage = comp.file_path && !/\.pdf$/i.test(comp.file_name || '') && /\.(jpe?g|png|gif|webp)$/i.test(comp.file_name || '');
                                 const openPreview = () => url && setComprobantePreview({ url, fileName: compLabel, isImage: !!isImage });
-                                const sym = comp.moneda === 'USD' ? '$' : 'S/.';
+                                const symComp = comp.moneda === 'USD' ? '$' : 'S/.';
                                 return (
                                   <div key={comp.id} className={`rounded-xl border-2 p-3 ${cardBg} hover:shadow-md transition-all flex flex-col gap-2`}>
                                     <div className="flex gap-3">
@@ -613,7 +732,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                           <p className="text-xs text-gray-500 mt-0.5">{formatDateTime(comp.created_at, 'es-ES')}</p>
                                         )}
                                         <p className="text-xs text-gray-600">
-                                          {isPendiente ? '—' : comp.monto != null ? `${sym} ${Number(comp.monto).toFixed(2)}` : '—'}
+                                          {isPendiente ? '—' : comp.monto != null ? `${symComp} ${Number(comp.monto).toFixed(2)}` : '—'}
                                         </p>
                                         <span className={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium mt-1 ${labelClass}`}>
                                           {estado === 'validado' ? 'Validado' : estado === 'rechazado' ? 'Rechazado' : 'Pendiente'}
@@ -645,6 +764,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                           onValidar={handleValidarComprobante}
                                           onRechazar={handleRechazarComprobante}
                                           montoMaximo={montoMaximo}
+                                          defaultMoneda={(c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda) === 'USD' ? 'USD' : 'PEN'}
                                         />
                                       </div>
                                     )}
@@ -659,10 +779,10 @@ export default function YegoMiAutoRentSaleDetail() {
                               const restantePorPagar = Math.max(0, (c.amount_due || 0) + (c.late_fee ?? 0) - verificado);
                               return (
                                 <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl bg-white border border-gray-200 px-4 py-3 text-sm text-gray-700 shadow-sm">
-                                  <span><strong className="text-gray-800">Total enviado:</strong> S/. {totalEnv.toFixed(2)}</span>
-                                  <span><strong className="text-gray-800">Verificado:</strong> S/. {verificado.toFixed(2)}</span>
-                                  <span><strong className="text-gray-800">Rechazado:</strong> S/. {rechazado.toFixed(2)}</span>
-                                  <span><strong className="text-gray-800">Pendiente por validar:</strong> S/. {restantePorPagar.toFixed(2)}</span>
+                                  <span><strong className="text-gray-800">Total enviado:</strong> {symCuota} {totalEnv.toFixed(2)}</span>
+                                  <span><strong className="text-gray-800">Verificado:</strong> {symCuota} {verificado.toFixed(2)}</span>
+                                  <span><strong className="text-gray-800">Rechazado:</strong> {symCuota} {rechazado.toFixed(2)}</span>
+                                  <span><strong className="text-gray-800">Pendiente por validar:</strong> {symCuota} {restantePorPagar.toFixed(2)}</span>
                                 </div>
                               );
                             })()}
@@ -678,91 +798,200 @@ export default function YegoMiAutoRentSaleDetail() {
             </table>
           </div>
           {cuotas.length > 0 && (
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 py-3 border-t border-gray-200">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-gray-500">Por página:</span>
-                <select
-                  value={cronogramaLimit}
-                  onChange={(e) => {
-                    setCronogramaLimit(Number(e.target.value));
-                    setCronogramaPage(1);
-                  }}
-                  className="text-sm border border-gray-300 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A]"
-                >
-                  {PAGE_SIZES_CRONO.map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setCronogramaPage(1)}
-                  disabled={cronogramaPage <= 1}
-                  className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-[#8B1A1A] text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  aria-label="Primera página"
-                >
-                  <ChevronsLeft className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCronogramaPage((p) => Math.max(1, p - 1))}
-                  disabled={cronogramaPage <= 1}
-                  className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-[#8B1A1A] text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  aria-label="Página anterior"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                {totalCronogramaPages > 1 && (
-                  <div className="flex items-center gap-1">
-                    {Array.from({ length: Math.min(5, totalCronogramaPages) }, (_, i) => {
-                      let pageNum: number;
-                      if (totalCronogramaPages <= 5) pageNum = i + 1;
-                      else if (cronogramaPage <= 3) pageNum = i + 1;
-                      else if (cronogramaPage >= totalCronogramaPages - 2) pageNum = totalCronogramaPages - 4 + i;
-                      else pageNum = cronogramaPage - 2 + i;
-                      const isActive = cronogramaPage === pageNum;
-                      return (
-                        <button
-                          key={pageNum}
-                          type="button"
-                          onClick={() => setCronogramaPage(pageNum)}
-                          className={`min-w-[2.25rem] w-9 h-9 flex items-center justify-center rounded-full text-sm font-semibold transition-colors ${
-                            isActive ? 'bg-[#8B1A1A] text-white border-2 border-[#8B1A1A]' : 'border-2 border-[#8B1A1A] text-[#8B1A1A] hover:bg-red-50'
-                          }`}
-                        >
-                          {pageNum}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setCronogramaPage((p) => Math.min(totalCronogramaPages, p + 1))}
-                  disabled={cronogramaPage >= totalCronogramaPages}
-                  className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-[#8B1A1A] text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  aria-label="Página siguiente"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCronogramaPage(totalCronogramaPages)}
-                  disabled={cronogramaPage >= totalCronogramaPages}
-                  className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-[#8B1A1A] text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  aria-label="Última página"
-                >
-                  <ChevronsRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+            <TablePaginationBar
+              page={cronPg.page}
+              setPage={cronPg.setPage}
+              totalPages={cronPg.totalPages}
+              limit={cronPg.limit}
+              setLimit={cronPg.setLimit}
+              pageSizes={cronPg.pageSizes}
+              containerClassName="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 py-3 border-t border-gray-200"
+            />
           )}
           </>
         )}
+        </>
+        )}
+
+        {tabCronograma === 'otros_gastos' && (
+        <>
+            {otrosGastosRows.length === 0 ? (
+              <p className="text-sm text-gray-500 text-center py-8 px-4">No hay cuotas de otros gastos para este contrato (solo aplica con pago parcial al generar Yego Mi Auto).</p>
+            ) : (
+              <>
+            <p className="text-xs text-gray-500 mb-3 px-4 pt-2">
+              Saldo pendiente de la cuota inicial (pago parcial) repartido en cuotas semanales. El conductor sube comprobantes; aquí puedes validar o rechazar.
+            </p>
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50 border-b border-gray-200">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Semana</th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Vencimiento</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Monto</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Pagado</th>
+                        <th className="px-4 py-3 text-center text-xs font-semibold text-gray-700 uppercase">Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {otrosPg.paginatedItems.map((og) => {
+                        const compsOg = comprobantesPorOtrosGastos[og.id] ?? [];
+                        const abiertoOg = comprobantesOtrosAbierto[og.id] === true;
+                        return (
+                          <Fragment key={og.id}>
+                            <tr className="hover:bg-gray-50">
+                              <td className="px-4 py-3 text-sm text-gray-900">
+                                {compsOg.length > 0 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleComprobantesOtros(og.id)}
+                                    className="inline-flex items-center gap-1.5 text-left text-gray-800 hover:text-gray-900 "
+                                  >
+                                    {abiertoOg ? <ChevronDown className="w-4 h-4 text-gray-600 flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-gray-600 flex-shrink-0" />}
+                                    <span className="font-semibold">Semana {og.week_index}</span>
+                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600">
+                                      {compsOg.length} comprobante{compsOg.length !== 1 ? 's' : ''}
+                                    </span>
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-gray-900">Semana {og.week_index}</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-gray-700">{formatDate(og.due_date, 'es-ES')}</td>
+                              <td className="px-4 py-3 text-sm text-right font-medium text-gray-900">
+                                {solicitud?.cronograma_vehiculo?.inicial_moneda === 'PEN' ? 'S/.' : '$'} {Number(og.amount_due).toFixed(2)}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-right text-green-700">
+                                {solicitud?.cronograma_vehiculo?.inicial_moneda === 'PEN' ? 'S/.' : '$'} {Number(og.paid_amount).toFixed(2)}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                <span
+                                  className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                                    STATUS_PILL[og.status] ?? 'bg-gray-100 text-gray-700'
+                                  }`}
+                                >
+                                  {STATUS_LABELS[og.status] ?? labelOtrosGastoStatus(og.status)}
+                                </span>
+                              </td>
+                            </tr>
+                            {compsOg.length > 0 && (
+                              <tr className="border-b border-gray-100">
+                                <td colSpan={5} className="p-0 align-top">
+                                  <div
+                                    className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
+                                    style={{ maxHeight: abiertoOg ? 1400 : 0, opacity: abiertoOg ? 1 : 0 }}
+                                  >
+                                    <div className="px-4 py-3 bg-gray-50/80 border-t border-gray-200">
+                                      <div className="flex items-center gap-2 mb-3">
+                                        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-[#8B1A1A]/10">
+                                          <FileText className="w-4 h-4 text-[#8B1A1A]" />
+                                        </div>
+                                        <div>
+                                          <h4 className="text-sm font-semibold text-gray-900">Comprobantes — Semana {og.week_index}</h4>
+                                          <p className="text-xs text-gray-500">{formatDate(og.due_date, 'es-ES')}</p>
+                                        </div>
+                                      </div>
+                                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                                        {compsOg.map((comp, compIdx) => {
+                                          const isPendiente = (comp.estado || '').toLowerCase() === 'pendiente';
+                                          const montoMaximo = Math.max(0, Number(og.amount_due) - Number(og.paid_amount));
+                                          const compLabel = `Comprobante ${compIdx + 1}`;
+                                          const estado = (comp.estado || '').toLowerCase();
+                                          const cardBg = estado === 'validado' ? 'bg-green-50/90 border-green-200' : estado === 'rechazado' ? 'bg-red-50/90 border-red-200' : 'bg-amber-50/90 border-amber-200';
+                                          const url = comp.file_path ? (comp.file_path.startsWith('http') ? comp.file_path : getAdjuntoUrl(comp.file_path)) : '';
+                                          const isImage = comp.file_path && !/\.pdf$/i.test(comp.file_name || '') && /\.(jpe?g|png|gif|webp)$/i.test(comp.file_name || '');
+                                          const openPreview = () => url && setComprobantePreview({ url, fileName: compLabel, isImage: !!isImage });
+                                          const sym = comp.moneda === 'USD' ? '$' : 'S/.';
+                                          return (
+                                            <div key={comp.id} className={`rounded-xl border-2 p-3 ${cardBg} hover:shadow-md transition-all flex flex-col gap-2`}>
+                                              <div className="flex gap-3">
+                                                <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center overflow-hidden">
+                                                  {comp.file_path && isImage ? (
+                                                    <button type="button" onClick={openPreview} className="w-full h-full rounded-lg overflow-hidden border border-white/50 shadow-sm hover:opacity-90">
+                                                      <img src={url} alt="" className="w-full h-full object-cover" />
+                                                    </button>
+                                                  ) : comp.file_path ? (
+                                                    <button type="button" onClick={openPreview} className="w-full h-full rounded-lg border border-gray-200 bg-white/80 flex items-center justify-center hover:bg-gray-50">
+                                                      <FileText className="w-6 h-6 text-gray-500" />
+                                                    </button>
+                                                  ) : (
+                                                    <span className="w-12 h-12 rounded-lg border border-gray-200 bg-white/80 flex items-center justify-center">
+                                                      <FileText className="w-6 h-6 text-gray-500" />
+                                                    </span>
+                                                  )}
+                                                </div>
+                                                <div className="min-w-0 flex-1">
+                                                  <p className="text-sm font-semibold text-gray-900">{compLabel}</p>
+                                                  {comp.created_at && (
+                                                    <p className="text-xs text-gray-500 mt-0.5">{formatDateTime(comp.created_at, 'es-ES')}</p>
+                                                  )}
+                                                  <p className="text-xs text-gray-600">
+                                                    {isPendiente ? '—' : comp.monto != null ? `${sym} ${Number(comp.monto).toFixed(2)}` : '—'}
+                                                  </p>
+                                                  <span className={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium mt-1 ${estado === 'validado' ? 'bg-green-100 text-green-800' : estado === 'rechazado' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
+                                                    {estado === 'validado' ? 'Validado' : estado === 'rechazado' ? 'Rechazado' : 'Pendiente'}
+                                                  </span>
+                                                </div>
+                                              </div>
+                                              {estado === 'rechazado' && (comp.rechazo_razon?.trim() ?? '') && (
+                                                <p className="flex items-start gap-1.5 text-xs text-red-700 bg-red-50/90 rounded-lg px-2 py-1.5 border border-red-100">
+                                                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                                                  <span className="line-clamp-2">{(comp.rechazo_razon ?? '').trim()}</span>
+                                                </p>
+                                              )}
+                                              {comp.file_path && (
+                                                <button
+                                                  type="button"
+                                                  onClick={openPreview}
+                                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border-2 border-gray-200 bg-white text-gray-800 hover:bg-gray-50 self-start"
+                                                >
+                                                  <ExternalLink className="w-3.5 h-3.5" />
+                                                  Ver comprobante
+                                                </button>
+                                              )}
+                                              {isPendiente && (
+                                                <div className="pt-2 border-t border-gray-200/80">
+                                                  <ComprobantePagoActions
+                                                    comprobanteId={comp.id}
+                                                    validando={validandoCompOgId === comp.id}
+                                                    rechazando={rechazandoCompOgId === comp.id}
+                                                    onValidar={handleValidarComprobanteOg}
+                                                    onRechazar={handleRechazarComprobanteOg}
+                                                    montoMaximo={montoMaximo}
+                                                    defaultMoneda={solicitud?.cronograma_vehiculo?.inicial_moneda === 'USD' ? 'USD' : 'PEN'}
+                                                  />
+                                                </div>
+                                              )}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <TablePaginationBar
+                  page={otrosPg.page}
+                  setPage={otrosPg.setPage}
+                  totalPages={otrosPg.totalPages}
+                  limit={otrosPg.limit}
+                  setLimit={otrosPg.setLimit}
+                  pageSizes={otrosPg.pageSizes}
+                  containerClassName="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 py-3 border-t border-gray-200"
+                />
+              </>
+            )}
+        </>
+        )}
       </div>
 
-      {/* Modal ver comprobante (igual que en vista conductor) */}
       {comprobantePreview && createPortal(
         <div
           className="fixed inset-0 bg-black/70 flex items-center justify-center p-4"

@@ -36,6 +36,13 @@ import {
   rejectComprobanteCuotaSemanal,
   addPagoManualCuotaSemanal,
 } from '../services/miautoComprobanteCuotaSemanalService.js';
+import {
+  listBySolicitud as listComprobantesOtrosGastos,
+  createComprobanteOtrosGastos,
+  validateComprobanteOtrosGastos,
+  rejectComprobanteOtrosGastos,
+} from '../services/miautoComprobanteOtrosGastosService.js';
+import { listBySolicitud as listOtrosGastosBySolicitud } from '../services/miautoOtrosGastosService.js';
 import pool from '../database/connection.js';
 import { uploadVoucher } from '../middleware/upload.js';
 
@@ -342,10 +349,11 @@ router.put('/tipo-cambio', async (req, res) => {
   }
 });
 
-// PATCH /api/miauto/solicitudes/:id/generar-yego-mi-auto
+// PATCH /api/miauto/solicitudes/:id/generar-yego-mi-auto  body: { placa_asignada: string } (obligatorio)
 router.patch('/solicitudes/:id/generar-yego-mi-auto', validateUUID, async (req, res) => {
   try {
-    const solicitud = await generarYegoMiAuto(req.params.id);
+    const placa_asignada = req.body?.placa_asignada;
+    const solicitud = await generarYegoMiAuto(req.params.id, { placa_asignada });
     if (!solicitud) return errorResponse(res, 'Solicitud no encontrada', 404);
     return successResponse(res, solicitud, 'Yego Mi Auto generado; cobro semanal iniciado');
   } catch (error) {
@@ -354,27 +362,27 @@ router.patch('/solicitudes/:id/generar-yego-mi-auto', validateUUID, async (req, 
   }
 });
 
-// PATCH /api/miauto/solicitudes/:id
+// PATCH /api/miauto/solicitudes/:id — solo se actualizan los campos enviados en el body (evita borrar cronograma_vehiculo_id al aprobar)
 router.patch('/solicitudes/:id', validateUUID, async (req, res) => {
   try {
-    const { status, rejection_reason, appointment_date, observations, withdrawal_reason, cronograma_id, cronograma_vehiculo_id, pago_tipo, pago_estado } = req.body;
-    const appsVal = getAppsFromBody(req.body);
-    const solicitud = await updateSolicitud(
-      req.params.id,
-      {
-        status,
-        rejection_reason,
-        appointment_date,
-        observations,
-        withdrawal_reason,
-        apps: appsVal.length ? appsVal : undefined,
-        cronograma_id: trimOrUndefined(cronograma_id) || null,
-        cronograma_vehiculo_id: trimOrUndefined(cronograma_vehiculo_id) || null,
-        pago_tipo: trimOrUndefined(pago_tipo) || null,
-        pago_estado: trimOrUndefined(pago_estado) || null,
-      },
-      req.user?.id
-    );
+    const body = req.body;
+    const appsVal = getAppsFromBody(body);
+    const payload = {};
+    if (body.hasOwnProperty('status')) payload.status = body.status;
+    if (body.hasOwnProperty('rejection_reason')) payload.rejection_reason = body.rejection_reason;
+    if (body.hasOwnProperty('appointment_date')) payload.appointment_date = body.appointment_date;
+    if (body.hasOwnProperty('observations')) payload.observations = body.observations;
+    if (body.hasOwnProperty('withdrawal_reason')) payload.withdrawal_reason = body.withdrawal_reason;
+    if (appsVal.length) payload.apps = appsVal;
+    if (body.hasOwnProperty('cronograma_id')) payload.cronograma_id = trimOrUndefined(body.cronograma_id) || null;
+    if (body.hasOwnProperty('cronograma_vehiculo_id')) payload.cronograma_vehiculo_id = trimOrUndefined(body.cronograma_vehiculo_id) || null;
+    if (body.hasOwnProperty('pago_tipo')) payload.pago_tipo = trimOrUndefined(body.pago_tipo) || null;
+    if (body.hasOwnProperty('pago_estado')) payload.pago_estado = trimOrUndefined(body.pago_estado) || null;
+    if (body.hasOwnProperty('placa_asignada')) {
+      const p = trimOrUndefined(body.placa_asignada);
+      payload.placa_asignada = p === undefined ? null : p;
+    }
+    const solicitud = await updateSolicitud(req.params.id, payload, req.user?.id);
     if (!solicitud) {
       return errorResponse(res, 'Solicitud no encontrada', 404);
     }
@@ -653,6 +661,97 @@ router.patch(
       return successResponse(res, list, 'Comprobante rechazado');
     } catch (error) {
       logger.error('Error rechazando comprobante cuota semanal Mi Auto:', error);
+      return errorResponse(res, error.message || 'Error al rechazar comprobante', 400);
+    }
+  }
+);
+
+router.get('/solicitudes/:id/otros-gastos', validateUUID, async (req, res) => {
+  try {
+    if (!(await ensureSolicitudOwnedByDriver(req.params.id, req, res))) return;
+    const list = await listOtrosGastosBySolicitud(req.params.id);
+    return successResponse(res, list);
+  } catch (error) {
+    logger.error('Error listando otros gastos Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al listar otros gastos', 500);
+  }
+});
+
+router.get('/solicitudes/:id/comprobantes-otros-gastos', validateUUID, async (req, res) => {
+  try {
+    if (!(await ensureSolicitudOwnedByDriver(req.params.id, req, res))) return;
+    const list = await listComprobantesOtrosGastos(req.params.id);
+    return successResponse(res, list);
+  } catch (error) {
+    logger.error('Error listando comprobantes otros gastos Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al listar comprobantes', 500);
+  }
+});
+
+router.post(
+  '/solicitudes/:id/otros-gastos/:otrosGastosId/comprobantes',
+  validateUUID,
+  uploadVoucher.single('file'),
+  async (req, res) => {
+    try {
+      if (!(await ensureSolicitudOwnedByDriver(req.params.id, req, res))) return;
+      if (!req.file) {
+        return errorResponse(res, 'Archivo requerido', 400);
+      }
+      const monto = req.body.monto != null ? parseFloat(req.body.monto) : null;
+      const moneda = trimOrUndefined(req.body.moneda);
+      const list = await createComprobanteOtrosGastos(
+        req.params.id,
+        req.params.otrosGastosId,
+        req.file,
+        monto,
+        moneda || 'PEN',
+        req.user?.id
+      );
+      return successResponse(res, list, 'Comprobante subido', 201);
+    } catch (error) {
+      logger.error('Error subiendo comprobante otros gastos Mi Auto:', error);
+      return errorResponse(res, error.message || 'Error al subir comprobante', 400);
+    }
+  }
+);
+
+router.patch(
+  '/solicitudes/:id/comprobantes-otros-gastos/:comprobanteId/validar',
+  validateUUID,
+  async (req, res) => {
+    try {
+      const monto = req.body.monto != null ? parseFloat(req.body.monto) : undefined;
+      const moneda = trimOrUndefined(req.body.moneda);
+      const list = await validateComprobanteOtrosGastos(
+        req.params.id,
+        req.params.comprobanteId,
+        req.user?.id,
+        (monto != null && !Number.isNaN(monto) && moneda) ? { monto, moneda: moneda.toUpperCase() === 'PEN' ? 'PEN' : 'USD' } : {}
+      );
+      return successResponse(res, list, 'Comprobante validado');
+    } catch (error) {
+      logger.error('Error validando comprobante otros gastos Mi Auto:', error);
+      return errorResponse(res, error.message || 'Error al validar comprobante', 400);
+    }
+  }
+);
+
+router.patch(
+  '/solicitudes/:id/comprobantes-otros-gastos/:comprobanteId/rechazar',
+  validateUUID,
+  async (req, res) => {
+    try {
+      const motivo = trimOrUndefined(req.body.motivo);
+      const list = await rejectComprobanteOtrosGastos(
+        req.params.id,
+        req.params.comprobanteId,
+        req.user?.id,
+        { motivo: motivo || undefined }
+      );
+      return successResponse(res, list, 'Comprobante rechazado');
+    } catch (error) {
+      logger.error('Error rechazando comprobante otros gastos Mi Auto:', error);
       return errorResponse(res, error.message || 'Error al rechazar comprobante', 400);
     }
   }

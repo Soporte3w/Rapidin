@@ -1,29 +1,34 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { PlusCircle, Trash2, X, Settings as SettingsIcon, Car, ImagePlus, ChevronDown, ChevronRight, ChevronLeft, ListOrdered, Search, DollarSign } from 'lucide-react';
+import {
+  PlusCircle,
+  Trash2,
+  X,
+  Settings as SettingsIcon,
+  ImagePlus,
+  ChevronDown,
+  ChevronRight,
+  ChevronLeft,
+  ListOrdered,
+  Search,
+  SlidersHorizontal,
+  Car,
+} from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
 /** Moneda de la cuota inicial */
 export type MonedaInicial = 'USD' | 'PEN';
 
-/** Carro ofrecido en el cronograma: inicial (con moneda) + cuotas semanales + foto */
-export interface VehiculoCronograma {
-  id: string;
-  name: string;
-  inicial: number;
-  /** Moneda de la inicial: dólares (USD) o soles (PEN) */
-  inicial_moneda: MonedaInicial;
-  cuotas_semanales: number;
-  /** URL o data URL (base64) de la foto del carro */
-  image?: string;
-}
-
 /** Moneda del bono mi auto por fila */
 export type BonoAutoMoneda = 'USD' | 'PEN';
 
-/** Fila del cronograma: viajes (intervalo ej. "0 - 119"), bono auto (con moneda), y cuota semanal por cada carro */
+/** Fila del cronograma: % comisión, cobro saldo, viajes, bono auto y cuota semanal por cada carro */
 export interface CronogramaRule {
+  /** % de comisión (0–100) para esta fila */
+  pct_comision?: number;
+  /** Cobro del saldo (monto fijo asociado a la fila) */
+  cobro_saldo?: number;
   /** Intervalo de viajes, ej: "0 - 119" = entre 0 y 119 viajes usan este bono y estas cuotas por carro */
   viajes: string;
   bono_auto: number;
@@ -34,6 +39,108 @@ export interface CronogramaRule {
   cuota_moneda_por_vehiculo?: BonoAutoMoneda[];
 }
 
+export type GastoRequisitoMoneda = 'USD' | 'PEN';
+
+/** Nuevo / seminuevo / segundo uso (semiusado) — un solo valor por cronograma */
+export type TipoVehiculoCronograma = 'nuevo' | 'seminuevo' | 'semiusado';
+
+export interface RequisitosVehiculo {
+  tipo_vehiculo: TipoVehiculoCronograma;
+}
+
+export function createDefaultRequisitosVehiculo(): RequisitosVehiculo {
+  return { tipo_vehiculo: 'nuevo' };
+}
+
+export function mergeRequisitosFromApi(raw: Partial<RequisitosVehiculo> & { tipos_condicion?: { nuevo?: boolean; semiusado?: boolean; seminuevo?: boolean } } | undefined | null): RequisitosVehiculo {
+  const d = createDefaultRequisitosVehiculo();
+  if (!raw || typeof raw !== 'object') return d;
+  const tipos: TipoVehiculoCronograma[] = ['nuevo', 'seminuevo', 'semiusado'];
+  if (raw.tipo_vehiculo && tipos.includes(raw.tipo_vehiculo)) {
+    d.tipo_vehiculo = raw.tipo_vehiculo;
+    return d;
+  }
+  if (raw.tipos_condicion && typeof raw.tipos_condicion === 'object') {
+    const tc = raw.tipos_condicion;
+    if (tc.nuevo) d.tipo_vehiculo = 'nuevo';
+    else if (tc.seminuevo) d.tipo_vehiculo = 'seminuevo';
+    else if (tc.semiusado) d.tipo_vehiculo = 'semiusado';
+  }
+  return d;
+}
+
+export type TodoRiesgoGpsModo = 'agrupado' | 'separado';
+
+export interface ItemGastoConCobro {
+  monto: number;
+  moneda: GastoRequisitoMoneda;
+  cobro?: Record<string, unknown>;
+}
+
+/** Gastos variables por carro (montos + metadatos de reglas de cobro) */
+export interface RequisitosGastosVehiculo {
+  todo_riesgo_y_gps_modo: TodoRiesgoGpsModo;
+  src: ItemGastoConCobro & { cobro?: { tipo?: string; meses_anticipo?: number } };
+  gps: ItemGastoConCobro & { cobro?: { tipo?: string; dia_mes?: number } };
+  soat: ItemGastoConCobro & { cobro?: { tipo?: string; meses_anticipo?: number } };
+  impuesto_vehicular: ItemGastoConCobro & {
+    cobro?: { tipo?: string; mes_inicio?: number; cuotas?: number; anios_vigencia_tras_modelo?: number };
+  };
+  todo_riesgo: ItemGastoConCobro & { cobro?: { tipo?: string; semanas?: number } };
+  todo_riesgo_mas_gps_agrupado: ItemGastoConCobro & { cobro?: { tipo?: string; semanas?: number } };
+}
+
+export function createDefaultRequisitosGastosVehiculo(): RequisitosGastosVehiculo {
+  return {
+    todo_riesgo_y_gps_modo: 'separado',
+    src: { monto: 0, moneda: 'USD', cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 5 } },
+    gps: { monto: 0, moneda: 'PEN', cobro: { tipo: 'mensual', dia_mes: 28 } },
+    soat: { monto: 0, moneda: 'PEN', cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 5 } },
+    impuesto_vehicular: {
+      monto: 0,
+      moneda: 'PEN',
+      cobro: { tipo: 'sat_febrero_cuotas', mes_inicio: 2, cuotas: 4, anios_vigencia_tras_modelo: 3 },
+    },
+    todo_riesgo: { monto: 0, moneda: 'PEN', cobro: { tipo: 'semanal', semanas: 26 } },
+    todo_riesgo_mas_gps_agrupado: { monto: 0, moneda: 'PEN', cobro: { tipo: 'semanal', semanas: 26 } },
+  };
+}
+
+export function mergeRequisitosGastosFromApi(raw: Partial<RequisitosGastosVehiculo> | undefined | null): RequisitosGastosVehiculo {
+  const d = createDefaultRequisitosGastosVehiculo();
+  if (!raw || typeof raw !== 'object') return d;
+  return {
+    ...d,
+    ...raw,
+    todo_riesgo_y_gps_modo: raw.todo_riesgo_y_gps_modo === 'agrupado' ? 'agrupado' : 'separado',
+    src: { ...d.src, ...raw.src, cobro: { ...d.src.cobro, ...raw.src?.cobro } },
+    gps: { ...d.gps, ...raw.gps, cobro: { ...d.gps.cobro, ...raw.gps?.cobro } },
+    soat: { ...d.soat, ...raw.soat, cobro: { ...d.soat.cobro, ...raw.soat?.cobro } },
+    impuesto_vehicular: {
+      ...d.impuesto_vehicular,
+      ...raw.impuesto_vehicular,
+      cobro: { ...d.impuesto_vehicular.cobro, ...raw.impuesto_vehicular?.cobro },
+    },
+    todo_riesgo: { ...d.todo_riesgo, ...raw.todo_riesgo, cobro: { ...d.todo_riesgo.cobro, ...raw.todo_riesgo?.cobro } },
+    todo_riesgo_mas_gps_agrupado: {
+      ...d.todo_riesgo_mas_gps_agrupado,
+      ...raw.todo_riesgo_mas_gps_agrupado,
+      cobro: { ...d.todo_riesgo_mas_gps_agrupado.cobro, ...raw.todo_riesgo_mas_gps_agrupado?.cobro },
+    },
+  };
+}
+
+/** Carro ofrecido en el cronograma: inicial + cuotas + foto + gastos variables por carro */
+export interface VehiculoCronograma {
+  id: string;
+  name: string;
+  inicial: number;
+  inicial_moneda: MonedaInicial;
+  cuotas_semanales: number;
+  image?: string;
+  requisitos_gastos?: RequisitosGastosVehiculo;
+}
+
 export interface Cronograma {
   id: string;
   name: string;
@@ -41,6 +148,12 @@ export interface Cronograma {
   active: boolean;
   /** Tasa de interés por mora (ej. 0.05 = 5%). Interés por día = (cuota_semanal * tasa) / 7 */
   tasa_interes_mora?: number;
+  /** Si está activo, el bono por 4 pagos consecutivos a tiempo solo se concede si en cada una de esas 4 semanas el conductor tuvo ≥ 120 viajes */
+  bono_tiempo_activo?: boolean;
+  /** Número de cuotas (semanas) en que se reparte el saldo pendiente de la cuota inicial (pago parcial). Solo aplica a nuevos contratos. */
+  cuotas_otros_gastos?: number;
+  /** Tipo de vehículo del plan: nuevo / seminuevo / segundo uso (JSON en cronograma) */
+  requisitos_vehiculo?: RequisitosVehiculo;
   vehicles: VehiculoCronograma[];
   rules: CronogramaRule[];
 }
@@ -51,6 +164,8 @@ function generateId() {
 
 function createEmptyRule(vehicleCount: number): CronogramaRule {
   return {
+    pct_comision: 0,
+    cobro_saldo: 0,
     viajes: '',
     bono_auto: 0,
     bono_auto_moneda: 'PEN',
@@ -60,12 +175,25 @@ function createEmptyRule(vehicleCount: number): CronogramaRule {
 }
 
 function createEmptyVehicle(): VehiculoCronograma {
-  return { id: generateId(), name: '', inicial: 0, inicial_moneda: 'USD', cuotas_semanales: 261 };
+  return {
+    id: generateId(),
+    name: '',
+    inicial: 0,
+    inicial_moneda: 'USD',
+    cuotas_semanales: 261,
+    requisitos_gastos: createDefaultRequisitosGastosVehiculo(),
+  };
 }
 
 /** Clases para inputs numéricos sin spinners y sin cambio por rueda */
 const INPUT_NUMBER_CLASS =
   ' [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:m-0 [&::-webkit-inner-spin-button]:m-0';
+
+const TIPO_VEHICULO_OPTIONS: { value: TipoVehiculoCronograma; label: string; hint: string }[] = [
+  { value: 'nuevo', label: 'Nuevo', hint: 'Plan para autos nuevos' },
+  { value: 'seminuevo', label: 'Seminuevo', hint: 'Condición intermedia' },
+  { value: 'semiusado', label: 'Segundo uso', hint: 'Semi-usado / usado' },
+];
 
 function getCountryBadgeClass(country: string): string {
   if (country === 'PE') return 'bg-red-100 text-red-700';
@@ -119,10 +247,17 @@ export default function YegoMiAutoConfig() {
     country: 'PE',
     active: true,
     tasa_interes_mora: 0,
+    bono_tiempo_activo: false,
+    cuotas_otros_gastos: 26,
+    requisitos_vehiculo: createDefaultRequisitosVehiculo(),
     vehicles: [{ ...createEmptyVehicle() }],
     rules: [],
   });
-  const [modalSectionOpen, setModalSectionOpen] = useState<'carros' | 'filas' | null>(null);
+  const [modalSectionsOpen, setModalSectionsOpen] = useState({
+    parametros: true,
+    carros: true,
+    filas: false,
+  });
   const [modalViewOnly, setModalViewOnly] = useState(true);
   const isViewMode = Boolean(editingId && modalViewOnly);
   const [isModalEntering, setIsModalEntering] = useState(false);
@@ -255,6 +390,9 @@ export default function YegoMiAutoConfig() {
       country: 'PE',
       active: true,
       tasa_interes_mora: 0,
+      bono_tiempo_activo: false,
+      cuotas_otros_gastos: 26,
+      requisitos_vehiculo: createDefaultRequisitosVehiculo(),
       vehicles: [createEmptyVehicle()],
       rules: [createEmptyRule(1)],
     });
@@ -267,6 +405,7 @@ export default function YegoMiAutoConfig() {
     const vehicles = (c.vehicles?.length ? c.vehicles : [createEmptyVehicle()]).map((v) => ({
       ...v,
       inicial_moneda: v.inicial_moneda ?? 'USD',
+      requisitos_gastos: mergeRequisitosGastosFromApi(v.requisitos_gastos),
     }));
     const rules = c.rules?.length
       ? c.rules.map((r) => {
@@ -278,20 +417,32 @@ export default function YegoMiAutoConfig() {
             : [...(r.cuota_moneda_por_vehiculo || []), ...Array(Math.max(0, vehicles.length - (r.cuota_moneda_por_vehiculo?.length || 0))).fill('PEN') as BonoAutoMoneda[]];
           return {
             ...r,
+            pct_comision: r.pct_comision ?? 0,
+            cobro_saldo: r.cobro_saldo ?? 0,
             bono_auto_moneda: r.bono_auto_moneda ?? 'PEN',
             cuotas_por_vehiculo: cuotas,
             cuota_moneda_por_vehiculo: monedas,
           };
         })
       : [createEmptyRule(vehicles.length)];
-    setForm({ name: c.name, country: c.country, active: c.active, tasa_interes_mora: c.tasa_interes_mora ?? 0, vehicles, rules });
+    setForm({
+      name: c.name,
+      country: c.country,
+      active: c.active,
+      tasa_interes_mora: c.tasa_interes_mora ?? 0,
+      bono_tiempo_activo: c.bono_tiempo_activo ?? false,
+      cuotas_otros_gastos: c.cuotas_otros_gastos ?? 26,
+      requisitos_vehiculo: mergeRequisitosFromApi(c.requisitos_vehiculo),
+      vehicles,
+      rules,
+    });
     setModalOpen(true);
   };
 
   const finishCloseModal = () => {
     setModalOpen(false);
     setEditingId(null);
-    setModalSectionOpen(null);
+    setModalSectionsOpen({ parametros: true, carros: true, filas: false });
     setModalViewOnly(true);
     setIsModalClosing(false);
   };
@@ -301,8 +452,8 @@ export default function YegoMiAutoConfig() {
     setIsModalClosing(true);
   };
 
-  const toggleSection = (section: 'carros' | 'filas') => {
-    setModalSectionOpen((prev) => (prev === section ? null : section));
+  const toggleModalSection = (key: 'parametros' | 'carros' | 'filas') => {
+    setModalSectionsOpen((s) => ({ ...s, [key]: !s[key] }));
   };
 
   const handleSave = async () => {
@@ -314,7 +465,13 @@ export default function YegoMiAutoConfig() {
         country: form.country,
         active: form.active,
         tasa_interes_mora: typeof form.tasa_interes_mora === 'number' ? form.tasa_interes_mora : 0,
-        vehicles: form.vehicles,
+        bono_tiempo_activo: form.bono_tiempo_activo ?? false,
+        cuotas_otros_gastos: typeof form.cuotas_otros_gastos === 'number' ? form.cuotas_otros_gastos : 26,
+        requisitos_vehiculo: mergeRequisitosFromApi(form.requisitos_vehiculo),
+        vehicles: form.vehicles.map((v) => ({
+          ...v,
+          requisitos_gastos: mergeRequisitosGastosFromApi(v.requisitos_gastos),
+        })),
         rules: form.rules,
       };
       if (editingId) {
@@ -347,6 +504,7 @@ export default function YegoMiAutoConfig() {
 
   const addVehicle = () => {
     const newV = createEmptyVehicle();
+    newV.requisitos_gastos = createDefaultRequisitosGastosVehiculo();
     setForm((f) => ({
       ...f,
       vehicles: [...f.vehicles, newV],
@@ -427,7 +585,11 @@ export default function YegoMiAutoConfig() {
     }));
   };
 
-  const updateRule = (ruleIndex: number, field: 'viajes' | 'bono_auto' | 'bono_auto_moneda', value: string | number | BonoAutoMoneda) => {
+  const updateRule = (
+    ruleIndex: number,
+    field: 'viajes' | 'bono_auto' | 'bono_auto_moneda' | 'pct_comision' | 'cobro_saldo',
+    value: string | number | BonoAutoMoneda
+  ) => {
     setForm((f) => ({
       ...f,
       rules: f.rules.map((r, i) =>
@@ -463,6 +625,49 @@ export default function YegoMiAutoConfig() {
   const removeRule = (index: number) => {
     setForm((f) => ({ ...f, rules: f.rules.filter((_, i) => i !== index) }));
   };
+
+  const setTipoVehiculoCronograma = (tipo: TipoVehiculoCronograma) => {
+    setForm((f) => ({
+      ...f,
+      requisitos_vehiculo: { ...mergeRequisitosFromApi(f.requisitos_vehiculo), tipo_vehiculo: tipo },
+    }));
+  };
+
+  const updateVehicleRequisitosGastos = (vehicleIndex: number, patch: Partial<RequisitosGastosVehiculo>) => {
+    setForm((f) => ({
+      ...f,
+      vehicles: f.vehicles.map((v, i) => {
+        if (i !== vehicleIndex) return v;
+        const cur = mergeRequisitosGastosFromApi(v.requisitos_gastos);
+        return { ...v, requisitos_gastos: mergeRequisitosGastosFromApi({ ...cur, ...patch }) };
+      }),
+    }));
+  };
+
+  const patchVehiculoGastoMonto = (
+    vehicleIndex: number,
+    key: 'src' | 'gps' | 'soat' | 'impuesto_vehicular' | 'todo_riesgo' | 'todo_riesgo_mas_gps_agrupado',
+    field: Partial<ItemGastoConCobro>
+  ) => {
+    setForm((f) => ({
+      ...f,
+      vehicles: f.vehicles.map((v, i) => {
+        if (i !== vehicleIndex) return v;
+        const cur = mergeRequisitosGastosFromApi(v.requisitos_gastos);
+        const item = cur[key];
+        if (typeof item !== 'object') return v;
+        return {
+          ...v,
+          requisitos_gastos: mergeRequisitosGastosFromApi({
+            ...cur,
+            [key]: { ...item, ...field },
+          }),
+        };
+      }),
+    }));
+  };
+
+  const tipoCronograma = mergeRequisitosFromApi(form.requisitos_vehiculo).tipo_vehiculo;
 
   /** Solo dígitos y un decimal (punto o coma). Sin "e", ni signos ni caracteres especiales. */
   const sanitizeDecimalInput = (raw: string): string => {
@@ -524,8 +729,7 @@ export default function YegoMiAutoConfig() {
       </div>
 
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-2">
-          <DollarSign className="w-5 h-5 text-[#8B1A1A]" />
+        <div className="px-4 py-3 border-b border-gray-200">
           <h2 className="text-base font-semibold text-gray-900">Valor del dólar (tipo de cambio)</h2>
         </div>
         <div className="p-4 sm:p-6">
@@ -769,10 +973,12 @@ export default function YegoMiAutoConfig() {
             </div>
 
             <div className="p-6 overflow-y-auto space-y-6">
-              {/* Datos generales */}
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Nombre del cronograma *</label>
+              {/* Datos generales: nombre + tipo de vehículo (misma fila) + país */}
+              <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-12 lg:gap-x-4 lg:items-end">
+                <div className="lg:col-span-5">
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    Nombre del cronograma *
+                  </label>
                   <input
                     type="text"
                     value={form.name}
@@ -782,8 +988,28 @@ export default function YegoMiAutoConfig() {
                     placeholder="Ej. Cronograma 2025 - II"
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">País</label>
+                <div className="lg:col-span-4">
+                  <label htmlFor="tipo_vehiculo_cronograma" className="block text-sm font-medium text-gray-700 mb-1.5">
+                    Tipo de vehículo
+                  </label>
+                  <select
+                    id="tipo_vehiculo_cronograma"
+                    value={tipoCronograma}
+                    onChange={(e) => setTipoVehiculoCronograma(e.target.value as TipoVehiculoCronograma)}
+                    disabled={isViewMode}
+                    className={`w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isViewMode ? 'bg-gray-50 cursor-default' : 'bg-white'}`}
+                  >
+                    {TIPO_VEHICULO_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value} title={opt.hint}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="md:col-span-2 lg:col-span-3">
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    País
+                  </label>
                   <select
                     value={form.country}
                     onChange={(e) => setForm((f) => ({ ...f, country: e.target.value }))}
@@ -795,87 +1021,169 @@ export default function YegoMiAutoConfig() {
                   </select>
                 </div>
               </div>
-              <div className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  id="active"
-                  checked={form.active}
-                  onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))}
-                  disabled={isViewMode}
-                  className="rounded border-gray-300 text-red-600 focus:ring-red-500 w-4 h-4"
-                />
-                <label htmlFor="active" className="text-sm font-medium text-gray-700">Activo</label>
-              </div>
 
-              {/* Interés por mora (pago semanal en lunes) */}
-              <div className="border border-gray-200 rounded-xl p-4 bg-gray-50/50">
-                <h4 className="text-sm font-medium text-gray-800 mb-2">Interés por mora (pago semanal en lunes)</h4>
-                <div className="mb-2">
-                  <label htmlFor="tasa_interes_mora" className="block text-sm text-gray-600 mb-1">Tasa de interés (%)</label>
-                  <input
-                    id="tasa_interes_mora"
-                    type="number"
-                    min={0}
-                    step={0.5}
-                    value={((form.tasa_interes_mora ?? 0) * 100).toString()}
-                    onChange={(e) => {
-                      const v = parseFloat(e.target.value);
-                      setForm((f) => ({ ...f, tasa_interes_mora: Number.isNaN(v) || v < 0 ? 0 : v / 100 }));
-                    }}
-                    disabled={isViewMode}
-                    className={`w-24 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 ${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50 cursor-default' : ''}`}
-                  />
-                </div>
-                <p className="text-xs text-gray-500 mb-1">
-                  Si el conductor no paga la cuota semanal completa el lunes, se aplica este interés por cada día de atraso.
-                </p>
-                <p className="text-xs text-gray-600 font-medium">Fórmula: Interés por día = (Cuota semanal × Tasa) / 7</p>
-              </div>
-
-              {/* Sección: Carros ofrecidos (acordeón) */}
+              {/* Parámetros del cronograma (acordeón, mismo patrón que Filas) */}
               <div className="border border-gray-200 rounded-xl overflow-hidden">
                 <button
                   type="button"
-                  onClick={() => toggleSection('carros')}
+                  onClick={() => toggleModalSection('parametros')}
                   className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
                 >
-                  <span className="text-sm font-medium text-gray-700 flex items-center gap-2">
-                    <Car className="w-4 h-4 text-gray-500" />
-                    Carros ofrecidos
-                    {form.vehicles.length > 0 && (
-                      <span className="text-xs font-normal text-gray-500">({form.vehicles.length})</span>
-                    )}
+                  <span className="text-sm font-medium text-gray-700 flex items-center gap-2 min-w-0">
+                    <SlidersHorizontal className="w-4 h-4 text-gray-500 shrink-0" aria-hidden />
+                    Parámetros del cronograma
                   </span>
-                  {modalSectionOpen === 'carros' ? (
-                    <ChevronDown className="w-5 h-5 text-gray-500 transition-transform duration-200" />
+                  {modalSectionsOpen.parametros ? (
+                    <ChevronDown className="w-5 h-5 text-gray-500 transition-transform duration-200 shrink-0" />
                   ) : (
-                    <ChevronRight className="w-5 h-5 text-gray-500 transition-transform duration-200" />
+                    <ChevronRight className="w-5 h-5 text-gray-500 transition-transform duration-200 shrink-0" />
                   )}
                 </button>
                 <div
                   className="grid transition-[grid-template-rows] duration-300 ease-in-out"
-                  style={{ gridTemplateRows: modalSectionOpen === 'carros' ? '1fr' : '0fr' }}
+                  style={{ gridTemplateRows: modalSectionsOpen.parametros ? '1fr' : '0fr' }}
                 >
                   <div className="min-h-0 overflow-hidden">
-                  <div className="p-5 pt-3 border-t border-gray-100">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-                      <p className="text-sm text-gray-600">Añade los carros con foto, inicial y cuotas semanales.</p>
-                      {!isViewMode && (
-                        <button
-                          type="button"
-                          onClick={addVehicle}
-                          className="shrink-0 inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors shadow-sm"
-                        >
-                          <Car className="w-4 h-4" />
-                          Añadir carro
-                        </button>
-                      )}
+                    <div className="p-4 sm:p-5 pt-2 border-t border-gray-100 bg-gray-50/50">
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 lg:gap-4 lg:divide-x lg:divide-gray-200">
+                        {/* Interés por mora */}
+                        <div className="lg:pr-4 space-y-2 min-w-0">
+                          <h4 className="text-sm font-medium text-gray-900 leading-tight">
+                            Interés por mora
+                          </h4>
+                          <p className="text-[11px] text-gray-500 leading-snug" title="Si no paga la cuota el lunes, interés por día de atraso">
+                            Cuota semanal (lunes). Interés/día = (cuota × tasa) ÷ 7
+                          </p>
+                          <div className="flex flex-wrap items-end gap-2">
+                            <div>
+                              <label htmlFor="tasa_interes_mora" className="block text-xs text-gray-600 mb-1">
+                                Tasa (%)
+                              </label>
+                              <input
+                                id="tasa_interes_mora"
+                                type="number"
+                                min={0}
+                                step={0.5}
+                                value={((form.tasa_interes_mora ?? 0) * 100).toString()}
+                                onChange={(e) => {
+                                  const v = parseFloat(e.target.value);
+                                  setForm((f) => ({ ...f, tasa_interes_mora: Number.isNaN(v) || v < 0 ? 0 : v / 100 }));
+                                }}
+                                disabled={isViewMode}
+                                className={`w-[5.5rem] rounded-lg border border-gray-300 px-2 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 ${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50 cursor-default' : 'bg-white'}`}
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Bono tiempo */}
+                        <div className="lg:px-4 space-y-2 min-w-0 pt-2 border-t border-gray-200 lg:border-t-0 lg:pt-0">
+                          <h4 className="text-sm font-medium text-gray-900 leading-tight">
+                            Bono a tiempo
+                          </h4>
+                          <p className="text-[11px] text-gray-500 leading-snug" title="Bonificación por 4 pagos seguidos a tiempo con ≥120 viajes por semana">
+                            Requiere 4 pagos consecutivos a tiempo y ≥120 viajes en cada una de esas semanas.
+                          </p>
+                          <label className="inline-flex items-start gap-2.5 cursor-pointer select-none">
+                            <input
+                              id="bono_tiempo_activo"
+                              type="checkbox"
+                              checked={form.bono_tiempo_activo ?? false}
+                              onChange={(e) => setForm((f) => ({ ...f, bono_tiempo_activo: e.target.checked }))}
+                              disabled={isViewMode}
+                              className="mt-0.5 rounded border-gray-300 text-red-600 focus:ring-red-500 w-4 h-4 shrink-0"
+                            />
+                            <span className="text-sm text-gray-800">Activar bono tiempo</span>
+                          </label>
+                        </div>
+
+                        {/* Otros gastos (pago parcial) */}
+                        <div className="lg:pl-4 space-y-2 min-w-0 pt-2 border-t border-gray-200 lg:border-t-0 lg:pt-0">
+                          <h4 className="text-sm font-medium text-gray-900 leading-tight">
+                            Otros gastos
+                          </h4>
+                          <p className="text-[11px] text-gray-500 leading-snug" title="Pago parcial de cuota inicial">
+                            Semanas para repartir el saldo pendiente de la inicial (pago parcial). Contratos nuevos.
+                          </p>
+                          <div className="space-y-2">
+                            <label htmlFor="cuotas_otros_gastos" className="block text-xs text-gray-600">
+                              Semanas (cuotas)
+                            </label>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                id="cuotas_otros_gastos"
+                                type="number"
+                                min={1}
+                                max={99}
+                                value={form.cuotas_otros_gastos ?? 26}
+                                onChange={(e) => {
+                                  const v = parseInt(e.target.value, 10);
+                                  setForm((f) => ({ ...f, cuotas_otros_gastos: Number.isNaN(v) || v < 1 ? 26 : Math.min(99, v) }));
+                                }}
+                                disabled={isViewMode}
+                                className={`w-24 rounded-lg border border-gray-300 px-2.5 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 ${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50 cursor-default' : 'bg-white'}`}
+                              />
+                              <span className="text-xs text-gray-500">1 — 99 semanas</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex gap-5 overflow-x-auto pb-2 scroll-smooth">
-                  {form.vehicles.map((v, i) => (
+                  </div>
+                </div>
+              </div>
+
+              {/* Carros ofrecidos (acordeón) */}
+              <div className="border border-gray-200 rounded-xl overflow-hidden flex flex-col min-h-0">
+                <div className="flex flex-col sm:flex-row sm:items-stretch gap-2 sm:gap-3 px-4 py-3 bg-gray-50 border-b border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => toggleModalSection('carros')}
+                    className="flex-1 flex items-center justify-between gap-2 min-w-0 text-left rounded-lg hover:bg-gray-100/80 transition-colors py-0.5 sm:py-0 -my-0.5 px-0 sm:pr-1"
+                  >
+                    <span className="min-w-0">
+                      <span className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                        <Car className="w-4 h-4 text-gray-500 shrink-0" aria-hidden />
+                        Carros ofrecidos
+                        <span className="text-xs font-normal text-gray-500">
+                          ({form.vehicles.length} carro{form.vehicles.length !== 1 ? 's' : ''})
+                        </span>
+                      </span>
+                      <span className="block text-[11px] text-gray-500 truncate mt-0.5">
+                        Foto, inicial, cuotas y gastos por vehículo
+                      </span>
+                    </span>
+                    {modalSectionsOpen.carros ? (
+                      <ChevronDown className="w-5 h-5 text-gray-500 shrink-0" />
+                    ) : (
+                      <ChevronRight className="w-5 h-5 text-gray-500 shrink-0" />
+                    )}
+                  </button>
+                  {!isViewMode && (
+                    <button
+                      type="button"
+                      onClick={addVehicle}
+                      className="shrink-0 inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-[#8B1A1A] rounded-xl hover:bg-[#6B1515] focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors shadow-sm w-full sm:w-auto sm:self-center"
+                    >
+                      <PlusCircle className="w-4 h-4" />
+                      Añadir carro
+                    </button>
+                  )}
+                </div>
+                <div
+                  className="grid transition-[grid-template-rows] duration-300 ease-in-out min-h-0"
+                  style={{ gridTemplateRows: modalSectionsOpen.carros ? '1fr' : '0fr' }}
+                >
+                  <div className="min-h-0 overflow-hidden flex flex-col">
+                    <div className="p-4 flex-1 min-h-[min(420px,55vh)] max-h-[min(560px,65vh)] overflow-x-auto overflow-y-auto bg-white">
+                    <div className="flex gap-4 pb-1 scroll-smooth min-h-[min(380px,50vh)]">
+                  {form.vehicles.map((v, i) => {
+                    const rg = mergeRequisitosGastosFromApi(v.requisitos_gastos);
+                    const modoAgr = rg.todo_riesgo_y_gps_modo === 'agrupado';
+                    return (
                     <div
                       key={v.id}
-                      className="flex-shrink-0 w-[280px] p-4 bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-md hover:border-gray-300 transition-all duration-200 flex flex-col items-stretch gap-4"
+                      className="flex-shrink-0 w-[min(100%,380px)] max-w-[380px] p-4 bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-md hover:border-gray-300 transition-all duration-200 flex flex-col items-stretch gap-4"
                     >
                       {/* Foto */}
                       <div className="flex flex-col items-center gap-2">
@@ -997,6 +1305,230 @@ export default function YegoMiAutoConfig() {
                           </div>
                         </div>
                       </div>
+
+                      {/* Gastos variables por carro: selector ancho completo + montos en grid 2×2 */}
+                      <div className="border-t border-gray-100 pt-3 space-y-2.5">
+                        <p className="text-xs font-semibold text-gray-800">
+                          Gastos / coberturas
+                        </p>
+                        <div className="grid grid-cols-2 gap-3 items-stretch">
+                          <div className="col-span-2 flex flex-col min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
+                            <label className="block text-[10px] font-medium text-gray-700 mb-1.5">Todo riesgo + GPS</label>
+                            <select
+                              value={rg.todo_riesgo_y_gps_modo}
+                              onChange={(e) =>
+                                updateVehicleRequisitosGastos(i, {
+                                  todo_riesgo_y_gps_modo: e.target.value as TodoRiesgoGpsModo,
+                                })
+                              }
+                              disabled={isViewMode}
+                              className={`w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs shadow-sm focus:ring-2 focus:ring-red-500/30 ${isViewMode ? 'bg-gray-50' : ''}`}
+                            >
+                              <option value="agrupado">Un solo costo (agrupado)</option>
+                              <option value="separado">Por separado (GPS y todo riesgo aparte)</option>
+                            </select>
+                          </div>
+                          {tipoCronograma !== 'nuevo' && (
+                            <div className="flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
+                              <div className="mb-2 min-h-0">
+                                <label className="block text-[10px] font-medium text-gray-700 leading-tight">SRC (resp. civil)</label>
+                                <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
+                                  Mensual · desde 5 meses antes del vencimiento
+                                </p>
+                              </div>
+                              <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
+                                <select
+                                  value={rg.src.moneda}
+                                  onChange={(e) => patchVehiculoGastoMonto(i, 'src', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                  disabled={isViewMode}
+                                  className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
+                                >
+                                  <option value="USD">USD</option>
+                                  <option value="PEN">PEN</option>
+                                </select>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={0.01}
+                                  value={rg.src.monto}
+                                  onChange={(e) => patchVehiculoGastoMonto(i, 'src', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
+                                  readOnly={isViewMode}
+                                  className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
+                            <div className="mb-2 min-h-0">
+                              <label className="block text-[10px] font-medium text-gray-700 leading-tight">SOAT</label>
+                              <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
+                                Mensual · desde 5 meses antes del vencimiento
+                              </p>
+                            </div>
+                            <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
+                              <select
+                                value={rg.soat.moneda}
+                                onChange={(e) => patchVehiculoGastoMonto(i, 'soat', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                disabled={isViewMode}
+                                className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
+                              >
+                                <option value="PEN">PEN</option>
+                                <option value="USD">USD</option>
+                              </select>
+                              <input
+                                type="number"
+                                min={0}
+                                step={0.01}
+                                value={rg.soat.monto}
+                                onChange={(e) => patchVehiculoGastoMonto(i, 'soat', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
+                                readOnly={isViewMode}
+                                className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
+                            <div className="mb-2 min-h-0">
+                              <label className="block text-[10px] font-medium text-gray-700 leading-tight">Impuesto vehicular</label>
+                              <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
+                                SAT febrero · 4 cuotas · vigencia según año modelo
+                              </p>
+                            </div>
+                            <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
+                              <select
+                                value={rg.impuesto_vehicular.moneda}
+                                onChange={(e) => patchVehiculoGastoMonto(i, 'impuesto_vehicular', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                disabled={isViewMode}
+                                className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
+                              >
+                                <option value="PEN">PEN</option>
+                                <option value="USD">USD</option>
+                              </select>
+                              <input
+                                type="number"
+                                min={0}
+                                step={0.01}
+                                value={rg.impuesto_vehicular.monto}
+                                onChange={(e) =>
+                                  patchVehiculoGastoMonto(i, 'impuesto_vehicular', { monto: Math.max(0, parseFloat(e.target.value) || 0) })
+                                }
+                                readOnly={isViewMode}
+                                className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
+                              />
+                            </div>
+                          </div>
+
+                          {!modoAgr && (
+                            <>
+                              <div className="flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
+                                <div className="mb-2 min-h-0">
+                                  <label className="block text-[10px] font-medium text-gray-700 leading-tight">GPS</label>
+                                  <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
+                                    Mensual · día {rg.gps.cobro?.dia_mes ?? 28} de cada mes
+                                  </p>
+                                </div>
+                              <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
+                                <select
+                                  value={rg.gps.moneda}
+                                    onChange={(e) => patchVehiculoGastoMonto(i, 'gps', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                    disabled={isViewMode}
+                                    className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
+                                  >
+                                    <option value="PEN">PEN</option>
+                                    <option value="USD">USD</option>
+                                  </select>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step={0.01}
+                                    value={rg.gps.monto}
+                                    onChange={(e) => patchVehiculoGastoMonto(i, 'gps', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
+                                    readOnly={isViewMode}
+                                    className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
+                                  />
+                                </div>
+                              </div>
+                              <div
+                                className={`flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm ${tipoCronograma !== 'nuevo' ? 'col-span-2' : ''}`}
+                              >
+                                <div className="mb-2 min-h-0">
+                                  <label className="block text-[10px] font-medium text-gray-700 leading-tight">Seguro todo riesgo</label>
+                                  <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
+                                    Semanal en {rg.todo_riesgo.cobro?.semanas ?? 26} semanas (referencia)
+                                  </p>
+                                </div>
+                                <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
+                                  <select
+                                    value={rg.todo_riesgo.moneda}
+                                    onChange={(e) => patchVehiculoGastoMonto(i, 'todo_riesgo', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                    disabled={isViewMode}
+                                    className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
+                                  >
+                                    <option value="PEN">PEN</option>
+                                    <option value="USD">USD</option>
+                                  </select>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step={0.01}
+                                    value={rg.todo_riesgo.monto}
+                                    onChange={(e) =>
+                                      patchVehiculoGastoMonto(i, 'todo_riesgo', { monto: Math.max(0, parseFloat(e.target.value) || 0) })
+                                    }
+                                    readOnly={isViewMode}
+                                    className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
+                                  />
+                                </div>
+                              </div>
+                            </>
+                          )}
+
+                          {modoAgr && (
+                            <div
+                              className={`flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm ${tipoCronograma === 'nuevo' ? 'col-span-2' : ''}`}
+                            >
+                              <div className="mb-2 min-h-0">
+                                <label className="block text-[10px] font-medium text-gray-700 leading-tight">
+                                  Seguro todo riesgo + GPS (agrupado)
+                                </label>
+                                <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
+                                  Semanal en {rg.todo_riesgo_mas_gps_agrupado.cobro?.semanas ?? 26} semanas (referencia)
+                                </p>
+                              </div>
+                              <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
+                                <select
+                                  value={rg.todo_riesgo_mas_gps_agrupado.moneda}
+                                  onChange={(e) =>
+                                    patchVehiculoGastoMonto(i, 'todo_riesgo_mas_gps_agrupado', {
+                                      moneda: e.target.value as GastoRequisitoMoneda,
+                                    })
+                                  }
+                                  disabled={isViewMode}
+                                  className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
+                                >
+                                  <option value="PEN">PEN</option>
+                                  <option value="USD">USD</option>
+                                </select>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={0.01}
+                                  value={rg.todo_riesgo_mas_gps_agrupado.monto}
+                                  onChange={(e) =>
+                                    patchVehiculoGastoMonto(i, 'todo_riesgo_mas_gps_agrupado', {
+                                      monto: Math.max(0, parseFloat(e.target.value) || 0),
+                                    })
+                                  }
+                                  readOnly={isViewMode}
+                                  className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
                       {form.vehicles.length > 1 && !isViewMode && (
                         <button
                           type="button"
@@ -1009,18 +1541,19 @@ export default function YegoMiAutoConfig() {
                         </button>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                     </div>
-                  </div>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* Sección: Filas del cronograma (acordeón) */}
+              {/* Sección: Filas del cronograma (acordeón, mismo patrón que Parámetros y Carros) */}
               <div className="border border-gray-200 rounded-xl overflow-hidden">
                 <button
                   type="button"
-                  onClick={() => toggleSection('filas')}
+                  onClick={() => toggleModalSection('filas')}
                   className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
                 >
                   <span className="text-sm font-medium text-gray-700 flex items-center gap-2">
@@ -1030,7 +1563,7 @@ export default function YegoMiAutoConfig() {
                       <span className="text-xs font-normal text-gray-500">({form.rules.length})</span>
                     )}
                   </span>
-                  {modalSectionOpen === 'filas' ? (
+                  {modalSectionsOpen.filas ? (
                     <ChevronDown className="w-5 h-5 text-gray-500 transition-transform duration-200" />
                   ) : (
                     <ChevronRight className="w-5 h-5 text-gray-500 transition-transform duration-200" />
@@ -1038,7 +1571,7 @@ export default function YegoMiAutoConfig() {
                 </button>
                 <div
                   className="grid transition-[grid-template-rows] duration-300 ease-in-out"
-                  style={{ gridTemplateRows: modalSectionOpen === 'filas' ? '1fr' : '0fr' }}
+                  style={{ gridTemplateRows: modalSectionsOpen.filas ? '1fr' : '0fr' }}
                 >
                   <div className="min-h-0 overflow-hidden">
                   <div className="p-4 pt-2 border-t border-gray-100">
@@ -1050,9 +1583,15 @@ export default function YegoMiAutoConfig() {
                       )}
                     </div>
                     <div className="border border-gray-200 rounded-xl overflow-hidden overflow-x-auto bg-white">
-                      <table className="w-full text-sm table-fixed" style={{ minWidth: 360 }}>
+                      <table className="w-full text-sm table-fixed" style={{ minWidth: 520 }}>
                         <thead>
                           <tr className="bg-gray-100 border-b border-gray-200">
+                            {!isViewMode && (
+                              <>
+                                <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-[5.5rem]">% comisión</th>
+                                <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-[6.5rem]">Cobro del saldo</th>
+                              </>
+                            )}
                             <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-[7rem]">Viajes</th>
                             <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-[7rem]">Bono mi auto</th>
                             {form.vehicles.map((v, i) => (
@@ -1066,6 +1605,46 @@ export default function YegoMiAutoConfig() {
                         <tbody>
                           {form.rules.map((r, ri) => (
                             <tr key={ri} className="border-b border-gray-100 last:border-0 hover:bg-gray-50/50">
+                              {!isViewMode && (
+                                <>
+                                  <td className="py-2 px-2 align-top w-[5.5rem]">
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      max={100}
+                                      step={0.1}
+                                      value={r.pct_comision != null ? r.pct_comision : ''}
+                                      onChange={(e) => {
+                                        const v = parseFloat(e.target.value);
+                                        updateRule(ri, 'pct_comision', Number.isNaN(v) || v < 0 ? 0 : Math.min(100, v));
+                                      }}
+                                      readOnly={isViewMode}
+                                      className={`w-full rounded border border-gray-300 px-1.5 py-1 text-xs focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 box-border ${isViewMode ? 'bg-gray-50 cursor-default' : ''}`}
+                                      placeholder="0"
+                                    />
+                                  </td>
+                                  <td className="py-2 px-2 align-top w-[6.5rem]">
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={0.01}
+                                      value={r.cobro_saldo != null ? r.cobro_saldo : ''}
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        const sanitized = sanitizeDecimalInput(raw);
+                                        const num = parseFloat(sanitized);
+                                        updateRule(ri, 'cobro_saldo', Number.isFinite(num) ? num : 0);
+                                      }}
+                                      onKeyDown={handleDecimalKeyDown}
+                                      onPaste={(e) => handleDecimalPaste(e, (n) => updateRule(ri, 'cobro_saldo', n))}
+                                      onWheel={(e) => e.currentTarget.blur()}
+                                      readOnly={isViewMode}
+                                      className={`w-full rounded border border-gray-300 px-1.5 py-1 text-xs focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 box-border${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50 cursor-default' : ''}`}
+                                      placeholder="0"
+                                    />
+                                  </td>
+                                </>
+                              )}
                               <td className="py-2 px-2 align-top w-[7rem]">
                                 <input
                                   type="text"

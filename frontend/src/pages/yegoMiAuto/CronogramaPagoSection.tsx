@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Car, ChevronDown, ChevronRight, ChevronLeft, DollarSign, Calendar, CheckCircle, File, FileText, X, PlusCircle } from 'lucide-react';
+import { Car, ChevronDown, ChevronRight, ChevronLeft, Calendar, CheckCircle, File, FileText, X, PlusCircle, Wallet } from 'lucide-react';
 
 export type PasoCP = 1 | 2 | 3;
 export type PagoTipo = 'completo' | 'parcial';
@@ -22,7 +22,6 @@ export interface CronogramaPagoSectionProps {
   setPagoSectionOpen: (open: boolean) => void;
   actionLoading: boolean;
   onGuardarCronogramaPago: () => Promise<void>;
-  onMarcarPagoCompleto: () => Promise<void>;
   onValidarComprobante?: (comprobanteId: string, data: { monto: number; moneda: 'PEN' | 'USD' }) => Promise<void>;
   onRechazarComprobante?: (comprobanteId: string, data: { motivo: string }) => Promise<void>;
   validandoComprobanteId?: string | null;
@@ -49,7 +48,6 @@ export function CronogramaPagoSection({
   setPagoSectionOpen,
   actionLoading,
   onGuardarCronogramaPago,
-  onMarcarPagoCompleto,
   onValidarComprobante,
   onRechazarComprobante,
   validandoComprobanteId,
@@ -103,7 +101,6 @@ export function CronogramaPagoSection({
               cronogramasList={cronogramasList}
               tipoCambio={tipoCambio}
               actionLoading={actionLoading}
-              onMarcarPagoCompleto={onMarcarPagoCompleto}
               onValidarComprobante={onValidarComprobante}
               onRechazarComprobante={onRechazarComprobante}
               validandoComprobanteId={validandoComprobanteId}
@@ -138,7 +135,7 @@ function StepperCP({ paso }: { paso: PasoCP }) {
       <div className={`flex-1 h-0.5 min-w-[12px] transition-colors duration-200 ${paso > 2 ? 'bg-green-200' : 'bg-gray-200'}`} />
       <div className="flex items-center gap-1.5 shrink-0">
         <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-200 ${paso === 3 ? 'bg-[#8B1A1A] text-white' : 'bg-gray-200 text-gray-500'}`}>
-          <DollarSign className="w-4 h-4" />
+          <Wallet className="w-4 h-4" />
         </span>
         <span className={`text-xs font-semibold hidden sm:inline ${paso === 3 ? 'text-[#8B1A1A]' : 'text-gray-500'}`}>Pago</span>
       </div>
@@ -297,7 +294,7 @@ function WizardSinAsignacion({
             </button>
           ) : (
             <button type="button" onClick={onGuardarCronogramaPago} disabled={actionLoading || !selectedVehiculoId} className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-              <DollarSign className="w-4 h-4" /> Guardar
+              Guardar
             </button>
           )}
         </div>
@@ -312,7 +309,6 @@ function AsignacionActual({
   cronogramasList = [],
   tipoCambio,
   actionLoading,
-  onMarcarPagoCompleto,
   onValidarComprobante,
   onRechazarComprobante,
   validandoComprobanteId,
@@ -325,7 +321,6 @@ function AsignacionActual({
   cronogramasList?: any[];
   tipoCambio: { moneda_local: string; valor_usd_a_local: number } | null;
   actionLoading: boolean;
-  onMarcarPagoCompleto: () => Promise<void>;
   onValidarComprobante?: (comprobanteId: string, data: { monto: number; moneda: 'PEN' | 'USD' }) => Promise<void>;
   onRechazarComprobante?: (comprobanteId: string, data: { motivo: string }) => Promise<void>;
   validandoComprobanteId?: string | null;
@@ -380,11 +375,14 @@ function AsignacionActual({
 
   const round2 = (n: number) => Math.round(n * 100) / 100;
   const comprobantes = Array.isArray(solicitud.comprobantes_pago) ? solicitud.comprobantes_pago : [];
-  const totalValidado = round2(
-    comprobantes
-      .filter((cp: any) => getEstado(cp) === 'validado' && cp.monto != null)
-      .reduce((sum: number, cp: any) => sum + Number(cp.monto), 0)
-  );
+  const totalValidado =
+    solicitud.total_validado != null
+      ? round2(Number(solicitud.total_validado))
+      : round2(
+          comprobantes
+            .filter((cp: any) => getEstado(cp) === 'validado' && cp.monto != null)
+            .reduce((sum: number, cp: any) => sum + Number(cp.monto), 0)
+        );
   const cuotaInicial = round2(vehiculoDisplay?.inicial != null ? Number(vehiculoDisplay.inicial) : 0);
   const moneda = vehiculoDisplay?.inicial_moneda === 'PEN' ? 'S/.' : '$';
   return (
@@ -425,15 +423,10 @@ function AsignacionActual({
           </div>
         </div>
       </div>
-      {solicitud.pago_tipo === 'parcial' && solicitud.pago_estado === 'pendiente' && (
-        <button type="button" onClick={onMarcarPagoCompleto} disabled={actionLoading} className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium disabled:opacity-50">
-          <CheckCircle className="w-4 h-4" /> Marcar pago completo
-        </button>
-      )}
       <div className="rounded-lg bg-gray-50 border border-gray-200 p-3 sm:p-4">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Comprobantes subidos por el conductor</p>
-          {(onAgregarComprobante || onAgregarPagoManual) && solicitud.pago_estado !== 'completo' && (
+          {(onAgregarComprobante || onAgregarPagoManual) && solicitud.pago_estado !== 'completo' && !solicitud.fecha_inicio_cobro_semanal && (
             <button
               type="button"
               onClick={() => {
@@ -496,7 +489,7 @@ function AsignacionActual({
                     )}
                     {isPagoManual ? (
                       <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50 p-1">
-                        <DollarSign className="w-6 h-6 text-gray-500" />
+                        <Wallet className="w-6 h-6 text-gray-500" />
                         <span className="text-[9px] text-gray-500 font-medium text-center leading-tight">Pago manual</span>
                         {cp.monto != null && (
                           <span className="text-[10px] font-semibold text-gray-700 mt-0.5">{moneda} {Number(cp.monto).toFixed(2)}</span>
@@ -675,7 +668,9 @@ function AsignacionActual({
         <div
           className="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
           style={{ zIndex: 9999 }}
-          onClick={() => setModalAgregarPago(false)}
+          onClick={() => {
+            if (!agregandoPago) setModalAgregarPago(false);
+          }}
           role="dialog"
           aria-modal="true"
           aria-label="Agregar pago"
@@ -687,7 +682,8 @@ function AsignacionActual({
                 <button
                   type="button"
                   onClick={() => setAgregarPagoTipo('comprobante')}
-                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium ${agregarPagoTipo === 'comprobante' ? 'bg-[#8B1A1A] text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                  disabled={agregandoPago}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed ${agregarPagoTipo === 'comprobante' ? 'bg-[#8B1A1A] text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
                 >
                   Subir comprobante
                 </button>
@@ -696,7 +692,8 @@ function AsignacionActual({
                 <button
                   type="button"
                   onClick={() => setAgregarPagoTipo('manual')}
-                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium ${agregarPagoTipo === 'manual' ? 'bg-[#8B1A1A] text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                  disabled={agregandoPago}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed ${agregarPagoTipo === 'manual' ? 'bg-[#8B1A1A] text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
                 >
                   Pago manual
                 </button>
@@ -709,8 +706,9 @@ function AsignacionActual({
                   <input
                     type="file"
                     accept="image/*,.pdf"
+                    disabled={agregandoPago}
                     onChange={(e) => setAgregarFile(e.target.files?.[0] || null)}
-                    className="w-full text-sm text-gray-600 file:mr-2 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-[#8B1A1A]/10 file:text-[#8B1A1A]"
+                    className="w-full text-sm text-gray-600 file:mr-2 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-[#8B1A1A]/10 file:text-[#8B1A1A] disabled:opacity-50"
                   />
                 </div>
                 <div className="mb-3">
@@ -722,7 +720,8 @@ function AsignacionActual({
                     value={agregarMonto}
                     onChange={(e) => setAgregarMonto(e.target.value)}
                     placeholder="Ej. 500"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A]"
+                    disabled={agregandoPago}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A] disabled:opacity-50"
                   />
                 </div>
                 <div className="mb-4">
@@ -730,7 +729,8 @@ function AsignacionActual({
                   <select
                     value={agregarMoneda}
                     onChange={(e) => setAgregarMoneda(e.target.value as 'PEN' | 'USD')}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A]"
+                    disabled={agregandoPago}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A] disabled:opacity-50"
                   >
                     <option value="PEN">Soles (PEN)</option>
                     <option value="USD">Dólares (USD)</option>
@@ -749,7 +749,8 @@ function AsignacionActual({
                     value={agregarMonto}
                     onChange={(e) => setAgregarMonto(e.target.value)}
                     placeholder="Ej. 500"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A]"
+                    disabled={agregandoPago}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A] disabled:opacity-50"
                   />
                 </div>
                 <div className="mb-4">
@@ -757,7 +758,8 @@ function AsignacionActual({
                   <select
                     value={agregarMoneda}
                     onChange={(e) => setAgregarMoneda(e.target.value as 'PEN' | 'USD')}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A]"
+                    disabled={agregandoPago}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A] disabled:opacity-50"
                   >
                     <option value="PEN">Soles (PEN)</option>
                     <option value="USD">Dólares (USD)</option>
@@ -766,7 +768,12 @@ function AsignacionActual({
               </>
             )}
             <div className="flex gap-2">
-              <button type="button" onClick={() => setModalAgregarPago(false)} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">
+              <button
+                type="button"
+                onClick={() => setModalAgregarPago(false)}
+                disabled={agregandoPago}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
+              >
                 Cancelar
               </button>
               <button

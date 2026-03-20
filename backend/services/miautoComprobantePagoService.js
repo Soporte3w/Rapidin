@@ -8,8 +8,8 @@ function round2(n) {
   return Number.isNaN(x) ? 0 : Math.round(x * 100) / 100;
 }
 
-/** Si la suma de comprobantes validados >= cuota inicial, marca pago_estado = completo. */
-async function marcarPagoCompletoSiAplica(solicitudId) {
+/** Si la suma de comprobantes validados (cuota inicial + otros gastos) >= cuota inicial, marca pago_estado = completo. */
+export async function marcarPagoCompletoSiAplica(solicitudId) {
   const sol = await query(
     'SELECT cronograma_vehiculo_id FROM module_miauto_solicitud WHERE id = $1',
     [solicitudId]
@@ -19,11 +19,7 @@ async function marcarPagoCompletoSiAplica(solicitudId) {
   const inicial = await query('SELECT inicial FROM module_miauto_cronograma_vehiculo WHERE id = $1', [cvId]);
   const cuotaInicial = round2(inicial.rows[0] ? parseFloat(inicial.rows[0].inicial) || 0 : 0);
   if (cuotaInicial <= 0) return;
-  const sum = await query(
-    `SELECT COALESCE(SUM(COALESCE(monto, 0)), 0) AS total FROM module_miauto_comprobante_pago WHERE solicitud_id = $1 AND estado = 'validado'`,
-    [solicitudId]
-  );
-  const totalValidado = round2(parseFloat(sum.rows[0]?.total) || 0);
+  const { total: totalValidado } = await getTotalValidado(solicitudId);
   if (totalValidado >= cuotaInicial) {
     await query(
       `UPDATE module_miauto_solicitud SET pago_estado = 'completo', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
@@ -136,6 +132,7 @@ export async function validateComprobante(solicitudId, comprobanteId, userId, { 
   }
 
   if (montoFinal != null) {
+    montoFinal = round2(montoFinal);
     await query(
       `UPDATE module_miauto_comprobante_pago SET monto = $1, estado = 'validado', validated_at = CURRENT_TIMESTAMP, validated_by = $2 WHERE id = $3`,
       [montoFinal, userId, comprobanteId]
@@ -171,6 +168,51 @@ async function montoEnMonedaCuotaInicial(solicitudId, monto, moneda) {
     valorUsdALocal = tc?.valor_usd_a_local ?? null;
   }
   return convertirMonto(monto, monedaIngreso, inicialMoneda, valorUsdALocal);
+}
+
+/** Total validado por solicitud en moneda de la cuota inicial y en USD (para regla de 500 USD en pago parcial).
+ * Incluye comprobantes de cuota inicial (comprobante_pago) y comprobantes de otros gastos validados. */
+export async function getTotalValidado(solicitudId) {
+  const sumPago = await query(
+    `SELECT COALESCE(SUM(COALESCE(monto, 0)), 0) AS total FROM module_miauto_comprobante_pago WHERE solicitud_id = $1 AND estado = 'validado'`,
+    [solicitudId]
+  );
+  let total = round2(parseFloat(sumPago.rows[0]?.total) || 0);
+
+  const sol = await query(
+    `SELECT s.country, s.cronograma_vehiculo_id FROM module_miauto_solicitud s WHERE s.id = $1`,
+    [solicitudId]
+  );
+  const cvId = sol.rows[0]?.cronograma_vehiculo_id;
+  const country = sol.rows[0]?.country;
+  let inicialMoneda = 'USD';
+  let valorUsdALocal = null;
+  if (cvId) {
+    const cv = await query('SELECT inicial_moneda FROM module_miauto_cronograma_vehiculo WHERE id = $1', [cvId]);
+    inicialMoneda = cv.rows[0]?.inicial_moneda || 'USD';
+  }
+  if (country) {
+    const tc = await getTipoCambioByCountry(country);
+    valorUsdALocal = tc?.valor_usd_a_local ?? null;
+  }
+
+  const sumOg = await query(
+    `SELECT monto, moneda FROM module_miauto_comprobante_otros_gastos WHERE solicitud_id = $1 AND estado = 'validado'`,
+    [solicitudId]
+  );
+  for (const row of sumOg.rows || []) {
+    const monto = parseFloat(row.monto) || 0;
+    if (monto <= 0) continue;
+    const monedaOg = (row.moneda && String(row.moneda).toUpperCase() === 'USD') ? 'USD' : 'PEN';
+    const enInicial = convertirMonto(monto, monedaOg, inicialMoneda, valorUsdALocal);
+    if (enInicial != null) total = round2(total + enInicial);
+  }
+
+  let totalUsd = total;
+  if (inicialMoneda !== 'USD' && valorUsdALocal && valorUsdALocal > 0) {
+    totalUsd = round2(total / valorUsdALocal);
+  }
+  return { total, totalUsd };
 }
 
 /** El admin agrega un pago manual (sin archivo): se registra como comprobante validado y suma a la cuota inicial. */

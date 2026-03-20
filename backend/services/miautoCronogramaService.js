@@ -1,5 +1,145 @@
 import { query } from '../config/database.js';
 
+const TIPOS_VEHICULO = ['nuevo', 'seminuevo', 'semiusado'];
+
+function defaultRequisitosVehiculo() {
+  return { tipo_vehiculo: 'nuevo' };
+}
+
+/** @param {any} raw - JSONB u objeto desde DB (cronograma): solo tipo_vehiculo por plan */
+export function parseRequisitosVehiculo(raw) {
+  let obj = raw;
+  if (raw == null) return defaultRequisitosVehiculo();
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return defaultRequisitosVehiculo();
+    }
+  }
+  if (typeof obj !== 'object' || obj === null) return defaultRequisitosVehiculo();
+  return mergeRequisitosVehiculo(obj);
+}
+
+function mergeRequisitosVehiculo(partial) {
+  let tipo = TIPOS_VEHICULO.includes(partial.tipo_vehiculo) ? partial.tipo_vehiculo : null;
+  if (!tipo && partial.tipos_condicion && typeof partial.tipos_condicion === 'object') {
+    const tc = partial.tipos_condicion;
+    if (tc.nuevo) tipo = 'nuevo';
+    else if (tc.seminuevo) tipo = 'seminuevo';
+    else if (tc.semiusado) tipo = 'semiusado';
+  }
+  if (!tipo) tipo = 'nuevo';
+  return { tipo_vehiculo: tipo };
+}
+
+function defaultRequisitosGastosVehiculo() {
+  return {
+    todo_riesgo_y_gps_modo: 'separado',
+    src: {
+      monto: 0,
+      moneda: 'USD',
+      cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 5 },
+    },
+    gps: {
+      monto: 0,
+      moneda: 'PEN',
+      cobro: { tipo: 'mensual', dia_mes: 28 },
+    },
+    soat: {
+      monto: 0,
+      moneda: 'PEN',
+      cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 5 },
+    },
+    impuesto_vehicular: {
+      monto: 0,
+      moneda: 'PEN',
+      cobro: {
+        tipo: 'sat_febrero_cuotas',
+        mes_inicio: 2,
+        cuotas: 4,
+        anios_vigencia_tras_modelo: 3,
+      },
+    },
+    todo_riesgo: {
+      monto: 0,
+      moneda: 'PEN',
+      cobro: { tipo: 'semanal', semanas: 26 },
+    },
+    todo_riesgo_mas_gps_agrupado: {
+      monto: 0,
+      moneda: 'PEN',
+      cobro: { tipo: 'semanal', semanas: 26 },
+    },
+  };
+}
+
+/** @param {any} raw - JSONB por fila module_miauto_cronograma_vehiculo */
+export function parseRequisitosGastosVehiculo(raw) {
+  let obj = raw;
+  if (raw == null) return defaultRequisitosGastosVehiculo();
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return defaultRequisitosGastosVehiculo();
+    }
+  }
+  if (typeof obj !== 'object' || obj === null) return defaultRequisitosGastosVehiculo();
+  return mergeRequisitosGastosVehiculo(obj);
+}
+
+function mergeRequisitosGastosVehiculo(partial) {
+  const d = defaultRequisitosGastosVehiculo();
+  d.todo_riesgo_y_gps_modo = partial.todo_riesgo_y_gps_modo === 'agrupado' ? 'agrupado' : 'separado';
+
+  const mergeMonto = (key, defMoneda = 'PEN') => {
+    const x = partial[key];
+    if (!x || typeof x !== 'object') return;
+    const moneda = x.moneda === 'USD' ? 'USD' : x.moneda === 'PEN' ? 'PEN' : defMoneda;
+    d[key] = {
+      ...d[key],
+      monto: Math.max(0, parseFloat(x.monto) || 0),
+      moneda,
+    };
+    if (x.cobro && typeof x.cobro === 'object') {
+      const c = x.cobro;
+      if (key === 'src' || key === 'soat') {
+        d[key].cobro = {
+          tipo: c.tipo || 'mensual_antes_vencimiento',
+          meses_anticipo: Math.min(12, Math.max(1, parseInt(c.meses_anticipo, 10) || 5)),
+        };
+      } else if (key === 'gps') {
+        d[key].cobro = {
+          tipo: c.tipo || 'mensual',
+          dia_mes: Math.min(28, Math.max(1, parseInt(c.dia_mes, 10) || 28)),
+        };
+      } else if (key === 'impuesto_vehicular') {
+        d[key].cobro = {
+          tipo: c.tipo || 'sat_febrero_cuotas',
+          mes_inicio: 2,
+          cuotas: Math.min(12, Math.max(1, parseInt(c.cuotas, 10) || 4)),
+          anios_vigencia_tras_modelo: Math.min(10, Math.max(1, parseInt(c.anios_vigencia_tras_modelo, 10) || 3)),
+        };
+      } else if (key === 'todo_riesgo' || key === 'todo_riesgo_mas_gps_agrupado') {
+        d[key].cobro = {
+          tipo: c.tipo || 'semanal',
+          semanas: Math.min(52, Math.max(1, parseInt(c.semanas, 10) || 26)),
+        };
+      }
+    }
+  };
+
+  mergeMonto('src', 'USD');
+  mergeMonto('gps');
+  mergeMonto('soat');
+  mergeMonto('impuesto_vehicular');
+  mergeMonto('todo_riesgo');
+  mergeMonto('todo_riesgo_mas_gps_agrupado');
+
+  return d;
+}
+
 /**
  * Parsea el campo "viajes" de una fila del cronograma (ej: "0 - 119", "120-239", "400+").
  * @param {string} viajesStr - Ej: "0 - 119", "0-119", "400+", "400"
@@ -32,8 +172,19 @@ export function parseViajesInterval(viajesStr) {
 }
 
 /**
+ * Devuelve el mínimo del intervalo de viajes de una regla (para usar como inicio del rango en contexto).
+ * @param {{ viajes: string }} rule
+ * @returns {number | null}
+ */
+function getMinViajesForRule(rule) {
+  const interval = parseViajesInterval(rule.viajes);
+  return interval ? interval.min : null;
+}
+
+/**
  * Dado un array de rules (con campo viajes) y un número de viajes, devuelve la regla cuyo intervalo contiene ese número.
- * Las rules se evalúan en orden; la primera cuyo intervalo incluya numViajes es la que aplica (bono auto y cuotas por carro).
+ * Las rules se evalúan en orden. Si una fila tiene un solo número N (ej. "120", "150"), se interpreta como rango
+ * desde N hasta (inicio de la siguiente fila) − 1, o hasta +∞ si es la última fila.
  * @param {Array<{ viajes: string, [key: string]: any }>} rules - Filas del cronograma ordenadas por orden
  * @param {number} numViajes - Número de viajes del conductor
  * @returns {object | null} - La regla que aplica o null si ninguna coincide
@@ -42,9 +193,19 @@ export function getRuleForTripCount(rules, numViajes) {
   if (!Array.isArray(rules) || rules.length === 0 || numViajes == null || numViajes < 0) return null;
   const n = Number(numViajes);
   if (Number.isNaN(n)) return null;
-  for (const rule of rules) {
-    const interval = parseViajesInterval(rule.viajes);
+  for (let i = 0; i < rules.length; i++) {
+    const rule = rules[i];
+    let interval = parseViajesInterval(rule.viajes);
     if (!interval) continue;
+    if (interval.min === interval.max) {
+      const nextRule = i + 1 < rules.length ? rules[i + 1] : null;
+      const nextMin = nextRule != null ? getMinViajesForRule(nextRule) : null;
+      if (typeof nextMin === 'number' && nextMin > interval.min) {
+        interval = { min: interval.min, max: nextMin - 1 };
+      } else if (nextRule == null) {
+        interval = { min: interval.min, max: Number.POSITIVE_INFINITY };
+      }
+    }
     if (n >= interval.min && n <= interval.max) return rule;
   }
   return null;
@@ -67,7 +228,7 @@ export async function listCronogramas(filters = {}) {
   }
 
   const listRes = await query(
-    `SELECT c.id, c.name, c.country, c.active, c.tasa_interes_mora FROM module_miauto_cronograma c ${where} ORDER BY c.name`,
+    `SELECT c.id, c.name, c.country, c.active, c.tasa_interes_mora, c.bono_tiempo_activo, c.cuotas_otros_gastos, c.requisitos_vehiculo FROM module_miauto_cronograma c ${where} ORDER BY c.name`,
     params
   );
 
@@ -78,12 +239,12 @@ export async function listCronogramas(filters = {}) {
   const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
   const [vehiclesRes, rulesRes] = await Promise.all([
     query(
-      `SELECT id, cronograma_id, name, inicial, inicial_moneda, cuotas_semanales, image, orden
+      `SELECT id, cronograma_id, name, inicial, inicial_moneda, cuotas_semanales, image, orden, requisitos_gastos
        FROM module_miauto_cronograma_vehiculo WHERE cronograma_id IN (${placeholders}) ORDER BY cronograma_id, orden`,
       ids
     ),
     query(
-      `SELECT id, cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden
+      `SELECT id, cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo
        FROM module_miauto_cronograma_rule WHERE cronograma_id IN (${placeholders}) ORDER BY cronograma_id, orden`,
       ids
     ),
@@ -100,6 +261,7 @@ export async function listCronogramas(filters = {}) {
       inicial_moneda: v.inicial_moneda || 'USD',
       cuotas_semanales: parseInt(v.cuotas_semanales, 10) || 0,
       image: v.image || undefined,
+      requisitos_gastos: parseRequisitosGastosVehiculo(v.requisitos_gastos),
     });
   }
   const rulesByCron = {};
@@ -122,13 +284,19 @@ export async function listCronogramas(filters = {}) {
     country: row.country,
     active: row.active,
     tasa_interes_mora: parseFloat(row.tasa_interes_mora) || 0,
+    bono_tiempo_activo: !!row.bono_tiempo_activo,
+    cuotas_otros_gastos: row.cuotas_otros_gastos != null ? parseInt(row.cuotas_otros_gastos, 10) : 26,
+    requisitos_vehiculo: parseRequisitosVehiculo(row.requisitos_vehiculo),
     vehicles: vehiclesByCron[row.id] || [],
     rules: rulesByCron[row.id] || [],
   }));
 }
 
 export async function getCronogramaById(id) {
-  const res = await query('SELECT id, name, country, active, tasa_interes_mora, created_at, updated_at FROM module_miauto_cronograma WHERE id = $1', [id]);
+  const res = await query(
+    'SELECT id, name, country, active, tasa_interes_mora, bono_tiempo_activo, cuotas_otros_gastos, requisitos_vehiculo, created_at, updated_at FROM module_miauto_cronograma WHERE id = $1',
+    [id]
+  );
   if (res.rows.length === 0) return null;
   const row = res.rows[0];
   const vehicles = await query(
@@ -136,7 +304,7 @@ export async function getCronogramaById(id) {
     [id]
   );
   const rules = await query(
-    'SELECT id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden FROM module_miauto_cronograma_rule WHERE cronograma_id = $1 ORDER BY orden, created_at',
+    'SELECT id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo FROM module_miauto_cronograma_rule WHERE cronograma_id = $1 ORDER BY orden, created_at',
     [id]
   );
   return {
@@ -145,6 +313,9 @@ export async function getCronogramaById(id) {
     country: row.country,
     active: row.active,
     tasa_interes_mora: parseFloat(row.tasa_interes_mora) || 0,
+    bono_tiempo_activo: !!row.bono_tiempo_activo,
+    cuotas_otros_gastos: row.cuotas_otros_gastos != null ? parseInt(row.cuotas_otros_gastos, 10) : 26,
+    requisitos_vehiculo: parseRequisitosVehiculo(row.requisitos_vehiculo),
     vehicles: (vehicles.rows || []).map((v) => ({
       id: v.id,
       name: v.name,
@@ -152,6 +323,7 @@ export async function getCronogramaById(id) {
       inicial_moneda: v.inicial_moneda || 'USD',
       cuotas_semanales: parseInt(v.cuotas_semanales, 10) || 0,
       image: v.image || undefined,
+      requisitos_gastos: parseRequisitosGastosVehiculo(v.requisitos_gastos),
     })),
     rules: (rules.rows || []).map((r) => ({
       id: r.id,
@@ -160,6 +332,8 @@ export async function getCronogramaById(id) {
       bono_auto_moneda: r.bono_auto_moneda || 'PEN',
       cuotas_por_vehiculo: Array.isArray(r.cuotas_por_vehiculo) ? r.cuotas_por_vehiculo : [],
       cuota_moneda_por_vehiculo: Array.isArray(r.cuota_moneda_por_vehiculo) ? r.cuota_moneda_por_vehiculo : [],
+      pct_comision: r.pct_comision != null ? parseFloat(r.pct_comision) : 0,
+      cobro_saldo: r.cobro_saldo != null ? parseFloat(r.cobro_saldo) : 0,
     })),
   };
 }
@@ -171,12 +345,31 @@ function normalizeTasaInteresMora(value) {
   return num > 1 ? num / 100 : num;
 }
 
+function normalizeCuotasOtrosGastos(value) {
+  if (value == null || value === '') return 26;
+  const num = parseInt(value, 10);
+  if (Number.isNaN(num) || num < 1) return 26;
+  return Math.min(99, num);
+}
+
 export async function createCronograma(data) {
-  const { name, country = 'PE', active = true, tasa_interes_mora, vehicles = [], rules = [] } = data;
+  const {
+    name,
+    country = 'PE',
+    active = true,
+    tasa_interes_mora,
+    bono_tiempo_activo = false,
+    cuotas_otros_gastos,
+    requisitos_vehiculo: reqRaw,
+    vehicles = [],
+    rules = [],
+  } = data;
   const tasa = normalizeTasaInteresMora(tasa_interes_mora);
+  const nOtros = normalizeCuotasOtrosGastos(cuotas_otros_gastos);
+  const reqJson = JSON.stringify(mergeRequisitosVehiculo(reqRaw && typeof reqRaw === 'object' ? reqRaw : {}));
   const ins = await query(
-    'INSERT INTO module_miauto_cronograma (name, country, active, tasa_interes_mora) VALUES ($1, $2, $3, $4) RETURNING id',
-    [String(name).trim() || 'Sin nombre', country, !!active, tasa]
+    'INSERT INTO module_miauto_cronograma (name, country, active, tasa_interes_mora, bono_tiempo_activo, cuotas_otros_gastos, requisitos_vehiculo) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb) RETURNING id',
+    [String(name).trim() || 'Sin nombre', country, !!active, tasa, !!bono_tiempo_activo, nOtros, reqJson]
   );
   const cronogramaId = ins.rows[0].id;
 
@@ -187,7 +380,8 @@ export async function createCronograma(data) {
           const vPlaceholders = [];
           vehicles.forEach((v, i) => {
             const base = vParams.length + 1;
-            vPlaceholders.push(`($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`);
+            vPlaceholders.push(`($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}::jsonb)`);
+            const reqG = mergeRequisitosGastosVehiculo(v.requisitos_gastos && typeof v.requisitos_gastos === 'object' ? v.requisitos_gastos : {});
             vParams.push(
               cronogramaId,
               (v.name && String(v.name).trim()) || '',
@@ -195,11 +389,12 @@ export async function createCronograma(data) {
               v.inicial_moneda === 'PEN' ? 'PEN' : 'USD',
               parseInt(v.cuotas_semanales, 10) || 0,
               v.image || null,
-              i
+              i,
+              JSON.stringify(reqG)
             );
           });
           return query(
-            `INSERT INTO module_miauto_cronograma_vehiculo (cronograma_id, name, inicial, inicial_moneda, cuotas_semanales, image, orden) VALUES ${vPlaceholders.join(', ')}`,
+            `INSERT INTO module_miauto_cronograma_vehiculo (cronograma_id, name, inicial, inicial_moneda, cuotas_semanales, image, orden, requisitos_gastos) VALUES ${vPlaceholders.join(', ')}`,
             vParams
           );
         })()
@@ -213,7 +408,9 @@ export async function createCronograma(data) {
             const cuotas = Array.isArray(r.cuotas_por_vehiculo) ? r.cuotas_por_vehiculo : [];
             const monedas = Array.isArray(r.cuota_moneda_por_vehiculo) ? r.cuota_moneda_por_vehiculo : [];
             const base = rParams.length + 1;
-            rPlaceholders.push(`($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::jsonb, $${base + 5}::jsonb, $${base + 6})`);
+            rPlaceholders.push(
+              `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::jsonb, $${base + 5}::jsonb, $${base + 6}, $${base + 7}, $${base + 8})`
+            );
             rParams.push(
               cronogramaId,
               (r.viajes && String(r.viajes).trim()) || '',
@@ -221,11 +418,13 @@ export async function createCronograma(data) {
               r.bono_auto_moneda === 'USD' ? 'USD' : 'PEN',
               JSON.stringify(cuotas),
               JSON.stringify(monedas),
-              i
+              i,
+              parseFloat(r.pct_comision) || 0,
+              parseFloat(r.cobro_saldo) || 0
             );
           });
           return query(
-            `INSERT INTO module_miauto_cronograma_rule (cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden) VALUES ${rPlaceholders.join(', ')}`,
+            `INSERT INTO module_miauto_cronograma_rule (cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo) VALUES ${rPlaceholders.join(', ')}`,
             rParams
           );
         })()
@@ -236,21 +435,34 @@ export async function createCronograma(data) {
 }
 
 export async function updateCronograma(id, data) {
-  const existing = await query('SELECT id FROM module_miauto_cronograma WHERE id = $1', [id]);
+  const existing = await query('SELECT id, name, country, active, tasa_interes_mora, bono_tiempo_activo, cuotas_otros_gastos FROM module_miauto_cronograma WHERE id = $1', [id]);
   if (existing.rows.length === 0) return null;
-
-  const { name, country, active, tasa_interes_mora, vehicles = [], rules = [] } = data;
+  const row = existing.rows[0];
+  const { name, country, active, tasa_interes_mora, bono_tiempo_activo, cuotas_otros_gastos, requisitos_vehiculo: reqRaw, vehicles = [], rules = [] } = data;
   const tasa = tasa_interes_mora !== undefined ? normalizeTasaInteresMora(tasa_interes_mora) : null;
   const updates = ['name = $2', 'country = $3', 'active = $4', 'updated_at = CURRENT_TIMESTAMP'];
   const params = [
     id,
-    name != null ? String(name).trim() || 'Sin nombre' : existing.rows[0].name,
-    country || 'PE',
-    active !== undefined ? !!active : true,
+    name != null ? String(name).trim() || 'Sin nombre' : row.name,
+    country || row.country || 'PE',
+    active !== undefined ? !!active : row.active,
   ];
+  let p = 5;
   if (tasa !== null) {
-    updates.push('tasa_interes_mora = $5');
+    updates.push(`tasa_interes_mora = $${p++}`);
     params.push(tasa);
+  }
+  if (bono_tiempo_activo !== undefined) {
+    updates.push(`bono_tiempo_activo = $${p++}`);
+    params.push(!!bono_tiempo_activo);
+  }
+  if (cuotas_otros_gastos !== undefined) {
+    updates.push(`cuotas_otros_gastos = $${p++}`);
+    params.push(normalizeCuotasOtrosGastos(cuotas_otros_gastos));
+  }
+  if (reqRaw !== undefined) {
+    updates.push(`requisitos_vehiculo = $${p++}::jsonb`);
+    params.push(JSON.stringify(mergeRequisitosVehiculo(reqRaw && typeof reqRaw === 'object' ? reqRaw : {})));
   }
   await query(`UPDATE module_miauto_cronograma SET ${updates.join(', ')} WHERE id = $1`, params);
 
@@ -266,7 +478,8 @@ export async function updateCronograma(id, data) {
           const vPlaceholders = [];
           vehicles.forEach((v, i) => {
             const base = vParams.length + 1;
-            vPlaceholders.push(`($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`);
+            vPlaceholders.push(`($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}::jsonb)`);
+            const reqG = mergeRequisitosGastosVehiculo(v.requisitos_gastos && typeof v.requisitos_gastos === 'object' ? v.requisitos_gastos : {});
             vParams.push(
               id,
               (v.name && String(v.name).trim()) || '',
@@ -274,11 +487,12 @@ export async function updateCronograma(id, data) {
               v.inicial_moneda === 'PEN' ? 'PEN' : 'USD',
               parseInt(v.cuotas_semanales, 10) || 0,
               v.image || null,
-              i
+              i,
+              JSON.stringify(reqG)
             );
           });
           return query(
-            `INSERT INTO module_miauto_cronograma_vehiculo (cronograma_id, name, inicial, inicial_moneda, cuotas_semanales, image, orden) VALUES ${vPlaceholders.join(', ')}`,
+            `INSERT INTO module_miauto_cronograma_vehiculo (cronograma_id, name, inicial, inicial_moneda, cuotas_semanales, image, orden, requisitos_gastos) VALUES ${vPlaceholders.join(', ')}`,
             vParams
           );
         })()
@@ -292,7 +506,9 @@ export async function updateCronograma(id, data) {
             const cuotas = Array.isArray(r.cuotas_por_vehiculo) ? r.cuotas_por_vehiculo : [];
             const monedas = Array.isArray(r.cuota_moneda_por_vehiculo) ? r.cuota_moneda_por_vehiculo : [];
             const base = rParams.length + 1;
-            rPlaceholders.push(`($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::jsonb, $${base + 5}::jsonb, $${base + 6})`);
+            rPlaceholders.push(
+              `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::jsonb, $${base + 5}::jsonb, $${base + 6}, $${base + 7}, $${base + 8})`
+            );
             rParams.push(
               id,
               (r.viajes && String(r.viajes).trim()) || '',
@@ -300,11 +516,13 @@ export async function updateCronograma(id, data) {
               r.bono_auto_moneda === 'USD' ? 'USD' : 'PEN',
               JSON.stringify(cuotas),
               JSON.stringify(monedas),
-              i
+              i,
+              parseFloat(r.pct_comision) || 0,
+              parseFloat(r.cobro_saldo) || 0
             );
           });
           return query(
-            `INSERT INTO module_miauto_cronograma_rule (cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden) VALUES ${rPlaceholders.join(', ')}`,
+            `INSERT INTO module_miauto_cronograma_rule (cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo) VALUES ${rPlaceholders.join(', ')}`,
             rParams
           );
         })()

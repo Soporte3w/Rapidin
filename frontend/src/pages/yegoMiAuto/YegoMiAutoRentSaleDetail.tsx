@@ -8,12 +8,18 @@ import { formatDate, formatDateTime } from '../../utils/date';
 import { TablePaginationBar } from '../../components/TablePaginationBar';
 import { useTablePagination } from '../../hooks/useTablePagination';
 import { labelOtrosGastoStatus, type MiautoOtrosGastoRow, type ComprobanteOtrosGastos } from '../../utils/miautoOtrosGastos';
-
-function getAdjuntoUrl(filePath: string | undefined): string {
-  if (!filePath) return '';
-  if (filePath.startsWith('http')) return filePath;
-  return `${window.location.origin}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
-}
+import { monedaCuotasLabel, symMoneda } from '../../utils/miautoAlquilerVentaList';
+import { MIAUTO_NO_CACHE_HEADERS, emptyListIfNotAbort, isAxiosAbortError } from '../../utils/miautoApiUtils';
+import {
+  driverDisplayRentSale,
+  formatKpiMixPenUsd,
+  getMiautoAdjuntoUrl,
+  MIAUTO_CUOTA_STATUS_LABELS,
+  MIAUTO_CUOTA_STATUS_PILL,
+  parseCuotasSemanalesPayload,
+} from '../../utils/miautoRentSaleHelpers';
+import { MiautoComprobantePagoActions } from '../../components/yegoMiAuto/MiautoComprobantePagoActions';
+import { MiautoComprobantesResumenSemana } from '../../components/yegoMiAuto/MiautoComprobantesResumenSemana';
 
 interface CuotaSemanal {
   id: string;
@@ -62,108 +68,6 @@ interface ComprobanteCuotaSemanal {
   created_at?: string;
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  pending: 'Pendiente',
-  overdue: 'Vencida',
-  paid: 'Pagada',
-  partial: 'Pago parcial',
-  bonificada: 'Bonificada',
-};
-
-const STATUS_PILL: Record<string, string> = {
-  pending: 'bg-amber-100 text-amber-800',
-  overdue: 'bg-red-100 text-red-800',
-  paid: 'bg-green-100 text-green-800',
-  partial: 'bg-blue-100 text-blue-800',
-  bonificada: 'bg-emerald-100 text-emerald-800',
-};
-
-function driverDisplay(sol: SolicitudSummary | null, driverNameFromState?: string): string {
-  if (driverNameFromState) return driverNameFromState;
-  if (!sol) return '—';
-  if (sol.phone) return `Tel: ${sol.phone}`;
-  if (sol.email) return sol.email;
-  return sol.dni || '—';
-}
-
-function ComprobantePagoActions({
-  comprobanteId,
-  validando,
-  rechazando,
-  onValidar,
-  onRechazar,
-  montoMaximo,
-  defaultMoneda = 'PEN',
-}: {
-  comprobanteId: string;
-  validando: boolean;
-  rechazando: boolean;
-  onValidar: (id: string, monto: number, moneda: 'PEN' | 'USD') => void;
-  onRechazar: (id: string, motivo: string) => void;
-  montoMaximo?: number;
-  defaultMoneda?: 'PEN' | 'USD';
-}) {
-  const [monto, setMonto] = useState('');
-  const [moneda, setMoneda] = useState<'PEN' | 'USD'>(defaultMoneda);
-  const sym = moneda === 'USD' ? '$' : 'S/.';
-  const handleValidar = () => {
-    const n = parseFloat(monto);
-    if (Number.isNaN(n) || n <= 0) {
-      toast.error('Indica un monto válido');
-      return;
-    }
-    if (montoMaximo != null && montoMaximo > 0 && n > montoMaximo) {
-      toast.error(`El monto no puede superar lo que falta por pagar (${sym} ${montoMaximo.toFixed(2)})`);
-      return;
-    }
-    onValidar(comprobanteId, n, moneda);
-  };
-  const handleRechazar = () => {
-    const motivo = window.prompt('Motivo del rechazo (opcional):');
-    if (motivo === null) return;
-    onRechazar(comprobanteId, motivo.trim());
-  };
-  const placeholder = montoMaximo != null && montoMaximo > 0 ? `Máx. ${sym} ${montoMaximo.toFixed(2)}` : 'Monto';
-  return (
-    <span className="flex flex-wrap items-center gap-1">
-      <input
-        type="number"
-        step="0.01"
-        min="0"
-        max={montoMaximo != null && montoMaximo > 0 ? montoMaximo : undefined}
-        placeholder={placeholder}
-        value={monto}
-        onChange={(e) => setMonto(e.target.value)}
-        className="w-20 px-1.5 py-0.5 border border-gray-300 rounded text-[11px]"
-      />
-      <select
-        value={moneda}
-        onChange={(e) => setMoneda(e.target.value as 'PEN' | 'USD')}
-        className="px-1.5 py-0.5 border border-gray-300 rounded text-[11px]"
-      >
-        <option value="PEN">S/.</option>
-        <option value="USD">USD</option>
-      </select>
-      <button
-        type="button"
-        disabled={validando}
-        onClick={handleValidar}
-        className="px-1.5 py-0.5 bg-green-600 text-white rounded text-[10px] font-medium hover:bg-green-700 disabled:opacity-50"
-      >
-        {validando ? '...' : 'Validar'}
-      </button>
-      <button
-        type="button"
-        disabled={rechazando}
-        onClick={handleRechazar}
-        className="px-1.5 py-0.5 bg-red-600 text-white rounded text-[10px] font-medium hover:bg-red-700 disabled:opacity-50"
-      >
-        {rechazando ? '...' : 'Rechazar'}
-      </button>
-    </span>
-  );
-}
-
 export default function YegoMiAutoRentSaleDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -175,6 +79,8 @@ export default function YegoMiAutoRentSaleDetail() {
   const [comprobantesPagos, setComprobantesPagos] = useState<ComprobanteCuotaSemanal[]>([]);
   const [comprobantePreview, setComprobantePreview] = useState<{ url: string; fileName: string; isImage: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
+  /** Recarga tras validar/rechazar: solo overlay en cronograma (no pantalla entera). */
+  const [refreshingDetail, setRefreshingDetail] = useState(false);
   const [error, setError] = useState('');
   const [idCopied, setIdCopied] = useState(false);
   const [validandoCompId, setValidandoCompId] = useState<string | null>(null);
@@ -201,115 +107,148 @@ export default function YegoMiAutoRentSaleDetail() {
     }).catch(() => toast.error('No se pudo copiar'));
   }, [id]);
 
-  const fetchDetail = useCallback(async () => {
+  const fetchDetail = useCallback(async (signal?: AbortSignal, opts?: { refresh?: boolean }) => {
     if (!id) return;
+    const isRefresh = !!opts?.refresh;
     try {
-      setLoading(true);
+      if (isRefresh) setRefreshingDetail(true);
+      else setLoading(true);
       setError('');
+      const req = { signal, headers: MIAUTO_NO_CACHE_HEADERS };
       const [resSol, resCuotas, resComp, resCompOg] = await Promise.all([
-        api.get(`/miauto/solicitudes/${id}`),
-        api.get(`/miauto/solicitudes/${id}/cuotas-semanales`),
-        api.get(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal`).catch(() => ({ data: [] })),
-        api.get(`/miauto/solicitudes/${id}/comprobantes-otros-gastos`).catch(() => ({ data: [] })),
+        api.get(`/miauto/solicitudes/${id}`, req),
+        api.get(`/miauto/solicitudes/${id}/cuotas-semanales`, req),
+        api.get(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal`, req).catch(emptyListIfNotAbort),
+        api.get(`/miauto/solicitudes/${id}/comprobantes-otros-gastos`, req).catch(emptyListIfNotAbort),
       ]);
       const sol = resSol.data?.data ?? resSol.data;
-      const bodyCuotas = resCuotas.data ?? {};
-      const inner = bodyCuotas.data ?? bodyCuotas;
-      const raw = inner?.data ?? inner;
-      const c = Array.isArray(raw) ? raw : (raw?.data ?? []);
+      const { cuotas: rawCuotas, racha: rachaNum, cuotasSemanalesBonificadas: bonoNum } = parseCuotasSemanalesPayload(resCuotas);
       const comp = resComp.data?.data ?? resComp.data ?? [];
       const compOg = resCompOg.data?.data ?? resCompOg.data ?? [];
-      const rachaNum = typeof inner?.racha === 'number' ? Math.max(0, Math.floor(inner.racha)) : (typeof inner?.racha === 'string' ? parseInt(inner.racha, 10) : null);
-      const bonoNum = typeof inner?.cuotas_semanales_bonificadas === 'number' ? Math.max(0, Math.floor(inner.cuotas_semanales_bonificadas)) : 0;
       setSolicitud(sol || null);
-      setCuotas(Array.isArray(c) ? c : []);
+      setCuotas(rawCuotas as CuotaSemanal[]);
       setComprobantesPagos(Array.isArray(comp) ? comp : []);
       setComprobantesOtrosGastos(Array.isArray(compOg) ? compOg : []);
-      setRacha(Number.isFinite(rachaNum) ? rachaNum : null);
-      setBonoAplicado(Number.isFinite(bonoNum) ? bonoNum : 0);
+      setRacha(rachaNum);
+      setBonoAplicado(bonoNum);
     } catch (e: any) {
-      setError(e.response?.data?.message || 'Error al cargar el detalle');
-      setSolicitud(null);
-      setCuotas([]);
-      setComprobantesPagos([]);
-      setComprobantesOtrosGastos([]);
-      setRacha(null);
-      setBonoAplicado(0);
+      if (isAxiosAbortError(e)) return;
+      const msg = e.response?.data?.message || 'Error al cargar el detalle';
+      if (isRefresh) {
+        toast.error(msg);
+      } else {
+        setError(msg);
+        setSolicitud(null);
+        setCuotas([]);
+        setComprobantesPagos([]);
+        setComprobantesOtrosGastos([]);
+        setRacha(null);
+        setBonoAplicado(0);
+      }
     } finally {
-      setLoading(false);
+      if (signal?.aborted) return;
+      if (isRefresh) setRefreshingDetail(false);
+      else setLoading(false);
     }
   }, [id]);
 
-  const handleValidarComprobante = async (comprobanteId: string, monto: number, moneda: 'PEN' | 'USD') => {
-    if (!id) return;
-    try {
-      setValidandoCompId(comprobanteId);
-      await api.patch(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal/${comprobanteId}/validar`, { monto, moneda });
-      toast.success('Comprobante validado');
-      await fetchDetail();
-    } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Error al validar');
-    } finally {
-      setValidandoCompId(null);
-    }
-  };
+  const runComprobantePatch = useCallback(
+    async (opts: {
+      setBusy: (v: string | null) => void;
+      busyId: string;
+      request: () => Promise<unknown>;
+      successMsg: string;
+      errorMsg: string;
+    }) => {
+      const { setBusy, busyId, request, successMsg, errorMsg } = opts;
+      if (!id) return;
+      try {
+        setBusy(busyId);
+        await request();
+        toast.success(successMsg);
+        await fetchDetail(undefined, { refresh: true });
+      } catch (e: any) {
+        toast.error(e.response?.data?.message || errorMsg);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [id, fetchDetail]
+  );
 
-  const handleRechazarComprobante = async (comprobanteId: string, motivo: string) => {
-    if (!id) return;
-    try {
-      setRechazandoCompId(comprobanteId);
-      await api.patch(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal/${comprobanteId}/rechazar`, { motivo: motivo.trim() });
-      toast.success('Comprobante rechazado');
-      await fetchDetail();
-    } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Error al rechazar');
-    } finally {
-      setRechazandoCompId(null);
-    }
-  };
+  const handleValidarComprobante = (comprobanteId: string, monto: number, moneda: 'PEN' | 'USD') =>
+    runComprobantePatch({
+      setBusy: setValidandoCompId,
+      busyId: comprobanteId,
+      request: () =>
+        api.patch(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal/${comprobanteId}/validar`, { monto, moneda }),
+      successMsg: 'Comprobante validado',
+      errorMsg: 'Error al validar',
+    });
 
-  const handleValidarComprobanteOg = async (comprobanteId: string, monto: number, moneda: 'PEN' | 'USD') => {
-    if (!id) return;
-    try {
-      setValidandoCompOgId(comprobanteId);
-      await api.patch(`/miauto/solicitudes/${id}/comprobantes-otros-gastos/${comprobanteId}/validar`, { monto, moneda });
-      toast.success('Comprobante validado');
-      await fetchDetail();
-    } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Error al validar');
-    } finally {
-      setValidandoCompOgId(null);
-    }
-  };
+  const handleRechazarComprobante = (comprobanteId: string, motivo: string) =>
+    runComprobantePatch({
+      setBusy: setRechazandoCompId,
+      busyId: comprobanteId,
+      request: () =>
+        api.patch(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal/${comprobanteId}/rechazar`, {
+          motivo: motivo.trim(),
+        }),
+      successMsg: 'Comprobante rechazado',
+      errorMsg: 'Error al rechazar',
+    });
 
-  const handleRechazarComprobanteOg = async (comprobanteId: string, motivo: string) => {
-    if (!id) return;
-    try {
-      setRechazandoCompOgId(comprobanteId);
-      await api.patch(`/miauto/solicitudes/${id}/comprobantes-otros-gastos/${comprobanteId}/rechazar`, { motivo: motivo.trim() });
-      toast.success('Comprobante rechazado');
-      await fetchDetail();
-    } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Error al rechazar');
-    } finally {
-      setRechazandoCompOgId(null);
-    }
-  };
+  const handleValidarComprobanteOg = (comprobanteId: string, monto: number, moneda: 'PEN' | 'USD') =>
+    runComprobantePatch({
+      setBusy: setValidandoCompOgId,
+      busyId: comprobanteId,
+      request: () =>
+        api.patch(`/miauto/solicitudes/${id}/comprobantes-otros-gastos/${comprobanteId}/validar`, { monto, moneda }),
+      successMsg: 'Comprobante validado',
+      errorMsg: 'Error al validar',
+    });
+
+  const handleRechazarComprobanteOg = (comprobanteId: string, motivo: string) =>
+    runComprobantePatch({
+      setBusy: setRechazandoCompOgId,
+      busyId: comprobanteId,
+      request: () =>
+        api.patch(`/miauto/solicitudes/${id}/comprobantes-otros-gastos/${comprobanteId}/rechazar`, {
+          motivo: motivo.trim(),
+        }),
+      successMsg: 'Comprobante rechazado',
+      errorMsg: 'Error al rechazar',
+    });
 
   const toggleComprobantesOtros = useCallback((otrosGastosId: string) => {
     setComprobantesOtrosAbierto((prev) => ({ ...prev, [otrosGastosId]: !prev[otrosGastosId] }));
   }, []);
 
   useEffect(() => {
-    fetchDetail();
+    const ac = new AbortController();
+    fetchDetail(ac.signal);
+    return () => ac.abort();
   }, [fetchDetail]);
 
   const totalCuotas = cuotas.length;
   const cuotasPagadas = cuotas.filter((c) => c.status === 'paid' || c.status === 'bonificada').length;
   const cuotasVencidas = cuotas.filter((c) => c.status === 'overdue').length;
-  const totalPagado = cuotas.reduce((sum, c) => sum + (c.paid_amount || 0), 0);
-  /** Monto vencido: saldo pendiente solo de las cuotas con estado vencido */
-  const totalVencido = cuotas.filter((c) => c.status === 'overdue').reduce((sum, c) => sum + (c.pending_total || 0), 0);
+  const kpiTotalesPorMoneda = useMemo(() => {
+    let totalPagadoPEN = 0;
+    let totalPagadoUSD = 0;
+    let totalVencidoPEN = 0;
+    let totalVencidoUSD = 0;
+    for (const c of cuotas) {
+      if (c.moneda === 'USD') {
+        totalPagadoUSD += c.paid_amount || 0;
+        if (c.status === 'overdue') totalVencidoUSD += c.pending_total || 0;
+      } else {
+        totalPagadoPEN += c.paid_amount || 0;
+        if (c.status === 'overdue') totalVencidoPEN += c.pending_total || 0;
+      }
+    }
+    return { totalPagadoPEN, totalPagadoUSD, totalVencidoPEN, totalVencidoUSD };
+  }, [cuotas]);
   const planCuotas = solicitud?.cronograma_vehiculo?.cuotas_semanales ?? totalCuotas;
 
   const cronPg = useTablePagination(cuotas);
@@ -319,22 +258,15 @@ export default function YegoMiAutoRentSaleDetail() {
   );
   const otrosPg = useTablePagination(otrosGastosRows);
 
-  /** Agrupar comprobantes por cuota (semana) para mostrar "Semana 2 (2 comprobantes)" cuando hay pagos parciales */
-  const comprobantesPorSemana = useMemo(() => {
-    const byCuota: Record<string, ComprobanteCuotaSemanal[]> = {};
+  const comprobantesByCuotaId = useMemo(() => {
+    const by: Record<string, ComprobanteCuotaSemanal[]> = {};
     for (const comp of comprobantesPagos) {
-      const id = comp.cuota_semanal_id;
-      if (!byCuota[id]) byCuota[id] = [];
-      byCuota[id].push(comp);
+      const cid = comp.cuota_semanal_id;
+      if (!by[cid]) by[cid] = [];
+      by[cid].push(comp);
     }
-    return cuotas
-      .filter((c) => (byCuota[c.id]?.length ?? 0) > 0)
-      .map((c) => ({
-        cuota: c,
-        numeroSemana: cuotas.findIndex((x) => x.id === c.id) + 1,
-        comprobantes: byCuota[c.id] ?? [],
-      }));
-  }, [comprobantesPagos, cuotas]);
+    return by;
+  }, [comprobantesPagos]);
 
   /** Comprobantes de otros gastos agrupados por otros_gastos_id */
   const comprobantesPorOtrosGastos = useMemo(() => {
@@ -373,6 +305,8 @@ export default function YegoMiAutoRentSaleDetail() {
     );
   }
 
+  const bonoTiempoActivo = solicitud.cronograma?.bono_tiempo_activo === true;
+
   return (
     <div className="space-y-6">
       <header className="bg-[#8B1A1A] rounded-lg p-4 lg:p-5">
@@ -384,7 +318,7 @@ export default function YegoMiAutoRentSaleDetail() {
               </div>
               <div>
                 <h1 className="text-lg lg:text-xl font-bold text-white leading-tight">
-                  {driverDisplay(solicitud, driverNameFromState)}
+                  {driverDisplayRentSale(solicitud, driverNameFromState)}
                 </h1>
                 <p className="text-xs lg:text-sm text-white/90 mt-0.5">
                   Cronograma y métricas del contrato
@@ -416,80 +350,79 @@ export default function YegoMiAutoRentSaleDetail() {
       </div>
 
       {/* Métricas KPI */}
-      {(() => {
-        const bonoTiempoActivo = solicitud?.cronograma?.bono_tiempo_activo === true;
-        return (
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-              <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
-                <div className="flex items-center gap-2 text-gray-600 text-sm mb-1">
-                  <Calendar className="w-4 h-4" />
-                  <span>Cuotas</span>
-                </div>
-                <p className="text-xl font-bold text-gray-900">
-                  {cuotasPagadas} / {planCuotas || totalCuotas}
-                </p>
-                <p className="text-xs text-gray-500">pagadas del plan</p>
-              </div>
-              <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
-                <div className="flex items-center gap-2 text-gray-600 text-sm mb-1">
-                  <TrendingUp className="w-4 h-4" />
-                  <span>Vencidas</span>
-                </div>
-                <p className={`text-xl font-bold ${cuotasVencidas > 0 ? 'text-red-600' : 'text-gray-900'}`}>
-                  {cuotasVencidas}
-                </p>
-              </div>
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+          <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-gray-600 text-sm mb-1">
+              <Calendar className="w-4 h-4" />
+              <span>Cuotas</span>
+            </div>
+            <p className="text-xl font-bold text-gray-900">
+              {cuotasPagadas} / {planCuotas || totalCuotas}
+            </p>
+            <p className="text-xs text-gray-500">pagadas del plan</p>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-gray-600 text-sm mb-1">
+              <TrendingUp className="w-4 h-4" />
+              <span>Vencidas</span>
+            </div>
+            <p className={`text-xl font-bold ${cuotasVencidas > 0 ? 'text-red-600' : 'text-gray-900'}`}>
+              {cuotasVencidas}
+            </p>
+          </div>
+          <div className="bg-white rounded-lg border border-green-100 p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-green-700 text-sm mb-1">
+              <Banknote className="w-4 h-4" />
+              <span>Total pagado</span>
+            </div>
+            <p className="text-xl font-bold text-green-800">
+              {formatKpiMixPenUsd(kpiTotalesPorMoneda.totalPagadoPEN, kpiTotalesPorMoneda.totalPagadoUSD)}
+            </p>
+          </div>
+          <div className="bg-white rounded-lg border border-red-100 p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-red-700 text-sm mb-1">
+              <Banknote className="w-4 h-4" />
+              <span>Vencido</span>
+            </div>
+            <p
+              className={`text-xl font-bold ${
+                kpiTotalesPorMoneda.totalVencidoPEN + kpiTotalesPorMoneda.totalVencidoUSD > 0 ? 'text-red-600' : 'text-gray-900'
+              }`}
+            >
+              {formatKpiMixPenUsd(kpiTotalesPorMoneda.totalVencidoPEN, kpiTotalesPorMoneda.totalVencidoUSD)}
+            </p>
+            <p className="text-xs text-gray-500">saldo en cuotas vencidas</p>
+          </div>
+          {bonoTiempoActivo && (
+            <>
               <div className="bg-white rounded-lg border border-green-100 p-4 shadow-sm">
                 <div className="flex items-center gap-2 text-green-700 text-sm mb-1">
-                  <Banknote className="w-4 h-4" />
-                  <span>Total pagado</span>
+                  <TrendingUp className="w-4 h-4" />
+                  <span>Racha</span>
                 </div>
-                <p className="text-xl font-bold text-green-800">
-                  {solicitud?.cronograma_vehiculo?.inicial_moneda === 'USD' ? '$' : 'S/.'} {totalPagado.toFixed(2)}
+                <p className="text-xl font-bold text-green-800">{racha ?? '—'}</p>
+                <p className="text-xs text-gray-500">cuotas seguidas al día</p>
+              </div>
+              <div className="bg-white rounded-lg border border-[#8B1A1A]/20 p-4 shadow-sm">
+                <div className="flex items-center gap-2 text-[#8B1A1A] text-sm mb-1">
+                  <Award className="w-4 h-4" />
+                  <span>Bono tiempo</span>
+                </div>
+                <p className="text-xl font-bold text-[#8B1A1A]">{bonoAplicado}</p>
+                <p className="text-xs text-gray-500">
+                  {bonoAplicado >= 1 ? `${bonoAplicado} cuota${bonoAplicado !== 1 ? 's' : ''} bonificada${bonoAplicado !== 1 ? 's' : ''}` : 'aplicado'}
                 </p>
               </div>
-              <div className="bg-white rounded-lg border border-red-100 p-4 shadow-sm">
-                <div className="flex items-center gap-2 text-red-700 text-sm mb-1">
-                  <Banknote className="w-4 h-4" />
-                  <span>Vencido</span>
-                </div>
-                <p className={`text-xl font-bold ${totalVencido > 0 ? 'text-red-600' : 'text-gray-900'}`}>
-                  {solicitud?.cronograma_vehiculo?.inicial_moneda === 'USD' ? '$' : 'S/.'} {totalVencido.toFixed(2)}
-                </p>
-                <p className="text-xs text-gray-500">saldo en cuotas vencidas</p>
-              </div>
-              {bonoTiempoActivo && (
-                <>
-                  <div className="bg-white rounded-lg border border-green-100 p-4 shadow-sm">
-                    <div className="flex items-center gap-2 text-green-700 text-sm mb-1">
-                      <TrendingUp className="w-4 h-4" />
-                      <span>Racha</span>
-                    </div>
-                    <p className="text-xl font-bold text-green-800">{racha ?? '—'}</p>
-                    <p className="text-xs text-gray-500">cuotas seguidas al día</p>
-                  </div>
-                  <div className="bg-white rounded-lg border border-[#8B1A1A]/20 p-4 shadow-sm">
-                    <div className="flex items-center gap-2 text-[#8B1A1A] text-sm mb-1">
-                      <Award className="w-4 h-4" />
-                      <span>Bono tiempo</span>
-                    </div>
-                    <p className="text-xl font-bold text-[#8B1A1A]">{bonoAplicado}</p>
-                    <p className="text-xs text-gray-500">
-                      {bonoAplicado >= 1 ? `${bonoAplicado} cuota${bonoAplicado !== 1 ? 's' : ''} bonificada${bonoAplicado !== 1 ? 's' : ''}` : 'aplicado'}
-                    </p>
-                  </div>
-                </>
-              )}
-            </div>
-            {bonoTiempoActivo && (
-              <p className="text-xs text-gray-500 px-1">
-                Bono tiempo: 1 cuota bonificada por cada 4 pagos consecutivos a tiempo; en cada una de esas 4 semanas el conductor debe tener al menos 120 viajes.
-              </p>
-            )}
-          </div>
-        );
-      })()}
+            </>
+          )}
+        </div>
+        {bonoTiempoActivo && (
+          <p className="text-xs text-gray-500 px-1">
+            Bono tiempo: 1 cuota bonificada por cada 4 pagos consecutivos a tiempo; en cada una de esas 4 semanas el conductor debe tener al menos 120 viajes.
+          </p>
+        )}
+      </div>
 
       {/* Datos del contrato */}
       <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
@@ -538,7 +471,7 @@ export default function YegoMiAutoRentSaleDetail() {
       </div>
 
       {/* Cronograma semanal + Otros gastos (pestañas) */}
-      <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden relative min-h-[200px]">
         <div className="flex border-b border-gray-200 px-2 sm:px-3 gap-0.5" role="tablist" aria-label="Cronograma y otros gastos">
           <button
             type="button"
@@ -582,11 +515,11 @@ export default function YegoMiAutoRentSaleDetail() {
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Semana</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Vence</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Cuota completa</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Viajes - B.A</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Cuota semanal (plan)</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Viajes / Bono auto</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">% comisión</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Cobro del saldo</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Cuota a pagar</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Pendiente a pagar</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">
                     Mora{solicitud?.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0 ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}% interés)` : ''}
                   </th>
@@ -599,9 +532,13 @@ export default function YegoMiAutoRentSaleDetail() {
                 {cronPg.paginatedItems.map((c, index) => {
                   const numeroSemana = (cronPg.page - 1) * cronPg.limit + index + 1;
                   const pendingTotal = Math.max(0, c.pending_total ?? ((c.amount_due ?? 0) + (c.late_fee ?? 0) - (c.paid_amount ?? 0)));
-                  const comps = comprobantesPorSemana.find((p) => p.cuota.id === c.id)?.comprobantes ?? [];
+                  const comps = comprobantesByCuotaId[c.id] ?? [];
                   const abierto = comprobantesSemanaAbierta[c.id] === true;
-                  const symCuota = (c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda) === 'USD' ? '$' : 'S/.';
+                  const symCuota = symMoneda(c.moneda);
+                  const cuotaBrutaPlan =
+                    c.cuota_semanal != null && !Number.isNaN(Number(c.cuota_semanal))
+                      ? Number(c.cuota_semanal)
+                      : (c.amount_due ?? 0);
                   return (
                   <Fragment key={c.id}>
                   <tr className="hover:bg-gray-50">
@@ -625,16 +562,16 @@ export default function YegoMiAutoRentSaleDetail() {
                     <td className="px-4 py-3 text-sm text-gray-700">
                       {c.due_date ? formatDate(c.due_date, 'es-ES') : (c.week_start_date ? formatDate(c.week_start_date, 'es-ES') : '—')}
                     </td>
-                    <td className="px-4 py-3 text-sm text-right font-medium text-gray-900">
-                      {symCuota} {(c.amount_due ?? 0).toFixed(2)}
+                    <td className="px-4 py-3 text-sm text-right font-medium text-gray-900" title="Cuota bruta del cronograma (antes de bono auto y descuentos)">
+                      {symCuota} {cuotaBrutaPlan.toFixed(2)}
                     </td>
-                    <td className="px-4 py-3 text-sm text-right text-gray-700 text-xs whitespace-nowrap">
+                    <td className="px-4 py-3 text-xs text-right text-gray-700 whitespace-nowrap">
                       {c.num_viajes != null && c.bono_auto != null
-                        ? `${c.num_viajes} — ${symCuota} ${(c.bono_auto).toFixed(2)}`
+                        ? `${c.num_viajes} viajes — Bono auto ${symCuota} ${Number(c.bono_auto).toFixed(2)}`
                         : c.num_viajes != null
-                          ? String(c.num_viajes)
+                          ? `${c.num_viajes} viajes`
                           : c.bono_auto != null
-                            ? `${symCuota} ${(c.bono_auto).toFixed(2)}`
+                            ? `Bono auto ${symCuota} ${Number(c.bono_auto).toFixed(2)}`
                             : '—'}
                     </td>
                     <td className="px-4 py-3 text-sm text-right text-gray-700 tabular-nums">
@@ -645,7 +582,7 @@ export default function YegoMiAutoRentSaleDetail() {
                     <td className="px-4 py-3 text-sm text-right text-gray-700 tabular-nums">
                       {symCuota} {(c.cobro_saldo ?? 0).toFixed(2)}
                     </td>
-                    <td className="px-4 py-3 text-sm text-right font-medium text-gray-900">
+                    <td className="px-4 py-3 text-sm text-right font-medium text-gray-900" title="Saldo aún por cubrir en esta semana (misma moneda que la cuota)">
                       {symCuota} {pendingTotal.toFixed(2)}
                     </td>
                     <td className="px-4 py-3 text-sm text-right text-red-600 font-medium">
@@ -661,11 +598,11 @@ export default function YegoMiAutoRentSaleDetail() {
                       <div className="flex flex-col gap-0.5 items-center">
                         <span
                           className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                            STATUS_PILL[c.status] ?? 'bg-gray-100 text-gray-700'
+                            MIAUTO_CUOTA_STATUS_PILL[c.status] ?? 'bg-gray-100 text-gray-700'
                           }`}
                           title={c.status === 'bonificada' ? 'Bonificación por 4 cuotas seguidas al día' : undefined}
                         >
-                          {STATUS_LABELS[c.status] ?? c.status}
+                          {MIAUTO_CUOTA_STATUS_LABELS[c.status] ?? c.status}
                         </span>
                         {c.status === 'bonificada' && (
                           <span className="text-[10px] text-gray-500">Por 4 cuotas al día</span>
@@ -704,10 +641,10 @@ export default function YegoMiAutoRentSaleDetail() {
                                 const iconBg = estado === 'validado' ? 'bg-green-100 text-green-700' : estado === 'rechazado' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700';
                                 const labelClass = estado === 'validado' ? 'bg-green-100 text-green-800' : estado === 'rechazado' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800';
                                 const verBtnClass = estado === 'validado' ? 'border-green-200 bg-green-50 text-green-800 hover:bg-green-100' : estado === 'rechazado' ? 'border-red-200 bg-red-50 text-red-800 hover:bg-red-100' : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100';
-                                const url = comp.file_path ? (comp.file_path.startsWith('http') ? comp.file_path : getAdjuntoUrl(comp.file_path)) : '';
+                                const url = comp.file_path ? (comp.file_path.startsWith('http') ? comp.file_path : getMiautoAdjuntoUrl(comp.file_path)) : '';
                                 const isImage = comp.file_path && !/\.pdf$/i.test(comp.file_name || '') && /\.(jpe?g|png|gif|webp)$/i.test(comp.file_name || '');
                                 const openPreview = () => url && setComprobantePreview({ url, fileName: compLabel, isImage: !!isImage });
-                                const symComp = comp.moneda === 'USD' ? '$' : 'S/.';
+                                const symComp = symMoneda(comp.moneda);
                                 return (
                                   <div key={comp.id} className={`rounded-xl border-2 p-3 ${cardBg} hover:shadow-md transition-all flex flex-col gap-2`}>
                                     <div className="flex gap-3">
@@ -757,14 +694,14 @@ export default function YegoMiAutoRentSaleDetail() {
                                     )}
                                     {isPendiente && (
                                       <div className="pt-2 border-t border-gray-200/80">
-                                        <ComprobantePagoActions
+                                        <MiautoComprobantePagoActions
                                           comprobanteId={comp.id}
                                           validando={validandoCompId === comp.id}
                                           rechazando={rechazandoCompId === comp.id}
                                           onValidar={handleValidarComprobante}
                                           onRechazar={handleRechazarComprobante}
                                           montoMaximo={montoMaximo}
-                                          defaultMoneda={(c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda) === 'USD' ? 'USD' : 'PEN'}
+                                          defaultMoneda={monedaCuotasLabel(c.moneda)}
                                         />
                                       </div>
                                     )}
@@ -772,20 +709,12 @@ export default function YegoMiAutoRentSaleDetail() {
                                 );
                               })}
                             </div>
-                            {(() => {
-                              const totalEnv = comps.reduce((s, cp) => s + (Number(cp.monto) || 0), 0);
-                              const verificado = comps.filter((cp) => (cp.estado || '').toLowerCase() === 'validado').reduce((s, cp) => s + (Number(cp.monto) || 0), 0);
-                              const rechazado = comps.filter((cp) => (cp.estado || '').toLowerCase() === 'rechazado').reduce((s, cp) => s + (Number(cp.monto) || 0), 0);
-                              const restantePorPagar = Math.max(0, (c.amount_due || 0) + (c.late_fee ?? 0) - verificado);
-                              return (
-                                <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl bg-white border border-gray-200 px-4 py-3 text-sm text-gray-700 shadow-sm">
-                                  <span><strong className="text-gray-800">Total enviado:</strong> {symCuota} {totalEnv.toFixed(2)}</span>
-                                  <span><strong className="text-gray-800">Verificado:</strong> {symCuota} {verificado.toFixed(2)}</span>
-                                  <span><strong className="text-gray-800">Rechazado:</strong> {symCuota} {rechazado.toFixed(2)}</span>
-                                  <span><strong className="text-gray-800">Pendiente por validar:</strong> {symCuota} {restantePorPagar.toFixed(2)}</span>
-                                </div>
-                              );
-                            })()}
+                            <MiautoComprobantesResumenSemana
+                              sym={symCuota}
+                              comps={comps}
+                              amountDue={c.amount_due || 0}
+                              lateFee={c.late_fee ?? 0}
+                            />
                           </div>
                         </div>
                       </td>
@@ -859,18 +788,18 @@ export default function YegoMiAutoRentSaleDetail() {
                               </td>
                               <td className="px-4 py-3 text-sm text-gray-700">{formatDate(og.due_date, 'es-ES')}</td>
                               <td className="px-4 py-3 text-sm text-right font-medium text-gray-900">
-                                {solicitud?.cronograma_vehiculo?.inicial_moneda === 'PEN' ? 'S/.' : '$'} {Number(og.amount_due).toFixed(2)}
+                                {symMoneda(solicitud?.cronograma_vehiculo?.inicial_moneda)} {Number(og.amount_due).toFixed(2)}
                               </td>
                               <td className="px-4 py-3 text-sm text-right text-green-700">
-                                {solicitud?.cronograma_vehiculo?.inicial_moneda === 'PEN' ? 'S/.' : '$'} {Number(og.paid_amount).toFixed(2)}
+                                {symMoneda(solicitud?.cronograma_vehiculo?.inicial_moneda)} {Number(og.paid_amount).toFixed(2)}
                               </td>
                               <td className="px-4 py-3 text-center">
                                 <span
                                   className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                                    STATUS_PILL[og.status] ?? 'bg-gray-100 text-gray-700'
+                                    MIAUTO_CUOTA_STATUS_PILL[og.status] ?? 'bg-gray-100 text-gray-700'
                                   }`}
                                 >
-                                  {STATUS_LABELS[og.status] ?? labelOtrosGastoStatus(og.status)}
+                                  {MIAUTO_CUOTA_STATUS_LABELS[og.status] ?? labelOtrosGastoStatus(og.status)}
                                 </span>
                               </td>
                             </tr>
@@ -898,10 +827,10 @@ export default function YegoMiAutoRentSaleDetail() {
                                           const compLabel = `Comprobante ${compIdx + 1}`;
                                           const estado = (comp.estado || '').toLowerCase();
                                           const cardBg = estado === 'validado' ? 'bg-green-50/90 border-green-200' : estado === 'rechazado' ? 'bg-red-50/90 border-red-200' : 'bg-amber-50/90 border-amber-200';
-                                          const url = comp.file_path ? (comp.file_path.startsWith('http') ? comp.file_path : getAdjuntoUrl(comp.file_path)) : '';
+                                          const url = comp.file_path ? (comp.file_path.startsWith('http') ? comp.file_path : getMiautoAdjuntoUrl(comp.file_path)) : '';
                                           const isImage = comp.file_path && !/\.pdf$/i.test(comp.file_name || '') && /\.(jpe?g|png|gif|webp)$/i.test(comp.file_name || '');
                                           const openPreview = () => url && setComprobantePreview({ url, fileName: compLabel, isImage: !!isImage });
-                                          const sym = comp.moneda === 'USD' ? '$' : 'S/.';
+                                          const sym = symMoneda(comp.moneda);
                                           return (
                                             <div key={comp.id} className={`rounded-xl border-2 p-3 ${cardBg} hover:shadow-md transition-all flex flex-col gap-2`}>
                                               <div className="flex gap-3">
@@ -951,14 +880,14 @@ export default function YegoMiAutoRentSaleDetail() {
                                               )}
                                               {isPendiente && (
                                                 <div className="pt-2 border-t border-gray-200/80">
-                                                  <ComprobantePagoActions
+                                                  <MiautoComprobantePagoActions
                                                     comprobanteId={comp.id}
                                                     validando={validandoCompOgId === comp.id}
                                                     rechazando={rechazandoCompOgId === comp.id}
                                                     onValidar={handleValidarComprobanteOg}
                                                     onRechazar={handleRechazarComprobanteOg}
                                                     montoMaximo={montoMaximo}
-                                                    defaultMoneda={solicitud?.cronograma_vehiculo?.inicial_moneda === 'USD' ? 'USD' : 'PEN'}
+                                                    defaultMoneda={monedaCuotasLabel(solicitud?.cronograma_vehiculo?.inicial_moneda)}
                                                   />
                                                 </div>
                                               )}
@@ -989,6 +918,18 @@ export default function YegoMiAutoRentSaleDetail() {
               </>
             )}
         </>
+        )}
+        {refreshingDetail && (
+          <div
+            className="absolute inset-0 z-20 flex items-center justify-center bg-white/75 backdrop-blur-[1px]"
+            aria-busy="true"
+            aria-live="polite"
+          >
+            <div className="flex flex-col items-center gap-2">
+              <div className="animate-spin rounded-full h-10 w-10 border-2 border-red-600 border-t-transparent" />
+              <span className="text-sm font-medium text-gray-600">Actualizando cronograma…</span>
+            </div>
+          </div>
         )}
       </div>
 

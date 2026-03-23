@@ -1,4 +1,5 @@
 import { query } from '../config/database.js';
+import { getCronogramasByIds, getMonedaCuotaSemanalPorVehiculo } from './miautoCronogramaService.js';
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helpers.js';
 import { ensureCuotaSemanalForWeek } from './miautoCuotaSemanalService.js';
 import { getTotalValidado } from './miautoComprobantePagoService.js';
@@ -120,6 +121,14 @@ export class ActiveSolicitudError extends Error {
   }
 }
 
+const MIAUTO_SOLICITUD_STATUSES = new Set(['pendiente', 'citado', 'rechazado', 'desistido', 'aprobado']);
+
+function sanitizeSolicitudStatus(value) {
+  const t = trimOrUndefined(value);
+  if (!t) return undefined;
+  return MIAUTO_SOLICITUD_STATUSES.has(t) ? t : undefined;
+}
+
 export const listSolicitudes = async (filters = {}) => {
   const { status, country, date_from, date_to, page = 1, limit = 20, driver_phone, driver_country, park_id, rapidin_driver_id, forDriver } = filters;
   const params = [];
@@ -129,9 +138,10 @@ export const listSolicitudes = async (filters = {}) => {
     fromJoin += ' LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id ';
   }
   let where = ' WHERE 1=1 ';
-  if (status) {
+  const statusFiltered = sanitizeSolicitudStatus(status);
+  if (statusFiltered) {
     where += ` AND s.status = $${n}`;
-    params.push(status);
+    params.push(statusFiltered);
     n += 1;
   }
   if (country) {
@@ -294,12 +304,18 @@ export const listSolicitudes = async (filters = {}) => {
   return { data: rows, total };
 };
 
-/**
- * Listado para sección Alquiler / Venta: mismas solicitudes que en Solicitudes (mismo criterio, sin filtrar por fecha_inicio).
- * Incluye resumen de cuotas: total, pagadas, vencidas, total pagado.
- */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Listado Alquiler/Venta con resumen de cuotas y moneda de cuotas según cronograma. */
 export const listAlquilerVenta = async (filters = {}) => {
-  const { country, page = 1, limit = 20 } = filters;
+  const {
+    country,
+    page = 1,
+    limit = 20,
+    q: qFilter,
+    cronograma_id: cronogramaIdFilter,
+    cuota_estado: cuotaEstadoFilter,
+  } = filters;
   const params = [];
   let n = 1;
   let where = ' WHERE 1=1 ';
@@ -308,51 +324,104 @@ export const listAlquilerVenta = async (filters = {}) => {
     params.push(country);
     n += 1;
   }
-  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const qRaw = (qFilter != null ? String(qFilter) : '').trim();
+  if (qRaw) {
+    const qLower = qRaw.toLowerCase();
+    const qDigits = qRaw.replace(/\D/g, '');
+    where += ` AND (
+      position($${n}::text in lower(coalesce(s.placa_asignada, ''))) > 0
+      OR position($${n}::text in lower(coalesce(s.license_number, ''))) > 0
+      OR position($${n}::text in lower(coalesce(s.dni, ''))) > 0
+      OR position($${n}::text in lower(coalesce(rd.first_name, ''))) > 0
+      OR position($${n}::text in lower(coalesce(rd.last_name, ''))) > 0
+      OR position($${n}::text in lower(trim(coalesce(rd.first_name, '')) || ' ' || trim(coalesce(rd.last_name, '')))) > 0
+      OR (
+        length($${n + 1}::text) >= 3
+        AND regexp_replace(coalesce(s.phone, ''), '[^0-9]', '', 'g') LIKE '%' || $${n + 1}::text || '%'
+      )
+    )`;
+    params.push(qLower, qDigits);
+    n += 2;
+  }
+  const cronogramaId = trimOrUndefined(cronogramaIdFilter);
+  if (cronogramaId && UUID_RE.test(cronogramaId)) {
+    where += ` AND s.cronograma_id = $${n}::uuid`;
+    params.push(cronogramaId);
+    n += 1;
+  }
+
+  const cuotaEstado = trimOrUndefined(cuotaEstadoFilter);
+  const CUOTA_ESTADO = ['vencido', 'pendiente', 'al_dia', 'sin_cuotas'];
+  if (cuotaEstado && CUOTA_ESTADO.includes(cuotaEstado)) {
+    if (cuotaEstado === 'vencido') {
+      where += ` AND COALESCE(cu_sum.n_overdue, 0) > 0`;
+    } else if (cuotaEstado === 'pendiente') {
+      where += ` AND COALESCE(cu_sum.n_pending, 0) > 0`;
+    } else if (cuotaEstado === 'al_dia') {
+      where += ` AND COALESCE(cu_sum.n_overdue, 0) = 0 AND COALESCE(cu_sum.n_cuotas, 0) > 0`;
+    } else if (cuotaEstado === 'sin_cuotas') {
+      where += ` AND COALESCE(cu_sum.n_cuotas, 0) = 0`;
+    }
+  }
+
+  const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * limitNum;
 
-  const countResult = await query(
-    `SELECT COUNT(*)::int AS total FROM module_miauto_solicitud s ${where}`,
-    params
-  );
-  const total = countResult.rows[0]?.total ?? 0;
-
-  const dataResult = await query(
-    `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.fecha_inicio_cobro_semanal, s.placa_asignada,
-            rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
-            c.name AS cronograma_name, v.name AS vehiculo_name, v.cuotas_semanales AS vehiculo_cuotas_semanales
+  const fromBase = `
      FROM module_miauto_solicitud s
      LEFT JOIN module_rapidin_drivers rd ON rd.id = s.rapidin_driver_id
      LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id
      LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id
+     LEFT JOIN (
+       SELECT solicitud_id,
+              COUNT(*) FILTER (WHERE status = 'overdue')::int AS n_overdue,
+              COUNT(*) FILTER (WHERE status = 'pending')::int AS n_pending,
+              COUNT(*)::int AS n_cuotas
+       FROM module_miauto_cuota_semanal
+       GROUP BY solicitud_id
+     ) cu_sum ON cu_sum.solicitud_id = s.id`;
+
+  const listSql = `SELECT s.id, s.cronograma_id, s.cronograma_vehiculo_id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.fecha_inicio_cobro_semanal, s.placa_asignada,
+            rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
+            c.name AS cronograma_name, v.name AS vehiculo_name, v.cuotas_semanales AS vehiculo_cuotas_semanales
+     ${fromBase}
      ${where}
      ORDER BY s.fecha_inicio_cobro_semanal DESC NULLS LAST, s.created_at DESC
-     LIMIT $${n} OFFSET $${n + 1}`,
-    [...params, limitNum, offset]
-  );
+     LIMIT $${n} OFFSET $${n + 1}`;
+
+  const [countResult, dataResult] = await Promise.all([
+    query(`SELECT COUNT(*)::int AS total ${fromBase} ${where}`, params),
+    query(listSql, [...params, limitNum, offset]),
+  ]);
+  const total = countResult.rows[0]?.total ?? 0;
   const rows = dataResult.rows || [];
   const solicitudIds = rows.map((r) => r.id);
-  let cuotaSummaryBySolicitud = {};
-  if (solicitudIds.length > 0) {
-    const summaryRes = await query(
-      `SELECT c.solicitud_id,
-              COUNT(*)::int AS total_cuotas,
-              COUNT(*) FILTER (WHERE c.status IN ('paid', 'bonificada'))::int AS cuotas_pagadas,
-              COUNT(*) FILTER (WHERE c.status = 'overdue')::int AS cuotas_vencidas,
-              COALESCE(SUM(c.paid_amount), 0)::decimal AS total_pagado
-       FROM module_miauto_cuota_semanal c
-       WHERE c.solicitud_id = ANY($1::uuid[])
-       GROUP BY c.solicitud_id`,
-      [solicitudIds]
-    );
-    for (const r of summaryRes.rows || []) {
-      cuotaSummaryBySolicitud[r.solicitud_id] = {
-        total_cuotas: r.total_cuotas,
-        cuotas_pagadas: r.cuotas_pagadas,
-        cuotas_vencidas: r.cuotas_vencidas,
-        total_pagado: parseFloat(r.total_pagado) || 0,
-      };
-    }
+  const cronogramaIds = [...new Set(rows.map((row) => row.cronograma_id).filter(Boolean))];
+
+  const cuotaSummaryBySolicitud = {};
+  const [summaryRes, cronogramaCache] = await Promise.all([
+    solicitudIds.length > 0
+      ? query(
+          `SELECT c.solicitud_id,
+                  COUNT(*)::int AS total_cuotas,
+                  COUNT(*) FILTER (WHERE c.status IN ('paid', 'bonificada'))::int AS cuotas_pagadas,
+                  COUNT(*) FILTER (WHERE c.status = 'overdue')::int AS cuotas_vencidas,
+                  COALESCE(SUM(c.paid_amount), 0)::decimal AS total_pagado
+           FROM module_miauto_cuota_semanal c
+           WHERE c.solicitud_id = ANY($1::uuid[])
+           GROUP BY c.solicitud_id`,
+          [solicitudIds]
+        )
+      : Promise.resolve({ rows: [] }),
+    getCronogramasByIds(cronogramaIds),
+  ]);
+  for (const r of summaryRes.rows || []) {
+    cuotaSummaryBySolicitud[r.solicitud_id] = {
+      total_cuotas: r.total_cuotas,
+      cuotas_pagadas: r.cuotas_pagadas,
+      cuotas_vencidas: r.cuotas_vencidas,
+      total_pagado: parseFloat(r.total_pagado) || 0,
+    };
   }
 
   const nameFromRapidin = (r) => [r.driver_first_name, r.driver_last_name].filter(Boolean).map(String).join(' ').trim() || null;
@@ -372,8 +441,18 @@ export const listAlquilerVenta = async (filters = {}) => {
       const { digits, last9 } = normalizePhoneForDriversMatch(r.phone);
       licenseNum = driverInfoAv.licenses[digits] || driverInfoAv.licenses[last9] || null;
     }
-    const summary = cuotaSummaryBySolicitud[r.id] || { total_cuotas: 0, cuotas_pagadas: 0, cuotas_vencidas: 0, total_pagado: 0 };
+    const summary = cuotaSummaryBySolicitud[r.id] || {
+      total_cuotas: 0,
+      cuotas_pagadas: 0,
+      cuotas_vencidas: 0,
+      total_pagado: 0,
+    };
     const cuotasPlan = r.vehiculo_cuotas_semanales != null ? parseInt(r.vehiculo_cuotas_semanales, 10) || 0 : 0;
+    const crono = r.cronograma_id ? cronogramaCache.get(String(r.cronograma_id)) : null;
+    const moneda =
+      crono && r.cronograma_vehiculo_id
+        ? getMonedaCuotaSemanalPorVehiculo(crono, r.cronograma_vehiculo_id)
+        : 'PEN';
     return {
       id: r.id,
       dni: r.dni,
@@ -392,6 +471,7 @@ export const listAlquilerVenta = async (filters = {}) => {
       cuotas_pagadas: summary.cuotas_pagadas,
       cuotas_vencidas: summary.cuotas_vencidas,
       total_pagado: summary.total_pagado,
+      moneda,
     };
   });
   return { data, total };

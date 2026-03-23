@@ -11,11 +11,12 @@ import { sanitizeBody, sanitizeQuery } from './middleware/sanitize.js';
 import { initializeJobs } from './jobs/index.js';
 import { initializeWebSocket } from './realtime/subscriber.js';
 import { initializeDatabaseListener } from './realtime/listener.js';
-import { loadProxiesFromUrlIfConfigured } from './services/proxyLoader.js';
+import { loadProxiesFromUrlIfConfigured, getProxyCount } from './services/proxyLoader.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Producción: backend/.env | Desarrollo: .env.development
 const envFile = process.env.NODE_ENV === 'production'
-  ? '.env.production'
+  ? '.env'
   : '.env.development';
 
 dotenv.config({ path: path.join(__dirname, envFile) });
@@ -25,6 +26,26 @@ try {
 } catch (error) {
   logger.error(error.message);
   process.exit(1);
+}
+
+/** Carga proxies ANTES de abrir el servidor: si no, getNextProxyConfig podía marcar loadAttempted con solo archivo y saltarse YANGO_PROXIES_URL. */
+try {
+  await loadProxiesFromUrlIfConfigured();
+  const proxyN = getProxyCount();
+  const hasProxyUrl = !!(process.env.YANGO_PROXIES_URL || '').trim();
+  if (hasProxyUrl) {
+    if (proxyN > 0) {
+      logger.info(`Proxies: ${proxyN} disponible(s) (descarga YANGO_PROXIES_URL o respaldo desde archivo)`);
+    } else {
+      logger.warn('Proxies: YANGO_PROXIES_URL definida pero lista vacía o error al descargar; revisa URL, formato o archivo. API Fleet sin proxy.');
+    }
+  } else if (proxyN > 0) {
+    logger.info(`Proxies: ${proxyN} desde archivo (YANGO_PROXIES_FILE o config/proxies.txt)`);
+  } else {
+    logger.info('Proxies: ninguno; peticiones a Fleet API sin proxy (hay reintentos si hay rate limit).');
+  }
+} catch (err) {
+  logger.warn('Proxies: error al inicializar', err?.message || err);
 }
 
 const app = express();
@@ -125,10 +146,6 @@ const server = app.listen(PORT, () => {
   initializeJobs();
   initializeWebSocket(server);
   initializeDatabaseListener();
-
-  loadProxiesFromUrlIfConfigured()
-    .then((ok) => { if (ok) logger.info('Proxies cargados desde YANGO_PROXIES_URL'); })
-    .catch((err) => logger.warn('Proxies: no se pudo cargar desde URL', err?.message));
 });
 
 export default app;

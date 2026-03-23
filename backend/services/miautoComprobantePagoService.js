@@ -1,12 +1,7 @@
 import { query } from '../config/database.js';
 import { uploadFileToMedia } from './voucherService.js';
 import { getTipoCambioByCountry } from './miautoTipoCambioService.js';
-
-/** Redondea a 2 decimales para evitar desfases por floating point. */
-function round2(n) {
-  const x = Number(n);
-  return Number.isNaN(x) ? 0 : Math.round(x * 100) / 100;
-}
+import { round2 } from './miautoMoneyUtils.js';
 
 /** Si la suma de comprobantes validados (cuota inicial + otros gastos) >= cuota inicial, marca pago_estado = completo. */
 export async function marcarPagoCompletoSiAplica(solicitudId) {
@@ -119,7 +114,7 @@ export async function validateComprobante(solicitudId, comprobanteId, userId, { 
       [cvId]
     );
     const inicialMoneda = cv.rows[0]?.inicial_moneda || 'USD';
-    const monedaIngreso = String(moneda).toUpperCase() === 'PEN' ? 'PEN' : 'USD';
+    const monedaIngreso = normalizePenUsd(moneda);
     let valorUsdALocal = null;
     if (solicitud.rows[0]?.country) {
       const tc = await getTipoCambioByCountry(solicitud.rows[0].country);
@@ -161,7 +156,7 @@ async function montoEnMonedaCuotaInicial(solicitudId, monto, moneda) {
     [cvId]
   );
   const inicialMoneda = cv.rows[0]?.inicial_moneda || 'USD';
-  const monedaIngreso = String(moneda).toUpperCase() === 'PEN' ? 'PEN' : 'USD';
+  const monedaIngreso = normalizePenUsd(moneda);
   let valorUsdALocal = null;
   if (solicitud.rows[0]?.country) {
     const tc = await getTipoCambioByCountry(solicitud.rows[0].country);
@@ -203,7 +198,7 @@ export async function getTotalValidado(solicitudId) {
   for (const row of sumOg.rows || []) {
     const monto = parseFloat(row.monto) || 0;
     if (monto <= 0) continue;
-    const monedaOg = (row.moneda && String(row.moneda).toUpperCase() === 'USD') ? 'USD' : 'PEN';
+    const monedaOg = normalizePenUsd(row.moneda);
     const enInicial = convertirMonto(monto, monedaOg, inicialMoneda, valorUsdALocal);
     if (enInicial != null) total = round2(total + enInicial);
   }
@@ -222,7 +217,7 @@ export async function addPagoManual(solicitudId, userId, { monto, moneda } = {})
   if (Number.isNaN(num) || num <= 0) {
     throw new Error('Monto inválido');
   }
-  const monedaVal = (moneda && String(moneda).toUpperCase() === 'PEN') ? 'PEN' : 'USD';
+  const monedaVal = normalizePenUsd(moneda);
   const montoFinal = await montoEnMonedaCuotaInicial(solicitudId, num, monedaVal);
   if (montoFinal == null || montoFinal < 0) {
     throw new Error('No se pudo convertir el monto a la moneda de la cuota inicial');

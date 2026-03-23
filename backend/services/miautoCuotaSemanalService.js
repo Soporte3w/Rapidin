@@ -6,13 +6,9 @@ import { query } from '../config/database.js';
 import { getCronogramaById, getRuleForTripCount } from './miautoCronogramaService.js';
 import { getDriverIncome, getContractorBalance, withdrawFromContractor } from './yangoService.js';
 import { logger } from '../utils/logger.js';
+import { round2 } from './miautoMoneyUtils.js';
 
 const PARTNER_FEES_PCT = 0.8333;
-
-function round2(n) {
-  const x = Number(n);
-  return Number.isNaN(x) ? 0 : Math.round(x * 100) / 100;
-}
 
 /**
  * Solicitudes que entran al cobro semanal: aprobado, pago completo, cronograma y vehículo asignados,
@@ -123,15 +119,21 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
  * Actualiza mora y marca vencidas: cuotas con due_date < hoy pasan a status 'overdue'.
  * La cuota sigue en 'pending' todo el día del vencimiento; a las 00:00 del día siguiente
  * (ej. 17 marzo) ya cumple due_date < CURRENT_DATE y este job la marca vencida. Job diario (ej. 1:00 AM).
+ *
+ * @param {string|null} solicitudId - Si se indica, solo se procesan cuotas de esa solicitud (p. ej. al listar en API).
  */
-export async function updateMoraDiaria() {
-  const res = await query(
-    `SELECT c.id, c.solicitud_id, c.cuota_semanal, c.amount_due, c.due_date, c.paid_amount, c.late_fee, c.status,
+export async function updateMoraDiaria(solicitudId = null) {
+  let sql = `SELECT c.id, c.solicitud_id, c.cuota_semanal, c.amount_due, c.due_date, c.paid_amount, c.late_fee, c.status,
             s.cronograma_id
      FROM module_miauto_cuota_semanal c
      INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
-     WHERE c.status IN ('pending', 'overdue') AND c.due_date < CURRENT_DATE`
-  );
+     WHERE c.status IN ('pending', 'overdue') AND c.due_date < CURRENT_DATE`;
+  const params = [];
+  if (solicitudId) {
+    sql += ` AND c.solicitud_id = $1`;
+    params.push(solicitudId);
+  }
+  const res = await query(sql, params);
 
   let updated = 0;
   for (const row of res.rows || []) {
@@ -216,6 +218,7 @@ export async function getCuotasSemanalesBySolicitud(solicitudId) {
  * datos históricos donde la columna pudo no existir o no actualizarse.
  */
 export async function getCuotasSemanalesConRacha(solicitudId) {
+  await updateMoraDiaria(solicitudId);
   const cuotas = await getCuotasSemanalesBySolicitud(solicitudId);
   const racha = calcularRacha(cuotas);
   const solRes = await query(

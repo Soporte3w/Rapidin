@@ -84,7 +84,7 @@ async function runWeeklyCharge() {
         { count_completed: incomeResult.count_completed, partner_fees: incomeResult.partner_fees }
       );
     }
-
+    
     const cuotas = await getCuotasToCharge();
     let success = 0, partial = 0, failed = 0;
     for (let i = 0; i < cuotas.length; i++) {

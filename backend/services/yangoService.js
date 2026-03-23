@@ -8,31 +8,55 @@ const COOKIE_PAGAR = trimCookie(process.env.YANGO_FLEET_COOKIE);           // pa
 const COOKIE_COBRO = trimCookie(process.env.YANGO_FLEET_COOKIE_COBRO) || COOKIE_PAGAR; // cobro automático (withdraw + balance en job)
 const PARK_ID = trimCookie(process.env.YANGO_FLEET_PARK_ID) || '08e20910d81d42658d4334d3f6d10ac0';
 
-const MAX_PROXY_RETRIES = 5;
+/** Reintentos ante 429 / Too many requests (con o sin proxies). */
+const MAX_RATE_LIMIT_RETRIES = Number(process.env.YANGO_RATE_LIMIT_MAX_RETRIES || 8);
+
+function normalizeApiMessage(data) {
+  if (data == null) return '';
+  if (typeof data === 'string') return data;
+  if (typeof data === 'object') {
+    const m = data.message ?? data.error ?? data.detail;
+    if (typeof m === 'string') return m;
+    try {
+      return JSON.stringify(data);
+    } catch {
+      return String(data);
+    }
+  }
+  return String(data);
+}
 
 function isRateLimitError(error) {
   if (error.response && error.response.status === 429) return true;
-  const msg = (error.response?.data?.message || error.message || '').toString();
-  return /too many requests/i.test(msg);
+  const msg = normalizeApiMessage(error.response?.data) + ' ' + (error.message || '');
+  return /too many requests|rate limit|429/i.test(msg);
+}
+
+function rateLimitBackoffMs(attempt) {
+  // Sin proxy: la API necesita más tiempo entre intentos (mismo IP).
+  const base = hasProxies() ? 600 * (attempt + 1) : 1200 * Math.pow(2, Math.min(attempt, 5));
+  const jitter = Math.floor(Math.random() * 500);
+  const cap = 25000;
+  return Math.min(base + jitter, cap);
 }
 
 /**
- * POST con reintento usando otro proxy si hay rate limit (429 / Too many requests).
+ * POST con reintento ante rate limit (429 / Too many requests).
+ * Siempre reintenta con backoff exponencial (antes solo si había proxies).
  */
 async function postWithProxyRetry(url, body, headers) {
   let lastError;
-  for (let attempt = 0; attempt < MAX_PROXY_RETRIES; attempt++) {
+  for (let attempt = 0; attempt < MAX_RATE_LIMIT_RETRIES; attempt++) {
     const config = { headers, ...getNextProxyConfig() };
     try {
       const res = await axios.post(url, body || {}, config);
       return res;
     } catch (error) {
       lastError = error;
-      if (attempt < MAX_PROXY_RETRIES - 1 && hasProxies() && isRateLimitError(error)) {
-        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-        continue;
-      }
-      throw error;
+      if (!isRateLimitError(error)) throw error;
+      if (attempt >= MAX_RATE_LIMIT_RETRIES - 1) throw error;
+      const waitMs = rateLimitBackoffMs(attempt);
+      await new Promise((r) => setTimeout(r, waitMs));
     }
   }
   throw lastError;
@@ -63,7 +87,8 @@ export async function withdrawFromContractor(id, amount, description, cookieOver
     return { success: true, data: response.data };
   } catch (error) {
     if (error.response) {
-      return { success: false, status: error.response.status, message: error.response.data?.message || error.response.data };
+      const msg = normalizeApiMessage(error.response.data) || error.message;
+      return { success: false, status: error.response.status, message: msg };
     }
     return { success: false, message: error.message };
   }
@@ -95,7 +120,8 @@ export async function addToContractor(id, amount, description, cookieOverride, p
     return { success: true, data: response.data };
   } catch (error) {
     if (error.response) {
-      return { success: false, status: error.response.status, message: error.response.data?.message || error.response.data };
+      const msg = normalizeApiMessage(error.response.data) || error.message;
+      return { success: false, status: error.response.status, message: msg };
     }
     return { success: false, message: error.message };
   }

@@ -506,27 +506,12 @@ const LoanRequestDetail = () => {
     setLoadingSendMessage(true);
     try {
       await sendMessageViaRapidin(reason);
-      const waLink = request ? getWhatsAppLink(request.phone, reason) : null;
-      if (waLink) window.open(waLink, '_blank');
       await handleRejectSubmit();
     } catch {
       // sendMessageViaRapidin o handleRejectSubmit ya muestran toast
     } finally {
       setLoadingSendMessage(false);
     }
-  };
-
-  const getWhatsAppLink = (phone: string, prefillText?: string) => {
-    if (!phone || !String(phone).trim()) return null;
-    const digits = String(phone).replace(/\D/g, '');
-    const country = request?.country || 'PE';
-    let num = digits;
-    if (digits.length >= 10 && (digits.startsWith('51') || digits.startsWith('57'))) num = digits;
-    else if (country === 'PE' && digits.length === 9) num = '51' + digits;
-    else if (country === 'CO' && digits.length === 10) num = '57' + digits;
-    const base = `https://wa.me/${num}`;
-    if (prefillText && prefillText.trim()) return `${base}?text=${encodeURIComponent(prefillText.trim())}`;
-    return base;
   };
 
   const sendMessageViaRapidin = async (message: string) => {
@@ -556,8 +541,6 @@ const LoanRequestDetail = () => {
     }
     try {
       await sendMessageViaRapidin(msg);
-      const waLink = request ? getWhatsAppLink(request.phone, msg) : null;
-      if (waLink) window.open(waLink, '_blank');
       setRapidinMessage('');
       setShowRejectDisbursedModal(false);
     } catch {
@@ -994,7 +977,7 @@ const LoanRequestDetail = () => {
           </div>
           <div className="p-4">
             <p className="text-sm text-gray-600 mb-4">
-              Si puede que se haya equivocado de cuenta bancaria, envía un mensaje por WhatsApp y Rapidín.
+              Si puede que se haya equivocado de cuenta bancaria, envía un mensaje al conductor por Rapidín (sin salir de esta pantalla).
             </p>
             <button
               type="button"
@@ -1002,7 +985,7 @@ const LoanRequestDetail = () => {
               className="px-5 py-2.5 text-sm font-semibold text-gray-700 bg-white border-2 border-amber-400 hover:border-amber-500 rounded-lg flex items-center gap-2 transition-colors"
             >
               <MessageCircle className="h-4 w-4" />
-              Contactar (WhatsApp y Rapidín)
+              Contactar por Rapidín
             </button>
           </div>
         </div>
@@ -1285,7 +1268,7 @@ const LoanRequestDetail = () => {
 
             <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200">
               <p className="text-sm font-medium text-amber-800">
-                Este mensaje se enviará por WhatsApp y por Rapidín al confirmar el rechazo.
+                Al confirmar, el conductor recibirá el mensaje por Rapidín; no se abrirá WhatsApp en el navegador.
               </p>
             </div>
 
@@ -1311,7 +1294,7 @@ const LoanRequestDetail = () => {
         </div>
       )}
 
-      {/* Modal desembolsado: contactar (WhatsApp + Rapidín) */}
+      {/* Modal desembolsado: contactar por Rapidín */}
       {showRejectDisbursedModal && request && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => { setShowRejectDisbursedModal(false); setRapidinMessage(''); }}>
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
@@ -1322,7 +1305,7 @@ const LoanRequestDetail = () => {
               <h3 className="text-lg font-semibold text-gray-900">Contactar al conductor</h3>
             </div>
             <p className="text-sm text-gray-600 mb-4">
-              Si puede que se haya equivocado de cuenta bancaria, escribe el mensaje. Se enviará por WhatsApp y por Rapidín.
+              Si puede que se haya equivocado de cuenta bancaria, escribe el mensaje. Se enviará por Rapidín sin abrir otras pestañas.
             </p>
             <label className="block text-xs font-medium text-gray-700 mb-1">Mensaje</label>
             <textarea
@@ -1334,7 +1317,7 @@ const LoanRequestDetail = () => {
             />
             <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200">
               <p className="text-sm font-medium text-amber-800">
-                Este mensaje se enviará por WhatsApp y por Rapidín.
+                El mensaje se envía por Rapidín; permaneces en esta vista.
               </p>
             </div>
             <div className="flex justify-end gap-2">

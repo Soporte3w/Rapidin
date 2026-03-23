@@ -5,11 +5,7 @@
  */
 import { query } from '../config/database.js';
 import { getFirstMonday } from '../utils/helpers.js';
-
-function round2(n) {
-  const x = Number(n);
-  return Number.isNaN(x) ? 0 : Math.round(x * 100) / 100;
-}
+import { round2 } from './miautoMoneyUtils.js';
 
 /** Parse YYYY-MM-DD como mediodía local (evita desface UTC con toISOString). */
 function parseLocalYmd(ymd) {

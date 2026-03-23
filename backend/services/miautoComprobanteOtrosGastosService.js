@@ -4,41 +4,8 @@
  */
 import { query } from '../config/database.js';
 import { uploadFileToMedia } from './voucherService.js';
-import { getTipoCambioByCountry } from './miautoTipoCambioService.js';
 import { marcarPagoCompletoSiAplica } from './miautoComprobantePagoService.js';
-
-function round2(n) {
-  const x = Number(n);
-  return Number.isNaN(x) ? 0 : Math.round(x * 100) / 100;
-}
-
-async function montoEnPEN(solicitudId, monto, moneda) {
-  const num = parseFloat(monto);
-  if (Number.isNaN(num) || num <= 0) return null;
-  const monedaIngreso = (moneda && String(moneda).toUpperCase() === 'PEN') ? 'PEN' : 'USD';
-  if (monedaIngreso === 'PEN') return round2(num);
-  const sol = await query('SELECT country FROM module_miauto_solicitud WHERE id = $1', [solicitudId]);
-  const country = sol.rows[0]?.country;
-  if (!country) return round2(num);
-  const tc = await getTipoCambioByCountry(country);
-  const valor = tc?.valor_usd_a_local ?? 0;
-  return round2(num * valor);
-}
-
-/** Convierte monto a USD: si ya es USD lo devuelve; si es PEN divide por tipo de cambio. */
-async function montoEnUSD(solicitudId, monto, moneda) {
-  const num = parseFloat(monto);
-  if (Number.isNaN(num) || num <= 0) return null;
-  const monedaIngreso = (moneda && String(moneda).toUpperCase() === 'PEN') ? 'PEN' : 'USD';
-  if (monedaIngreso === 'USD') return round2(num);
-  const sol = await query('SELECT country FROM module_miauto_solicitud WHERE id = $1', [solicitudId]);
-  const country = sol.rows[0]?.country;
-  if (!country) return round2(num);
-  const tc = await getTipoCambioByCountry(country);
-  const valor = tc?.valor_usd_a_local ?? 0;
-  if (!valor || valor <= 0) return round2(num);
-  return round2(num / valor);
-}
+import { montoEnPEN, montoEnUSD, normalizePenUsd, round2 } from './miautoMoneyUtils.js';
 
 /** Lista comprobantes de otros gastos por solicitud. */
 export async function listBySolicitud(solicitudId) {
@@ -57,7 +24,7 @@ export async function createComprobanteOtrosGastos(solicitudId, otrosGastosId, f
   const path = await uploadFileToMedia(file);
   const fileName = file.originalname || `comprobante_otros_${Date.now()}.pdf`;
   const montoVal = monto != null ? parseFloat(monto) : null;
-  const monedaVal = (moneda && String(moneda).toUpperCase() === 'PEN') ? 'PEN' : 'USD';
+  const monedaVal = normalizePenUsd(moneda);
 
   const og = await query(
     'SELECT id, solicitud_id, amount_due, paid_amount, status FROM module_miauto_otros_gastos WHERE id = $1 AND solicitud_id = $2',
@@ -120,14 +87,14 @@ export async function validateComprobanteOtrosGastos(solicitudId, comprobanteId,
   const c = og.rows[0];
   if (c.status === 'paid') throw new Error('Esta cuota ya está pagada');
 
-  const monedaCuota = (c.moneda && String(c.moneda).toUpperCase() === 'USD') ? 'USD' : 'PEN';
+  const monedaCuota = normalizePenUsd(c.moneda);
   const symCuota = monedaCuota === 'USD' ? '$' : 'S/.';
 
   const montoIngreso = monto != null && moneda ? parseFloat(monto) : parseFloat(compRow.monto);
   if (Number.isNaN(montoIngreso) || montoIngreso <= 0) {
     throw new Error('Debe indicar monto y moneda para validar');
   }
-  const monedaIngreso = (moneda || compRow.moneda || 'PEN').toUpperCase() === 'PEN' ? 'PEN' : 'USD';
+  const monedaIngreso = normalizePenUsd(moneda || compRow.moneda || 'PEN');
   const montoAplicar = monedaCuota === 'USD'
     ? await montoEnUSD(solicitudId, montoIngreso, monedaIngreso)
     : await montoEnPEN(solicitudId, montoIngreso, monedaIngreso);

@@ -35,6 +35,11 @@ const STATUS_CLASS: Record<string, string> = {
   aprobado: 'bg-green-100 text-green-800',
 };
 
+const STATUS_FILTER_OPTIONS = [
+  { value: '', label: 'Todos' },
+  ...Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label })),
+];
+
 const MAX_REAGENDOS = 2;
 const STATUS_LABEL_ACTIVE: Record<string, string> = { pendiente: 'Pendiente', citado: 'Cita agendada', aprobado: 'Aprobado' };
 
@@ -1256,6 +1261,7 @@ function QuieroMiYegoAuto() {
   type CuotasCacheEntry = { cuotas: CuotaSemanal[]; comprobantes: ComprobanteCuotaSemanal[]; racha: number | null; cuotas_semanales_bonificadas?: number; comprobantesOtrosGastos?: ComprobanteOtrosGastos[] };
   const [cuotasCache, setCuotasCache] = useState<Record<string, CuotasCacheEntry>>({});
   const [cuotasLoadingId, setCuotasLoadingId] = useState<string | null>(null);
+  const [solicitudStatusFilter, setSolicitudStatusFilter] = useState('');
 
   const blockedByActiveInOtherFlota = activeBlocking?.hasActive === true && activeBlocking?.sameFlota === false;
   const blockingMessage = blockedByActiveInOtherFlota
@@ -1338,6 +1344,7 @@ function QuieroMiYegoAuto() {
       const rapidinDriverId = getStoredRapidinDriverId();
       const params: Record<string, string> = { limit: '50' };
       if (rapidinDriverId) params.rapidin_driver_id = rapidinDriverId;
+      if (solicitudStatusFilter) params.status = solicitudStatusFilter;
       const response = await api.get('/miauto/solicitudes', { params });
       const data = response.data?.data ?? response.data ?? [];
       setSolicitudes(Array.isArray(data) ? data : []);
@@ -1350,7 +1357,7 @@ function QuieroMiYegoAuto() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [solicitudStatusFilter]);
 
   const fetchActiveBlocking = useCallback(async () => {
     try {
@@ -1788,17 +1795,34 @@ function QuieroMiYegoAuto() {
       ) : (
         <>
         <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-            <h2 className="text-base font-semibold text-gray-900">Estado de tu solicitud</h2>
-            {canCreateNew && (
-              <button
-                type="button"
-                onClick={() => setShowForm(true)}
-                className="text-sm font-medium text-[#8B1A1A] hover:underline"
+          <div className="px-4 py-3 border-b border-gray-200 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            <h2 className="text-base font-semibold text-gray-900 shrink-0">Estado de tu solicitud</h2>
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+              <label htmlFor="driver-sol-status" className="text-xs font-medium text-gray-600 whitespace-nowrap">
+                Filtrar por estado
+              </label>
+              <select
+                id="driver-sol-status"
+                value={solicitudStatusFilter}
+                onChange={(e) => setSolicitudStatusFilter(e.target.value)}
+                className="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white text-gray-800 focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A] outline-none min-w-[10rem]"
               >
-                Nueva solicitud
-              </button>
-            )}
+                {STATUS_FILTER_OPTIONS.map((o) => (
+                  <option key={o.value || 'all'} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              {canCreateNew && (
+                <button
+                  type="button"
+                  onClick={() => setShowForm(true)}
+                  className="text-sm font-medium text-[#8B1A1A] hover:underline whitespace-nowrap"
+                >
+                  Nueva solicitud
+                </button>
+              )}
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full">

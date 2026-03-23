@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../services/api';
+import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError } from '../../utils/miautoApiUtils';
 import { FileText, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatDate } from '../../utils/date';
@@ -94,10 +95,11 @@ function SolicitudesFilters({
 }) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
+      <p className="text-xs font-semibold text-[#8B1A1A] uppercase tracking-wide mb-3">Filtros</p>
       <div className="flex flex-col sm:flex-row gap-4 flex-wrap">
         <div className="flex-1 min-w-[150px]">
           <label htmlFor="status" className="block text-xs font-semibold text-gray-900 mb-1.5">
-            Estado
+            Estado de la solicitud
           </label>
           <select
             id="status"
@@ -284,9 +286,11 @@ export default function YegoMiAutoSolicitudes() {
     totalPages: 0,
   });
   const [paginationLoading, setPaginationLoading] = useState(false);
+  const paginationRef = useRef(pagination);
+  paginationRef.current = pagination;
 
   const fetchSolicitudes = useCallback(
-    async (page: number, limit: number, isPaginationChange: boolean) => {
+    async (page: number, limit: number, isPaginationChange: boolean, signal?: AbortSignal) => {
       try {
         if (isPaginationChange) setPaginationLoading(true);
         else setLoading(true);
@@ -298,7 +302,10 @@ export default function YegoMiAutoSolicitudes() {
         if (filters.country) params.append('country', filters.country);
         if (filters.date_from) params.append('date_from', filters.date_from);
         if (filters.date_to) params.append('date_to', filters.date_to);
-        const response = await api.get(`/miauto/solicitudes?${params.toString()}`);
+        const response = await api.get(`/miauto/solicitudes?${params.toString()}`, {
+          signal,
+          headers: MIAUTO_NO_CACHE_HEADERS,
+        });
         const data = response.data?.data ?? [];
         const pag = response.data?.pagination ?? {};
         setSolicitudes(Array.isArray(data) ? data : []);
@@ -310,9 +317,11 @@ export default function YegoMiAutoSolicitudes() {
           totalPages: pag.totalPages ?? 1,
         }));
       } catch (e: any) {
+        if (isAxiosAbortError(e)) return;
         setError(e.response?.data?.message || 'Error al cargar solicitudes');
         setSolicitudes([]);
       } finally {
+        if (signal?.aborted) return;
         setLoading(false);
         setPaginationLoading(false);
       }
@@ -321,8 +330,11 @@ export default function YegoMiAutoSolicitudes() {
   );
 
   useEffect(() => {
+    const ac = new AbortController();
+    const lim = paginationRef.current.limit;
     setPagination((p) => ({ ...p, page: 1 }));
-    fetchSolicitudes(1, pagination.limit, false);
+    fetchSolicitudes(1, lim, false, ac.signal);
+    return () => ac.abort();
   }, [filters.status, filters.country, filters.date_from, filters.date_to, fetchSolicitudes]);
 
   const goToPage = useCallback(

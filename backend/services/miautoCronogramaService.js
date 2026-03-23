@@ -189,6 +189,23 @@ function getMinViajesForRule(rule) {
  * @param {number} numViajes - Número de viajes del conductor
  * @returns {object | null} - La regla que aplica o null si ninguna coincide
  */
+/**
+ * Moneda de las cuotas semanales para un vehículo en el cronograma (`cuota_moneda_por_vehiculo` en las reglas).
+ * Puede diferir de `inicial_moneda` del vehículo (ej. cuota inicial en USD y cuotas semanales en PEN).
+ */
+export function getMonedaCuotaSemanalPorVehiculo(cronograma, cronogramaVehiculoId) {
+  if (!cronograma?.rules?.length) return 'PEN';
+  const vehicles = cronograma.vehicles || [];
+  const vehicleIndex = vehicles.findIndex((v) => v.id === cronogramaVehiculoId);
+  if (vehicleIndex < 0) return 'PEN';
+  for (const rule of cronograma.rules) {
+    const arr = rule.cuota_moneda_por_vehiculo || [];
+    const m = arr[vehicleIndex];
+    if (m === 'USD' || m === 'PEN') return m;
+  }
+  return 'PEN';
+}
+
 export function getRuleForTripCount(rules, numViajes) {
   if (!Array.isArray(rules) || rules.length === 0 || numViajes == null || numViajes < 0) return null;
   const n = Number(numViajes);
@@ -209,6 +226,34 @@ export function getRuleForTripCount(rules, numViajes) {
     if (n >= interval.min && n <= interval.max) return rule;
   }
   return null;
+}
+
+/**
+ * Solo id + name + country (combos / filtros). Sin vehículos ni reglas.
+ */
+export async function listCronogramasLite(filters = {}) {
+  const { country, active } = filters;
+  const params = [];
+  let n = 1;
+  let where = ' WHERE 1=1 ';
+  if (country) {
+    where += ` AND c.country = $${n}`;
+    params.push(country);
+    n += 1;
+  }
+  if (active !== undefined && active !== null && active !== '') {
+    where += ` AND c.active = $${n}`;
+    params.push(!!active);
+    n += 1;
+  }
+  const listRes = await query(
+    `SELECT c.id, c.name FROM module_miauto_cronograma c ${where} ORDER BY c.name`,
+    params
+  );
+  return (listRes.rows || []).map((row) => ({
+    id: row.id,
+    name: row.name,
+  }));
 }
 
 export async function listCronogramas(filters = {}) {
@@ -336,6 +381,88 @@ export async function getCronogramaById(id) {
       cobro_saldo: r.cobro_saldo != null ? parseFloat(r.cobro_saldo) : 0,
     })),
   };
+}
+
+/**
+ * Carga varios cronogramas en batch (3 queries en total: cabecera + vehículos + reglas).
+ * Evita N×getCronogramaById en listados (p. ej. Alquiler/Venta).
+ * @param {string[]} ids - UUIDs de module_miauto_cronograma
+ * @returns {Promise<Map<string, object>>}
+ */
+export async function getCronogramasByIds(ids) {
+  const unique = [...new Set((ids || []).filter(Boolean))];
+  if (unique.length === 0) return new Map();
+
+  const listRes = await query(
+    `SELECT c.id, c.name, c.country, c.active, c.tasa_interes_mora, c.bono_tiempo_activo, c.cuotas_otros_gastos, c.requisitos_vehiculo
+     FROM module_miauto_cronograma c WHERE c.id = ANY($1::uuid[])`,
+    [unique]
+  );
+  const rows = listRes.rows || [];
+  if (rows.length === 0) return new Map();
+
+  const crIds = rows.map((r) => r.id);
+  const placeholders = crIds.map((_, i) => `$${i + 1}`).join(', ');
+  const [vehiclesRes, rulesRes] = await Promise.all([
+    query(
+      `SELECT id, cronograma_id, name, inicial, inicial_moneda, cuotas_semanales, image, orden, requisitos_gastos
+       FROM module_miauto_cronograma_vehiculo WHERE cronograma_id IN (${placeholders}) ORDER BY cronograma_id, orden`,
+      crIds
+    ),
+    query(
+      `SELECT id, cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo
+       FROM module_miauto_cronograma_rule WHERE cronograma_id IN (${placeholders}) ORDER BY cronograma_id, orden`,
+      crIds
+    ),
+  ]);
+
+  const vehiclesByCron = {};
+  for (const v of vehiclesRes.rows || []) {
+    const cid = v.cronograma_id;
+    if (!vehiclesByCron[cid]) vehiclesByCron[cid] = [];
+    vehiclesByCron[cid].push({
+      id: v.id,
+      name: v.name,
+      inicial: parseFloat(v.inicial) || 0,
+      inicial_moneda: v.inicial_moneda || 'USD',
+      cuotas_semanales: parseInt(v.cuotas_semanales, 10) || 0,
+      image: v.image || undefined,
+      requisitos_gastos: parseRequisitosGastosVehiculo(v.requisitos_gastos),
+    });
+  }
+  const rulesByCron = {};
+  for (const r of rulesRes.rows || []) {
+    const cid = r.cronograma_id;
+    if (!rulesByCron[cid]) rulesByCron[cid] = [];
+    rulesByCron[cid].push({
+      id: r.id,
+      viajes: r.viajes || '',
+      bono_auto: parseFloat(r.bono_auto) || 0,
+      bono_auto_moneda: r.bono_auto_moneda || 'PEN',
+      cuotas_por_vehiculo: Array.isArray(r.cuotas_por_vehiculo) ? r.cuotas_por_vehiculo : [],
+      cuota_moneda_por_vehiculo: Array.isArray(r.cuota_moneda_por_vehiculo) ? r.cuota_moneda_por_vehiculo : [],
+      pct_comision: r.pct_comision != null ? parseFloat(r.pct_comision) : 0,
+      cobro_saldo: r.cobro_saldo != null ? parseFloat(r.cobro_saldo) : 0,
+    });
+  }
+
+  const map = new Map();
+  for (const row of rows) {
+    const id = row.id;
+    map.set(String(id), {
+      id,
+      name: row.name,
+      country: row.country,
+      active: row.active,
+      tasa_interes_mora: parseFloat(row.tasa_interes_mora) || 0,
+      bono_tiempo_activo: !!row.bono_tiempo_activo,
+      cuotas_otros_gastos: row.cuotas_otros_gastos != null ? parseInt(row.cuotas_otros_gastos, 10) : 26,
+      requisitos_vehiculo: parseRequisitosVehiculo(row.requisitos_vehiculo),
+      vehicles: vehiclesByCron[id] || [],
+      rules: rulesByCron[id] || [],
+    });
+  }
+  return map;
 }
 
 function normalizeTasaInteresMora(value) {

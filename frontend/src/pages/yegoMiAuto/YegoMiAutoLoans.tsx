@@ -1,37 +1,16 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../services/api';
-import { Banknote, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { Banknote, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Search } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatDate } from '../../utils/date';
-
-interface AlquilerVentaItem {
-  id: string;
-  dni: string;
-  status: string;
-  created_at: string;
-  fecha_inicio_cobro_semanal: string;
-  driver_name?: string;
-  phone?: string;
-  email?: string;
-  cronograma_name?: string;
-  vehiculo_name?: string;
-  placa_asignada?: string;
-  license_number?: string;
-  /** Total de cuotas del plan (del vehículo en el cronograma) */
-  cuotas_semanales_plan?: number;
-  total_cuotas: number;
-  cuotas_pagadas: number;
-  cuotas_vencidas: number;
-  total_pagado: number;
-}
-
-function conductorDisplay(row: AlquilerVentaItem): string {
-  if (row.driver_name) return row.driver_name;
-  if (row.phone) return `Tel: ${row.phone}`;
-  if (row.email) return row.email;
-  return '—';
-}
+import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError } from '../../utils/miautoApiUtils';
+import {
+  ALQUILER_VENTA_CUOTA_ESTADO_OPTIONS,
+  conductorDisplay,
+  formatTotalPagadoList,
+  type AlquilerVentaListItem,
+} from '../../utils/miautoAlquilerVentaList';
 
 interface PaginationState {
   page: number;
@@ -49,6 +28,11 @@ const COUNTRY_OPTIONS = [
 const PAGE_SIZES = [10, 20, 50];
 const PAGINATION_BTN = 'w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors';
 
+interface CronogramaOption {
+  id: string;
+  name: string;
+}
+
 function getVisiblePageNumbers(pagination: PaginationState): number[] {
   const { page, totalPages } = pagination;
   if (totalPages <= 5) return Array.from({ length: totalPages }, (_, i) => i + 1);
@@ -60,7 +44,7 @@ function getVisiblePageNumbers(pagination: PaginationState): number[] {
 export default function YegoMiAutoLoans() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [items, setItems] = useState<AlquilerVentaItem[]>([]);
+  const [items, setItems] = useState<AlquilerVentaListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [country, setCountry] = useState((user?.country as string) || '');
@@ -71,9 +55,52 @@ export default function YegoMiAutoLoans() {
     totalPages: 0,
   });
   const [paginationLoading, setPaginationLoading] = useState(false);
+  const [searchInput, setSearchInput] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [cronogramaId, setCronogramaId] = useState('');
+  const [cuotaEstado, setCuotaEstado] = useState('');
+  const [cronogramas, setCronogramas] = useState<CronogramaOption[]>([]);
+  const paginationRef = useRef(pagination);
+  paginationRef.current = pagination;
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchInput.trim()), 350);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  useEffect(() => {
+    setCronogramaId('');
+    setCuotaEstado('');
+  }, [country]);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    const qs = new URLSearchParams();
+    if (country) qs.set('country', country);
+    qs.set('active', 'true');
+    qs.set('lite', 'true');
+    api
+      .get(`/miauto/cronogramas?${qs.toString()}`, { signal: ac.signal, headers: MIAUTO_NO_CACHE_HEADERS })
+      .then((res) => {
+        const data = res.data?.data ?? res.data;
+        const list = Array.isArray(data) ? data : [];
+        setCronogramas(
+          list.map((c: { id: string; name: string; country?: string }) => ({
+            id: c.id,
+            name: c.name,
+            country: c.country,
+          }))
+        );
+      })
+      .catch((e) => {
+        if (isAxiosAbortError(e)) return;
+        setCronogramas([]);
+      });
+    return () => ac.abort();
+  }, [country]);
 
   const fetchList = useCallback(
-    async (page: number, limit: number, isPaginationChange: boolean) => {
+    async (page: number, limit: number, isPaginationChange: boolean, signal?: AbortSignal) => {
       try {
         if (isPaginationChange) setPaginationLoading(true);
         else setLoading(true);
@@ -82,7 +109,13 @@ export default function YegoMiAutoLoans() {
         params.append('page', String(page));
         params.append('limit', String(limit));
         if (country) params.append('country', country);
-        const response = await api.get(`/miauto/alquiler-venta?${params.toString()}`);
+        if (debouncedSearch) params.append('q', debouncedSearch);
+        if (cronogramaId) params.append('cronograma_id', cronogramaId);
+        if (cuotaEstado) params.append('cuota_estado', cuotaEstado);
+        const response = await api.get(`/miauto/alquiler-venta?${params.toString()}`, {
+          signal,
+          headers: MIAUTO_NO_CACHE_HEADERS,
+        });
         const data = response.data?.data ?? [];
         const pag = response.data?.pagination ?? {};
         setItems(Array.isArray(data) ? data : []);
@@ -94,20 +127,26 @@ export default function YegoMiAutoLoans() {
           totalPages: pag.totalPages ?? 1,
         }));
       } catch (e: any) {
+        if (isAxiosAbortError(e)) return;
         setError(e.response?.data?.message || 'Error al cargar Alquiler / Venta');
         setItems([]);
       } finally {
+        // Strict Mode aborta la 1.ª petición: no bajar loading o se ve "vacío" hasta la 2.ª.
+        if (signal?.aborted) return;
         setLoading(false);
         setPaginationLoading(false);
       }
     },
-    [country]
+    [country, debouncedSearch, cronogramaId, cuotaEstado]
   );
 
   useEffect(() => {
+    const ac = new AbortController();
+    const lim = paginationRef.current.limit;
     setPagination((p) => ({ ...p, page: 1 }));
-    fetchList(1, pagination.limit, false);
-  }, [country, fetchList]);
+    fetchList(1, lim, false, ac.signal);
+    return () => ac.abort();
+  }, [country, debouncedSearch, cronogramaId, cuotaEstado, fetchList]);
 
   const goToPage = useCallback(
     (page: number) => {
@@ -126,6 +165,7 @@ export default function YegoMiAutoLoans() {
   );
 
   const countryLabel = COUNTRY_OPTIONS.find((o) => o.value === country)?.label ?? 'Todos';
+  const hasActiveFilters = Boolean(debouncedSearch || cronogramaId || cuotaEstado);
 
   return (
     <div className="space-y-4 lg:space-y-6">
@@ -143,22 +183,78 @@ export default function YegoMiAutoLoans() {
         </div>
       </header>
 
-      <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
-        <label htmlFor="country-av" className="block text-xs font-semibold text-gray-900 mb-1.5">
-          País
-        </label>
-        <select
-          id="country-av"
-          value={country}
-          onChange={(e) => setCountry(e.target.value)}
-          className="w-full max-w-xs px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
-        >
-          {COUNTRY_OPTIONS.map((o) => (
-            <option key={o.value || 'all'} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+      <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 space-y-4">
+        <div>
+          <label htmlFor="country-av" className="block text-xs font-semibold text-gray-900 mb-1.5">
+            País
+          </label>
+          <select
+            id="country-av"
+            value={country}
+            onChange={(e) => setCountry(e.target.value)}
+            className="w-full max-w-xs px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
+          >
+            {COUNTRY_OPTIONS.map((o) => (
+              <option key={o.value || 'all'} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <div>
+            <label htmlFor="search-av" className="block text-xs font-semibold text-gray-900 mb-1.5">
+              Buscar (placa, nombre, DNI, licencia, teléfono)
+            </label>
+            <div className="relative max-w-lg">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              <input
+                id="search-av"
+                type="search"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder="Ej. ABC123, Juan, Q12345678…"
+                className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
+                autoComplete="off"
+              />
+            </div>
+          </div>
+          <div>
+            <label htmlFor="cronograma-av" className="block text-xs font-semibold text-gray-900 mb-1.5">
+              Cronograma
+            </label>
+            <select
+              id="cronograma-av"
+              value={cronogramaId}
+              onChange={(e) => setCronogramaId(e.target.value)}
+              className="w-full max-w-lg px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
+            >
+              <option value="">Todos los cronogramas</option>
+              {cronogramas.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="md:col-span-2 xl:col-span-1">
+            <label htmlFor="cuota-estado-av" className="block text-xs font-semibold text-gray-900 mb-1.5">
+              Estado de cuotas
+            </label>
+            <select
+              id="cuota-estado-av"
+              value={cuotaEstado}
+              onChange={(e) => setCuotaEstado(e.target.value)}
+              className="w-full max-w-lg xl:max-w-none px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
+            >
+              {ALQUILER_VENTA_CUOTA_ESTADO_OPTIONS.map((o) => (
+                <option key={o.value || 'all'} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
       </div>
 
       {error && (
@@ -178,9 +274,13 @@ export default function YegoMiAutoLoans() {
       ) : items.length === 0 ? (
         <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 text-center">
           <Banknote className="w-10 h-10 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-xl font-bold text-gray-900 mb-2">No hay contratos</h3>
+          <h3 className="text-xl font-bold text-gray-900 mb-2">
+            {hasActiveFilters ? 'Sin resultados' : 'No hay contratos'}
+          </h3>
           <p className="text-gray-600 text-sm">
-            Aún no hay contratos de Alquiler / Venta. Aparecerán aquí cuando se genere Yego Mi Auto en una solicitud aprobada.
+            {hasActiveFilters
+              ? 'Prueba a cambiar la búsqueda, el cronograma o el país.'
+              : 'Aún no hay contratos de Alquiler / Venta. Aparecerán aquí cuando se genere Yego Mi Auto en una solicitud aprobada.'}
           </p>
         </div>
       ) : (
@@ -226,8 +326,8 @@ export default function YegoMiAutoLoans() {
                         <span className="text-gray-400">0</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-sm font-medium text-green-700">
-                      S/. {row.total_pagado.toFixed(2)}
+                    <td className="px-4 py-3 text-sm font-medium text-green-700 tabular-nums">
+                      {formatTotalPagadoList(row)}
                     </td>
                     <td className="px-4 py-3">
                       <button

@@ -193,7 +193,7 @@ router.post('/:id/reject', validateUUID, verifyRole('analyst', 'approver', 'admi
   }
 });
 
-/** Enviar mensaje al conductor por WhatsApp (solicitud desembolsada: ej. cuenta bancaria equivocada) */
+/** Enviar mensaje al conductor por Rapidín/WhatsApp (pendiente hasta desembolsado; ej. rechazo con aviso, cuenta equivocada) */
 router.post('/:id/send-message', validateUUID, verifyRole('analyst', 'approver', 'admin'), async (req, res) => {
   try {
     const request = await getLoanRequestById(req.params.id);
@@ -203,8 +203,9 @@ router.post('/:id/send-message', validateUUID, verifyRole('analyst', 'approver',
     if (req.allowedCountries && !req.allowedCountries.includes(request.country)) {
       return errorResponse(res, 'No tienes permisos para esta solicitud', 403);
     }
-    if (!['approved', 'disbursed'].includes(request.status)) {
-      return errorResponse(res, 'Solo se puede enviar mensaje para solicitudes aprobadas o desembolsadas', 400);
+    const canSendMessage = ['pending', 'signed', 'approved', 'disbursed'].includes(request.status);
+    if (!canSendMessage) {
+      return errorResponse(res, 'No se puede enviar mensaje: la solicitud está rechazada, cancelada o no es válida', 400);
     }
     const rawPhone = request.phone;
     if (!rawPhone || !String(rawPhone).trim()) {

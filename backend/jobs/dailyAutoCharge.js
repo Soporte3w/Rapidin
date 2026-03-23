@@ -275,7 +275,15 @@ const writeCobrosTxt = (cobrosTxtLines) => {
 };
 
 /** Pausa entre cobros al mismo conductor (segundos) para evitar "Too many requests" de la API de flota. */
-const DELAY_SAME_DRIVER_SEC = 2;
+const DELAY_SAME_DRIVER_SEC = Math.max(2, parseInt(process.env.AUTO_CHARGE_DELAY_SAME_DRIVER_SEC || '5', 10) || 5);
+
+/** Tras consultar saldo y antes de retirar: la API de flota suele limitar dos POST seguidos al mismo perfil. */
+const DELAY_MS_AFTER_BALANCE = Math.max(0, parseInt(process.env.AUTO_CHARGE_DELAY_AFTER_BALANCE_MS || '1500', 10) || 1500);
+
+/** Pausa opcional entre cada cobro (distintos conductores) para no saturar la API (0 = desactivado). */
+const DELAY_MS_BETWEEN_CHARGES = Math.max(0, parseInt(process.env.AUTO_CHARGE_DELAY_BETWEEN_CHARGES_MS || '0', 10) || 0);
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Procesa una lista de cuotas (cobro automático): retira saldo, registra pago, log. Retorna { success, partial, failed, cobrosTxtLines }. */
 const processInstallmentsList = async (installments) => {
@@ -283,11 +291,16 @@ const processInstallmentsList = async (installments) => {
   const cobrosTxtLines = [];
   let lastDriverId = null;
 
-  for (const inst of installments) {
+  for (let idx = 0; idx < installments.length; idx++) {
+    const inst = installments[idx];
     try {
+      // Pausa ligera entre cobros (opcional; no antes del primero)
+      if (idx > 0 && DELAY_MS_BETWEEN_CHARGES > 0) {
+        await sleepMs(DELAY_MS_BETWEEN_CHARGES);
+      }
       // Pausa si la cuota anterior era del mismo conductor (evita Too many requests)
       if (lastDriverId === inst.driver_id) {
-        await new Promise((r) => setTimeout(r, DELAY_SAME_DRIVER_SEC * 1000));
+        await sleepMs(DELAY_SAME_DRIVER_SEC * 1000);
       }
       lastDriverId = inst.driver_id;
 
@@ -351,6 +364,9 @@ const processInstallmentsList = async (installments) => {
       }
 
       const amountToCharge = Math.min(pendingAmount, balance);
+      if (DELAY_MS_AFTER_BALANCE > 0) {
+        await sleepMs(DELAY_MS_AFTER_BALANCE);
+      }
       const withdrawResult = await withdrawFromContractor(externalDriverId, amountToCharge.toFixed(2), 'Cuota Rapidin', null, flota);
 
       if (!withdrawResult.success) {

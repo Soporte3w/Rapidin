@@ -109,9 +109,9 @@ async function ensureProxiesLoaded() {
   if (loadAttempted) return proxyList.length > 0;
   loadAttempted = true;
 
-  const url = process.env.YANGO_PROXIES_URL || '';
-  if (url.trim()) {
-    proxyList = await downloadProxiesFromUrl(url.trim());
+  const url = (process.env.YANGO_PROXIES_URL || '').trim();
+  if (url) {
+    proxyList = await downloadProxiesFromUrl(url);
     if (proxyList.length > 0) return true;
   }
 
@@ -120,8 +120,8 @@ async function ensureProxiesLoaded() {
 }
 
 /**
- * Carga proxies (desde URL si YANGO_PROXIES_URL está definida, si no desde archivo).
- * Debe llamarse una vez al arrancar el backend si quieres proxies desde URL.
+ * Carga proxies (primero YANGO_PROXIES_URL si está definida; si falla o viene vacía, archivo local).
+ * Debe llamarse al arrancar el backend (await) para que la URL no quede anulada por una carrera.
  */
 export async function loadProxiesFromUrlIfConfigured() {
   return ensureProxiesLoaded();
@@ -129,27 +129,17 @@ export async function loadProxiesFromUrlIfConfigured() {
 
 /**
  * Devuelve la config de axios para el siguiente proxy (rotación).
- * Si no hay proxies, devuelve {}.
+ * No carga proxies solo: debió ejecutarse loadProxiesFromUrlIfConfigured() antes.
  */
 export function getNextProxyConfig() {
-  if (proxyList.length === 0 && !loadAttempted) {
-    proxyList = loadProxiesSync();
-    loadAttempted = true;
-  }
   if (proxyList.length === 0) return {};
   const p = proxyList[proxyIndex % proxyList.length];
   proxyIndex += 1;
   return { proxy: p };
 }
 
-/**
- * Número de proxies cargados (sin descargar desde URL).
- */
+/** Número de proxies en memoria (tras loadProxiesFromUrlIfConfigured). */
 export function getProxyCount() {
-  if (proxyList.length === 0 && !loadAttempted) {
-    proxyList = loadProxiesSync();
-    loadAttempted = true;
-  }
   return proxyList.length;
 }
 

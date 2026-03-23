@@ -19,6 +19,8 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { formatDateFlex } from '../../utils/date';
+import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError, unwrapApiData } from '../../utils/miautoApiUtils';
+import { getMiautoAdjuntoUrl } from '../../utils/miautoRentSaleHelpers';
 import { DateTimePicker } from '../../components/DateTimePicker';
 import { CronogramaPagoSection } from './CronogramaPagoSection';
 
@@ -63,12 +65,6 @@ const FLOW_STEPS = [
 const MAX_REAGENDOS = 2;
 const SECTION_HEADING = 'text-xs font-semibold text-[#8B1A1A] uppercase tracking-wide';
 const COUNTRY_LABELS: Record<string, string> = { PE: 'Perú', CO: 'Colombia' };
-
-function getAdjuntoUrl(filePath: string | undefined): string {
-  if (!filePath) return '';
-  if (filePath.startsWith('http')) return filePath;
-  return `${window.location.origin}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
-}
 
 function isImageAdjunto(fileName: string, tipo: string): boolean {
   return /\.(jpe?g|png|gif|webp)$/i.test(fileName || '') || tipo === 'licencia';
@@ -151,32 +147,40 @@ export default function YegoMiAutoSolicitudDetail() {
   const [showSimularCuotasModal, setShowSimularCuotasModal] = useState(false);
   const [placaParaGenerar, setPlacaParaGenerar] = useState('');
 
-  const fetchDetail = useCallback(async (silent = false) => {
+  const fetchDetail = useCallback(async (opts?: { silent?: boolean; signal?: AbortSignal }) => {
     if (!id) return;
+    const silent = !!opts?.silent;
+    const signal = opts?.signal;
+    const req = { signal, headers: MIAUTO_NO_CACHE_HEADERS };
     try {
       if (!silent) {
         setLoading(true);
         setError('');
       }
       const [resSol, resAdj] = await Promise.all([
-        api.get(`/miauto/solicitudes/${id}`),
-        api.get(`/miauto/solicitudes/${id}/adjuntos`),
+        api.get(`/miauto/solicitudes/${id}`, req),
+        api.get(`/miauto/solicitudes/${id}/adjuntos`, req),
       ]);
-      const sol = resSol.data?.data ?? resSol.data;
+      const sol = unwrapApiData(resSol);
       setSolicitud(sol);
-      setAdjuntos(Array.isArray(resAdj.data?.data) ? resAdj.data.data : resAdj.data ?? []);
+      const adjRaw = unwrapApiData(resAdj);
+      setAdjuntos(Array.isArray(adjRaw) ? adjRaw : []);
     } catch (e: any) {
+      if (isAxiosAbortError(e)) return;
       const msg = e.response?.data?.message || 'Error al cargar la solicitud';
       setError(msg);
       if (silent) toast.error(msg);
       if (!silent) setSolicitud(null);
     } finally {
+      if (signal?.aborted) return;
       if (!silent) setLoading(false);
     }
   }, [id]);
 
   useEffect(() => {
-    fetchDetail();
+    const ac = new AbortController();
+    fetchDetail({ signal: ac.signal });
+    return () => ac.abort();
   }, [fetchDetail]);
 
   useEffect(() => {
@@ -185,37 +189,41 @@ export default function YegoMiAutoSolicitudDetail() {
     }
   }, [showSimularCuotasModal, solicitud?.id, solicitud?.placa_asignada]);
 
-  const fetchedCronogramaTipoCambioKey = useRef({ status: '', country: '' });
   useEffect(() => {
+    const ac = new AbortController();
+    const { signal } = ac;
+
     if (!(solicitud?.status === 'aprobado' && solicitud?.country)) {
       setCronogramasList([]);
       setSelectedCronogramaForVehicles(null);
       setSelectedVehiculoId(null);
       setTipoCambio(null);
-      fetchedCronogramaTipoCambioKey.current = { status: '', country: '' };
-      return;
+      setLoadingCronogramas(false);
+      return () => ac.abort();
     }
-    const key = { status: solicitud.status, country: solicitud.country };
-    if (fetchedCronogramaTipoCambioKey.current.status === key.status && fetchedCronogramaTipoCambioKey.current.country === key.country) {
-      return;
-    }
-    fetchedCronogramaTipoCambioKey.current = key;
+
+    const country = solicitud.country;
     setLoadingCronogramas(true);
     Promise.all([
-      api.get(`/miauto/cronogramas?country=${solicitud.country}&active=true`),
-      api.get(`/miauto/tipo-cambio?country=${solicitud.country}`),
+      api.get(`/miauto/cronogramas?country=${encodeURIComponent(country)}&active=true`, { signal, headers: MIAUTO_NO_CACHE_HEADERS }),
+      api.get(`/miauto/tipo-cambio?country=${encodeURIComponent(country)}`, { signal, headers: MIAUTO_NO_CACHE_HEADERS }),
     ])
       .then(([resCron, resTc]) => {
-        const data = resCron.data?.data ?? resCron.data;
+        const data = unwrapApiData(resCron);
         setCronogramasList(Array.isArray(data) ? data : []);
-        const d = resTc.data?.data ?? resTc.data;
+        const d = unwrapApiData(resTc) as { valor_usd_a_local?: number; moneda_local?: string } | undefined;
         setTipoCambio(d && typeof d.valor_usd_a_local === 'number' ? { valor_usd_a_local: d.valor_usd_a_local, moneda_local: d.moneda_local || 'PEN' } : null);
       })
-      .catch(() => {
+      .catch((e) => {
+        if (isAxiosAbortError(e)) return;
         setCronogramasList([]);
         setTipoCambio(null);
       })
-      .finally(() => setLoadingCronogramas(false));
+      .finally(() => {
+        if (!signal.aborted) setLoadingCronogramas(false);
+      });
+
+    return () => ac.abort();
   }, [solicitud?.status, solicitud?.country]);
 
   const prevPagoSectionOpen = useRef(false);
@@ -246,7 +254,7 @@ export default function YegoMiAutoSolicitudDetail() {
       toast.success('Cita reprogramada');
       setModalReprogramar(false);
       setNewAppointmentDate('');
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al reprogramar');
     } finally {
@@ -267,7 +275,7 @@ export default function YegoMiAutoSolicitudDetail() {
       setModalEditarCita(false);
       setEditCitaDate('');
       setEditCitaTime('09:00');
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al actualizar la fecha');
     } finally {
@@ -280,7 +288,7 @@ export default function YegoMiAutoSolicitudDetail() {
       setActionLoading(true);
       await api.post(`/miauto/solicitudes/${id}/no-vino-rechazar`);
       toast.success('Solicitud rechazada por inasistencia');
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al rechazar');
     } finally {
@@ -304,7 +312,7 @@ export default function YegoMiAutoSolicitudDetail() {
       setSelectedCronogramaForVehicles(null);
       setSelectedVehiculoId(null);
       setPendingPagoTipo('completo');
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al guardar');
     } finally {
@@ -318,7 +326,7 @@ export default function YegoMiAutoSolicitudDetail() {
       setValidandoComprobanteId(comprobanteId);
       await api.patch(`/miauto/solicitudes/${id}/comprobantes-pago/${comprobanteId}/validar`, { monto: data.monto, moneda: data.moneda });
       toast.success('Comprobante validado. Se descontará de la cuota inicial.');
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al validar comprobante');
     } finally {
@@ -332,7 +340,7 @@ export default function YegoMiAutoSolicitudDetail() {
       setRechazandoComprobanteId(comprobanteId);
       await api.patch(`/miauto/solicitudes/${id}/comprobantes-pago/${comprobanteId}/rechazar`, { motivo: data.motivo.trim() });
       toast.success('Comprobante rechazado. El conductor verá el motivo.');
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al rechazar comprobante');
     } finally {
@@ -351,7 +359,7 @@ export default function YegoMiAutoSolicitudDetail() {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       toast.success('Comprobante subido y validado.');
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al subir comprobante');
       throw e;
@@ -363,7 +371,7 @@ export default function YegoMiAutoSolicitudDetail() {
     try {
       await api.post(`/miauto/solicitudes/${id}/pago-manual`, { monto, moneda });
       toast.success('Pago manual registrado.');
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al registrar pago');
       throw e;
@@ -375,7 +383,7 @@ export default function YegoMiAutoSolicitudDetail() {
       setActionLoading(true);
       await api.post(`/miauto/solicitudes/${id}/marcar-llegada`);
       toast.success('Llegada registrada. Elige Aprobar o Desistió.');
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al registrar llegada');
     } finally {
@@ -396,7 +404,7 @@ export default function YegoMiAutoSolicitudDetail() {
       setShowAprobarModal(false);
       await api.patch(`/miauto/solicitudes/${id}`, { status: 'aprobado' });
       toast.success('Solicitud aprobada. Se ha registrado quién la aprobó.');
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al aprobar');
     } finally {
@@ -416,7 +424,7 @@ export default function YegoMiAutoSolicitudDetail() {
       });
       setDesistidoMotivo('');
       toast.success('Solicitud marcada como Desistido.');
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al actualizar');
     } finally {
@@ -440,7 +448,7 @@ export default function YegoMiAutoSolicitudDetail() {
       await api.patch(`/miauto/solicitudes/${id}`, payload);
       toast.success('Estado actualizado');
       closeStatusModal();
-      await fetchDetail(true);
+      await fetchDetail({ silent: true });
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al actualizar estado');
     } finally {
@@ -627,7 +635,7 @@ export default function YegoMiAutoSolicitudDetail() {
               ) : (
                 <ul className="flex flex-row flex-wrap gap-4">
                   {adjuntos.map((a: { id: string; tipo: string; file_name: string; file_path: string }) => {
-                    const url = getAdjuntoUrl(a.file_path);
+                    const url = getMiautoAdjuntoUrl(a.file_path);
                     const isImage = isImageAdjunto(a.file_name || '', a.tipo);
                     return (
                       <li key={a.id} className="flex-shrink-0 w-64 rounded-lg border border-gray-200 bg-gray-50/50 overflow-hidden">
@@ -882,7 +890,7 @@ export default function YegoMiAutoSolicitudDetail() {
                             await api.patch(`/miauto/solicitudes/${id}/generar-yego-mi-auto`, { placa_asignada: placa });
                             toast.success('Yego Mi Auto generado; cobro semanal iniciado');
                             setShowSimularCuotasModal(false);
-                            await fetchDetail(true);
+                            await fetchDetail({ silent: true });
                           } catch (e: any) {
                             toast.error(e.response?.data?.message || 'Error al generar Yego Mi Auto');
                           } finally {
@@ -935,7 +943,7 @@ export default function YegoMiAutoSolicitudDetail() {
               onAgregarPagoManual={handleAgregarPagoManual}
               validandoComprobanteId={validandoComprobanteId}
               rechazandoComprobanteId={rechazandoComprobanteId}
-              getAdjuntoUrl={getAdjuntoUrl}
+              getAdjuntoUrl={getMiautoAdjuntoUrl}
             />
           )}
 

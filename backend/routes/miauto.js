@@ -18,6 +18,7 @@ import {
 } from '../services/miautoSolicitudService.js';
 import {
   listCronogramas,
+  listCronogramasLite,
   getCronogramaById,
   createCronograma,
   updateCronograma,
@@ -97,10 +98,17 @@ async function ensureSolicitudOwnedByDriver(solicitudId, req, res) {
 // GET /api/miauto/alquiler-venta (solicitudes con Yego Mi Auto generado; para sección Alquiler / Venta)
 router.get('/alquiler-venta', authenticate, async (req, res) => {
   try {
-    const { country, page, limit } = req.query;
-    const result = await listAlquilerVenta({ country: trimOrUndefined(country), page, limit });
+    const { country, page, limit, q, cronograma_id, cuota_estado } = req.query;
+    const result = await listAlquilerVenta({
+      country: trimOrUndefined(country),
+      page,
+      limit,
+      q: trimOrUndefined(q),
+      cronograma_id: trimOrUndefined(cronograma_id),
+      cuota_estado: trimOrUndefined(cuota_estado),
+    });
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 20));
     return paginatedResponse(res, result.data, pageNum, limitNum, result.total);
   } catch (error) {
     logger.error('Error listando Alquiler/Venta Mi Auto:', error);
@@ -224,18 +232,21 @@ function invalidateCronogramasListCache() {
   cronogramasListCache.clear();
 }
 
-// GET /api/miauto/cronogramas
+// GET /api/miauto/cronogramas — por defecto payload completo; ?lite=true → solo { id, name } (combos)
 router.get('/cronogramas', async (req, res) => {
   try {
-    const { country, active } = req.query;
+    const { country, active, lite } = req.query;
     const countryVal = trimOrUndefined(country);
-    const key = getCronogramasCacheKey(countryVal, active);
+    const isLite = lite === 'true' || lite === '1';
+    const key = getCronogramasCacheKey(countryVal, active, isLite);
     const now = Date.now();
     const cached = cronogramasListCache.get(key);
     if (cached && cached.expires > now) {
       return successResponse(res, cached.data);
     }
-    const list = await listCronogramas({ country: countryVal, active });
+    const list = isLite
+      ? await listCronogramasLite({ country: countryVal, active })
+      : await listCronogramas({ country: countryVal, active });
     cronogramasListCache.set(key, { data: list, expires: now + CRONOGRAMAS_CACHE_TTL_MS });
     return successResponse(res, list);
   } catch (error) {

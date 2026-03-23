@@ -42,6 +42,13 @@ function DataRow({ label, value = '—', mono, highlight, custom, copyable }: { 
   );
 }
 
+const LIGHTBOX_ZOOM_MIN = 0.25;
+const LIGHTBOX_ZOOM_MAX = 5;
+
+function clampLightboxZoom(z: number) {
+  return Math.min(LIGHTBOX_ZOOM_MAX, Math.max(LIGHTBOX_ZOOM_MIN, z));
+}
+
 function DocumentThumb({ requestId, doc }: { requestId: string; doc: { id: string; type: string; file_name: string } }) {
   const cacheKey = `${requestId}-${doc.id}`;
   const cachedUrl = documentFileCache.get(cacheKey);
@@ -49,8 +56,79 @@ function DocumentThumb({ requestId, doc }: { requestId: string; doc: { id: strin
   const [loading, setLoading] = useState(!cachedUrl);
   const [error, setError] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxZoom, setLightboxZoom] = useState(1);
   const objectUrlRef = useRef<string | null>(cachedUrl ?? null);
+  const lightboxRef = useRef<HTMLDivElement>(null);
+  const lightboxTouchAreaRef = useRef<HTMLDivElement>(null);
+  const lightboxZoomRef = useRef(1);
+  const pinchRef = useRef<{ d0: number; z0: number } | null>(null);
   const isPdf = /\.pdf$/i.test(doc.file_name);
+
+  lightboxZoomRef.current = lightboxZoom;
+
+  useEffect(() => {
+    if (!lightboxOpen) {
+      setLightboxZoom(1);
+      pinchRef.current = null;
+      return;
+    }
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [lightboxOpen]);
+
+  useEffect(() => {
+    if (!lightboxOpen) return;
+    const el = lightboxRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
+        setLightboxZoom((z) => clampLightboxZoom(z * factor));
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [lightboxOpen]);
+
+  useEffect(() => {
+    if (!lightboxOpen) return;
+    const el = lightboxTouchAreaRef.current;
+    if (!el) return;
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        pinchRef.current = { d0: Math.hypot(dx, dy), z0: lightboxZoomRef.current };
+      }
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 2 || !pinchRef.current) return;
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const d = Math.hypot(dx, dy);
+      const { d0, z0 } = pinchRef.current;
+      if (d0 > 0) setLightboxZoom(clampLightboxZoom(z0 * (d / d0)));
+    };
+    const onTouchEnd = () => {
+      pinchRef.current = null;
+    };
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd);
+    el.addEventListener('touchcancel', onTouchEnd);
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, [lightboxOpen]);
 
   useEffect(() => {
     if (documentFileCache.has(cacheKey)) {
@@ -157,7 +235,8 @@ function DocumentThumb({ requestId, doc }: { requestId: string; doc: { id: strin
       </div>
       {lightboxOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          ref={lightboxRef}
+          className="fixed inset-0 z-50 flex flex-col bg-black/80 overscroll-contain select-none"
           onClick={() => setLightboxOpen(false)}
           role="dialog"
           aria-modal="true"
@@ -166,17 +245,28 @@ function DocumentThumb({ requestId, doc }: { requestId: string; doc: { id: strin
           <button
             type="button"
             onClick={() => setLightboxOpen(false)}
-            className="absolute top-4 right-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors focus:outline-none focus:ring-2 focus:ring-white"
+            className="absolute top-4 right-4 z-10 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors focus:outline-none focus:ring-2 focus:ring-white"
             aria-label="Cerrar"
           >
             <XCircle className="w-8 h-8" />
           </button>
-          <img
-            src={src}
-            alt={label}
-            className="max-w-full max-h-[90vh] w-auto h-auto object-contain rounded shadow-2xl"
+          <p className="absolute top-4 left-4 right-16 z-10 text-white/70 text-xs sm:text-sm pointer-events-none">
+            Zoom: Ctrl + rueda (o pellizco en el móvil)
+          </p>
+          <div
+            ref={lightboxTouchAreaRef}
+            className="flex-1 min-h-0 w-full flex items-center justify-center overflow-auto overscroll-contain touch-pan-x touch-pan-y p-4 pt-14"
             onClick={(e) => e.stopPropagation()}
-          />
+          >
+            <img
+              src={src}
+              alt={label}
+              className="max-w-[min(100%,95vw)] max-h-[min(90vh,100%)] w-auto h-auto object-contain rounded shadow-2xl origin-center will-change-transform"
+              style={{ transform: `scale(${lightboxZoom})` }}
+              onClick={(e) => e.stopPropagation()}
+              draggable={false}
+            />
+          </div>
         </div>
       )}
     </>

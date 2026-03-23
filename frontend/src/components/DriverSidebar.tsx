@@ -11,7 +11,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 
 /** Sección Yego Mi Auto en conductor: desactivada por mientras. true = muestra menú y permite ruta /driver/quiero-mi-auto */
-export const DRIVER_MI_AUTO_ENABLED = true;
+export const DRIVER_MI_AUTO_ENABLED = false;
 
 interface DriverSidebarProps {
   isOpen: boolean;

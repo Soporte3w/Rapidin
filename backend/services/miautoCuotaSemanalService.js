@@ -1,19 +1,108 @@
 /**
- * Cuotas semanales Mi Auto: creación por semana, mora diaria, cobro desde fleet.
- * Solo Mi Auto; no tiene relación con Yego Rapidin.
+ * Yego Mi Auto — cuotas semanales: generación por semana, mora, cobro fleet (Yango), API conductor/admin.
  */
 import { query } from '../config/database.js';
-import { getCronogramaById, getRuleForTripCount } from './miautoCronogramaService.js';
-import { getDriverIncome, getContractorBalance, withdrawFromContractor } from './yangoService.js';
+import {
+  getCronogramaById,
+  getMonedaCuotaSemanalPorVehiculo,
+  getRuleForTripCount,
+  resolveMonedaCuotaSemanal,
+} from './miautoCronogramaService.js';
+import { getContractorBalance, withdrawFromContractor } from './yangoService.js';
 import { logger } from '../utils/logger.js';
 import { round2 } from './miautoMoneyUtils.js';
 
 const PARTNER_FEES_PCT = 0.8333;
 
 /**
- * Solicitudes que entran al cobro semanal: aprobado, pago completo, cronograma y vehículo asignados,
- * fecha_inicio_cobro_semanal setea, y tienen rapidin_driver_id (para external_driver_id y park_id).
+ * Monto base semanal antes de mora: cuota neta (plan − bono − 83,33% partner_fees) + cobro del saldo (regla)
+ * + (% comisión × partner_fees_raw de Yango). pct_comision y cobro_saldo se guardan en la fila y entran aquí.
  */
+function computeAmountDueSemanal({ cuotaSemanal, bonoAuto, partnerFeesRaw, pctComision, cobroSaldo }) {
+  const partnerFees83 = round2(Number(partnerFeesRaw) * PARTNER_FEES_PCT);
+  const cuotaNeta = round2(Math.max(0, (cuotaSemanal - bonoAuto) - partnerFees83));
+  const pfRaw = round2(Number(partnerFeesRaw) || 0);
+  const pct = round2(Number(pctComision) || 0);
+  const cobro = round2(Number(cobroSaldo) || 0);
+  const comisionSobrePartnerFees = round2(pfRaw * (pct / 100));
+  return round2(Math.max(0, cuotaNeta + cobro + comisionSobrePartnerFees));
+}
+
+/**
+ * Regla por tramo de viajes + montos del vehículo en el cronograma (misma base que ensureCuotaSemanalForWeek).
+ * @returns {null|{ cuotaSemanal, moneda, bonoAuto, pctComision, cobroSaldo }}
+ */
+function planFromCronograma(cronograma, cronogramaVehiculoId, numViajes) {
+  if (!cronograma?.rules?.length) return null;
+  const vehicles = cronograma.vehicles || [];
+  const vehicleIndex = vehicles.findIndex((v) => v.id === cronogramaVehiculoId);
+  if (vehicleIndex < 0) return null;
+  const n = numViajes == null || Number.isNaN(Number(numViajes)) ? 0 : Number(numViajes);
+  const rule = getRuleForTripCount(cronograma.rules, n);
+  if (!rule) return null;
+  const cuotasPorVehiculo = rule.cuotas_por_vehiculo || [];
+  const cuotaSemanal =
+    cuotasPorVehiculo[vehicleIndex] != null ? round2(parseFloat(cuotasPorVehiculo[vehicleIndex]) || 0) : 0;
+  return {
+    cuotaSemanal,
+    moneda: resolveMonedaCuotaSemanal(cronograma, rule, vehicleIndex),
+    bonoAuto: round2(parseFloat(rule.bono_auto) || 0),
+    pctComision: round2(Number(parseFloat(rule.pct_comision) || 0)),
+    cobroSaldo: round2(parseFloat(rule.cobro_saldo) || 0),
+  };
+}
+
+/** partner_fees_83 guardado o derivado de partner_fees_raw (misma lógica que al generar la cuota). */
+function partnerFees83FromRow(row) {
+  let pf83 = round2(parseFloat(row.partner_fees_83) || 0);
+  if (pf83 > 0) return pf83;
+  const raw = round2(parseFloat(row.partner_fees_raw) || 0);
+  return round2(raw * PARTNER_FEES_PCT);
+}
+
+/** nº de viajes usable para reglas del cronograma, o null si no aplica. */
+function tripCountForRules(numViajes) {
+  if (numViajes == null) return null;
+  const n = Number(numViajes);
+  return Number.isNaN(n) || n < 0 ? null : n;
+}
+
+/** % comisión y cobro del saldo desde una fila de regla (cronograma). */
+function pctCobroFromRule(rule) {
+  return {
+    pct_comision: round2(Number(parseFloat(rule.pct_comision) || 0)),
+    cobro_saldo: round2(parseFloat(rule.cobro_saldo) || 0),
+  };
+}
+
+/** Mora por días de retraso (misma fórmula que updateMoraDiaria). baseCuota = cuota neta antes de mora. */
+function computeLateFeeDisplay(cronograma, dueDateStr, baseCuota) {
+  if (!dueDateStr || baseCuota <= 0) return round2(0);
+  const tasa = round2(parseFloat(cronograma?.tasa_interes_mora) || 0);
+  if (tasa <= 0) return round2(0);
+  const dueDate = new Date(dueDateStr);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  dueDate.setHours(0, 0, 0, 0);
+  if (dueDate >= today) return round2(0);
+  const daysOverdue = Math.max(0, Math.floor((today - dueDate) / (24 * 60 * 60 * 1000)));
+  return round2((baseCuota * tasa) / 7 * daysOverdue);
+}
+
+/** amount_due + late_fee alineados al cronograma (solo cuotas abiertas). */
+function amountDueAndLateForOpen(cronograma, r, cuota_semanal, bono_auto, pct_comision, cobro_saldo) {
+  const amount_due = computeAmountDueSemanal({
+    cuotaSemanal: cuota_semanal,
+    bonoAuto: bono_auto,
+    partnerFeesRaw: r.partner_fees_raw,
+    pctComision: pct_comision,
+    cobroSaldo: cobro_saldo,
+  });
+  const late_fee = computeLateFeeDisplay(cronograma, r.due_date, amount_due);
+  return { amount_due, late_fee };
+}
+
+/** Solicitudes listas para generar cuota semanal (job lunes). */
 export async function getSolicitudesParaCobroSemanal() {
   const res = await query(
     `SELECT s.id AS solicitud_id, s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal,
@@ -31,8 +120,8 @@ export async function getSolicitudesParaCobroSemanal() {
 }
 
 /**
- * Crea o actualiza la cuota semanal para una solicitud y un lunes dado.
- * incomeResult: { count_completed, partner_fees } de getDriverIncome.
+ * Crea o actualiza la cuota semanal para un lunes y los ingresos Yango de esa semana.
+ * incomeResult: { count_completed, partner_fees }.
  */
 export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, cronogramaVehiculoId, weekStartDate, incomeResult) {
   const { count_completed: numViajes = 0, partner_fees: partnerFeesRaw = 0 } = incomeResult;
@@ -40,29 +129,24 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
   const partnerFees83 = round2(partnerFeesRawRounded * PARTNER_FEES_PCT);
 
   const cronograma = await getCronogramaById(cronogramaId);
-  if (!cronograma?.rules?.length) {
-    logger.warn(`Cronograma ${cronogramaId} sin rules para solicitud ${solicitudId}`);
+  const plan = planFromCronograma(cronograma, cronogramaVehiculoId, numViajes);
+  if (!plan) {
+    if (!cronograma?.rules?.length) {
+      logger.warn(`Cronograma ${cronogramaId} sin rules para solicitud ${solicitudId}`);
+    } else {
+      logger.warn(`Sin regla o vehículo para ${numViajes} viajes, cronograma ${cronogramaId}`);
+    }
     return null;
   }
 
-  const rule = getRuleForTripCount(cronograma.rules, numViajes);
-  if (!rule) {
-    logger.warn(`Sin regla para ${numViajes} viajes, cronograma ${cronogramaId}`);
-    return null;
-  }
-
-  const vehicles = cronograma.vehicles || [];
-  const vehicleIndex = vehicles.findIndex((v) => v.id === cronogramaVehiculoId);
-  const cuotasPorVehiculo = rule.cuotas_por_vehiculo || [];
-  const cuotaSemanal = vehicleIndex >= 0 && cuotasPorVehiculo[vehicleIndex] != null
-    ? round2(parseFloat(cuotasPorVehiculo[vehicleIndex]) || 0)
-    : 0;
-  const monedasPorVehiculo = rule.cuota_moneda_por_vehiculo || [];
-  const moneda = vehicleIndex >= 0 && monedasPorVehiculo[vehicleIndex] === 'USD' ? 'USD' : 'PEN';
-  const bonoAuto = round2(parseFloat(rule.bono_auto) || 0);
-  const amountDue = round2(Math.max(0, (cuotaSemanal - bonoAuto) - partnerFees83));
-  const pctComision = round2(Number(parseFloat(rule.pct_comision) || 0));
-  const cobroSaldo = round2(parseFloat(rule.cobro_saldo) || 0);
+  const { cuotaSemanal, moneda, bonoAuto, pctComision, cobroSaldo } = plan;
+  const amountDue = computeAmountDueSemanal({
+    cuotaSemanal,
+    bonoAuto,
+    partnerFeesRaw: partnerFeesRawRounded,
+    pctComision,
+    cobroSaldo,
+  });
 
   const existing = await query(
     'SELECT id FROM module_miauto_cuota_semanal WHERE solicitud_id = $1 AND week_start_date = $2',
@@ -70,11 +154,40 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
   );
 
   if (existing.rows.length > 0) {
+    const prev = await query(
+      `SELECT paid_amount, late_fee, status FROM module_miauto_cuota_semanal WHERE solicitud_id = $1 AND week_start_date = $2`,
+      [solicitudId, weekStartDate]
+    );
+    const rowPrev = prev.rows[0] || {};
+    const latePrev = round2(parseFloat(rowPrev.late_fee) || 0);
+    const paidPrev = round2(parseFloat(rowPrev.paid_amount) || 0);
+    const st = (rowPrev.status || '').toLowerCase();
+    const totalDueNow = round2(amountDue + latePrev);
+    let paidToStore = paidPrev;
+    let statusOut = rowPrev.status || 'pending';
+    if (st !== 'bonificada' && paidPrev > totalDueNow) {
+      paidToStore = totalDueNow;
+      if (totalDueNow > 0) statusOut = 'paid';
+    }
     await query(
       `UPDATE module_miauto_cuota_semanal
-       SET num_viajes = $1, partner_fees_raw = $2, partner_fees_83 = $3, bono_auto = $4, cuota_semanal = $5, amount_due = $6, moneda = $7, pct_comision = $8, cobro_saldo = $9, updated_at = CURRENT_TIMESTAMP
-       WHERE solicitud_id = $10 AND week_start_date = $11`,
-      [numViajes, partnerFeesRawRounded, partnerFees83, bonoAuto, cuotaSemanal, amountDue, moneda, pctComision, cobroSaldo, solicitudId, weekStartDate]
+       SET num_viajes = $1, partner_fees_raw = $2, partner_fees_83 = $3, bono_auto = $4, cuota_semanal = $5, amount_due = $6, moneda = $7, pct_comision = $8, cobro_saldo = $9, paid_amount = $10, status = $11, updated_at = CURRENT_TIMESTAMP
+       WHERE solicitud_id = $12 AND week_start_date = $13`,
+      [
+        numViajes,
+        partnerFeesRawRounded,
+        partnerFees83,
+        bonoAuto,
+        cuotaSemanal,
+        amountDue,
+        moneda,
+        pctComision,
+        cobroSaldo,
+        paidToStore,
+        statusOut,
+        solicitudId,
+        weekStartDate,
+      ]
     );
     return existing.rows[0].id;
   }
@@ -115,13 +228,7 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
   return ins.rows[0]?.id || null;
 }
 
-/**
- * Actualiza mora y marca vencidas: cuotas con due_date < hoy pasan a status 'overdue'.
- * La cuota sigue en 'pending' todo el día del vencimiento; a las 00:00 del día siguiente
- * (ej. 17 marzo) ya cumple due_date < CURRENT_DATE y este job la marca vencida. Job diario (ej. 1:00 AM).
- *
- * @param {string|null} solicitudId - Si se indica, solo se procesan cuotas de esa solicitud (p. ej. al listar en API).
- */
+/** Mora y vencidas (due_date antes de hoy → overdue + late_fee). Job diario o al listar una solicitud. */
 export async function updateMoraDiaria(solicitudId = null) {
   let sql = `SELECT c.id, c.solicitud_id, c.cuota_semanal, c.amount_due, c.due_date, c.paid_amount, c.late_fee, c.status,
             s.cronograma_id
@@ -144,7 +251,12 @@ export async function updateMoraDiaria(solicitudId = null) {
     today.setHours(0, 0, 0, 0);
     dueDate.setHours(0, 0, 0, 0);
     const daysOverdue = Math.max(0, Math.floor((today - dueDate) / (24 * 60 * 60 * 1000)));
-    const baseCuota = round2(parseFloat(row.cuota_semanal) || parseFloat(row.amount_due) || 0);
+    let baseCuota;
+    if (row.amount_due != null && row.amount_due !== '') {
+      baseCuota = round2(parseFloat(row.amount_due));
+    } else {
+      baseCuota = round2(parseFloat(row.cuota_semanal) || 0);
+    }
     const lateFee = round2(tasa > 0 && baseCuota > 0 ? (baseCuota * tasa) / 7 * daysOverdue : 0);
 
     await query(
@@ -153,7 +265,7 @@ export async function updateMoraDiaria(solicitudId = null) {
     );
     updated++;
   }
-  if (updated > 0) logger.info(`Mora actualizada para ${updated} cuota(s) semanales Mi Auto`);
+  if (updated > 0) logger.info(`Yego Mi Auto: mora actualizada en ${updated} cuota(s)`);
   return updated;
 }
 
@@ -175,50 +287,185 @@ export function calcularRacha(cuotas) {
   return racha;
 }
 
-/**
- * Lista cuotas semanales de una solicitud (para conductor y admin). Orden por due_date ASC.
- */
-export async function getCuotasSemanalesBySolicitud(solicitudId) {
+/** Plan + mora para API (listados Yego Mi Auto). */
+function computeCuotaDerivedForRow(r, cronograma, vehId) {
+  let cuota_semanal = round2(parseFloat(r.cuota_semanal) || 0);
+  let amount_due = round2(parseFloat(r.amount_due) || 0);
+  let late_fee = round2(parseFloat(r.late_fee) || 0);
+  let bono_auto = round2(parseFloat(r.bono_auto) || 0);
+  let pct_comision = round2(Number(parseFloat(r.pct_comision) || 0));
+  let cobro_saldo = round2(parseFloat(r.cobro_saldo) || 0);
+  let moneda = r.moneda === 'USD' ? 'USD' : 'PEN';
+
+  const nTrips = tripCountForRules(r.num_viajes);
+  const cerrada = r.status === 'paid' || r.status === 'bonificada';
+  const pf83 = partnerFees83FromRow(r);
+  const vehicles = cronograma?.vehicles || [];
+  const vehicleOk = vehId != null && vehicles.findIndex((v) => v.id === vehId) >= 0;
+
+  const ruleForTrips =
+    cronograma?.rules?.length && nTrips != null ? getRuleForTripCount(cronograma.rules, nTrips) : null;
+
+  const plan =
+    cronograma?.rules?.length && vehicleOk && nTrips != null
+      ? planFromCronograma(cronograma, vehId, nTrips)
+      : null;
+
+  let usoCronogramaParaMontos = false;
+
+  if (plan) {
+    usoCronogramaParaMontos = true;
+    cuota_semanal = plan.cuotaSemanal;
+    bono_auto = plan.bonoAuto;
+    pct_comision = plan.pctComision;
+    cobro_saldo = plan.cobroSaldo;
+    moneda = plan.moneda;
+  } else if (cronograma?.rules?.length && vehicleOk) {
+    moneda = getMonedaCuotaSemanalPorVehiculo(cronograma, vehId);
+  }
+
+  // Vehículo desfasado en solicitud: mismo tramo de viajes → % y cobro desde la regla (sin recalcular cuota/bono de fila).
+  if (!plan && ruleForTrips) {
+    usoCronogramaParaMontos = true;
+    const pc = pctCobroFromRule(ruleForTrips);
+    pct_comision = pc.pct_comision;
+    cobro_saldo = pc.cobro_saldo;
+    if (vehId != null && cronograma) moneda = getMonedaCuotaSemanalPorVehiculo(cronograma, vehId);
+  }
+
+  if (!cerrada && usoCronogramaParaMontos) {
+    const m = amountDueAndLateForOpen(cronograma, r, cuota_semanal, bono_auto, pct_comision, cobro_saldo);
+    amount_due = m.amount_due;
+    late_fee = m.late_fee;
+  }
+
+  const cuota_neta = round2(Math.max(0, (cuota_semanal - bono_auto) - pf83));
+  const cuota_final = round2(amount_due + late_fee);
+  return {
+    cuota_semanal,
+    amount_due,
+    late_fee,
+    bono_auto,
+    pct_comision,
+    cobro_saldo,
+    moneda,
+    cuota_neta,
+    cuota_final,
+    pf83,
+  };
+}
+
+function buildCuotaSemanalApiRow(r, cronograma, vehId) {
+  const d = computeCuotaDerivedForRow(r, cronograma, vehId);
+  let paid_amount = round2(parseFloat(r.paid_amount) || 0);
+  paid_amount = round2(Math.min(paid_amount, d.cuota_final));
+  return {
+    id: r.id,
+    solicitud_id: r.solicitud_id,
+    week_start_date: r.week_start_date,
+    due_date: r.due_date,
+    num_viajes: r.num_viajes,
+    bono_auto: d.bono_auto,
+    cuota_semanal: d.cuota_semanal,
+    amount_due: d.amount_due,
+    paid_amount,
+    late_fee: d.late_fee,
+    status: r.status,
+    moneda: d.moneda,
+    pct_comision: d.pct_comision,
+    cobro_saldo: d.cobro_saldo,
+    partner_fees_raw: round2(parseFloat(r.partner_fees_raw) || 0),
+    partner_fees_83: d.pf83,
+    cuota_neta: d.cuota_neta,
+    cuota_final: d.cuota_final,
+    pending_total: round2(Math.max(0, d.cuota_final - paid_amount)),
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  };
+}
+
+/** Recorta paid_amount si supera cuota_final tras cambio de tramo de viajes (tras updateMoraDiaria). */
+export async function persistPaidAmountCapsForSolicitud(solicitudId) {
+  const solRes = await query(
+    'SELECT cronograma_id, cronograma_vehiculo_id FROM module_miauto_solicitud WHERE id = $1',
+    [solicitudId]
+  );
+  const solRow = solRes.rows[0];
+  if (!solRow?.cronograma_id) return 0;
+
+  const cronograma = await getCronogramaById(solRow.cronograma_id);
+  const vehId = solRow.cronograma_vehiculo_id;
+
   const res = await query(
-    `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, moneda, pct_comision, cobro_saldo, created_at, updated_at
+    `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, moneda, pct_comision, cobro_saldo,
+            partner_fees_raw, partner_fees_83,
+            created_at, updated_at
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1 ORDER BY due_date ASC`,
     [solicitudId]
   );
-  return (res.rows || []).map((r) => {
-    const amount_due = round2(parseFloat(r.amount_due) || 0);
-    const paid_amount = round2(parseFloat(r.paid_amount) || 0);
-    const late_fee = round2(parseFloat(r.late_fee) || 0);
-    return {
-      id: r.id,
-      solicitud_id: r.solicitud_id,
-      week_start_date: r.week_start_date,
-      due_date: r.due_date,
-      num_viajes: r.num_viajes,
-      bono_auto: round2(parseFloat(r.bono_auto) || 0),
-      cuota_semanal: round2(parseFloat(r.cuota_semanal) || 0),
-      amount_due,
-      paid_amount,
-      late_fee,
-      status: r.status,
-      moneda: r.moneda === 'USD' ? 'USD' : 'PEN',
-      pct_comision: round2(Number(parseFloat(r.pct_comision) || 0)),
-      cobro_saldo: round2(parseFloat(r.cobro_saldo) || 0),
-      pending_total: round2(amount_due + late_fee - paid_amount),
-      created_at: r.created_at,
-      updated_at: r.updated_at,
-    };
-  });
+
+  let updated = 0;
+  for (const r of res.rows || []) {
+    const st = (r.status || '').toLowerCase();
+    if (st === 'bonificada') continue;
+
+    const d = computeCuotaDerivedForRow(r, cronograma, vehId);
+    const paidDb = round2(parseFloat(r.paid_amount) || 0);
+    const cap = d.cuota_final;
+    if (paidDb <= cap) continue;
+
+    const paidNew = cap;
+    let statusOut = r.status;
+    if (cap <= 0) {
+      statusOut = paidNew > 0 ? 'paid' : st === 'overdue' ? 'overdue' : 'pending';
+    } else if (paidNew >= cap) {
+      statusOut = 'paid';
+    } else if (paidNew > 0) {
+      statusOut = 'partial';
+    } else {
+      statusOut = st === 'overdue' ? 'overdue' : 'pending';
+    }
+
+    await query(
+      `UPDATE module_miauto_cuota_semanal SET paid_amount = $1, status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
+      [paidNew, statusOut, r.id]
+    );
+    updated++;
+  }
+  if (updated > 0) {
+    logger.info(`Yego Mi Auto: paid_amount ajustado al tope en ${updated} cuota(s), solicitud ${solicitudId}`);
+  }
+  return updated;
 }
 
-/**
- * Lista cuotas semanales y calcula la racha (para conductor). Respuesta: { data: cuotas, racha, cuotas_semanales_bonificadas }.
- * La cuenta de bonificaciones viene de module_miauto_solicitud.cuotas_semanales_bonificadas (se actualiza cada vez que
- * se aplica una bonificación en tryGrantBenefit4Consecutive). Se usa max(column, count de cuotas 'bonificada') por
- * datos históricos donde la columna pudo no existir o no actualizarse.
- */
+/** Cuotas de una solicitud (conductor / admin Rent–Sale), orden por due_date. */
+export async function getCuotasSemanalesBySolicitud(solicitudId) {
+  const solRes = await query(
+    'SELECT cronograma_id, cronograma_vehiculo_id FROM module_miauto_solicitud WHERE id = $1',
+    [solicitudId]
+  );
+  const solRow = solRes.rows[0];
+  const cronograma =
+    solRow?.cronograma_id != null ? await getCronogramaById(solRow.cronograma_id) : null;
+
+  const res = await query(
+    `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, moneda, pct_comision, cobro_saldo,
+            partner_fees_raw, partner_fees_83,
+            created_at, updated_at
+     FROM module_miauto_cuota_semanal
+     WHERE solicitud_id = $1 ORDER BY due_date ASC`,
+    [solicitudId]
+  );
+  const vehId = solRow?.cronograma_vehiculo_id;
+
+  return (res.rows || []).map((r) => buildCuotaSemanalApiRow(r, cronograma, vehId));
+}
+
+/** Cuotas + racha + bonificadas (app conductor). */
 export async function getCuotasSemanalesConRacha(solicitudId) {
   await updateMoraDiaria(solicitudId);
+  await persistPaidAmountCapsForSolicitud(solicitudId);
   const cuotas = await getCuotasSemanalesBySolicitud(solicitudId);
   const racha = calcularRacha(cuotas);
   const solRes = await query(
@@ -231,10 +478,7 @@ export async function getCuotasSemanalesConRacha(solicitudId) {
   return { data: cuotas, racha, cuotas_semanales_bonificadas: cuotasSemanalesBonificadas };
 }
 
-/**
- * Cuotas a cobrar: pending/overdue con saldo pendiente > 0.
- * Orden: por solicitud_id, luego due_date ASC, para cobrar siempre cuota 1 antes que 2, 2 antes que 3, etc.
- */
+/** Pending/overdue con saldo > 0 (job cobro). Orden: solicitud, due_date. */
 export async function getCuotasToCharge() {
   const res = await query(
     `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.status,
@@ -249,10 +493,7 @@ export async function getCuotasToCharge() {
   return res.rows || [];
 }
 
-/**
- * Procesa el cobro de una cuota: consulta saldo fleet, withdraw, actualiza paid_amount.
- * Retorna { success, partial, failed, reason?, amountCharged? }.
- */
+/** Retiro en fleet y actualización de paid_amount. */
 export async function processCobroCuota(cuotaRow, cookieOverride = null, parkIdOverride = null) {
   const driverName = [cuotaRow.first_name, cuotaRow.last_name].filter(Boolean).join(' ').trim() || 'Conductor';
   const amountDue = round2(parseFloat(cuotaRow.amount_due) || 0);
@@ -279,13 +520,13 @@ export async function processCobroCuota(cuotaRow, cookieOverride = null, parkIdO
   }
 
   if (!externalDriverId) {
-    logger.warn(`Mi Auto cobro: ${driverName} sin external_driver_id`);
+    logger.warn(`Yego Mi Auto cobro: ${driverName} sin external_driver_id`);
     return { success: false, partial: false, failed: true, reason: 'Sin external_driver_id' };
   }
 
   const balanceResult = await getContractorBalance(externalDriverId, parkId, cookieOverride);
   if (!balanceResult.success) {
-    logger.warn(`Mi Auto cobro: no se pudo obtener saldo de ${driverName}: ${balanceResult.error}`);
+    logger.warn(`Yego Mi Auto cobro: sin saldo API ${driverName}: ${balanceResult.error}`);
     return { success: false, partial: false, failed: true, reason: balanceResult.error };
   }
 
@@ -304,12 +545,13 @@ export async function processCobroCuota(cuotaRow, cookieOverride = null, parkIdO
   );
 
   if (!withdrawResult.success) {
-    logger.error(`Mi Auto cobro: error al retirar de ${driverName}: ${withdrawResult.message || withdrawResult.error}`);
+    logger.error(`Yego Mi Auto cobro: retiro ${driverName}: ${withdrawResult.message || withdrawResult.error}`);
     return { success: false, partial: false, failed: true, reason: withdrawResult.message || withdrawResult.error };
   }
 
-  const newPaid = round2(paid + amountToCharge);
-  const totalDue = amountDue + lateFee;
+  const totalDue = round2(amountDue + lateFee);
+  let newPaid = round2(paid + amountToCharge);
+  newPaid = round2(Math.min(newPaid, totalDue));
   const newStatus = newPaid >= totalDue ? 'paid' : 'partial';
 
   await query(
@@ -318,9 +560,106 @@ export async function processCobroCuota(cuotaRow, cookieOverride = null, parkIdO
   );
 
   if (amountToCharge >= pendingAmount) {
-    logger.info(`Mi Auto cobro completo: ${driverName} S/ ${amountToCharge.toFixed(2)}`);
+    logger.info(`Yego Mi Auto cobro completo: ${driverName} ${amountToCharge.toFixed(2)}`);
     return { success: true, partial: false, failed: false, amountCharged: amountToCharge };
   }
-  logger.info(`Mi Auto cobro parcial: ${driverName} S/ ${amountToCharge.toFixed(2)} de S/ ${pendingAmount.toFixed(2)}`);
+  logger.info(`Yego Mi Auto cobro parcial: ${driverName} ${amountToCharge.toFixed(2)} / ${pendingAmount.toFixed(2)}`);
   return { success: true, partial: true, failed: false, amountCharged: amountToCharge };
+}
+
+/**
+ * Recalcula y persiste en BD `pct_comision`, `cobro_saldo`, `cuota_semanal`, `bono_auto`, `moneda`, `partner_fees_83`
+ * y `amount_due` según el cronograma actual y los `num_viajes` / `partner_fees_raw` ya guardados en cada fila.
+ * Cuotas `paid`: solo actualiza snapshot de la regla (no modifica amount_due ni paid_amount).
+ * Luego aplica mora y tope de paid_amount por solicitud.
+ *
+ * @param {{ solicitudId?: string|null }} opts - Si viene `solicitudId`, solo cuotas de esa solicitud.
+ * @returns {Promise<{ updated: number, solicitudes: number }>}
+ */
+export async function recalcMontosCuotasSemanalesDesdeCronograma(opts = {}) {
+  const solicitudId = opts.solicitudId != null && String(opts.solicitudId).trim() ? String(opts.solicitudId).trim() : null;
+
+  let sql = `
+    SELECT c.id, c.solicitud_id, c.num_viajes, c.partner_fees_raw, c.paid_amount, c.late_fee, c.status,
+           c.amount_due, s.cronograma_id, s.cronograma_vehiculo_id
+    FROM module_miauto_cuota_semanal c
+    INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id`;
+  const params = [];
+  if (solicitudId) {
+    sql += ` WHERE c.solicitud_id = $1::uuid`;
+    params.push(solicitudId);
+  }
+  sql += ` ORDER BY c.solicitud_id, c.due_date, c.id`;
+
+  const res = await query(sql, params);
+  const rows = res.rows || [];
+  const cronogramaCache = new Map();
+  let updated = 0;
+  const solicitudesAfectadas = new Set();
+
+  for (const row of rows) {
+    const crId = String(row.cronograma_id);
+    let cronograma = cronogramaCache.get(crId);
+    if (!cronograma) {
+      cronograma = await getCronogramaById(crId);
+      cronogramaCache.set(crId, cronograma);
+    }
+    if (!cronograma) continue;
+
+    const plan = planFromCronograma(cronograma, row.cronograma_vehiculo_id, row.num_viajes);
+    if (!plan) continue;
+
+    const pfRaw = round2(Number(row.partner_fees_raw) || 0);
+    const pf83 = round2(pfRaw * PARTNER_FEES_PCT);
+    const amountDue = computeAmountDueSemanal({
+      cuotaSemanal: plan.cuotaSemanal,
+      bonoAuto: plan.bonoAuto,
+      partnerFeesRaw: pfRaw,
+      pctComision: plan.pctComision,
+      cobroSaldo: plan.cobroSaldo,
+    });
+
+    const st = (row.status || '').toLowerCase();
+    solicitudesAfectadas.add(String(row.solicitud_id));
+
+    if (st === 'paid') {
+      await query(
+        `UPDATE module_miauto_cuota_semanal SET
+          cuota_semanal = $1, bono_auto = $2, moneda = $3, pct_comision = $4, cobro_saldo = $5, partner_fees_83 = $6, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $7`,
+        [plan.cuotaSemanal, plan.bonoAuto, plan.moneda, plan.pctComision, plan.cobroSaldo, pf83, row.id]
+      );
+      updated++;
+      continue;
+    }
+
+    if (st === 'bonificada') {
+      await query(
+        `UPDATE module_miauto_cuota_semanal SET
+          cuota_semanal = $1, bono_auto = $2, amount_due = $3, paid_amount = $3, moneda = $4, pct_comision = $5, cobro_saldo = $6, partner_fees_83 = $7, late_fee = 0, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $8`,
+        [plan.cuotaSemanal, plan.bonoAuto, amountDue, plan.moneda, plan.pctComision, plan.cobroSaldo, pf83, row.id]
+      );
+      updated++;
+      continue;
+    }
+
+    await query(
+      `UPDATE module_miauto_cuota_semanal SET
+        cuota_semanal = $1, bono_auto = $2, amount_due = $3, moneda = $4, pct_comision = $5, cobro_saldo = $6, partner_fees_83 = $7, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $8`,
+      [plan.cuotaSemanal, plan.bonoAuto, amountDue, plan.moneda, plan.pctComision, plan.cobroSaldo, pf83, row.id]
+    );
+    updated++;
+  }
+
+  await updateMoraDiaria();
+  for (const sid of solicitudesAfectadas) {
+    await persistPaidAmountCapsForSolicitud(sid);
+  }
+
+  logger.info(
+    `Yego Mi Auto: recalcMontosCuotasSemanalesDesdeCronograma ${updated} fila(s), ${solicitudesAfectadas.size} solicitud(es)`
+  );
+  return { updated, solicitudes: solicitudesAfectadas.size };
 }

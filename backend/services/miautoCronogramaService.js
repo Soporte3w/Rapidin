@@ -181,17 +181,62 @@ function getMinViajesForRule(rule) {
   return interval ? interval.min : null;
 }
 
+/** Umbral suelto ("89", "150"), no rango explícito ("0 - 119", "150+"). */
+function isThresholdOnlyViajesLabel(viajesStr) {
+  if (!viajesStr || typeof viajesStr !== 'string') return false;
+  const s = viajesStr.trim();
+  if (!s) return false;
+  if (/^\d+\s*\+$/.test(s)) return false;
+  if (s.includes('-')) return false;
+  const n = parseInt(s, 10);
+  return !Number.isNaN(n) && n >= 0;
+}
+
 /**
- * Dado un array de rules (con campo viajes) y un número de viajes, devuelve la regla cuyo intervalo contiene ese número.
- * Las rules se evalúan en orden. Si una fila tiene un solo número N (ej. "120", "150"), se interpreta como rango
- * desde N hasta (inicio de la siguiente fila) − 1, o hasta +∞ si es la última fila.
- * @param {Array<{ viajes: string, [key: string]: any }>} rules - Filas del cronograma ordenadas por orden
- * @param {number} numViajes - Número de viajes del conductor
- * @returns {object | null} - La regla que aplica o null si ninguna coincide
+ * Rango colapsado "120-120" o "120 - 120" (mismo min/max): en UI a veces se guarda así en vez de "120".
+ * Debe comportarse como umbral [120, siguiente tramo) igual que el número suelto "120".
  */
+function isCollapsedPointRange(viajesStr, interval) {
+  if (!viajesStr || typeof viajesStr !== 'string' || !interval) return false;
+  if (interval.min !== interval.max) return false;
+  if (!viajesStr.includes('-')) return false;
+  return true;
+}
+
+/** Si la regla es un solo punto (120 o 120-120), expandir hasta el inicio del siguiente tramo. */
+function shouldExpandPointRuleToNextSegment(viajesStr, interval) {
+  if (!interval || interval.min !== interval.max) return false;
+  return isThresholdOnlyViajesLabel(viajesStr) || isCollapsedPointRange(viajesStr, interval);
+}
+
+/**
+ * Menor inicio de intervalo entre las demás reglas con min > currentMin (no depende del orden en el array).
+ * Así 132 entra en [120,149] aunque la fila "150" esté antes o después en la lista.
+ */
+function getNextSegmentMinAfter(rules, excludeIndex, currentMin) {
+  let best = null;
+  for (let j = 0; j < rules.length; j++) {
+    if (j === excludeIndex) continue;
+    const m = getMinViajesForRule(rules[j]);
+    if (typeof m === 'number' && m > currentMin) {
+      if (best == null || m < best) best = m;
+    }
+  }
+  return best;
+}
+
+/**
+ * Moneda persistida en `module_miauto_cuota_semanal.moneda`.
+ * Sale de la regla del cronograma (`cuota_moneda_por_vehiculo` por índice de carro), no del país ni de `inicial_moneda` del vehículo.
+ */
+export function resolveMonedaCuotaSemanal(_cronograma, rule, vehicleIndex) {
+  const arr = rule?.cuota_moneda_por_vehiculo || [];
+  return vehicleIndex >= 0 && arr[vehicleIndex] === 'USD' ? 'USD' : 'PEN';
+}
+
 /**
  * Moneda de las cuotas semanales para un vehículo en el cronograma (`cuota_moneda_por_vehiculo` en las reglas).
- * Puede diferir de `inicial_moneda` del vehículo (ej. cuota inicial en USD y cuotas semanales en PEN).
+ * Puede diferir de `inicial_moneda` del vehículo (ej. cuota inicial en USD y cuotas semanales en PEN o USD según la regla).
  */
 export function getMonedaCuotaSemanalPorVehiculo(cronograma, cronogramaVehiculoId) {
   if (!cronograma?.rules?.length) return 'PEN';
@@ -214,12 +259,11 @@ export function getRuleForTripCount(rules, numViajes) {
     const rule = rules[i];
     let interval = parseViajesInterval(rule.viajes);
     if (!interval) continue;
-    if (interval.min === interval.max) {
-      const nextRule = i + 1 < rules.length ? rules[i + 1] : null;
-      const nextMin = nextRule != null ? getMinViajesForRule(nextRule) : null;
-      if (typeof nextMin === 'number' && nextMin > interval.min) {
+    if (shouldExpandPointRuleToNextSegment(rule.viajes, interval)) {
+      const nextMin = getNextSegmentMinAfter(rules, i, interval.min);
+      if (nextMin != null) {
         interval = { min: interval.min, max: nextMin - 1 };
-      } else if (nextRule == null) {
+      } else {
         interval = { min: interval.min, max: Number.POSITIVE_INFINITY };
       }
     }

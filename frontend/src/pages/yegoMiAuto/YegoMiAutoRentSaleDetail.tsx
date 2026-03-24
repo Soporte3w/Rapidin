@@ -14,6 +14,9 @@ import {
   driverDisplayRentSale,
   formatKpiMixPenUsd,
   getMiautoAdjuntoUrl,
+  miautoFmtMonto,
+  miautoMontoPagadoCuotaSemanal,
+  miautoNum,
   MIAUTO_CUOTA_STATUS_LABELS,
   MIAUTO_CUOTA_STATUS_PILL,
   parseCuotasSemanalesPayload,
@@ -34,10 +37,10 @@ interface CuotaSemanal {
   status: string;
   pending_total?: number;
   moneda?: string;
-  /** Snapshot % comisión de la fila del cronograma */
-  pct_comision?: number;
-  /** Snapshot cobro del saldo */
   cobro_saldo?: number;
+  cuota_neta?: number;
+  cuota_final?: number;
+  partner_fees_83?: number;
 }
 
 interface SolicitudSummary {
@@ -233,22 +236,6 @@ export default function YegoMiAutoRentSaleDetail() {
   const totalCuotas = cuotas.length;
   const cuotasPagadas = cuotas.filter((c) => c.status === 'paid' || c.status === 'bonificada').length;
   const cuotasVencidas = cuotas.filter((c) => c.status === 'overdue').length;
-  const kpiTotalesPorMoneda = useMemo(() => {
-    let totalPagadoPEN = 0;
-    let totalPagadoUSD = 0;
-    let totalVencidoPEN = 0;
-    let totalVencidoUSD = 0;
-    for (const c of cuotas) {
-      if (c.moneda === 'USD') {
-        totalPagadoUSD += c.paid_amount || 0;
-        if (c.status === 'overdue') totalVencidoUSD += c.pending_total || 0;
-      } else {
-        totalPagadoPEN += c.paid_amount || 0;
-        if (c.status === 'overdue') totalVencidoPEN += c.pending_total || 0;
-      }
-    }
-    return { totalPagadoPEN, totalPagadoUSD, totalVencidoPEN, totalVencidoUSD };
-  }, [cuotas]);
   const planCuotas = solicitud?.cronograma_vehiculo?.cuotas_semanales ?? totalCuotas;
 
   const cronPg = useTablePagination(cuotas);
@@ -267,6 +254,27 @@ export default function YegoMiAutoRentSaleDetail() {
     }
     return by;
   }, [comprobantesPagos]);
+
+  const kpiTotalesPorMoneda = useMemo(() => {
+    let totalPagadoPEN = 0;
+    let totalPagadoUSD = 0;
+    let totalVencidoPEN = 0;
+    let totalVencidoUSD = 0;
+    for (const c of cuotas) {
+      const pagado = miautoMontoPagadoCuotaSemanal(c.paid_amount);
+      const cuotaFinal =
+        c.cuota_final != null ? miautoNum(c.cuota_final) : miautoNum(c.amount_due) + miautoNum(c.late_fee);
+      const pendienteMostrar = Math.max(0, cuotaFinal - pagado);
+      if (c.moneda === 'USD') {
+        totalPagadoUSD += pagado;
+        if (c.status === 'overdue') totalVencidoUSD += pendienteMostrar;
+      } else {
+        totalPagadoPEN += pagado;
+        if (c.status === 'overdue') totalVencidoPEN += pendienteMostrar;
+      }
+    }
+    return { totalPagadoPEN, totalPagadoUSD, totalVencidoPEN, totalVencidoUSD };
+  }, [cuotas, comprobantesByCuotaId]);
 
   /** Comprobantes de otros gastos agrupados por otros_gastos_id */
   const comprobantesPorOtrosGastos = useMemo(() => {
@@ -509,95 +517,96 @@ export default function YegoMiAutoRentSaleDetail() {
           </div>
         ) : (
           <>
-          <div className="overflow-x-auto">
-            <table className="w-full">
+          <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+            <table className="w-full min-w-max border-collapse">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Semana</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Vence</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Cuota semanal (plan)</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Viajes / Bono auto</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">% comisión</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Cobro del saldo</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Pendiente a pagar</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">
-                    Mora{solicitud?.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0 ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}% interés)` : ''}
+                  <th className="px-3 sm:px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase whitespace-nowrap">Semana</th>
+                  <th className="px-3 sm:px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase whitespace-nowrap">Vence</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-green-700 uppercase whitespace-nowrap">Cuota semanal</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase whitespace-nowrap">Viajes / Bono auto</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-red-600 uppercase whitespace-nowrap">Comisión</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-green-700 uppercase whitespace-nowrap">Cobro del saldo</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-green-700 uppercase whitespace-nowrap">Pendiente a pagar</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-red-600 uppercase whitespace-nowrap">
+                    Mora{solicitud?.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0 ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}%)` : ''}
                   </th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Cuota final</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">Pagado</th>
-                  <th className="px-4 py-3 text-center text-xs font-semibold text-gray-700 uppercase">Estado</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-green-700 uppercase whitespace-nowrap">Cuota final</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-green-700 uppercase whitespace-nowrap">Pagado</th>
+                  <th className="px-3 sm:px-4 py-3 text-center text-xs font-semibold text-gray-700 uppercase whitespace-nowrap">Estado</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {cronPg.paginatedItems.map((c, index) => {
                   const numeroSemana = (cronPg.page - 1) * cronPg.limit + index + 1;
-                  const pendingTotal = Math.max(0, c.pending_total ?? ((c.amount_due ?? 0) + (c.late_fee ?? 0) - (c.paid_amount ?? 0)));
                   const comps = comprobantesByCuotaId[c.id] ?? [];
+                  const cuotaFinalSemana =
+                    c.cuota_final != null ? miautoNum(c.cuota_final) : miautoNum(c.amount_due) + miautoNum(c.late_fee);
+                  const montoPagadoDisplay = miautoMontoPagadoCuotaSemanal(c.paid_amount);
+                  const pendingTotal = Math.max(0, cuotaFinalSemana - montoPagadoDisplay);
                   const abierto = comprobantesSemanaAbierta[c.id] === true;
                   const symCuota = symMoneda(c.moneda);
-                  const cuotaBrutaPlan =
-                    c.cuota_semanal != null && !Number.isNaN(Number(c.cuota_semanal))
-                      ? Number(c.cuota_semanal)
-                      : (c.amount_due ?? 0);
+                  const bonoAutoVal = miautoNum(c.bono_auto);
                   return (
                   <Fragment key={c.id}>
                   <tr className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm text-gray-900">
+                    <td className="px-3 sm:px-4 py-3 text-sm text-gray-900 whitespace-nowrap align-top">
                       {comps.length > 0 ? (
                         <button
                           type="button"
                           onClick={() => toggleComprobantesSemana(c.id)}
-                          className="inline-flex items-center gap-1.5 text-left text-gray-800 hover:text-gray-900"
+                          className="inline-flex flex-nowrap items-center gap-1.5 text-left text-gray-800 hover:text-gray-900 max-w-none"
                         >
                           {abierto ? <ChevronDown className="w-4 h-4 text-gray-600 flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-gray-600 flex-shrink-0" />}
-                          <span className="font-semibold">Semana {numeroSemana}</span>
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600">
+                          <span className="font-semibold whitespace-nowrap">Semana {numeroSemana}</span>
+                          <span className="inline-flex flex-shrink-0 items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600 whitespace-nowrap">
                             {comps.length} comprobante{comps.length !== 1 ? 's' : ''}
                           </span>
                         </button>
                       ) : (
-                        <span className="font-semibold text-gray-900">Semana {numeroSemana}</span>
+                        <span className="font-semibold text-gray-900 whitespace-nowrap">Semana {numeroSemana}</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-700">
+                    <td className="px-3 sm:px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
                       {c.due_date ? formatDate(c.due_date, 'es-ES') : (c.week_start_date ? formatDate(c.week_start_date, 'es-ES') : '—')}
                     </td>
-                    <td className="px-4 py-3 text-sm text-right font-medium text-gray-900" title="Cuota bruta del cronograma (antes de bono auto y descuentos)">
-                      {symCuota} {cuotaBrutaPlan.toFixed(2)}
+                    <td className="px-3 sm:px-4 py-3 text-sm text-right font-medium text-green-700 whitespace-nowrap tabular-nums">
+                      {miautoFmtMonto(symCuota, c.cuota_semanal)}
                     </td>
-                    <td className="px-4 py-3 text-xs text-right text-gray-700 whitespace-nowrap">
-                      {c.num_viajes != null && c.bono_auto != null
-                        ? `${c.num_viajes} viajes — Bono auto ${symCuota} ${Number(c.bono_auto).toFixed(2)}`
-                        : c.num_viajes != null
-                          ? `${c.num_viajes} viajes`
-                          : c.bono_auto != null
-                            ? `Bono auto ${symCuota} ${Number(c.bono_auto).toFixed(2)}`
-                            : '—'}
+                    <td className="px-3 sm:px-4 py-3 text-xs text-right whitespace-nowrap tabular-nums">
+                      {c.num_viajes != null ? (
+                        <>
+                          <span className="text-gray-700">{c.num_viajes} viajes — </span>
+                          <span className="text-red-600">Bono auto {miautoFmtMonto(symCuota, bonoAutoVal)}</span>
+                        </>
+                      ) : c.bono_auto != null ? (
+                        <span className="text-red-600">Bono auto {miautoFmtMonto(symCuota, bonoAutoVal)}</span>
+                      ) : (
+                        <span className="text-gray-500">—</span>
+                      )}
                     </td>
-                    <td className="px-4 py-3 text-sm text-right text-gray-700 tabular-nums">
-                      {c.pct_comision != null && !Number.isNaN(Number(c.pct_comision))
-                        ? `${Number(c.pct_comision).toFixed(1)}%`
-                        : '—'}
+                    <td className="px-3 sm:px-4 py-3 text-sm text-right text-red-600 whitespace-nowrap tabular-nums">
+                      {miautoFmtMonto(symCuota, c.partner_fees_83)}
                     </td>
-                    <td className="px-4 py-3 text-sm text-right text-gray-700 tabular-nums">
-                      {symCuota} {(c.cobro_saldo ?? 0).toFixed(2)}
+                    <td className="px-3 sm:px-4 py-3 text-sm text-right text-green-700 whitespace-nowrap tabular-nums">
+                      {miautoFmtMonto(symCuota, c.cobro_saldo)}
                     </td>
-                    <td className="px-4 py-3 text-sm text-right font-medium text-gray-900" title="Saldo aún por cubrir en esta semana (misma moneda que la cuota)">
-                      {symCuota} {pendingTotal.toFixed(2)}
+                    <td className="px-3 sm:px-4 py-3 text-sm text-right font-medium text-green-700 whitespace-nowrap tabular-nums">
+                      {miautoFmtMonto(symCuota, pendingTotal)}
                     </td>
-                    <td className="px-4 py-3 text-sm text-right text-red-600 font-medium">
-                      {symCuota} {(c.late_fee ?? 0).toFixed(2)}
+                    <td className="px-3 sm:px-4 py-3 text-sm text-right text-red-600 font-medium whitespace-nowrap tabular-nums">
+                      {miautoFmtMonto(symCuota, c.late_fee)}
                     </td>
-                    <td className="px-4 py-3 text-sm text-right font-medium text-gray-900">
-                      {symCuota} {((c.amount_due ?? 0) + (c.late_fee ?? 0)).toFixed(2)}
+                    <td className="px-3 sm:px-4 py-3 text-sm text-right font-medium text-green-700 whitespace-nowrap tabular-nums">
+                      {miautoFmtMonto(symCuota, cuotaFinalSemana)}
                     </td>
-                    <td className="px-4 py-3 text-sm text-right text-green-700">
-                      {symCuota} {(c.paid_amount ?? 0).toFixed(2)}
+                    <td className="px-3 sm:px-4 py-3 text-sm text-right font-medium text-green-800 whitespace-nowrap tabular-nums">
+                      {miautoFmtMonto(symCuota, montoPagadoDisplay)}
                     </td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-3 sm:px-4 py-3 text-center whitespace-nowrap">
                       <div className="flex flex-col gap-0.5 items-center">
                         <span
-                          className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                          className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium ${
                             MIAUTO_CUOTA_STATUS_PILL[c.status] ?? 'bg-gray-100 text-gray-700'
                           }`}
                           title={c.status === 'bonificada' ? 'Bonificación por 4 cuotas seguidas al día' : undefined}
@@ -630,7 +639,7 @@ export default function YegoMiAutoRentSaleDetail() {
                             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
                               {comps.map((comp, compIdx) => {
                                 const isPendiente = (comp.estado || '').toLowerCase() === 'pendiente';
-                                const totalCuota = (c.amount_due || 0) + (c.late_fee ?? 0);
+                                const totalCuota = cuotaFinalSemana;
                                 const validadoSum = comps
                                   .filter((cp) => (cp.estado || '').toLowerCase() === 'validado')
                                   .reduce((s, cp) => s + (Number(cp.monto) || 0), 0);
@@ -714,6 +723,7 @@ export default function YegoMiAutoRentSaleDetail() {
                               comps={comps}
                               amountDue={c.amount_due || 0}
                               lateFee={c.late_fee ?? 0}
+                              totalCuotaSemana={cuotaFinalSemana}
                             />
                           </div>
                         </div>

@@ -121,14 +121,6 @@ export class ActiveSolicitudError extends Error {
   }
 }
 
-const MIAUTO_SOLICITUD_STATUSES = new Set(['pendiente', 'citado', 'rechazado', 'desistido', 'aprobado']);
-
-function sanitizeSolicitudStatus(value) {
-  const t = trimOrUndefined(value);
-  if (!t) return undefined;
-  return MIAUTO_SOLICITUD_STATUSES.has(t) ? t : undefined;
-}
-
 export const listSolicitudes = async (filters = {}) => {
   const { status, country, date_from, date_to, page = 1, limit = 20, driver_phone, driver_country, park_id, rapidin_driver_id, forDriver } = filters;
   const params = [];
@@ -138,10 +130,9 @@ export const listSolicitudes = async (filters = {}) => {
     fromJoin += ' LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id ';
   }
   let where = ' WHERE 1=1 ';
-  const statusFiltered = sanitizeSolicitudStatus(status);
-  if (statusFiltered) {
+  if (status) {
     where += ` AND s.status = $${n}`;
-    params.push(statusFiltered);
+    params.push(status);
     n += 1;
   }
   if (country) {
@@ -308,14 +299,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 
 /** Listado Alquiler/Venta con resumen de cuotas y moneda de cuotas según cronograma. */
 export const listAlquilerVenta = async (filters = {}) => {
-  const {
-    country,
-    page = 1,
-    limit = 20,
-    q: qFilter,
-    cronograma_id: cronogramaIdFilter,
-    cuota_estado: cuotaEstadoFilter,
-  } = filters;
+  const { country, page = 1, limit = 20, q: qFilter, cronograma_id: cronogramaIdFilter } = filters;
   const params = [];
   let n = 1;
   let where = ' WHERE 1=1 ';
@@ -327,21 +311,15 @@ export const listAlquilerVenta = async (filters = {}) => {
   const qRaw = (qFilter != null ? String(qFilter) : '').trim();
   if (qRaw) {
     const qLower = qRaw.toLowerCase();
-    const qDigits = qRaw.replace(/\D/g, '');
     where += ` AND (
       position($${n}::text in lower(coalesce(s.placa_asignada, ''))) > 0
       OR position($${n}::text in lower(coalesce(s.license_number, ''))) > 0
-      OR position($${n}::text in lower(coalesce(s.dni, ''))) > 0
       OR position($${n}::text in lower(coalesce(rd.first_name, ''))) > 0
       OR position($${n}::text in lower(coalesce(rd.last_name, ''))) > 0
       OR position($${n}::text in lower(trim(coalesce(rd.first_name, '')) || ' ' || trim(coalesce(rd.last_name, '')))) > 0
-      OR (
-        length($${n + 1}::text) >= 3
-        AND regexp_replace(coalesce(s.phone, ''), '[^0-9]', '', 'g') LIKE '%' || $${n + 1}::text || '%'
-      )
     )`;
-    params.push(qLower, qDigits);
-    n += 2;
+    params.push(qLower);
+    n += 1;
   }
   const cronogramaId = trimOrUndefined(cronogramaIdFilter);
   if (cronogramaId && UUID_RE.test(cronogramaId)) {
@@ -349,37 +327,28 @@ export const listAlquilerVenta = async (filters = {}) => {
     params.push(cronogramaId);
     n += 1;
   }
-
-  const cuotaEstado = trimOrUndefined(cuotaEstadoFilter);
-  const CUOTA_ESTADO = ['vencido', 'pendiente', 'al_dia', 'sin_cuotas'];
-  if (cuotaEstado && CUOTA_ESTADO.includes(cuotaEstado)) {
-    if (cuotaEstado === 'vencido') {
-      where += ` AND COALESCE(cu_sum.n_overdue, 0) > 0`;
-    } else if (cuotaEstado === 'pendiente') {
-      where += ` AND COALESCE(cu_sum.n_pending, 0) > 0`;
-    } else if (cuotaEstado === 'al_dia') {
-      where += ` AND COALESCE(cu_sum.n_overdue, 0) = 0 AND COALESCE(cu_sum.n_cuotas, 0) > 0`;
-    } else if (cuotaEstado === 'sin_cuotas') {
-      where += ` AND COALESCE(cu_sum.n_cuotas, 0) = 0`;
+  const cuotaEstado = trimOrUndefined(filters.cuota_estado);
+  if (cuotaEstado) {
+    const ce = String(cuotaEstado).toLowerCase();
+    if (ce === 'vencido') {
+      where += ` AND EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs WHERE cs.solicitud_id = s.id AND cs.status = 'overdue')`;
+    } else if (ce === 'pendiente') {
+      where += ` AND EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs WHERE cs.solicitud_id = s.id AND cs.status = 'pending')`;
+    } else if (ce === 'al_dia') {
+      where += ` AND EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs WHERE cs.solicitud_id = s.id)
+                AND NOT EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs2 WHERE cs2.solicitud_id = s.id AND cs2.status = 'overdue')`;
+    } else if (ce === 'sin_cuotas') {
+      where += ` AND NOT EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs WHERE cs.solicitud_id = s.id)`;
     }
   }
-
-  const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 20));
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * limitNum;
 
   const fromBase = `
      FROM module_miauto_solicitud s
      LEFT JOIN module_rapidin_drivers rd ON rd.id = s.rapidin_driver_id
      LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id
-     LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id
-     LEFT JOIN (
-       SELECT solicitud_id,
-              COUNT(*) FILTER (WHERE status = 'overdue')::int AS n_overdue,
-              COUNT(*) FILTER (WHERE status = 'pending')::int AS n_pending,
-              COUNT(*)::int AS n_cuotas
-       FROM module_miauto_cuota_semanal
-       GROUP BY solicitud_id
-     ) cu_sum ON cu_sum.solicitud_id = s.id`;
+     LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id`;
 
   const listSql = `SELECT s.id, s.cronograma_id, s.cronograma_vehiculo_id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.fecha_inicio_cobro_semanal, s.placa_asignada,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,

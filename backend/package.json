@@ -8,7 +8,9 @@
     "start": "NODE_ENV=production node index.js",
     "dev": "NODE_ENV=development nodemon index.js",
     "migrate": "node database/migrate.js",
-    "import-miauto-placas": "node scripts/import-miauto-placas-from-excel.js"
+    "import-miauto-placas": "node scripts/import-miauto-placas-from-excel.js",
+    "recalc-miauto-cuotas": "node scripts/recalc-miauto-cuotas-semanales-montos.js",
+    "miauto:generar-cuota-semana": "node scripts/generar-cuota-miauto-semana.js"
   },
   "keywords": [
     "rapidin",

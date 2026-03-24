@@ -223,14 +223,60 @@ export function parseViajesInterval(viajesStr: string): { min: number; max: numb
   return null;
 }
 
+function getMinViajesForRule(rule: CronogramaRule): number | null {
+  const interval = parseViajesInterval(rule.viajes);
+  return interval ? interval.min : null;
+}
+
+function isThresholdOnlyViajesLabel(viajesStr: string): boolean {
+  const s = viajesStr.trim();
+  if (!s) return false;
+  if (/^\d+\s*\+$/.test(s)) return false;
+  if (s.includes('-')) return false;
+  const n = parseInt(s, 10);
+  return !Number.isNaN(n) && n >= 0;
+}
+
+/** "120-120" guardado en UI: mismo criterio que backend (umbral hasta el siguiente tramo). */
+function isCollapsedPointRange(viajesStr: string, interval: { min: number; max: number }): boolean {
+  if (!viajesStr.includes('-')) return false;
+  return interval.min === interval.max;
+}
+
+function shouldExpandPointRuleToNextSegment(viajesStr: string, interval: { min: number; max: number }): boolean {
+  if (interval.min !== interval.max) return false;
+  return isThresholdOnlyViajesLabel(viajesStr) || isCollapsedPointRange(viajesStr, interval);
+}
+
+function getNextSegmentMinAfter(rules: CronogramaRule[], excludeIndex: number, currentMin: number): number | null {
+  let best: number | null = null;
+  for (let j = 0; j < rules.length; j++) {
+    if (j === excludeIndex) continue;
+    const m = getMinViajesForRule(rules[j]);
+    if (typeof m === 'number' && m > currentMin) {
+      if (best == null || m < best) best = m;
+    }
+  }
+  return best;
+}
+
 /** Devuelve la regla cuyo intervalo de viajes contiene a numViajes (bono auto y cuotas por carro aplican). */
 export function getRuleForTripCount(rules: CronogramaRule[], numViajes: number): CronogramaRule | null {
   if (!Array.isArray(rules) || rules.length === 0 || numViajes == null || numViajes < 0) return null;
   const n = Number(numViajes);
   if (Number.isNaN(n)) return null;
-  for (const rule of rules) {
-    const interval = parseViajesInterval(rule.viajes);
+  for (let i = 0; i < rules.length; i++) {
+    const rule = rules[i];
+    let interval = parseViajesInterval(rule.viajes);
     if (!interval) continue;
+    if (shouldExpandPointRuleToNextSegment(rule.viajes, interval)) {
+      const nextMin = getNextSegmentMinAfter(rules, i, interval.min);
+      if (nextMin != null) {
+        interval = { min: interval.min, max: nextMin - 1 };
+      } else {
+        interval = { min: interval.min, max: Number.POSITIVE_INFINITY };
+      }
+    }
     if (n >= interval.min && n <= interval.max) return rule;
   }
   return null;
@@ -1698,7 +1744,7 @@ export default function YegoMiAutoConfig() {
                                         onChange={(e) => updateRuleCuotaMoneda(ri, vi, e.target.value as BonoAutoMoneda)}
                                         disabled={isViewMode}
                                         className={`shrink-0 flex items-center px-1.5 py-1 text-xs text-gray-700 border-r border-gray-200 bg-gray-50 rounded-l focus:ring-0 focus:outline-none cursor-pointer ${isViewMode ? 'cursor-default' : ''}`}
-                                        title="Moneda cuota"
+                                        title="Moneda cuota semanal (según esta regla del cronograma)"
                                       >
                                         <option value="USD">$</option>
                                         <option value="PEN">S/.</option>

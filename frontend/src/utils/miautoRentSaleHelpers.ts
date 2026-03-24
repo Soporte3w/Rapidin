@@ -27,6 +27,26 @@ export function formatKpiMixPenUsd(pen: number, usd: number): string {
   return parts.join(' · ');
 }
 
+/** Normaliza montos que vienen de la API como number o string (PostgreSQL/JSON). */
+export function miautoNum(v: unknown): number {
+  if (v == null || v === '') return 0;
+  const n = typeof v === 'number' ? v : parseFloat(String(v).trim().replace(',', '.'));
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
+/** Celda de monto: `S/. 0.00` / `$ 0.00` (espacio fino no rompible entre símbolo y número). */
+export function miautoFmtMonto(sym: string, monto: unknown): string {
+  return `${sym}\u00A0${miautoNum(monto).toFixed(2)}`;
+}
+
+/**
+ * Monto mostrado en columna "Pagado": `paid_amount` de la cuota (BD actualiza al validar comprobantes o cobrar fleet).
+ * Así coincide con bono/cuota/cuota final y con el estado de la fila.
+ */
+export function miautoMontoPagadoCuotaSemanal(paidAmount: unknown): number {
+  return miautoNum(paidAmount);
+}
+
 export const MIAUTO_CUOTA_STATUS_LABELS: Record<string, string> = {
   pending: 'Pendiente',
   overdue: 'Vencida',

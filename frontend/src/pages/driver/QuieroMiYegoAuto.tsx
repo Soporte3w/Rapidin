@@ -9,6 +9,8 @@ import { getStoredSession, getStoredRapidinDriverId, getStoredSelectedParkId } f
 import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateFlex, formatDateTime } from '../../utils/date';
+import { symMoneda } from '../../utils/miautoAlquilerVentaList';
+import { miautoFmtMonto, miautoMontoPagadoCuotaSemanal, miautoNum } from '../../utils/miautoRentSaleHelpers';
 
 const APPS_OPTIONS = [
   { code: 'uber', name: 'Uber' },
@@ -137,12 +139,17 @@ interface CuotaSemanal {
   late_fee: number;
   status: string;
   pending_total: number;
-  /** Moneda de la fila del cronograma que aplica a esta cuota (PEN | USD). */
   moneda?: string;
-  /** Snapshot % comisión de la fila del cronograma */
-  pct_comision?: number;
-  /** Snapshot cobro del saldo */
   cobro_saldo?: number;
+  cuota_neta?: number;
+  cuota_final?: number;
+  partner_fees_83?: number;
+}
+
+/** Total semana (neto + mora), alineado a la API / fórmula de creación de cuota. */
+function miautoCuotaFinalSemana(c: CuotaSemanal): number {
+  if (c.cuota_final != null) return miautoNum(c.cuota_final);
+  return miautoNum(c.amount_due) + miautoNum(c.late_fee);
 }
 
 interface ComprobanteCuotaSemanal {
@@ -291,7 +298,7 @@ function AprobadoBlock({
 
   const handleUploadComprobanteCuota = async (cuotaId: string, file: File) => {
     const cuota = cuotasSemanales.find((x) => x.id === cuotaId);
-    const monto = cuota ? String((cuota.amount_due + (cuota.late_fee ?? 0)).toFixed(2)) : '';
+    const monto = cuota ? String(miautoCuotaFinalSemana(cuota).toFixed(2)) : '';
     const moneda = (cuota?.moneda === 'USD' ? 'USD' : 'PEN') as 'PEN' | 'USD';
     if (!monto || Number.isNaN(parseFloat(monto)) || parseFloat(monto) <= 0) {
       toast.error('No se pudo obtener el monto de la cuota');
@@ -623,7 +630,9 @@ function AprobadoBlock({
           {solicitud.fecha_inicio_cobro_semanal && subTabCronogramaDriver === 'semanales' && !loadingCuotas && cuotasSemanales.length > 0 && (() => {
             const cuotasPagadas = cuotasSemanales.filter((c) => c.status === 'paid' || c.status === 'bonificada').length;
             const vencidas = cuotasSemanales.filter((c) => c.status === 'overdue').length;
-            const totalPagado = round2(cuotasSemanales.reduce((s, c) => s + (c.paid_amount ?? 0), 0));
+            const totalPagado = round2(
+              cuotasSemanales.reduce((s, c) => s + miautoMontoPagadoCuotaSemanal(c.paid_amount), 0),
+            );
             const planTotal = Math.max(vehiculo?.cuotas_semanales ?? 0, cuotasSemanales.length) || cuotasSemanales.length;
             const bonoTiempoActivo = solicitud.cronograma?.bono_tiempo_activo === true;
             const racha = bonoTiempoActivo ? (rachaFromBackend ?? (() => {
@@ -693,68 +702,81 @@ function AprobadoBlock({
                 <p className="text-sm text-gray-500">Aún no hay cuotas semanales generadas.</p>
               ) : (
                 <>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                <div className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0">
+                  <table className="w-full min-w-max text-sm border-collapse">
                     <thead>
                       <tr className="border-b border-gray-200 text-left text-gray-600">
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Semana</th>
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Vence</th>
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Cuota completa</th>
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Viajes - B.A</th>
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide text-right">% comisión</th>
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide text-right">Cobro del saldo</th>
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Cuota a pagar</th>
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Semana</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Vence</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Cuota semanal (plan)</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Viajes - B.A</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-red-600">Comisión</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Cobro del saldo</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Cuota a pagar</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap text-red-600">
                           Mora{solicitud.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0 ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}%)` : ''}
                         </th>
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Cuota final</th>
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Pagado</th>
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Estado</th>
-                        <th className="py-2.5 pr-2 text-xs font-semibold uppercase tracking-wide">Comprobante</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Cuota final</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Pagado</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Estado</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Comprobante</th>
                       </tr>
                     </thead>
                     <tbody>
                       {cuotasPg.paginatedItems.map((c, index) => {
                         const numeroSemana = (cuotasPg.page - 1) * cuotasPg.limit + index + 1;
-                        const pendiente = c.pending_total > 0;
                         const comps = comprobantesByCuotaId[c.id] ?? [];
+                        const cuotaFinalSemana = miautoCuotaFinalSemana(c);
+                        const montoPagadoDisplay = miautoMontoPagadoCuotaSemanal(c.paid_amount);
+                        const pendienteMonto = Math.max(0, cuotaFinalSemana - montoPagadoDisplay);
+                        const pendiente = pendienteMonto > 0;
                         const abierto = historialAbiertoPorCuota === c.id;
-                        const symCuota =
-                          (c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda) === 'USD' ? '$' : 'S/.';
+                        const symCuota = symMoneda(c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda);
                         return (
                           <Fragment key={c.id}>
                             <tr className="border-b border-gray-100">
-                              <td className="py-2 pr-2 text-gray-700">
-                                <span className="font-medium text-[#8B1A1A]">Semana {numeroSemana}</span>
-                                <span className="block text-xs text-gray-500 mt-0.5">{formatDateFlex(c.week_start_date)}</span>
+                              <td className="py-2 pr-3 text-gray-700 align-top whitespace-nowrap">
+                                <span className="font-medium text-[#8B1A1A] whitespace-nowrap">Semana {numeroSemana}</span>
+                                <span className="block text-xs text-gray-500 mt-0.5 whitespace-nowrap">{formatDateFlex(c.week_start_date)}</span>
                               </td>
-                              <td className="py-2 pr-2 text-gray-700">{formatDateFlex(c.due_date)}</td>
-                              <td className="py-2 pr-2 font-medium">{symCuota} {(c.amount_due ?? 0).toFixed(2)}</td>
-                              <td className="py-2 pr-2 text-gray-700 text-xs whitespace-nowrap">
-                                {c.num_viajes != null && c.bono_auto != null
-                                  ? `${c.num_viajes} — ${symCuota} ${(c.bono_auto).toFixed(2)}`
-                                  : c.num_viajes != null
-                                    ? String(c.num_viajes)
-                                    : c.bono_auto != null
-                                      ? `${symCuota} ${(c.bono_auto).toFixed(2)}`
-                                      : '—'}
+                              <td className="py-2 pr-3 text-gray-700 whitespace-nowrap">{formatDateFlex(c.due_date)}</td>
+                              <td className="py-2 pr-3 font-medium text-green-700 whitespace-nowrap tabular-nums text-right">
+                                {miautoFmtMonto(symCuota, c.cuota_semanal)}
                               </td>
-                              <td className="py-2 pr-2 text-gray-700 text-xs text-right tabular-nums">
-                                {c.pct_comision != null && !Number.isNaN(Number(c.pct_comision))
-                                  ? `${Number(c.pct_comision).toFixed(1)}%`
-                                  : '—'}
+                              <td className="py-2 pr-3 text-xs whitespace-nowrap tabular-nums text-right">
+                                {c.num_viajes != null ? (
+                                  <>
+                                    <span className="text-gray-700">{c.num_viajes} — </span>
+                                    <span className="text-red-600">Bono {miautoFmtMonto(symCuota, c.bono_auto)}</span>
+                                  </>
+                                ) : c.bono_auto != null ? (
+                                  <span className="text-red-600">Bono {miautoFmtMonto(symCuota, c.bono_auto)}</span>
+                                ) : (
+                                  <span className="text-gray-500">—</span>
+                                )}
                               </td>
-                              <td className="py-2 pr-2 text-gray-700 text-xs text-right tabular-nums">
-                                {symCuota} {(c.cobro_saldo ?? 0).toFixed(2)}
+                              <td className="py-2 pr-3 text-xs text-right text-red-600 whitespace-nowrap tabular-nums">
+                                {miautoFmtMonto(symCuota, c.partner_fees_83)}
                               </td>
-                              <td className="py-2 pr-2 font-medium">S/. {(Math.max(0, c.pending_total ?? (c.amount_due + (c.late_fee ?? 0) - (c.paid_amount ?? 0)))).toFixed(2)}</td>
-                              <td className="py-2 pr-2 text-red-600 font-medium">S/. {(c.late_fee ?? 0).toFixed(2)}</td>
-                              <td className="py-2 pr-2 font-medium">S/. {(c.amount_due + (c.late_fee ?? 0)).toFixed(2)}</td>
-                              <td className="py-2 pr-2 text-green-700">S/. {c.paid_amount.toFixed(2)}</td>
-                              <td className="py-2 pr-2">
+                              <td className="py-2 pr-3 text-xs text-right text-green-700 whitespace-nowrap tabular-nums">
+                                {miautoFmtMonto(symCuota, c.cobro_saldo)}
+                              </td>
+                              <td className="py-2 pr-3 font-medium text-green-700 whitespace-nowrap tabular-nums text-right">
+                                {miautoFmtMonto(symCuota, pendienteMonto)}
+                              </td>
+                              <td className="py-2 pr-3 text-red-600 font-medium whitespace-nowrap tabular-nums text-right">
+                                {miautoFmtMonto(symCuota, c.late_fee)}
+                              </td>
+                              <td className="py-2 pr-3 font-medium text-green-700 whitespace-nowrap tabular-nums text-right">
+                                {miautoFmtMonto(symCuota, cuotaFinalSemana)}
+                              </td>
+                              <td className="py-2 pr-3 font-medium text-green-800 whitespace-nowrap tabular-nums text-right">
+                                {miautoFmtMonto(symCuota, montoPagadoDisplay)}
+                              </td>
+                              <td className="py-2 pr-3 whitespace-nowrap">
                                 <div className="flex flex-col gap-0.5">
                                   <span
-                                    className={`inline-flex w-fit px-1.5 py-0.5 rounded text-xs font-medium ${
+                                    className={`inline-flex w-fit whitespace-nowrap px-1.5 py-0.5 rounded text-xs font-medium ${
                                       c.status === 'paid' || c.status === 'bonificada' ? 'bg-green-100 text-green-800' :
                                       c.status === 'overdue' ? 'bg-red-100 text-red-800' :
                                       c.status === 'partial' ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'
@@ -938,7 +960,7 @@ function AprobadoBlock({
                                         const verificado = comps.filter((cp) => getEstadoComp(cp) === 'validado').reduce((s, cp) => s + (cp.monto != null ? Number(cp.monto) : 0), 0);
                                         const totalEnv = verificado;
                                         const rechazado = comps.filter((cp) => getEstadoComp(cp) === 'rechazado').reduce((s, cp) => s + (cp.monto != null ? Number(cp.monto) : 0), 0);
-                                        const totalCuota = c.amount_due + (c.late_fee ?? 0);
+                                        const totalCuota = miautoCuotaFinalSemana(c);
                                         const restantePorPagar = Math.max(0, c.pending_total ?? (totalCuota - verificado));
                                         return (
                                           <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl bg-white border border-gray-200 px-4 py-3 text-sm text-gray-700 shadow-sm">

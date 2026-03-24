@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import axios from 'axios';
 import { getNextProxyConfig, hasProxies } from './proxyLoader.js';
+import { logger } from '../utils/logger.js';
 
 // Cookie y Park ID. Dos cookies: cobro automático (Jhajaira) y pagar/recarga (carmenvargas).
 const trimCookie = (v) => (v || '').replace(/^["']|["']$/g, '').trim();
@@ -154,7 +155,7 @@ export async function getContractorBalance(contractorProfileId, parkId = null, c
 /**
  * Driver income (Mi Auto): viajes e ingresos por rango de fechas.
  * POST fleet.yango.com/api/v1/cards/driver/income con date_from, date_to, driver_id.
- * dateFrom/dateTo: ISO con timezone -05:00 (ej. 2026-03-02T00:00:00-05:00, 2026-03-08T23:00:00-05:00).
+ * dateFrom/dateTo: ISO -05:00; usar limaWeekStartToIncomeRange (lunes 00:00 … domingo 23:59).
  */
 export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null, cookieOverride = null) {
   const id = String(driverId || '').trim();
@@ -165,20 +166,38 @@ export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null,
     date_to: dateTo || '',
     driver_id: id
   };
+  const resolvedPark = (parkId && String(parkId).trim()) ? String(parkId).trim() : PARK_ID;
   const headers = {
     'Accept-Language': 'es-ES,es',
     'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : COOKIE_COBRO,
-    'X-Park-Id': (parkId && String(parkId).trim()) ? String(parkId).trim() : PARK_ID,
+    'X-Park-Id': resolvedPark,
     'Content-Type': 'application/json'
   };
+  const logIncome = process.env.YANGO_LOG_DRIVER_INCOME !== '0';
+  if (logIncome) {
+    logger.info(
+      `[Yango driver/income] POST body: date_from=${body.date_from} date_to=${body.date_to} driver_id=${id} X-Park-Id=${resolvedPark}`
+    );
+  }
   try {
     const res = await postWithProxyRetry(url, body, headers);
     const countCompleted = res.data?.orders?.count_completed != null ? Number(res.data.orders.count_completed) : 0;
     const partnerFees = res.data?.balances?.partner_fees != null ? parseFloat(res.data.balances.partner_fees) : 0;
+    if (logIncome) {
+      logger.info(
+        `[Yango driver/income] response: count_completed=${countCompleted} partner_fees=${Number.isFinite(partnerFees) ? partnerFees : 0}`
+      );
+    }
     return {
       success: true,
       count_completed: countCompleted,
       partner_fees: Number.isFinite(partnerFees) ? partnerFees : 0,
+      request: {
+        date_from: body.date_from,
+        date_to: body.date_to,
+        driver_id: id,
+        park_id: resolvedPark,
+      },
       raw: res.data
     };
   } catch (error) {

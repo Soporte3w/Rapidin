@@ -9,8 +9,9 @@ import { montoEnPEN, normalizePenUsd, round2 } from './miautoMoneyUtils.js';
 
 /** Actualiza cuota con nuevo paid_amount y status; aplica beneficio 4 seguidas si queda pagada. */
 async function aplicarPagoACuota(solicitudId, cuotaSemanalId, amountDue, paid, lateFee, montoAplicar) {
-  const newPaid = round2(paid + montoAplicar);
-  const totalDue = amountDue + lateFee;
+  const totalDue = round2(amountDue + lateFee);
+  let newPaid = round2(paid + montoAplicar);
+  newPaid = round2(Math.min(newPaid, totalDue));
   const newStatus = newPaid >= totalDue ? 'paid' : 'partial';
   await query(
     `UPDATE module_miauto_cuota_semanal SET paid_amount = $1, status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,

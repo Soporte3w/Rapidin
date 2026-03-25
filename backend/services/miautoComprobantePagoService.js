@@ -1,7 +1,7 @@
 import { query } from '../config/database.js';
 import { uploadFileToMedia } from './voucherService.js';
 import { getTipoCambioByCountry } from './miautoTipoCambioService.js';
-import { round2 } from './miautoMoneyUtils.js';
+import { round2, normalizePenUsd } from './miautoMoneyUtils.js';
 
 /** Si la suma de comprobantes validados (cuota inicial + otros gastos) >= cuota inicial, marca pago_estado = completo. */
 export async function marcarPagoCompletoSiAplica(solicitudId) {

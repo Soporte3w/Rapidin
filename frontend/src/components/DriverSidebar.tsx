@@ -10,8 +10,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
-/** Sección Yego Mi Auto en conductor: desactivada por mientras. true = muestra menú y permite ruta /driver/quiero-mi-auto */
-export const DRIVER_MI_AUTO_ENABLED = false;
+/** Sección Yego Mi Auto en conductor: menú + ruta /driver/quiero-mi-auto */
+export const DRIVER_MI_AUTO_ENABLED = true;
 
 interface DriverSidebarProps {
   isOpen: boolean;
@@ -43,7 +43,7 @@ export default function DriverSidebar({ isOpen, onClose }: DriverSidebarProps) {
       { name: 'Mis Préstamos', href: '/driver/loans', icon: FileText },
     ]},
     ...(SHOW_MI_AUTO ? [{ title: 'Mi Auto', items: [
-      { name: '¡Quiero mi Yego Auto!', href: '/driver/quiero-mi-auto', icon: Car },
+      { name: '¡Quiero Yego Mi Auto!', href: '/driver/quiero-mi-auto', icon: Car },
     ]}] : []),
   ];
 

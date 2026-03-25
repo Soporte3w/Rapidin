@@ -1,7 +1,8 @@
 import pool from '../database/connection.js';
 import { logger } from '../utils/logger.js';
 
-const MIN_TRIPS_PER_MONTH = 400;
+/** Mínimo de viajes completados por mes (cada uno de los dos meses anteriores al actual) para oferta Rapidín. */
+export const MIN_TRIPS_PER_MONTH = 400;
 
 /** Normaliza conductor_id para comparar: en trips puede ser igual a driver_id o "driver-"+driver_id */
 function conductorIdParam(conductorId) {

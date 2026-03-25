@@ -17,7 +17,7 @@ export function addDaysYmd(yyyyMmDd, deltaDays) {
 }
 
 /**
- * @param weekStartMondayYmd Lunes de la semana en YYYY-MM-DD (mismo valor que week_start_date / due_date típico de cuota).
+ * @param weekStartMondayYmd Lunes de la semana Lun–Dom de viajes Yango (mismo que `week_start_date` en BD).
  * @returns {{ weekStartDate: string, dateFrom: string, dateTo: string }}
  *   dateFrom = lunes 00:00:00-05:00, dateTo = domingo (lunes+6) 23:59:59-05:00
  */
@@ -86,4 +86,24 @@ export function getPreviousWeekIncomeRangeLima(now = new Date()) {
   const thisWeekMonday = mondayOfWeekContainingYmd(limaToday);
   const previousWeekMonday = addDaysYmd(thisWeekMonday, -7);
   return limaWeekStartToIncomeRange(previousWeekMonday);
+}
+
+/**
+ * Vencimiento de la cuota: **lunes siguiente** al cierre Lun–Dom de los viajes (`week_start_date + 7`),
+ * salvo la **primera cuota** (depósito / sin viajes Yango): vence en `fecha_inicio_cobro_semanal`
+ * (día de entrega; suele ser el lunes de esa semana en Lima).
+ *
+ * @param {string} weekStartMondayYmd Lunes de la semana de ingresos (Yango Lun 00:00 – Dom 23:59).
+ * @param {string|null|undefined} fechaInicioCobroYmd `fecha_inicio_cobro_semanal` de la solicitud (YYYY-MM-DD).
+ * @returns {string} YYYY-MM-DD
+ */
+export function computeDueDateForMiAutoCuota(weekStartMondayYmd, fechaInicioCobroYmd) {
+  const ws = String(weekStartMondayYmd || '').trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ws)) return ws;
+  const fi = fechaInicioCobroYmd ? String(fechaInicioCobroYmd).trim().slice(0, 10) : null;
+  if (fi && /^\d{4}-\d{2}-\d{2}$/.test(fi)) {
+    const mondayInicio = mondayOfWeekContainingYmd(fi);
+    if (ws === mondayInicio) return fi;
+  }
+  return addDaysYmd(ws, 7);
 }

@@ -2,6 +2,7 @@ import { query } from '../config/database.js';
 import { getCronogramasByIds, getMonedaCuotaSemanalPorVehiculo } from './miautoCronogramaService.js';
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helpers.js';
 import { ensureCuotaSemanalForWeek } from './miautoCuotaSemanalService.js';
+import { getLimaYmd, mondayOfWeekContainingYmd } from '../utils/miautoLimaWeekRange.js';
 import { getTotalValidado } from './miautoComprobantePagoService.js';
 import { ensureOtroGastoForWeek, listBySolicitud as listOtrosGastosBySolicitud, listBySolicitudIds as listOtrosGastosBySolicitudIds } from './miautoOtrosGastosService.js';
 import { logger } from '../utils/logger.js';
@@ -784,11 +785,11 @@ export const generarYegoMiAuto = async (id, options = {}) => {
     }
   }
 
-  const today = new Date();
-  const dateStr = today.toISOString().slice(0, 10);
+  /** Inicio alineado al job Lun–Dom Lima: lunes de la semana que contiene “hoy” en Lima (no UTC ni día suelto). */
+  const dateStr = mondayOfWeekContainingYmd(getLimaYmd(new Date()));
   const updated = await updateSolicitud(id, { fecha_inicio_cobro_semanal: dateStr, placa_asignada: placa });
 
-  // Primera cuota semanal: due_date = hoy.
+  // Primera cuota semanal (depósito): due_date = fecha_inicio (computeDueDateForMiAutoCuota).
   try {
     await ensureCuotaSemanalForWeek(
       id,

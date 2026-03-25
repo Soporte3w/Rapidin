@@ -10,7 +10,12 @@ import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateFlex, formatDateTime } from '../../utils/date';
 import { symMoneda } from '../../utils/miautoAlquilerVentaList';
-import { miautoFmtMonto, miautoMontoPagadoCuotaSemanal, miautoNum } from '../../utils/miautoRentSaleHelpers';
+import {
+  miautoFmtMonto,
+  miautoMontoPagadoCuotaSemanal,
+  miautoSemanaLista,
+  miautoCuotaFinalSemana,
+} from '../../utils/miautoRentSaleHelpers';
 
 const APPS_OPTIONS = [
   { code: 'uber', name: 'Uber' },
@@ -144,12 +149,6 @@ interface CuotaSemanal {
   cuota_neta?: number;
   cuota_final?: number;
   partner_fees_83?: number;
-}
-
-/** Total semana (neto + mora), alineado a la API / fórmula de creación de cuota. */
-function miautoCuotaFinalSemana(c: CuotaSemanal): number {
-  if (c.cuota_final != null) return miautoNum(c.cuota_final);
-  return miautoNum(c.amount_due) + miautoNum(c.late_fee);
 }
 
 interface ComprobanteCuotaSemanal {
@@ -708,11 +707,11 @@ function AprobadoBlock({
                       <tr className="border-b border-gray-200 text-left text-gray-600">
                         <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Semana</th>
                         <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Vence</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Cuota semanal (plan)</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Viajes - B.A</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-red-600">Comisión</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-gray-900">Cuota semanal (plan)</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Viajes - B.A</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Comisión</th>
                         <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Cobro del saldo</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Cuota a pagar</th>
+                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-gray-900">Cuota a pagar</th>
                         <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap text-red-600">
                           Mora{solicitud.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0 ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}%)` : ''}
                         </th>
@@ -724,7 +723,9 @@ function AprobadoBlock({
                     </thead>
                     <tbody>
                       {cuotasPg.paginatedItems.map((c, index) => {
-                        const numeroSemana = (cuotasPg.page - 1) * cuotasPg.limit + index + 1;
+                        const numeroSemana =
+                          miautoSemanaLista(cuotasSemanales, c.week_start_date) ??
+                          (cuotasPg.page - 1) * cuotasPg.limit + index + 1;
                         const comps = comprobantesByCuotaId[c.id] ?? [];
                         const cuotaFinalSemana = miautoCuotaFinalSemana(c);
                         const montoPagadoDisplay = miautoMontoPagadoCuotaSemanal(c.paid_amount);
@@ -740,29 +741,29 @@ function AprobadoBlock({
                                 <span className="block text-xs text-gray-500 mt-0.5 whitespace-nowrap">{formatDateFlex(c.week_start_date)}</span>
                               </td>
                               <td className="py-2 pr-3 text-gray-700 whitespace-nowrap">{formatDateFlex(c.due_date)}</td>
-                              <td className="py-2 pr-3 font-medium text-green-700 whitespace-nowrap tabular-nums text-right">
+                              <td className="py-2 pr-3 font-medium text-gray-900 whitespace-nowrap tabular-nums text-right">
                                 {miautoFmtMonto(symCuota, c.cuota_semanal)}
                               </td>
                               <td className="py-2 pr-3 text-xs whitespace-nowrap tabular-nums text-right">
                                 {c.num_viajes != null ? (
                                   <>
                                     <span className="text-gray-700">{c.num_viajes} — </span>
-                                    <span className="text-red-600">Bono {miautoFmtMonto(symCuota, c.bono_auto)}</span>
+                                    <span className="text-green-700">Bono {miautoFmtMonto(symCuota, c.bono_auto)}</span>
                                   </>
                                 ) : c.bono_auto != null ? (
-                                  <span className="text-red-600">Bono {miautoFmtMonto(symCuota, c.bono_auto)}</span>
+                                  <span className="text-green-700">Bono {miautoFmtMonto(symCuota, c.bono_auto)}</span>
                                 ) : (
                                   <span className="text-gray-500">—</span>
                                 )}
                               </td>
-                              <td className="py-2 pr-3 text-xs text-right text-red-600 whitespace-nowrap tabular-nums">
+                              <td className="py-2 pr-3 text-xs text-right text-green-700 whitespace-nowrap tabular-nums">
                                 {miautoFmtMonto(symCuota, c.partner_fees_83)}
                               </td>
                               <td className="py-2 pr-3 text-xs text-right text-green-700 whitespace-nowrap tabular-nums">
                                 {miautoFmtMonto(symCuota, c.cobro_saldo)}
                               </td>
-                              <td className="py-2 pr-3 font-medium text-green-700 whitespace-nowrap tabular-nums text-right">
-                                {miautoFmtMonto(symCuota, pendienteMonto)}
+                              <td className="py-2 pr-3 font-medium text-gray-900 whitespace-nowrap tabular-nums text-right">
+                                {miautoFmtMonto(symCuota, c.amount_due)}
                               </td>
                               <td className="py-2 pr-3 text-red-600 font-medium whitespace-nowrap tabular-nums text-right">
                                 {miautoFmtMonto(symCuota, c.late_fee)}

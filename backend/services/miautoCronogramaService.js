@@ -251,24 +251,39 @@ export function getMonedaCuotaSemanalPorVehiculo(cronograma, cronogramaVehiculoI
   return 'PEN';
 }
 
+/** Intervalo efectivo [min,max] de una regla respecto al resto del cronograma. */
+function expandIntervalForRule(rule, rules, ruleIndex) {
+  let interval = parseViajesInterval(rule.viajes);
+  if (!interval) return null;
+  if (shouldExpandPointRuleToNextSegment(rule.viajes, interval)) {
+    const nextMin = getNextSegmentMinAfter(rules, ruleIndex, interval.min);
+    if (nextMin != null) {
+      interval = { min: interval.min, max: nextMin - 1 };
+    } else {
+      interval = { min: interval.min, max: Number.POSITIVE_INFINITY };
+    }
+  }
+  return interval;
+}
+
 export function getRuleForTripCount(rules, numViajes) {
   if (!Array.isArray(rules) || rules.length === 0 || numViajes == null || numViajes < 0) return null;
   const n = Number(numViajes);
   if (Number.isNaN(n)) return null;
+  let floorRule = null;
+  let floorMinStart = Infinity;
   for (let i = 0; i < rules.length; i++) {
     const rule = rules[i];
-    let interval = parseViajesInterval(rule.viajes);
+    const interval = expandIntervalForRule(rule, rules, i);
     if (!interval) continue;
-    if (shouldExpandPointRuleToNextSegment(rule.viajes, interval)) {
-      const nextMin = getNextSegmentMinAfter(rules, i, interval.min);
-      if (nextMin != null) {
-        interval = { min: interval.min, max: nextMin - 1 };
-      } else {
-        interval = { min: interval.min, max: Number.POSITIVE_INFINITY };
-      }
+    if (interval.min < floorMinStart) {
+      floorMinStart = interval.min;
+      floorRule = rule;
     }
     if (n >= interval.min && n <= interval.max) return rule;
   }
+  // Debajo del tramo mínimo del cronograma (ej. menos de 89 viajes): misma cuota que el tramo con menor umbral.
+  if (floorRule != null && n < floorMinStart) return floorRule;
   return null;
 }
 

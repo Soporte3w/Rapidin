@@ -2,6 +2,7 @@
  * Yego Mi Auto — cuotas semanales: generación por semana, mora, cobro fleet (Yango), API conductor/admin.
  */
 import { query } from '../config/database.js';
+import { computeDueDateForMiAutoCuota, mondayOfWeekContainingYmd } from '../utils/miautoLimaWeekRange.js';
 import {
   getCronogramaById,
   getMonedaCuotaSemanalPorVehiculo,
@@ -13,6 +14,27 @@ import { logger } from '../utils/logger.js';
 import { round2 } from './miautoMoneyUtils.js';
 
 const PARTNER_FEES_PCT = 0.8333;
+
+function ymdFromDbDate(v) {
+  if (v == null) return null;
+  if (typeof v === 'string') {
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(v.trim());
+    return m ? m[1] : null;
+  }
+  try {
+    return new Date(v).toISOString().slice(0, 10);
+  } catch {
+    return null;
+  }
+}
+
+function diffDaysYmdUtc(a, b) {
+  const [ya, ma, da] = a.split('-').map(Number);
+  const [yb, mb, db] = b.split('-').map(Number);
+  const ta = Date.UTC(ya, ma - 1, da);
+  const tb = Date.UTC(yb, mb - 1, db);
+  return Math.round((tb - ta) / (24 * 60 * 60 * 1000));
+}
 
 /**
  * Monto base semanal antes de mora: cuota neta (plan − bono − 83,33% partner_fees) + cobro del saldo (regla)
@@ -102,6 +124,17 @@ function amountDueAndLateForOpen(cronograma, r, cuota_semanal, bono_auto, pct_co
   return { amount_due, late_fee };
 }
 
+/** Último lunes (`week_start_date`) con cuota en una solicitud; null si no hay filas. */
+export async function getMaxWeekStartYmdForSolicitud(solicitudId) {
+  const res = await query(
+    `SELECT (MAX(week_start_date))::text AS m FROM module_miauto_cuota_semanal WHERE solicitud_id = $1::uuid`,
+    [solicitudId]
+  );
+  const m = res.rows[0]?.m;
+  if (m == null || String(m).trim() === '') return null;
+  return String(m).trim().slice(0, 10);
+}
+
 /** Solicitudes listas para generar cuota semanal (job lunes). */
 export async function getSolicitudesParaCobroSemanal() {
   const res = await query(
@@ -120,10 +153,20 @@ export async function getSolicitudesParaCobroSemanal() {
 }
 
 /**
- * Crea o actualiza la cuota semanal para un lunes y los ingresos Yango de esa semana.
+ * Crea o actualiza la cuota semanal para el lunes de la semana Lun–Dom de viajes Yango (`week_start_date`).
+ * `due_date` (vence): lunes siguiente salvo primera cuota = `fecha_inicio_cobro_semanal` (depósito).
  * incomeResult: { count_completed, partner_fees }.
+ * @param {{ skipUpdateIfExists?: boolean }} [options] skipUpdateIfExists: si ya hay fila para ese lunes, no la modifica (útil para no pisar Excel / depósito).
  */
-export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, cronogramaVehiculoId, weekStartDate, incomeResult) {
+export async function ensureCuotaSemanalForWeek(
+  solicitudId,
+  cronogramaId,
+  cronogramaVehiculoId,
+  weekStartDate,
+  incomeResult,
+  options = {}
+) {
+  const skipUpdateIfExists = !!options.skipUpdateIfExists;
   const { count_completed: numViajes = 0, partner_fees: partnerFeesRaw = 0 } = incomeResult;
   const partnerFeesRawRounded = round2(Number(partnerFeesRaw) || 0);
   const partnerFees83 = round2(partnerFeesRawRounded * PARTNER_FEES_PCT);
@@ -148,12 +191,22 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
     cobroSaldo,
   });
 
+  const solInicio = await query(
+    `SELECT fecha_inicio_cobro_semanal FROM module_miauto_solicitud WHERE id = $1`,
+    [solicitudId]
+  );
+  const fechaInicioYmd = ymdFromDbDate(solInicio.rows[0]?.fecha_inicio_cobro_semanal);
+  const dueDateForRow = computeDueDateForMiAutoCuota(String(weekStartDate).trim().slice(0, 10), fechaInicioYmd);
+
   const existing = await query(
     'SELECT id FROM module_miauto_cuota_semanal WHERE solicitud_id = $1 AND week_start_date = $2',
     [solicitudId, weekStartDate]
   );
 
   if (existing.rows.length > 0) {
+    if (skipUpdateIfExists) {
+      return existing.rows[0].id;
+    }
     const prev = await query(
       `SELECT paid_amount, late_fee, status FROM module_miauto_cuota_semanal WHERE solicitud_id = $1 AND week_start_date = $2`,
       [solicitudId, weekStartDate]
@@ -171,8 +224,8 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
     }
     await query(
       `UPDATE module_miauto_cuota_semanal
-       SET num_viajes = $1, partner_fees_raw = $2, partner_fees_83 = $3, bono_auto = $4, cuota_semanal = $5, amount_due = $6, moneda = $7, pct_comision = $8, cobro_saldo = $9, paid_amount = $10, status = $11, updated_at = CURRENT_TIMESTAMP
-       WHERE solicitud_id = $12 AND week_start_date = $13`,
+       SET num_viajes = $1, partner_fees_raw = $2, partner_fees_83 = $3, bono_auto = $4, cuota_semanal = $5, amount_due = $6, moneda = $7, pct_comision = $8, cobro_saldo = $9, paid_amount = $10, status = $11, due_date = $12, updated_at = CURRENT_TIMESTAMP
+       WHERE solicitud_id = $13 AND week_start_date = $14`,
       [
         numViajes,
         partnerFeesRawRounded,
@@ -185,6 +238,7 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
         cobroSaldo,
         paidToStore,
         statusOut,
+        dueDateForRow,
         solicitudId,
         weekStartDate,
       ]
@@ -206,9 +260,12 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
     const total = parseInt(solVeh.rows[0].cuotas_semanales, 10) || 0;
     const bonif = parseInt(solVeh.rows[0].cuotas_semanales_bonificadas, 10) || 0;
     if (f && total > 0 && bonif >= 1) {
-      const start = new Date(f);
-      const week = new Date(weekStartDate);
-      const daysDiff = Math.round((week - start) / (24 * 60 * 60 * 1000));
+      const fYmd = ymdFromDbDate(f);
+      const wYmd = String(weekStartDate).trim().slice(0, 10);
+      const daysDiff =
+        fYmd && /^\d{4}-\d{2}-\d{2}$/.test(wYmd)
+          ? diffDaysYmdUtc(mondayOfWeekContainingYmd(fYmd), mondayOfWeekContainingYmd(wYmd))
+          : 0;
       const weekIndex = Math.floor(daysDiff / 7);
       // total = semanas del plan según cronograma del vehículo (v.cuotas_semanales). Bonificación a las últimas N (N = bonif). Ej: 261 → cuota 261 bonificada.
       if (weekIndex >= total - bonif && weekIndex < total) {
@@ -221,15 +278,34 @@ export async function ensureCuotaSemanalForWeek(solicitudId, cronogramaId, crono
   const ins = await query(
     `INSERT INTO module_miauto_cuota_semanal
      (solicitud_id, week_start_date, due_date, num_viajes, partner_fees_raw, partner_fees_83, bono_auto, cuota_semanal, amount_due, paid_amount, status, moneda, pct_comision, cobro_saldo)
-     VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING id`,
-    [solicitudId, weekStartDate, numViajes, partnerFeesRawRounded, partnerFees83, bonoAuto, cuotaSemanal, amountDue, paidAmountInsert, statusInsert, moneda, pctComision, cobroSaldo]
+    [
+      solicitudId,
+      weekStartDate,
+      dueDateForRow,
+      numViajes,
+      partnerFeesRawRounded,
+      partnerFees83,
+      bonoAuto,
+      cuotaSemanal,
+      amountDue,
+      paidAmountInsert,
+      statusInsert,
+      moneda,
+      pctComision,
+      cobroSaldo,
+    ]
   );
   return ins.rows[0]?.id || null;
 }
 
-/** Mora y vencidas (due_date antes de hoy → overdue + late_fee). Job diario o al listar una solicitud. */
-export async function updateMoraDiaria(solicitudId = null) {
+/** Mora y vencidas (due_date antes de hoy → overdue + late_fee). Job diario o al listar una solicitud.
+ * @param {string|null} solicitudId
+ * @param {{ singleCuotaId?: string }} [options] Si `singleCuotaId` está definido, solo actualiza esa fila (útil para scripts que no deben tocar otras semanas).
+ */
+export async function updateMoraDiaria(solicitudId = null, options = {}) {
+  const singleCuotaId = options.singleCuotaId || null;
   let sql = `SELECT c.id, c.solicitud_id, c.cuota_semanal, c.amount_due, c.due_date, c.paid_amount, c.late_fee, c.status,
             s.cronograma_id
      FROM module_miauto_cuota_semanal c
@@ -239,6 +315,10 @@ export async function updateMoraDiaria(solicitudId = null) {
   if (solicitudId) {
     sql += ` AND c.solicitud_id = $1`;
     params.push(solicitudId);
+  }
+  if (singleCuotaId) {
+    sql += ` AND c.id = $${params.length + 1}::uuid`;
+    params.push(singleCuotaId);
   }
   const res = await query(sql, params);
 
@@ -359,6 +439,8 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId) {
   const d = computeCuotaDerivedForRow(r, cronograma, vehId);
   let paid_amount = round2(parseFloat(r.paid_amount) || 0);
   paid_amount = round2(Math.min(paid_amount, d.cuota_final));
+  /** Columna cronograma “cobro del saldo”: valor persistido en la fila (regla al generar la cuota), no el recalculado del cronograma actual. */
+  const cobroSaldoDesdeFila = round2(parseFloat(r.cobro_saldo) || 0);
   return {
     id: r.id,
     solicitud_id: r.solicitud_id,
@@ -373,7 +455,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId) {
     status: r.status,
     moneda: d.moneda,
     pct_comision: d.pct_comision,
-    cobro_saldo: d.cobro_saldo,
+    cobro_saldo: cobroSaldoDesdeFila,
     partner_fees_raw: round2(parseFloat(r.partner_fees_raw) || 0),
     partner_fees_83: d.pf83,
     cuota_neta: d.cuota_neta,

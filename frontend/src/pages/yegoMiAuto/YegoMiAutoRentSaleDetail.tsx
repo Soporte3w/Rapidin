@@ -17,6 +17,8 @@ import {
   miautoFmtMonto,
   miautoMontoPagadoCuotaSemanal,
   miautoNum,
+  miautoSemanaLista,
+  miautoCuotaFinalSemana,
   MIAUTO_CUOTA_STATUS_LABELS,
   MIAUTO_CUOTA_STATUS_PILL,
   parseCuotasSemanalesPayload,
@@ -262,8 +264,7 @@ export default function YegoMiAutoRentSaleDetail() {
     let totalVencidoUSD = 0;
     for (const c of cuotas) {
       const pagado = miautoMontoPagadoCuotaSemanal(c.paid_amount);
-      const cuotaFinal =
-        c.cuota_final != null ? miautoNum(c.cuota_final) : miautoNum(c.amount_due) + miautoNum(c.late_fee);
+      const cuotaFinal = miautoCuotaFinalSemana(c);
       const pendienteMostrar = Math.max(0, cuotaFinal - pagado);
       if (c.moneda === 'USD') {
         totalPagadoUSD += pagado;
@@ -523,11 +524,11 @@ export default function YegoMiAutoRentSaleDetail() {
                 <tr>
                   <th className="px-3 sm:px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase whitespace-nowrap">Semana</th>
                   <th className="px-3 sm:px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase whitespace-nowrap">Vence</th>
-                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-green-700 uppercase whitespace-nowrap">Cuota semanal</th>
-                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase whitespace-nowrap">Viajes / Bono auto</th>
-                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-red-600 uppercase whitespace-nowrap">Comisión</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-gray-900 uppercase whitespace-nowrap">Cuota semanal</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-green-700 uppercase whitespace-nowrap">Viajes / Bono auto</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-green-700 uppercase whitespace-nowrap">Comisión</th>
                   <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-green-700 uppercase whitespace-nowrap">Cobro del saldo</th>
-                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-green-700 uppercase whitespace-nowrap">Pendiente a pagar</th>
+                  <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-gray-900 uppercase whitespace-nowrap">Pendiente a pagar</th>
                   <th className="px-3 sm:px-4 py-3 text-right text-xs font-semibold text-red-600 uppercase whitespace-nowrap">
                     Mora{solicitud?.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0 ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}%)` : ''}
                   </th>
@@ -538,10 +539,11 @@ export default function YegoMiAutoRentSaleDetail() {
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {cronPg.paginatedItems.map((c, index) => {
-                  const numeroSemana = (cronPg.page - 1) * cronPg.limit + index + 1;
+                  const numeroSemana =
+                    miautoSemanaLista(cuotas, c.week_start_date) ??
+                    (cronPg.page - 1) * cronPg.limit + index + 1;
                   const comps = comprobantesByCuotaId[c.id] ?? [];
-                  const cuotaFinalSemana =
-                    c.cuota_final != null ? miautoNum(c.cuota_final) : miautoNum(c.amount_due) + miautoNum(c.late_fee);
+                  const cuotaFinalSemana = miautoCuotaFinalSemana(c);
                   const montoPagadoDisplay = miautoMontoPagadoCuotaSemanal(c.paid_amount);
                   const pendingTotal = Math.max(0, cuotaFinalSemana - montoPagadoDisplay);
                   const abierto = comprobantesSemanaAbierta[c.id] === true;
@@ -570,28 +572,28 @@ export default function YegoMiAutoRentSaleDetail() {
                     <td className="px-3 sm:px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
                       {c.due_date ? formatDate(c.due_date, 'es-ES') : (c.week_start_date ? formatDate(c.week_start_date, 'es-ES') : '—')}
                     </td>
-                    <td className="px-3 sm:px-4 py-3 text-sm text-right font-medium text-green-700 whitespace-nowrap tabular-nums">
+                    <td className="px-3 sm:px-4 py-3 text-sm text-right font-medium text-gray-900 whitespace-nowrap tabular-nums">
                       {miautoFmtMonto(symCuota, c.cuota_semanal)}
                     </td>
                     <td className="px-3 sm:px-4 py-3 text-xs text-right whitespace-nowrap tabular-nums">
                       {c.num_viajes != null ? (
                         <>
                           <span className="text-gray-700">{c.num_viajes} viajes — </span>
-                          <span className="text-red-600">Bono auto {miautoFmtMonto(symCuota, bonoAutoVal)}</span>
+                          <span className="text-green-700">Bono auto {miautoFmtMonto(symCuota, bonoAutoVal)}</span>
                         </>
                       ) : c.bono_auto != null ? (
-                        <span className="text-red-600">Bono auto {miautoFmtMonto(symCuota, bonoAutoVal)}</span>
+                        <span className="text-green-700">Bono auto {miautoFmtMonto(symCuota, bonoAutoVal)}</span>
                       ) : (
                         <span className="text-gray-500">—</span>
                       )}
                     </td>
-                    <td className="px-3 sm:px-4 py-3 text-sm text-right text-red-600 whitespace-nowrap tabular-nums">
+                    <td className="px-3 sm:px-4 py-3 text-sm text-right text-green-700 whitespace-nowrap tabular-nums">
                       {miautoFmtMonto(symCuota, c.partner_fees_83)}
                     </td>
                     <td className="px-3 sm:px-4 py-3 text-sm text-right text-green-700 whitespace-nowrap tabular-nums">
                       {miautoFmtMonto(symCuota, c.cobro_saldo)}
                     </td>
-                    <td className="px-3 sm:px-4 py-3 text-sm text-right font-medium text-green-700 whitespace-nowrap tabular-nums">
+                    <td className="px-3 sm:px-4 py-3 text-sm text-right font-medium text-gray-900 whitespace-nowrap tabular-nums">
                       {miautoFmtMonto(symCuota, pendingTotal)}
                     </td>
                     <td className="px-3 sm:px-4 py-3 text-sm text-right text-red-600 font-medium whitespace-nowrap tabular-nums">

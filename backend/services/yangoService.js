@@ -1,13 +1,19 @@
 import crypto from 'crypto';
 import axios from 'axios';
-import { getNextProxyConfig, hasProxies } from './proxyLoader.js';
+import { getNextProxyConfig, hasProxies, loadProxiesFromUrlIfConfigured } from './proxyLoader.js';
 import { logger } from '../utils/logger.js';
 
-// Cookie y Park ID. Dos cookies: cobro automático (Jhajaira) y pagar/recarga (carmenvargas).
+// Lectura en cada request: los scripts pueden cargar .env después del import sin quedar valores vacíos.
 const trimCookie = (v) => (v || '').replace(/^["']|["']$/g, '').trim();
-const COOKIE_PAGAR = trimCookie(process.env.YANGO_FLEET_COOKIE);           // pagar / recarga (add)
-const COOKIE_COBRO = trimCookie(process.env.YANGO_FLEET_COOKIE_COBRO) || COOKIE_PAGAR; // cobro automático (withdraw + balance en job)
-const PARK_ID = trimCookie(process.env.YANGO_FLEET_PARK_ID) || '08e20910d81d42658d4334d3f6d10ac0';
+function fleetCookiePagar() {
+  return trimCookie(process.env.YANGO_FLEET_COOKIE);
+}
+function fleetCookieCobro() {
+  return trimCookie(process.env.YANGO_FLEET_COOKIE_COBRO) || fleetCookiePagar();
+}
+function fleetParkId() {
+  return trimCookie(process.env.YANGO_FLEET_PARK_ID) || '08e20910d81d42658d4334d3f6d10ac0';
+}
 
 /** Reintentos ante 429 / Too many requests (con o sin proxies). */
 const MAX_RATE_LIMIT_RETRIES = Number(process.env.YANGO_RATE_LIMIT_MAX_RETRIES || 8);
@@ -42,10 +48,10 @@ function rateLimitBackoffMs(attempt) {
 }
 
 /**
- * POST con reintento ante rate limit (429 / Too many requests).
- * Siempre reintenta con backoff exponencial (antes solo si había proxies).
+ * POST con reintento ante 429. Cada intento usa el siguiente proxy si hay lista (getNextProxyConfig).
  */
 async function postWithProxyRetry(url, body, headers) {
+  await loadProxiesFromUrlIfConfigured();
   let lastError;
   for (let attempt = 0; attempt < MAX_RATE_LIMIT_RETRIES; attempt++) {
     const config = { headers, ...getNextProxyConfig() };
@@ -78,8 +84,8 @@ export async function withdrawFromContractor(id, amount, description, cookieOver
   };
   const headers = {
     'Accept-Language': 'es-ES,es',
-    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : COOKIE_COBRO,
-    'X-Park-Id': (parkIdOverride && String(parkIdOverride).trim()) ? String(parkIdOverride).trim() : PARK_ID,
+    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : fleetCookieCobro(),
+    'X-Park-Id': (parkIdOverride && String(parkIdOverride).trim()) ? String(parkIdOverride).trim() : fleetParkId(),
     'X-Idempotency-Token': xIdempotencyToken,
     'Content-Type': 'text/plain'
   };
@@ -111,8 +117,8 @@ export async function addToContractor(id, amount, description, cookieOverride, p
   };
   const headers = {
     'Accept-Language': 'es-ES,es',
-    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : COOKIE_PAGAR,
-    'X-Park-Id': (parkIdOverride && String(parkIdOverride).trim()) ? String(parkIdOverride).trim() : PARK_ID,
+    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : fleetCookiePagar(),
+    'X-Park-Id': (parkIdOverride && String(parkIdOverride).trim()) ? String(parkIdOverride).trim() : fleetParkId(),
     'X-Idempotency-Token': xIdempotencyToken,
     'Content-Type': 'text/plain'
   };
@@ -135,8 +141,8 @@ export async function getContractorBalance(contractorProfileId, parkId = null, c
   const url = `https://fleet.yango.com/api/fleet/contractor-profiles-manager/v1/contractor-balances/by-pro-id?contractor_profile_id=${encodeURIComponent(id)}`;
   const headers = {
     'Accept-Language': 'es-ES,es',
-    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : COOKIE_COBRO,
-    'X-Park-Id': (parkId && String(parkId).trim()) ? String(parkId).trim() : PARK_ID,
+    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : fleetCookieCobro(),
+    'X-Park-Id': (parkId && String(parkId).trim()) ? String(parkId).trim() : fleetParkId(),
     'Content-Type': 'application/json'
   };
   try {
@@ -166,10 +172,10 @@ export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null,
     date_to: dateTo || '',
     driver_id: id
   };
-  const resolvedPark = (parkId && String(parkId).trim()) ? String(parkId).trim() : PARK_ID;
+  const resolvedPark = (parkId && String(parkId).trim()) ? String(parkId).trim() : fleetParkId();
   const headers = {
     'Accept-Language': 'es-ES,es',
-    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : COOKIE_COBRO,
+    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : fleetCookieCobro(),
     'X-Park-Id': resolvedPark,
     'Content-Type': 'application/json'
   };

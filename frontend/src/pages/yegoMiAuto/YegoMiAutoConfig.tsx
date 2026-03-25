@@ -1370,11 +1370,11 @@ export default function YegoMiAutoConfig() {
                               disabled={isViewMode}
                               className={`w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs shadow-sm focus:ring-2 focus:ring-red-500/30 ${isViewMode ? 'bg-gray-50' : ''}`}
                             >
-                              <option value="agrupado">Un solo costo (agrupado)</option>
-                              <option value="separado">Por separado (GPS y todo riesgo aparte)</option>
+                              <option value="agrupado">Un solo costo (agrupado): GPS + seguro todo riesgo</option>
+                              <option value="separado">Por separado: GPS + seguro de responsabilidad civil</option>
                             </select>
                           </div>
-                          {tipoCronograma !== 'nuevo' && (
+                          {tipoCronograma !== 'nuevo' && modoAgr && (
                             <div className="flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
                               <div className="mb-2 min-h-0">
                                 <label className="block text-[10px] font-medium text-gray-700 leading-tight">SRC (resp. civil)</label>
@@ -1499,28 +1499,30 @@ export default function YegoMiAutoConfig() {
                                 className={`flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm ${tipoCronograma !== 'nuevo' ? 'col-span-2' : ''}`}
                               >
                                 <div className="mb-2 min-h-0">
-                                  <label className="block text-[10px] font-medium text-gray-700 leading-tight">Seguro todo riesgo</label>
+                                  <label className="block text-[10px] font-medium text-gray-700 leading-tight">
+                                    Seguro de responsabilidad civil (SRC)
+                                  </label>
                                   <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
-                                    Semanal en {rg.todo_riesgo.cobro?.semanas ?? 26} semanas (referencia)
+                                    Mensual · desde {rg.src.cobro?.meses_anticipo ?? 5} meses antes del vencimiento
                                   </p>
                                 </div>
                                 <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
                                   <select
-                                    value={rg.todo_riesgo.moneda}
-                                    onChange={(e) => patchVehiculoGastoMonto(i, 'todo_riesgo', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                    value={rg.src.moneda}
+                                    onChange={(e) => patchVehiculoGastoMonto(i, 'src', { moneda: e.target.value as GastoRequisitoMoneda })}
                                     disabled={isViewMode}
                                     className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
                                   >
-                                    <option value="PEN">PEN</option>
                                     <option value="USD">USD</option>
+                                    <option value="PEN">PEN</option>
                                   </select>
                                   <input
                                     type="number"
                                     min={0}
                                     step={0.01}
-                                    value={rg.todo_riesgo.monto}
+                                    value={rg.src.monto}
                                     onChange={(e) =>
-                                      patchVehiculoGastoMonto(i, 'todo_riesgo', { monto: Math.max(0, parseFloat(e.target.value) || 0) })
+                                      patchVehiculoGastoMonto(i, 'src', { monto: Math.max(0, parseFloat(e.target.value) || 0) })
                                     }
                                     readOnly={isViewMode}
                                     className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}

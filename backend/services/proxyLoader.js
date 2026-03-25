@@ -106,7 +106,8 @@ function loadProxiesSync() {
 }
 
 async function ensureProxiesLoaded() {
-  if (loadAttempted) return proxyList.length > 0;
+  if (proxyList.length > 0) return true;
+  if (loadAttempted) return false;
   loadAttempted = true;
 
   const url = (process.env.YANGO_PROXIES_URL || '').trim();
@@ -129,7 +130,7 @@ export async function loadProxiesFromUrlIfConfigured() {
 
 /**
  * Devuelve la config de axios para el siguiente proxy (rotación).
- * No carga proxies solo: debió ejecutarse loadProxiesFromUrlIfConfigured() antes.
+ * La lista se rellena con loadProxiesFromUrlIfConfigured (p. ej. al primer POST Fleet en yangoService).
  */
 export function getNextProxyConfig() {
   if (proxyList.length === 0) return {};

@@ -146,6 +146,7 @@ export default function YegoMiAutoSolicitudDetail() {
   const [tipoCambio, setTipoCambio] = useState<{ valor_usd_a_local: number; moneda_local: string } | null>(null);
   const [showSimularCuotasModal, setShowSimularCuotasModal] = useState(false);
   const [placaParaGenerar, setPlacaParaGenerar] = useState('');
+  const [fechaInicioParaGenerar, setFechaInicioParaGenerar] = useState('');
 
   const fetchDetail = useCallback(async (opts?: { silent?: boolean; signal?: AbortSignal }) => {
     if (!id) return;
@@ -822,7 +823,7 @@ export default function YegoMiAutoSolicitudDetail() {
                     <p className="text-xs text-amber-900/90 leading-relaxed">
                       {solicitud.pago_estado !== 'completo' && (solicitud.pago_tipo === 'parcial' || (solicitud.total_validado_usd ?? 0) >= 500) ? (
                         <>
-                          <strong className="text-amber-900">Nota:</strong> simulación informativa. Si al generar Yego Mi Auto aún <strong>falta saldo</strong> de la cuota inicial, ese monto se repartirá en <strong>26 cuotas</strong> en &quot;Otros gastos&quot;, con vencimientos en <strong>lunes</strong> desde la <strong>semana 2</strong> del plan. La primera cuota del plan semanal vence el mismo día de la generación.
+                          <strong className="text-amber-900">Nota:</strong> simulación informativa. Si al generar Yego Mi Auto aún <strong>falta saldo</strong> de la cuota inicial, ese monto se repartirá en <strong>26 cuotas</strong> en &quot;Otros gastos&quot;, con vencimientos en <strong>lunes</strong> desde la <strong>semana 2</strong> del plan. Indica la <strong>fecha real del depósito</strong> abajo; la primera cuota semanal vence ese día (si no indicas fecha, se usa el lunes de la semana actual en Lima).
                         </>
                       ) : solicitud.pago_tipo === 'parcial' && solicitud.pago_estado === 'completo' ? (
                         <>
@@ -866,6 +867,20 @@ export default function YegoMiAutoSolicitudDetail() {
                         maxLength={20}
                         disabled={actionLoading}
                       />
+                      <label htmlFor="fecha-inicio-yego-mi-auto" className="block text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-4">
+                        Fecha del depósito / inicio cobro semanal
+                      </label>
+                      <p className="text-xs text-gray-500 mb-1">
+                        Ej. <span className="font-mono">2026-02-23</span> si el depósito fue el 23 de febrero. Si la dejas vacía, se usa el lunes de la semana actual (Lima).
+                      </p>
+                      <input
+                        id="fecha-inicio-yego-mi-auto"
+                        type="date"
+                        value={fechaInicioParaGenerar}
+                        onChange={(e) => setFechaInicioParaGenerar(e.target.value)}
+                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-gray-900 font-mono focus:ring-2 focus:ring-[#8B1A1A]/30 focus:border-[#8B1A1A] outline-none"
+                        disabled={actionLoading}
+                      />
                     </div>
                   ) : null}
                 </div>
@@ -887,7 +902,12 @@ export default function YegoMiAutoSolicitudDetail() {
                           }
                           try {
                             setActionLoading(true);
-                            await api.patch(`/miauto/solicitudes/${id}/generar-yego-mi-auto`, { placa_asignada: placa });
+                            await api.patch(`/miauto/solicitudes/${id}/generar-yego-mi-auto`, {
+                              placa_asignada: placa,
+                              ...(fechaInicioParaGenerar.trim()
+                                ? { fecha_inicio_cobro_semanal: fechaInicioParaGenerar.trim() }
+                                : {}),
+                            });
                             toast.success('Yego Mi Auto generado; cobro semanal iniciado');
                             setShowSimularCuotasModal(false);
                             await fetchDetail({ silent: true });

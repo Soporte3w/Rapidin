@@ -12,6 +12,24 @@ export function normalizePenUsd(moneda) {
 }
 
 /**
+ * Convierte monto entre PEN/COP y USD (1 USD = valorUsdALocal en moneda local).
+ * Usado para cuota inicial y totales validados.
+ */
+export function convertirMontoEntreMonedas(monto, monedaOrigen, monedaDestino, valorUsdALocal) {
+  const num = parseFloat(monto);
+  if (Number.isNaN(num) || num <= 0) return null;
+  if (monedaOrigen === monedaDestino) return num;
+  if (monedaOrigen === 'USD' && (monedaDestino === 'PEN' || monedaDestino === 'COP')) {
+    return num * (valorUsdALocal || 0);
+  }
+  if ((monedaOrigen === 'PEN' || monedaOrigen === 'COP') && monedaDestino === 'USD') {
+    const rate = valorUsdALocal && valorUsdALocal > 0 ? valorUsdALocal : 1;
+    return num / rate;
+  }
+  return num;
+}
+
+/**
  * Convierte monto a PEN usando tipo de cambio del país de la solicitud (USD → PEN).
  */
 export async function montoEnPEN(solicitudId, monto, moneda) {

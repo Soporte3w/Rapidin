@@ -1,7 +1,7 @@
 import { query } from '../config/database.js';
 import { uploadFileToMedia } from './voucherService.js';
 import { getTipoCambioByCountry } from './miautoTipoCambioService.js';
-import { round2, normalizePenUsd } from './miautoMoneyUtils.js';
+import { round2, normalizePenUsd, convertirMontoEntreMonedas } from './miautoMoneyUtils.js';
 
 /** Si la suma de comprobantes validados (cuota inicial + otros gastos) >= cuota inicial, marca pago_estado = completo. */
 export async function marcarPagoCompletoSiAplica(solicitudId) {
@@ -69,19 +69,28 @@ export async function rejectComprobante(solicitudId, comprobanteId, userId, { mo
   return listBySolicitud(solicitudId);
 }
 
-/** Convierte monto entre monedas usando tipo de cambio (1 USD = valorUsdALocal en local). */
-function convertirMonto(monto, monedaOrigen, monedaDestino, valorUsdALocal) {
-  const num = parseFloat(monto);
-  if (Number.isNaN(num) || num <= 0) return null;
-  if (monedaOrigen === monedaDestino) return num;
-  if (monedaOrigen === 'USD' && (monedaDestino === 'PEN' || monedaDestino === 'COP')) {
-    return num * (valorUsdALocal || 0);
+/** País, moneda de cuota inicial y TC para una solicitud (evita queries repetidas). */
+async function loadMonedaContextForSolicitud(solicitudId) {
+  const sol = await query(
+    `SELECT s.country, s.cronograma_vehiculo_id FROM module_miauto_solicitud s WHERE s.id = $1`,
+    [solicitudId]
+  );
+  if (sol.rows.length === 0) {
+    return { country: null, cronograma_vehiculo_id: null, inicialMoneda: 'USD', valorUsdALocal: null };
   }
-  if ((monedaOrigen === 'PEN' || monedaOrigen === 'COP') && monedaDestino === 'USD') {
-    const rate = valorUsdALocal && valorUsdALocal > 0 ? valorUsdALocal : 1;
-    return num / rate;
+  const country = sol.rows[0]?.country;
+  const cvId = sol.rows[0]?.cronograma_vehiculo_id;
+  let inicialMoneda = 'USD';
+  if (cvId) {
+    const cv = await query('SELECT inicial_moneda FROM module_miauto_cronograma_vehiculo WHERE id = $1', [cvId]);
+    inicialMoneda = cv.rows[0]?.inicial_moneda || 'USD';
   }
-  return num;
+  let valorUsdALocal = null;
+  if (country) {
+    const tc = await getTipoCambioByCountry(country);
+    valorUsdALocal = tc?.valor_usd_a_local ?? null;
+  }
+  return { country, cronograma_vehiculo_id: cvId, inicialMoneda, valorUsdALocal };
 }
 
 /** Valida un comprobante con monto y moneda; convierte a la moneda de la cuota inicial. Si suma validados >= cuota inicial, marca pago_estado = completo */
@@ -101,26 +110,12 @@ export async function validateComprobante(solicitudId, comprobanteId, userId, { 
     throw new Error('No se puede validar un comprobante rechazado');
   }
 
-  const solicitud = await query(
-    `SELECT s.country, s.cronograma_vehiculo_id FROM module_miauto_solicitud s WHERE s.id = $1`,
-    [solicitudId]
-  );
+  const ctx = await loadMonedaContextForSolicitud(solicitudId);
   let montoFinal = comp.rows[0].monto != null ? parseFloat(comp.rows[0].monto) : null;
-  const cvId = solicitud.rows[0]?.cronograma_vehiculo_id;
 
-  if (monto != null && moneda && cvId) {
-    const cv = await query(
-      'SELECT inicial_moneda FROM module_miauto_cronograma_vehiculo WHERE id = $1',
-      [cvId]
-    );
-    const inicialMoneda = cv.rows[0]?.inicial_moneda || 'USD';
+  if (monto != null && moneda && ctx.cronograma_vehiculo_id) {
     const monedaIngreso = normalizePenUsd(moneda);
-    let valorUsdALocal = null;
-    if (solicitud.rows[0]?.country) {
-      const tc = await getTipoCambioByCountry(solicitud.rows[0].country);
-      valorUsdALocal = tc?.valor_usd_a_local ?? null;
-    }
-    montoFinal = convertirMonto(monto, monedaIngreso, inicialMoneda, valorUsdALocal);
+    montoFinal = convertirMontoEntreMonedas(monto, monedaIngreso, ctx.inicialMoneda, ctx.valorUsdALocal);
     if (montoFinal == null || montoFinal < 0) {
       throw new Error('Monto inválido');
     }
@@ -143,26 +138,11 @@ export async function validateComprobante(solicitudId, comprobanteId, userId, { 
   return listBySolicitud(solicitudId);
 }
 
-/** Obtiene el monto convertido a la moneda de la cuota inicial de la solicitud. */
 async function montoEnMonedaCuotaInicial(solicitudId, monto, moneda) {
-  const solicitud = await query(
-    `SELECT s.country, s.cronograma_vehiculo_id FROM module_miauto_solicitud s WHERE s.id = $1`,
-    [solicitudId]
-  );
-  const cvId = solicitud.rows[0]?.cronograma_vehiculo_id;
-  if (!cvId || monto == null || !moneda) return null;
-  const cv = await query(
-    'SELECT inicial_moneda FROM module_miauto_cronograma_vehiculo WHERE id = $1',
-    [cvId]
-  );
-  const inicialMoneda = cv.rows[0]?.inicial_moneda || 'USD';
+  const ctx = await loadMonedaContextForSolicitud(solicitudId);
+  if (!ctx.cronograma_vehiculo_id || monto == null || !moneda) return null;
   const monedaIngreso = normalizePenUsd(moneda);
-  let valorUsdALocal = null;
-  if (solicitud.rows[0]?.country) {
-    const tc = await getTipoCambioByCountry(solicitud.rows[0].country);
-    valorUsdALocal = tc?.valor_usd_a_local ?? null;
-  }
-  return convertirMonto(monto, monedaIngreso, inicialMoneda, valorUsdALocal);
+  return convertirMontoEntreMonedas(monto, monedaIngreso, ctx.inicialMoneda, ctx.valorUsdALocal);
 }
 
 /** Total validado por solicitud en moneda de la cuota inicial y en USD (para regla de 500 USD en pago parcial).
@@ -174,22 +154,8 @@ export async function getTotalValidado(solicitudId) {
   );
   let total = round2(parseFloat(sumPago.rows[0]?.total) || 0);
 
-  const sol = await query(
-    `SELECT s.country, s.cronograma_vehiculo_id FROM module_miauto_solicitud s WHERE s.id = $1`,
-    [solicitudId]
-  );
-  const cvId = sol.rows[0]?.cronograma_vehiculo_id;
-  const country = sol.rows[0]?.country;
-  let inicialMoneda = 'USD';
-  let valorUsdALocal = null;
-  if (cvId) {
-    const cv = await query('SELECT inicial_moneda FROM module_miauto_cronograma_vehiculo WHERE id = $1', [cvId]);
-    inicialMoneda = cv.rows[0]?.inicial_moneda || 'USD';
-  }
-  if (country) {
-    const tc = await getTipoCambioByCountry(country);
-    valorUsdALocal = tc?.valor_usd_a_local ?? null;
-  }
+  const ctx = await loadMonedaContextForSolicitud(solicitudId);
+  const { inicialMoneda, valorUsdALocal } = ctx;
 
   const sumOg = await query(
     `SELECT monto, moneda FROM module_miauto_comprobante_otros_gastos WHERE solicitud_id = $1 AND estado = 'validado'`,
@@ -199,7 +165,7 @@ export async function getTotalValidado(solicitudId) {
     const monto = parseFloat(row.monto) || 0;
     if (monto <= 0) continue;
     const monedaOg = normalizePenUsd(row.moneda);
-    const enInicial = convertirMonto(monto, monedaOg, inicialMoneda, valorUsdALocal);
+    const enInicial = convertirMontoEntreMonedas(monto, monedaOg, inicialMoneda, valorUsdALocal);
     if (enInicial != null) total = round2(total + enInicial);
   }
 

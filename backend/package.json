@@ -10,7 +10,12 @@
     "migrate": "node database/migrate.js",
     "import-miauto-placas": "node scripts/import-miauto-placas-from-excel.js",
     "recalc-miauto-cuotas": "node scripts/recalc-miauto-cuotas-semanales-montos.js",
-    "miauto:generar-cuota-semana": "node scripts/generar-cuota-miauto-semana.js"
+    "miauto:generar-cuota-semana": "node scripts/generar-cuota-miauto-semana.js",
+    "miauto:cobro-solicitud": "node scripts/miauto-ejecutar-cobro-solicitud.js",
+    "miauto:reset-regenerar-cuotas": "node scripts/reset-regenerar-miauto-cuotas-solicitud.js",
+    "miauto:excel-entrega-json": "node scripts/excel-entrega-inmediata-a-json.js",
+    "miauto:entrega-json-bd": "node scripts/entrega-inmediata-json-a-bd.js",
+    "miauto:entrega-excel-reset": "node scripts/miauto-entrega-excel-full-reset.js"
   },
   "keywords": [
     "rapidin",

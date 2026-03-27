@@ -33,7 +33,10 @@ interface CuotaSemanal {
   paid_amount: number;
   late_fee: number;
   status: string;
+  /** Solo cuota pendiente (sin mora). */
   pending_total: number;
+  /** Cuota + mora pendiente (saldo total de la semana). */
+  cuota_final?: number;
   moneda?: string | null;
 }
 
@@ -206,11 +209,17 @@ export default function YegoMiAutoPayments() {
       const res = await api.get(`/miauto/solicitudes/${row.id}/cuotas-semanales`);
       const payload = res.data?.data ?? res.data;
       const lista = Array.isArray(payload) ? payload : (payload?.data ?? []);
-      const conPendiente = lista.filter(
-        (c: CuotaSemanal) =>
-          (c.status === 'pending' || c.status === 'overdue') &&
-          (c.pending_total == null || Number(c.pending_total) > 0)
-      );
+      const conPendiente = lista.filter((c: CuotaSemanal) => {
+        if (c.status !== 'pending' && c.status !== 'overdue') return false;
+        const total =
+          c.cuota_final != null
+            ? Number(c.cuota_final)
+            : Math.max(
+                0,
+                Number(c.amount_due || 0) + Number(c.late_fee || 0) - Number(c.paid_amount || 0)
+              );
+        return total > 0;
+      });
       setCuotas(conPendiente);
       if (conPendiente.length > 0) {
         setCuotaSeleccionadaId(conPendiente[0].id);
@@ -596,7 +605,14 @@ export default function YegoMiAutoPayments() {
                   {cuotas.map((c) => (
                     <option key={c.id} value={c.id}>
                       Vence {formatDate(c.due_date || c.week_start_date, 'es-ES')} — {symMoneda(c.moneda)}{' '}
-                      {(c.pending_total ?? 0).toFixed(2)} pendiente
+                      {(c.cuota_final != null
+                        ? Number(c.cuota_final)
+                        : Math.max(
+                            0,
+                            Number(c.amount_due || 0) + Number(c.late_fee || 0) - Number(c.paid_amount || 0)
+                          )
+                      ).toFixed(2)}{' '}
+                      saldo total
                     </option>
                   ))}
                 </select>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import api from '../../services/api';
-import { Car, FileText, Check, ShieldCheck, Phone, Mail, ChevronDown, ChevronRight, ChevronUp, Upload, XCircle, X, Info, CreditCard, AlertCircle, ExternalLink } from 'lucide-react';
+import { Car, FileText, Check, ShieldCheck, Phone, Mail, ChevronDown, ChevronRight, Upload, X, Info, CreditCard, AlertCircle, ExternalLink } from 'lucide-react';
 import { TablePaginationBar } from '../../components/TablePaginationBar';
 import { useTablePagination } from '../../hooks/useTablePagination';
 import { labelOtrosGastoStatus, type ComprobanteOtrosGastos, type MiautoOtrosGastoRow } from '../../utils/miautoOtrosGastos';
@@ -14,7 +14,9 @@ import {
   miautoFmtMonto,
   miautoMontoPagadoCuotaSemanal,
   miautoSemanaLista,
-  miautoCuotaFinalSemana,
+  miautoSemanaOrdinalPorVencimiento,
+  miautoCuotaAPagarCronogramaSemanal,
+  miautoCuotaFinalCronogramaSemanal,
 } from '../../utils/miautoRentSaleHelpers';
 
 const APPS_OPTIONS = [
@@ -30,7 +32,7 @@ const STATUS_LABELS: Record<string, string> = {
   pendiente: 'Pendiente',
   citado: 'Citado',
   rechazado: 'Rechazado',
-  desistido: 'Desistido',
+  desistido: 'Desistió',
   aprobado: 'Aprobado',
 };
 
@@ -49,6 +51,37 @@ const STATUS_FILTER_OPTIONS = [
 
 const MAX_REAGENDOS = 2;
 const STATUS_LABEL_ACTIVE: Record<string, string> = { pendiente: 'Pendiente', citado: 'Cita agendada', aprobado: 'Aprobado' };
+
+/** Estados en los que tiene sentido mostrar contador de citas/reagendos en la tabla. */
+const STATUS_WITH_REAGENDO_INFO = new Set(['citado', 'aprobado', 'rechazado']);
+
+function apiErrMessage(err: unknown): string | null {
+  if (!err || typeof err !== 'object' || !('response' in err)) return null;
+  const msg = (err as { response?: { data?: { message?: string } } }).response?.data?.message;
+  return typeof msg === 'string' && msg.trim() ? msg : null;
+}
+
+function parseEstadoComprobante(estado?: string | null): 'pendiente' | 'validado' | 'rechazado' {
+  const e = (estado || '').toLowerCase();
+  if (e === 'validado' || e === 'rechazado') return e;
+  return 'pendiente';
+}
+
+/** Origen en BD o legacy sin columna: por defecto conductor. */
+function origenComprobanteCuota(cp: { origen?: string | null }): string {
+  return (cp.origen || 'conductor').toLowerCase();
+}
+
+function esComprobanteAdminPago(cp: { origen?: string | null }): boolean {
+  return origenComprobanteCuota(cp) === 'admin_confirmacion';
+}
+
+/** Por nombre o URL (p. ej. S3) para poder mostrar miniatura en conductor. */
+function comprobanteArchivoEsImagen(fileName?: string | null, filePath?: string | null): boolean {
+  const blob = `${fileName || ''} ${filePath || ''}`;
+  if (/\.pdf(\?|$|#|\/)/i.test(blob)) return false;
+  return /\.(jpe?g|png|gif|webp)(\?|$|#|\/)/i.test(blob);
+}
 
 const INPUT_BASE =
   'w-full pl-9 pr-3 py-2.5 border rounded-lg bg-white text-gray-900 placeholder:text-gray-400 focus:ring-2 focus:ring-[#8B1A1A] focus:border-[#8B1A1A]';
@@ -132,6 +165,15 @@ interface Solicitud {
   otros_gastos?: { id: string; week_index: number; due_date: string; amount_due: number; paid_amount: number; status: string }[];
 }
 
+type CuotasCacheEntry = {
+  cuotas: CuotaSemanal[];
+  comprobantes: ComprobanteCuotaSemanal[];
+  racha: number | null;
+  cuotas_semanales_bonificadas?: number;
+  comprobantesOtrosGastos?: ComprobanteOtrosGastos[];
+  otrosGastos?: MiautoOtrosGastoRow[];
+};
+
 interface CuotaSemanal {
   id: string;
   week_start_date: string;
@@ -143,12 +185,14 @@ interface CuotaSemanal {
   paid_amount: number;
   late_fee: number;
   status: string;
+  /** Solo cuota pendiente (sin mora); saldo total del periodo = `cuota_final` (mora+cuota pendiente). `late_fee` = mora del periodo (intacta, como `amount_due`). */
   pending_total: number;
+  cuota_final?: number;
   moneda?: string;
   cobro_saldo?: number;
   cuota_neta?: number;
-  cuota_final?: number;
   partner_fees_83?: number;
+  pct_comision?: number;
 }
 
 interface ComprobanteCuotaSemanal {
@@ -161,6 +205,8 @@ interface ComprobanteCuotaSemanal {
   estado?: string;
   created_at?: string;
   rechazo_razon?: string | null;
+  /** admin_confirmacion = documento oficial subido por admin (solo lectura para el conductor) */
+  origen?: string | null;
 }
 
 const REQUISITOS = [
@@ -213,20 +259,26 @@ function AprobadoBlock({
   const loadingCuotas = cuotasLoading ?? false;
   const comprobantesCuotaSemanal = cuotasData?.comprobantes ?? [];
   const comprobantesOtrosGastos = cuotasData?.comprobantesOtrosGastos ?? [];
-  const [historialAbiertoPorCuota, setHistorialAbiertoPorCuota] = useState<string | null>(null);
+  const [comprobantesSemanaAbierta, setComprobantesSemanaAbierta] = useState<Record<string, boolean>>({});
   const [uploadCuotaLoading, setUploadCuotaLoading] = useState<string | null>(null);
   const [fileParaSubir, setFileParaSubir] = useState<File | null>(null);
   const [fileCuotaPreview, setFileCuotaPreview] = useState<{ cuotaId: string; file: File } | null>(null);
   const fileCuotaRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [uploadOgLoading, setUploadOgLoading] = useState<string | null>(null);
   const [fileOgPreview, setFileOgPreview] = useState<{ otrosGastosId: string; file: File } | null>(null);
-  const [historialAbiertoPorOg, setHistorialAbiertoPorOg] = useState<string | null>(null);
+  const [comprobantesOgAbierta, setComprobantesOgAbierta] = useState<Record<string, boolean>>({});
   /** Moneda elegida por el conductor al subir comprobante de otros gastos (puede pagar en soles o dólares) */
   const [monedaOgPorFila, setMonedaOgPorFila] = useState<Record<string, 'PEN' | 'USD'>>({});
   const fileOgRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const previewInicial = useFilePreview(fileParaSubir);
   const previewCuotaFile = useFilePreview(fileCuotaPreview?.file ?? null);
   const previewOgFile = useFilePreview(fileOgPreview?.file ?? null);
+  const toggleComprobantesSemana = useCallback((cuotaId: string) => {
+    setComprobantesSemanaAbierta((prev) => ({ ...prev, [cuotaId]: !prev[cuotaId] }));
+  }, []);
+  const toggleComprobantesOg = useCallback((ogId: string) => {
+    setComprobantesOgAbierta((prev) => ({ ...prev, [ogId]: !prev[ogId] }));
+  }, []);
   const cronograma = solicitud.cronograma;
   const vehiculo = solicitud.cronograma_vehiculo;
   const getEstado = (cp: { estado?: string; validado?: boolean; rechazado?: boolean }): 'pendiente' | 'validado' | 'rechazado' => {
@@ -297,7 +349,7 @@ function AprobadoBlock({
 
   const handleUploadComprobanteCuota = async (cuotaId: string, file: File) => {
     const cuota = cuotasSemanales.find((x) => x.id === cuotaId);
-    const monto = cuota ? String(miautoCuotaFinalSemana(cuota).toFixed(2)) : '';
+    const monto = cuota ? String(miautoCuotaFinalCronogramaSemanal(cuota).toFixed(2)) : '';
     const moneda = (cuota?.moneda === 'USD' ? 'USD' : 'PEN') as 'PEN' | 'USD';
     if (!monto || Number.isNaN(parseFloat(monto)) || parseFloat(monto) <= 0) {
       toast.error('No se pudo obtener el monto de la cuota');
@@ -315,9 +367,9 @@ function AprobadoBlock({
       toast.success('Comprobante subido. Un admin lo validará.');
       onInvalidateCuotas?.(solicitud.id);
       onRefetchSolicitudes?.();
-      setHistorialAbiertoPorCuota(cuotaId);
-    } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Error al subir comprobante');
+      setComprobantesSemanaAbierta((prev) => ({ ...prev, [cuotaId]: true }));
+    } catch (e: unknown) {
+      toast.error(apiErrMessage(e) || 'Error al subir comprobante');
     } finally {
       setUploadCuotaLoading(null);
       setFileCuotaPreview((prev) => (prev?.cuotaId === cuotaId ? null : prev));
@@ -379,19 +431,13 @@ function AprobadoBlock({
       toast.success('Comprobante subido. Un admin lo validará.');
       onInvalidateCuotas?.(solicitud.id);
       onRefetchSolicitudes?.();
-      setHistorialAbiertoPorOg(otrosGastosId);
-    } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Error al subir comprobante');
+      setComprobantesOgAbierta((prev) => ({ ...prev, [otrosGastosId]: true }));
+    } catch (e: unknown) {
+      toast.error(apiErrMessage(e) || 'Error al subir comprobante');
     } finally {
       setUploadOgLoading(null);
       setFileOgPreview((prev) => (prev?.otrosGastosId === otrosGastosId ? null : prev));
     }
-  };
-
-  const getEstadoCompOg = (cp: ComprobanteOtrosGastos): 'pendiente' | 'validado' | 'rechazado' => {
-    const e = (cp.estado || '').toLowerCase();
-    if (e === 'validado' || e === 'rechazado') return e;
-    return 'pendiente';
   };
 
   const cuotasPg = useTablePagination(cuotasSemanales);
@@ -400,12 +446,6 @@ function AprobadoBlock({
     [cuotasData?.otrosGastos, solicitud.otros_gastos]
   );
   const otrosPg = useTablePagination(otrosGastosRows);
-
-  const getEstadoComp = (cp: ComprobanteCuotaSemanal): 'pendiente' | 'validado' | 'rechazado' => {
-    const e = (cp.estado || '').toLowerCase();
-    if (e === 'validado' || e === 'rechazado') return e;
-    return 'pendiente';
-  };
 
   return (
     <div className="mt-4 bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
@@ -640,7 +680,7 @@ function AprobadoBlock({
               const ordenadas = [...cuotasSemanales].sort((a, b) => new Date(a.due_date).getTime() - new Date(b.due_date).getTime());
               let n = 0;
               for (const c of ordenadas) {
-                if ((c.status === 'paid' || c.status === 'bonificada') && (c.late_fee ?? 0) === 0) n++;
+                if ((c.status === 'paid' || c.status === 'bonificada') && (Number(c.pending_total) || 0) === 0) n++;
                 else break;
               }
               return n;
@@ -691,7 +731,7 @@ function AprobadoBlock({
             <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-4">
               <h4 className="text-sm font-semibold text-gray-900 mb-2">Mis cuotas semanales</h4>
               <p className="text-xs text-gray-600 mb-3">
-                Puedes pagar cualquier monto por cuota (con mora aplicada si hay retraso). Sube tu comprobante e indica monto y moneda.
+                Con saldo pendiente, sube tu comprobante de pago; el equipo lo revisará. Cuando la cuota figure como pagada, el administrador puede adjuntar aquí el comprobante de pago de esa cuota (es distinto al archivo que tú envías).
               </p>
               {loadingCuotas ? (
                 <div className="flex justify-center py-4">
@@ -701,50 +741,100 @@ function AprobadoBlock({
                 <p className="text-sm text-gray-500">Aún no hay cuotas semanales generadas.</p>
               ) : (
                 <>
-                <div className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0">
-                  <table className="w-full min-w-max text-sm border-collapse">
+                <div className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0 rounded-lg border border-gray-100 bg-white">
+                  <table className="w-full min-w-[1080px] text-sm border-collapse">
                     <thead>
-                      <tr className="border-b border-gray-200 text-left text-gray-600">
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Semana</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Vence</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-gray-900">Cuota semanal (plan)</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Viajes - B.A</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Comisión</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Cobro del saldo</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-gray-900">Cuota a pagar</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap text-red-600">
-                          Mora{solicitud.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0 ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}%)` : ''}
+                      <tr className="border-b border-gray-200 bg-gray-50/80">
+                        <th className="sticky left-0 z-[1] bg-gray-50/95 py-3 pl-3 pr-2 text-left text-xs font-semibold uppercase tracking-wide text-gray-700 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)] min-w-[9.5rem]">
+                          Semana
                         </th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Cuota final</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide text-right whitespace-nowrap text-green-700">Pagado</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Estado</th>
-                        <th className="py-2.5 pr-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap">Comprobante</th>
+                        <th className="py-3 pr-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-600 whitespace-nowrap min-w-[7.5rem]">
+                          Vence
+                        </th>
+                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-gray-900 whitespace-nowrap w-[7.25rem]">
+                          Cuota sem. (plan)
+                        </th>
+                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap min-w-[8.5rem]">
+                          Viajes — B.A
+                        </th>
+                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap w-[5.5rem]">
+                          Comisión
+                        </th>
+                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap min-w-[6.5rem]">
+                          Cobro saldo
+                        </th>
+                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-gray-900 whitespace-nowrap w-[6.5rem]">
+                          Cuota a pagar
+                        </th>
+                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-red-600 whitespace-nowrap min-w-[5.5rem]">
+                          Mora
+                          {solicitud.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0
+                            ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}%)`
+                            : ''}
+                        </th>
+                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap w-[6.5rem]">
+                          Cuota final
+                        </th>
+                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap w-[6.5rem]">
+                          Pagado
+                        </th>
+                        <th className="py-3 pr-2 text-center text-xs font-semibold uppercase tracking-wide text-gray-700 whitespace-nowrap w-[5.5rem]">
+                          Estado
+                        </th>
+                        <th className="py-3 pr-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-700 min-w-[13rem] max-w-[18rem] w-[15rem]">
+                          Comprobante
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
                       {cuotasPg.paginatedItems.map((c, index) => {
                         const numeroSemana =
+                          miautoSemanaOrdinalPorVencimiento(cuotasSemanales, c.due_date, c.week_start_date) ??
                           miautoSemanaLista(cuotasSemanales, c.week_start_date) ??
                           (cuotasPg.page - 1) * cuotasPg.limit + index + 1;
                         const comps = comprobantesByCuotaId[c.id] ?? [];
-                        const cuotaFinalSemana = miautoCuotaFinalSemana(c);
+                        const conformidadesAdmin = comps.filter(esComprobanteAdminPago);
+                        const compsPanelConductor = comps.filter((cp) => !esComprobanteAdminPago(cp));
+                        const cuotaCerrada = c.status === 'paid' || c.status === 'bonificada';
+                        const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(c);
                         const montoPagadoDisplay = miautoMontoPagadoCuotaSemanal(c.paid_amount);
-                        const pendienteMonto = Math.max(0, cuotaFinalSemana - montoPagadoDisplay);
+                        const saldoSemanaNeto = cuotaFinalSemana;
+                        const pendienteMonto = Math.max(0, saldoSemanaNeto);
                         const pendiente = pendienteMonto > 0;
-                        const abierto = historialAbiertoPorCuota === c.id;
+                        const mostrarPanelComprobantes = comps.length > 0 || cuotaCerrada;
+                        const abierto = comprobantesSemanaAbierta[c.id] === true;
                         const symCuota = symMoneda(c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda);
                         return (
                           <Fragment key={c.id}>
-                            <tr className="border-b border-gray-100">
-                              <td className="py-2 pr-3 text-gray-700 align-top whitespace-nowrap">
-                                <span className="font-medium text-[#8B1A1A] whitespace-nowrap">Semana {numeroSemana}</span>
-                                <span className="block text-xs text-gray-500 mt-0.5 whitespace-nowrap">{formatDateFlex(c.week_start_date)}</span>
+                            <tr className="group border-b border-gray-100 hover:bg-gray-50/60">
+                              <td className="sticky left-0 z-[1] bg-white py-2.5 pl-3 pr-2 align-middle shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)] group-hover:bg-gray-50/80">
+                                {mostrarPanelComprobantes ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleComprobantesSemana(c.id)}
+                                    className="flex w-full max-w-[13rem] items-center gap-1.5 rounded-md py-0.5 text-left text-gray-700 transition-colors hover:bg-gray-100/90"
+                                  >
+                                    {abierto ? (
+                                      <ChevronDown className="h-4 w-4 flex-shrink-0 text-gray-500" aria-hidden />
+                                    ) : (
+                                      <ChevronRight className="h-4 w-4 flex-shrink-0 text-gray-500" aria-hidden />
+                                    )}
+                                    <span className="min-w-0 flex-1 leading-normal">
+                                      <span className="block font-semibold text-[#8B1A1A]">Semana {numeroSemana}</span>
+                                    </span>
+                                  </button>
+                                ) : (
+                                  <div className="max-w-[13rem] py-1">
+                                    <span className="block font-semibold text-[#8B1A1A]">Semana {numeroSemana}</span>
+                                    <span className="mt-0.5 block text-[11px] text-gray-500">{formatDate(c.week_start_date, 'es-ES')}</span>
+                                  </div>
+                                )}
                               </td>
-                              <td className="py-2 pr-3 text-gray-700 whitespace-nowrap">{formatDateFlex(c.due_date)}</td>
-                              <td className="py-2 pr-3 font-medium text-gray-900 whitespace-nowrap tabular-nums text-right">
+                              <td className="py-2.5 pr-3 align-middle text-[13px] text-gray-700 whitespace-nowrap">{formatDate(c.due_date, 'es-ES')}</td>
+                              <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-gray-900 text-right text-[13px]">
                                 {miautoFmtMonto(symCuota, c.cuota_semanal)}
                               </td>
-                              <td className="py-2 pr-3 text-xs whitespace-nowrap tabular-nums text-right">
+                              <td className="py-2.5 pr-2 align-middle text-xs tabular-nums text-right">
                                 {c.num_viajes != null ? (
                                   <>
                                     <span className="text-gray-700">{c.num_viajes} — </span>
@@ -756,26 +846,26 @@ function AprobadoBlock({
                                   <span className="text-gray-500">—</span>
                                 )}
                               </td>
-                              <td className="py-2 pr-3 text-xs text-right text-green-700 whitespace-nowrap tabular-nums">
+                              <td className="py-2.5 pr-2 align-middle text-xs tabular-nums text-right text-green-700">
                                 {miautoFmtMonto(symCuota, c.partner_fees_83)}
                               </td>
-                              <td className="py-2 pr-3 text-xs text-right text-green-700 whitespace-nowrap tabular-nums">
+                              <td className="py-2.5 pr-2 align-middle text-xs tabular-nums text-right text-green-700">
                                 {miautoFmtMonto(symCuota, c.cobro_saldo)}
                               </td>
-                              <td className="py-2 pr-3 font-medium text-gray-900 whitespace-nowrap tabular-nums text-right">
-                                {miautoFmtMonto(symCuota, c.amount_due)}
+                              <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-gray-900 text-[13px]">
+                                {miautoFmtMonto(symCuota, miautoCuotaAPagarCronogramaSemanal(c))}
                               </td>
-                              <td className="py-2 pr-3 text-red-600 font-medium whitespace-nowrap tabular-nums text-right">
+                              <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-[13px] text-red-600">
                                 {miautoFmtMonto(symCuota, c.late_fee)}
                               </td>
-                              <td className="py-2 pr-3 font-medium text-green-700 whitespace-nowrap tabular-nums text-right">
+                              <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-[13px] text-green-700">
                                 {miautoFmtMonto(symCuota, cuotaFinalSemana)}
                               </td>
-                              <td className="py-2 pr-3 font-medium text-green-800 whitespace-nowrap tabular-nums text-right">
+                              <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-[13px] text-green-800">
                                 {miautoFmtMonto(symCuota, montoPagadoDisplay)}
                               </td>
-                              <td className="py-2 pr-3 whitespace-nowrap">
-                                <div className="flex flex-col gap-0.5">
+                              <td className="py-2.5 pr-2 align-middle whitespace-nowrap">
+                                <div className="flex flex-col items-center gap-0.5">
                                   <span
                                     className={`inline-flex w-fit whitespace-nowrap px-1.5 py-0.5 rounded text-xs font-medium ${
                                       c.status === 'paid' || c.status === 'bonificada' ? 'bg-green-100 text-green-800' :
@@ -787,12 +877,59 @@ function AprobadoBlock({
                                     {c.status === 'bonificada' ? 'Bonificada' : c.status === 'paid' ? 'Pagada' : c.status === 'overdue' ? 'Vencida' : c.status === 'partial' ? 'Parcial' : 'Pendiente'}
                                   </span>
                                   {c.status === 'bonificada' && (
-                                    <span className="text-[10px] text-gray-500">Por 4 cuotas al día</span>
+                                    <span className="text-center text-[10px] text-gray-500">Por 4 cuotas al día</span>
                                   )}
                                 </div>
                               </td>
-                              <td className="py-2 pr-2">
-                                <div className="flex flex-wrap items-center gap-2">
+                              <td className="py-2.5 pl-1 pr-3 align-top">
+                                <div className="flex min-w-0 flex-col gap-2">
+                                  {conformidadesAdmin.length > 0 && (
+                                    <div className="space-y-2">
+                                      {conformidadesAdmin.map((cf) => {
+                                        const urlCf = cf.file_path ? getComprobanteUrl(cf.file_path) : '';
+                                        const isImg = !!cf.file_path && comprobanteArchivoEsImagen(cf.file_name, cf.file_path);
+                                        const openOficial = () =>
+                                          urlCf &&
+                                          setComprobantePreview({
+                                            url: urlCf,
+                                            fileName: cf.file_name || 'Comprobante de pago',
+                                            isImage: isImg,
+                                          });
+                                        return (
+                                          <div key={cf.id} className="inline-flex flex-row items-center gap-2">
+                                            {urlCf ? (
+                                              <>
+                                                <button
+                                                  type="button"
+                                                  onClick={openOficial}
+                                                  className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100/90"
+                                                  title="Abrir documento"
+                                                  aria-label="Abrir documento"
+                                                >
+                                                  <FileText className="h-5 w-5" />
+                                                </button>
+                                                <a
+                                                  href={urlCf}
+                                                  download={cf.file_name || 'comprobante-pago'}
+                                                  target="_blank"
+                                                  rel="noopener noreferrer"
+                                                  className="whitespace-nowrap text-[11px] font-medium text-[#8B1A1A] hover:underline"
+                                                >
+                                                  Descargar
+                                                </a>
+                                              </>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                  {cuotaCerrada && conformidadesAdmin.length === 0 && (
+                                    <p className="text-[11px] text-gray-500 leading-snug">
+                                      Se adjunta el comprobante de pago
+                                    </p>
+                                  )}
+                                  <div className="flex flex-wrap items-center gap-2">
                                   {pendiente && (
                                     <>
                                       <select
@@ -856,26 +993,17 @@ function AprobadoBlock({
                                       )}
                                     </>
                                   )}
-                                  {comps.length > 0 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => setHistorialAbiertoPorCuota(abierto ? null : c.id)}
-                                      className="inline-flex items-center gap-1 text-xs font-medium text-[#8B1A1A] hover:underline"
-                                    >
-                                      {abierto ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                                      {abierto ? 'Ocultar historial' : `Historial (${comps.length})`}
-                                    </button>
-                                  )}
-                                  {!pendiente && comps.length === 0 && <span className="text-gray-400">—</span>}
+                                  {!pendiente && comps.length === 0 && conformidadesAdmin.length === 0 && <span className="text-gray-400">—</span>}
+                                  </div>
                                 </div>
                               </td>
                             </tr>
-                            {comps.length > 0 && (
+                            {mostrarPanelComprobantes && (
                               <tr className="border-b border-gray-100">
                                 <td colSpan={12} className="p-0 align-top">
                                   <div
                                     className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
-                                    style={{ maxHeight: abierto ? 1400 : 0, opacity: abierto ? 1 : 0 }}
+                                    style={{ maxHeight: abierto ? 1800 : 0, opacity: abierto ? 1 : 0 }}
                                   >
                                     <div className="px-4 py-3 bg-gray-50/80 border-t border-gray-200">
                                       <div className="flex items-center gap-2 mb-3">
@@ -884,35 +1012,71 @@ function AprobadoBlock({
                                         </div>
                                         <div>
                                           <h4 className="text-sm font-semibold text-gray-900">Comprobantes — Semana {numeroSemana}</h4>
-                                          <p className="text-xs text-gray-500">{formatDateFlex(c.week_start_date)}</p>
+                                          <p className="text-xs text-gray-500">{formatDate(c.week_start_date, 'es-ES')}</p>
                                         </div>
                                       </div>
+
+                                      {comps.length === 0 ? (
+                                        <p className="text-xs text-gray-500 mb-2">No hay comprobantes registrados para esta semana.</p>
+                                      ) : compsPanelConductor.length === 0 ? (
+                                        <p className="text-xs text-gray-500 mb-2">
+                                          No has enviado comprobantes para esta semana.
+                                        </p>
+                                      ) : (
+                                      <>
+                                      <p className="mb-2 text-xs font-semibold text-gray-800">Comprobantes que enviaste</p>
                                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                                        {comps.map((cp, compIdx) => {
-                                          const estado = getEstadoComp(cp);
+                                        {compsPanelConductor.map((cp, compIdx) => {
+                                          const esPagoManual = origenComprobanteCuota(cp) === 'pago_manual';
+                                          const estado = parseEstadoComprobante(cp.estado);
                                           const sym = cp.moneda === 'USD' ? '$' : 'S/.';
-                                          const url = getComprobanteUrl(cp.file_path);
-                                          const isImage = cp.file_path && !/\.pdf$/i.test(cp.file_name || '') && /\.(jpe?g|png|gif|webp)$/i.test(cp.file_name || '');
-                                          const compLabel = `Comprobante ${compIdx + 1}`;
-                                          const openPreview = () => cp.file_path && setComprobantePreview({ url, fileName: compLabel, isImage: !!isImage });
-                                          const cardBg = estado === 'validado' ? 'bg-green-50/90 border-green-200' : estado === 'rechazado' ? 'bg-red-50/90 border-red-200' : 'bg-amber-50/90 border-amber-200';
-                                          const iconBg = estado === 'validado' ? 'bg-green-100 text-green-700' : estado === 'rechazado' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700';
-                                          const labelEstado = estado === 'validado' ? 'Verificado' : estado === 'rechazado' ? 'Rechazado' : 'En revisión';
-                                          const labelClass = estado === 'validado' ? 'bg-green-100 text-green-800' : estado === 'rechazado' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800';
-                                          const verBtnClass = estado === 'validado'
-                                            ? 'border-green-200 bg-green-50 text-green-800 hover:bg-green-100'
-                                            : estado === 'rechazado'
-                                              ? 'border-red-200 bg-red-50 text-red-800 hover:bg-red-100'
-                                              : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100';
+                                          const puedeVer = !!cp.file_path && cp.file_path !== 'manual';
+                                          const url = puedeVer ? getComprobanteUrl(cp.file_path) : '';
+                                          const isImage = puedeVer && comprobanteArchivoEsImagen(cp.file_name, cp.file_path);
+                                          const compLabel = esPagoManual
+                                            ? 'Pago registrado por administración'
+                                            : `Comprobante ${compIdx + 1}`;
+                                          const openPreview = () =>
+                                            puedeVer && setComprobantePreview({ url, fileName: compLabel, isImage: !!isImage });
+                                          const cardBg =
+                                            estado === 'validado'
+                                              ? 'bg-green-50/90 border-green-200'
+                                              : estado === 'rechazado'
+                                                ? 'bg-red-50/90 border-red-200'
+                                                : 'bg-amber-50/90 border-amber-200';
+                                          const iconBg =
+                                            estado === 'validado'
+                                              ? 'bg-green-100 text-green-700'
+                                              : estado === 'rechazado'
+                                                ? 'bg-red-100 text-red-700'
+                                                : 'bg-amber-100 text-amber-700';
+                                          const labelEstado =
+                                            estado === 'validado'
+                                              ? 'Verificado'
+                                              : estado === 'rechazado'
+                                                ? 'Rechazado'
+                                                : 'En revisión';
+                                          const labelClass =
+                                            estado === 'validado'
+                                              ? 'bg-green-100 text-green-800'
+                                              : estado === 'rechazado'
+                                                ? 'bg-red-100 text-red-800'
+                                                : 'bg-amber-100 text-amber-800';
+                                          const verBtnClass =
+                                            estado === 'validado'
+                                              ? 'border-green-200 bg-green-50 text-green-800 hover:bg-green-100'
+                                              : estado === 'rechazado'
+                                                ? 'border-red-200 bg-red-50 text-red-800 hover:bg-red-100'
+                                                : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100';
                                           return (
                                             <div key={cp.id} className={`rounded-xl border-2 p-3 ${cardBg} hover:shadow-md transition-all flex flex-col gap-2`}>
                                               <div className="flex gap-3">
                                                 <div className={`flex-shrink-0 w-12 h-12 rounded-lg flex items-center justify-center overflow-hidden ${iconBg}`}>
-                                                  {cp.file_path && isImage ? (
+                                                  {puedeVer && isImage ? (
                                                     <button type="button" onClick={openPreview} className="w-full h-full rounded-lg overflow-hidden border border-white/50 shadow-sm hover:opacity-90 transition-opacity">
                                                       <img src={url} alt="" className="w-full h-full object-cover" />
                                                     </button>
-                                                  ) : cp.file_path ? (
+                                                  ) : puedeVer ? (
                                                     <button type="button" onClick={openPreview} className="w-full h-full rounded-lg border border-gray-200 bg-white/80 flex items-center justify-center hover:bg-gray-50">
                                                       <FileText className="w-6 h-6 text-gray-500" />
                                                     </button>
@@ -932,7 +1096,11 @@ function AprobadoBlock({
                                                       {labelEstado}
                                                     </span>
                                                     <span className="text-xs font-semibold text-gray-800">
-                                                      {estado === 'pendiente' ? '—' : (cp.monto != null ? `${sym} ${Number(cp.monto).toFixed(2)}` : '—')}
+                                                      {esPagoManual
+                                                        ? '—'
+                                                        : estado === 'pendiente'
+                                                          ? '—'
+                                                          : (cp.monto != null ? `${sym} ${Number(cp.monto).toFixed(2)}` : '—')}
                                                     </span>
                                                   </div>
                                                 </div>
@@ -943,14 +1111,14 @@ function AprobadoBlock({
                                                   <span className="line-clamp-2">{(cp.rechazo_razon ?? '').trim()}</span>
                                                 </p>
                                               )}
-                                              {cp.file_path && (
+                                              {puedeVer && (
                                                 <button
                                                   type="button"
                                                   onClick={openPreview}
                                                   className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-colors self-start ${verBtnClass}`}
                                                 >
                                                   <ExternalLink className="w-3.5 h-3.5" />
-                                                  Ver comprobante
+                                                  Ver archivo
                                                 </button>
                                               )}
                                             </div>
@@ -958,11 +1126,19 @@ function AprobadoBlock({
                                         })}
                                       </div>
                                       {(() => {
-                                        const verificado = comps.filter((cp) => getEstadoComp(cp) === 'validado').reduce((s, cp) => s + (cp.monto != null ? Number(cp.monto) : 0), 0);
-                                        const totalEnv = verificado;
-                                        const rechazado = comps.filter((cp) => getEstadoComp(cp) === 'rechazado').reduce((s, cp) => s + (cp.monto != null ? Number(cp.monto) : 0), 0);
-                                        const totalCuota = miautoCuotaFinalSemana(c);
-                                        const restantePorPagar = Math.max(0, c.pending_total ?? (totalCuota - verificado));
+                                        const compsSinOficial = comps.filter((cp) => !esComprobanteAdminPago(cp));
+                                        const verificado = compsSinOficial
+                                          .filter((cp) => parseEstadoComprobante(cp.estado) === 'validado')
+                                          .reduce((s, cp) => s + (cp.monto != null ? Number(cp.monto) : 0), 0);
+                                        const totalEnv = compsSinOficial.reduce(
+                                          (s, cp) => s + (cp.monto != null ? Number(cp.monto) : 0),
+                                          0
+                                        );
+                                        const rechazado = compsSinOficial
+                                          .filter((cp) => parseEstadoComprobante(cp.estado) === 'rechazado')
+                                          .reduce((s, cp) => s + (cp.monto != null ? Number(cp.monto) : 0), 0);
+                                        const totalCuota = miautoCuotaFinalCronogramaSemanal(c);
+                                        const restantePorPagar = Math.max(0, totalCuota - verificado);
                                         return (
                                           <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl bg-white border border-gray-200 px-4 py-3 text-sm text-gray-700 shadow-sm">
                                             <span><strong className="text-gray-800">Total enviado:</strong> S/. {totalEnv.toFixed(2)}</span>
@@ -972,6 +1148,8 @@ function AprobadoBlock({
                                           </div>
                                         );
                                       })()}
+                                      </>
+                                      )}
                                     </div>
                                   </div>
                                 </td>
@@ -1028,13 +1206,38 @@ function AprobadoBlock({
                       {otrosPg.paginatedItems.map((og: { id: string; week_index: number; due_date: string; amount_due: number; paid_amount: number; status: string }) => {
                         const pendienteOg = og.status !== 'paid';
                         const compsOg = comprobantesByOtrosGastosId[og.id] ?? [];
-                        const abiertoOg = historialAbiertoPorOg === og.id;
+                        const mostrarPanelOg = compsOg.length > 0 || !pendienteOg;
+                        const abiertoOg = comprobantesOgAbierta[og.id] === true;
                         const tieneCompPendienteOg = compsOg.some((cp: { estado?: string }) => (cp.estado || '').toLowerCase() === 'pendiente');
                         return (
                           <Fragment key={og.id}>
                             <tr className="border-b border-gray-50">
-                              <td className="py-1.5 pr-2">{og.week_index}</td>
-                              <td className="py-1.5 pr-2">{formatDateFlex(og.due_date)}</td>
+                              <td className="py-1.5 pr-2 align-top">
+                                {mostrarPanelOg ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleComprobantesOg(og.id)}
+                                    className="inline-flex flex-nowrap items-center gap-1.5 text-left hover:opacity-90"
+                                  >
+                                    {abiertoOg ? (
+                                      <ChevronDown className="w-4 h-4 text-gray-600 flex-shrink-0" aria-hidden />
+                                    ) : (
+                                      <ChevronRight className="w-4 h-4 text-gray-600 flex-shrink-0" aria-hidden />
+                                    )}
+                                    <span className="font-medium text-[#8B1A1A]">Semana {og.week_index}</span>
+                                    <span className="inline-flex flex-shrink-0 items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600">
+                                      {compsOg.length > 0
+                                        ? `${compsOg.length} comprobante${compsOg.length !== 1 ? 's' : ''}`
+                                        : !pendienteOg
+                                          ? 'Detalle'
+                                          : '—'}
+                                    </span>
+                                  </button>
+                                ) : (
+                                  <span className="font-medium text-[#8B1A1A]">{og.week_index}</span>
+                                )}
+                              </td>
+                              <td className="py-1.5 pr-2">{formatDate(og.due_date, 'es-ES')}</td>
                               <td className="py-1.5 pr-2">
                                 {monedaSimbolo}{Number(og.amount_due).toFixed(2)}
                               </td>
@@ -1110,26 +1313,16 @@ function AprobadoBlock({
                                       )}
                                     </>
                                   )}
-                                  {compsOg.length > 0 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => setHistorialAbiertoPorOg(abiertoOg ? null : og.id)}
-                                      className="inline-flex items-center gap-1 text-xs font-medium text-[#8B1A1A] hover:underline"
-                                    >
-                                      {abiertoOg ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                                      {abiertoOg ? 'Ocultar historial' : `Historial (${compsOg.length})`}
-                                    </button>
-                                  )}
                                   {!pendienteOg && compsOg.length === 0 && <span className="text-gray-400">—</span>}
                                 </div>
                               </td>
                             </tr>
-                            {compsOg.length > 0 && (
+                            {mostrarPanelOg && (
                               <tr className="border-b border-gray-50">
                                 <td colSpan={6} className="p-0 align-top">
                                   <div
                                     className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
-                                    style={{ maxHeight: abiertoOg ? 800 : 0, opacity: abiertoOg ? 1 : 0 }}
+                                    style={{ maxHeight: abiertoOg ? 1200 : 0, opacity: abiertoOg ? 1 : 0 }}
                                   >
                                     <div className="px-4 py-3 bg-gray-50/80 border-t border-gray-200">
                                       <div className="flex items-center gap-2 mb-3">
@@ -1138,12 +1331,15 @@ function AprobadoBlock({
                                         </div>
                                         <div>
                                           <h4 className="text-sm font-semibold text-gray-900">Comprobantes — Semana {og.week_index}</h4>
-                                          <p className="text-xs text-gray-500">{formatDateFlex(og.due_date)}</p>
+                                          <p className="text-xs text-gray-500">{formatDate(og.due_date, 'es-ES')}</p>
                                         </div>
                                       </div>
+                                      {compsOg.length === 0 ? (
+                                        <p className="text-xs text-gray-500">No hay comprobantes registrados para esta semana.</p>
+                                      ) : (
                                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                                         {compsOg.map((cp, compIdx) => {
-                                          const estadoOg = getEstadoCompOg(cp);
+                                          const estadoOg = parseEstadoComprobante(cp.estado);
                                           const sym = cp.moneda === 'USD' ? '$' : 'S/.';
                                           const url = getComprobanteUrl(cp.file_path);
                                           const isImage = cp.file_path && !/\.pdf$/i.test(cp.file_name || '') && /\.(jpe?g|png|gif|webp)$/i.test(cp.file_name || '');
@@ -1177,6 +1373,7 @@ function AprobadoBlock({
                                           );
                                         })}
                                       </div>
+                                      )}
                                     </div>
                                   </div>
                                 </td>
@@ -1238,37 +1435,6 @@ function AprobadoBlock({
   );
 }
 
-function DesistidoBlock({ solicitud }: { solicitud: Solicitud }) {
-  const fecha = solicitud.withdrawn_at || solicitud.reviewed_at;
-  const motivo = solicitud.withdrawal_reason?.trim() || (solicitud.observations?.trim() ? solicitud.observations.trim() : null);
-  return (
-    <div className="mt-4 bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-200 bg-gray-50/70">
-        <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-          <XCircle className="w-5 h-5 text-gray-500" />
-          Solicitud desistida
-        </h3>
-      </div>
-      <div className="p-4 space-y-3">
-        {fecha && (
-          <p className="text-sm text-gray-600">
-            <span className="font-medium text-gray-700">Fecha:</span> {formatDateFlex(fecha)}
-          </p>
-        )}
-        {motivo && (
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-0.5">Motivo</p>
-            <p className="text-sm text-gray-600 whitespace-pre-wrap">{motivo}</p>
-          </div>
-        )}
-        {!motivo && !fecha && (
-          <p className="text-sm text-gray-500">Esta solicitud fue marcada como desistida.</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function QuieroMiYegoAuto() {
   const { updateUser } = useAuth();
   const [solicitudes, setSolicitudes] = useState<Solicitud[]>([]);
@@ -1281,7 +1447,6 @@ function QuieroMiYegoAuto() {
   const [uploadComprobanteLoading, setUploadComprobanteLoading] = useState<string | null>(null);
   const initialFetchInFlight = useRef(false);
   const [tipoCambioByCountry, setTipoCambioByCountry] = useState<Record<string, { valor_usd_a_local: number; moneda_local: string } | null>>({});
-  type CuotasCacheEntry = { cuotas: CuotaSemanal[]; comprobantes: ComprobanteCuotaSemanal[]; racha: number | null; cuotas_semanales_bonificadas?: number; comprobantesOtrosGastos?: ComprobanteOtrosGastos[] };
   const [cuotasCache, setCuotasCache] = useState<Record<string, CuotasCacheEntry>>({});
   const [cuotasLoadingId, setCuotasLoadingId] = useState<string | null>(null);
   const [solicitudStatusFilter, setSolicitudStatusFilter] = useState('');
@@ -1372,10 +1537,7 @@ function QuieroMiYegoAuto() {
       const data = response.data?.data ?? response.data ?? [];
       setSolicitudes(Array.isArray(data) ? data : []);
     } catch (e: unknown) {
-      const msg = e && typeof e === 'object' && 'response' in e
-        ? (e as { response?: { data?: { message?: string } } }).response?.data?.message
-        : null;
-      setError(msg || 'Error al cargar tus solicitudes');
+      setError(apiErrMessage(e) || 'Error al cargar tus solicitudes');
       setSolicitudes([]);
     } finally {
       setLoading(false);
@@ -1495,8 +1657,8 @@ function QuieroMiYegoAuto() {
       });
       toast.success('Comprobante subido');
       await fetchSolicitudes();
-    } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Error al subir comprobante');
+    } catch (e: unknown) {
+      toast.error(apiErrMessage(e) || 'Error al subir comprobante');
     } finally {
       setUploadComprobanteLoading(null);
     }
@@ -1578,16 +1740,17 @@ function QuieroMiYegoAuto() {
       setFileLicencia(null);
       setFileComprobante(null);
     } catch (err: unknown) {
-      const msg = err && typeof err === 'object' && 'response' in err
-        ? (err as { response?: { data?: { message?: string } } }).response?.data?.message
-        : null;
-      toast.error(msg || 'Error al enviar la solicitud');
+      toast.error(apiErrMessage(err) || 'Error al enviar la solicitud');
     } finally {
       setSubmitting(false);
     }
   };
 
   const hasSolicitudes = solicitudes.length > 0;
+  const solicitudesAprobadas = useMemo(
+    () => solicitudes.filter((s) => s.status === 'aprobado'),
+    [solicitudes],
+  );
   const hasSolicitudActiva = solicitudes.some((s) =>
     ['pendiente', 'citado', 'aprobado'].includes(s.status)
   );
@@ -1802,7 +1965,6 @@ function QuieroMiYegoAuto() {
                     className="inline-flex items-center justify-center gap-2 w-full sm:flex-1 py-3 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] disabled:opacity-50 font-medium transition-colors shadow-sm"
                   >
                     <Check className="h-4 w-4" />
-                    <Car className="h-5 w-5" />
                     {submitting ? 'Enviando...' : 'Enviar solicitud'}
                   </button>
                 </div>
@@ -1875,7 +2037,7 @@ function QuieroMiYegoAuto() {
                           : '—'}
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-700">
-                      {(s.status === 'citado' || s.status === 'aprobado' || s.status === 'rechazado' || s.status === 'desistido') ? (
+                      {STATUS_WITH_REAGENDO_INFO.has(s.status) ? (
                         <span className={((s.reagendo_count ?? 0) >= MAX_REAGENDOS ? 'text-amber-600 font-medium' : '')}>
                           {s.reagendo_count ?? 0}/{MAX_REAGENDOS}
                         </span>
@@ -1897,7 +2059,7 @@ function QuieroMiYegoAuto() {
           </div>
         </div>
 
-        {solicitudes.filter((s) => s.status === 'aprobado').map((s) => (
+        {solicitudesAprobadas.map((s) => (
           <AprobadoBlock
             key={s.id}
             solicitud={s}
@@ -1912,10 +2074,6 @@ function QuieroMiYegoAuto() {
             cuotasLoading={cuotasLoadingId === s.id}
             onInvalidateCuotas={invalidateCuotasCache}
           />
-        ))}
-
-        {solicitudes.filter((s) => s.status === 'desistido').map((s) => (
-          <DesistidoBlock key={s.id} solicitud={s} />
         ))}
 
         {solicitudes.some((s) => s.status === 'citado') && (

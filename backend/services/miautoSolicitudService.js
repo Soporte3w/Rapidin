@@ -6,77 +6,15 @@ import { getLimaYmd, mondayOfWeekContainingYmd } from '../utils/miautoLimaWeekRa
 import { getTotalValidado } from './miautoComprobantePagoService.js';
 import { ensureOtroGastoForWeek, listBySolicitud as listOtrosGastosBySolicitud, listBySolicitudIds as listOtrosGastosBySolicitudIds } from './miautoOtrosGastosService.js';
 import { logger } from '../utils/logger.js';
+import {
+  MIAUTO_PARK_ID,
+  getDriverInfoByPhones,
+  normalizePhoneForDriversMatch,
+} from './miautoDriverLookup.js';
 
 const MINIMO_USD_PARCIAL = 500;
 
 const MAX_REAGENDOS = 2;
-
-/** Park_id de Yego Mi Auto: para consultar conductores en tabla drivers por teléfono. */
-const MIAUTO_PARK_ID = 'fafd623109d740f8a1f15af7c3dd86c6';
-
-/**
- * Normaliza teléfono para match en drivers: con/sin +51, solo dígitos, últimos 9.
- * Perú: 987654321, 51987654321, +51987654321, 051987654321 → { digits, last9, with51 }.
- */
-function normalizePhoneForDriversMatch(phone) {
-  if (phone == null || String(phone).trim() === '') return { digits: '', last9: '', with51: '' };
-  const digits = String(phone).replace(/\D/g, '');
-  if (digits.length < 9) return { digits, last9: '', with51: '' };
-  const last9 = digits.slice(-9);
-  const with51 = digits.length === 9 ? `51${last9}` : digits.startsWith('51') ? digits : `51${last9}`;
-  return { digits: digits.length >= 9 ? digits : '', last9, with51 };
-}
-
-/**
- * Busca nombre y licencia en tabla drivers por park_id Mi Auto y teléfono normalizado.
- * Devuelve { names: { digits|last9 -> string }, licenses: { digits|last9 -> string } }.
- */
-async function getDriverInfoByPhones(parkId, phones) {
-  const empty = { names: {}, licenses: {} };
-  if (!parkId || !Array.isArray(phones) || phones.length === 0) return empty;
-  const variants = new Set();
-  for (const p of phones) {
-    const { digits, last9, with51 } = normalizePhoneForDriversMatch(p);
-    if (last9) variants.add(last9);
-    if (digits) variants.add(digits);
-    if (with51) variants.add(with51);
-  }
-  const arr = [...variants];
-  if (arr.length === 0) return empty;
-  const last9Arr = arr.filter((s) => s.length === 9);
-  const res = await query(
-    `SELECT first_name, last_name,
-            license_number,
-            REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') AS phone_digits
-     FROM drivers
-     WHERE park_id = $1 AND work_status = 'working'
-       AND (
-         REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = ANY($2::text[])
-         OR RIGHT(REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g'), 9) = ANY($3::text[])
-       )`,
-    [parkId, arr, last9Arr.length ? last9Arr : ['']]
-  );
-  const names = {};
-  const licenses = {};
-  for (const r of res.rows || []) {
-    const name = [r.first_name, r.last_name].filter(Boolean).map(String).join(' ').trim();
-    const lic =
-      r.license_number != null && String(r.license_number).trim() !== ''
-        ? String(r.license_number).trim()
-        : null;
-    const dig = (r.phone_digits || '').replace(/\D/g, '');
-    if (!dig) continue;
-    if (name) {
-      names[dig] = name;
-      if (dig.length >= 9) names[dig.slice(-9)] = name;
-    }
-    if (lic) {
-      licenses[dig] = lic;
-      if (dig.length >= 9) licenses[dig.slice(-9)] = lic;
-    }
-  }
-  return { names, licenses };
-}
 
 function trimOrUndefined(x) {
   if (x == null) return undefined;
@@ -238,8 +176,12 @@ export const listSolicitudes = async (filters = {}) => {
   }
 
   const nameFromRapidinList = (r) => [r.driver_first_name, r.driver_last_name].filter(Boolean).map(String).join(' ').trim() || null;
+  const licenseOnSolicitud = (r) => {
+    const lic = r.license_number;
+    return lic != null && String(lic).trim() !== '' ? String(lic).trim() : null;
+  };
   const phonesForLookupList = dataResult.rows
-    .filter((r) => (!nameFromRapidinList(r) && r.phone) || (r.phone && (!r.license_number || String(r.license_number).trim() === '')))
+    .filter((r) => r.phone && (!nameFromRapidinList(r) || !licenseOnSolicitud(r)))
     .map((r) => r.phone);
   const driverInfoList = await getDriverInfoByPhones(MIAUTO_PARK_ID, phonesForLookupList);
 
@@ -303,7 +245,8 @@ export const listAlquilerVenta = async (filters = {}) => {
   const { country, page = 1, limit = 20, q: qFilter, cronograma_id: cronogramaIdFilter } = filters;
   const params = [];
   let n = 1;
-  let where = ' WHERE 1=1 ';
+  // Solo solicitudes aprobadas (con Yego Mi Auto generado)
+  let where = ` WHERE s.status = 'aprobado' `;
   if (country) {
     where += ` AND s.country = $${n}`;
     params.push(country);
@@ -315,6 +258,8 @@ export const listAlquilerVenta = async (filters = {}) => {
     where += ` AND (
       position($${n}::text in lower(coalesce(s.placa_asignada, ''))) > 0
       OR position($${n}::text in lower(coalesce(s.license_number, ''))) > 0
+      OR position($${n}::text in lower(coalesce(s.dni, ''))) > 0
+      OR position($${n}::text in lower(coalesce(rd.dni, ''))) > 0
       OR position($${n}::text in lower(coalesce(rd.first_name, ''))) > 0
       OR position($${n}::text in lower(coalesce(rd.last_name, ''))) > 0
       OR position($${n}::text in lower(trim(coalesce(rd.first_name, '')) || ' ' || trim(coalesce(rd.last_name, '')))) > 0
@@ -395,8 +340,13 @@ export const listAlquilerVenta = async (filters = {}) => {
   }
 
   const nameFromRapidin = (r) => [r.driver_first_name, r.driver_last_name].filter(Boolean).map(String).join(' ').trim() || null;
+  const licenseFromSolicitud = (r) => {
+    const lic = r.license_number;
+    return lic != null && String(lic).trim() !== '' ? String(lic).trim() : null;
+  };
+  // Solo consultar tabla drivers (Yango) si falta nombre o licencia en solicitud/rapidin
   const phonesForLookup = rows
-    .filter((r) => (!nameFromRapidin(r) && r.phone) || (r.phone && (!r.license_number || String(r.license_number).trim() === '')))
+    .filter((r) => r.phone && (!nameFromRapidin(r) || !licenseFromSolicitud(r)))
     .map((r) => r.phone);
   const driverInfoAv = await getDriverInfoByPhones(MIAUTO_PARK_ID, phonesForLookup);
 
@@ -406,7 +356,7 @@ export const listAlquilerVenta = async (filters = {}) => {
       const { digits, last9 } = normalizePhoneForDriversMatch(r.phone);
       driverName = driverInfoAv.names[digits] || driverInfoAv.names[last9] || null;
     }
-    let licenseNum = r.license_number != null && String(r.license_number).trim() !== '' ? String(r.license_number).trim() : null;
+    let licenseNum = licenseFromSolicitud(r);
     if (!licenseNum && r.phone) {
       const { digits, last9 } = normalizePhoneForDriversMatch(r.phone);
       licenseNum = driverInfoAv.licenses[digits] || driverInfoAv.licenses[last9] || null;
@@ -447,7 +397,8 @@ export const listAlquilerVenta = async (filters = {}) => {
   return { data, total };
 };
 
-export const getSolicitudById = async (id) => {
+export const getSolicitudById = async (id, options = {}) => {
+  const skipYangoLicenseLookup = options.skipYangoLicenseLookup === true;
   const result = await query(
     `SELECT id, country, dni, phone, email, license_number, description,
             status, rejection_reason, cited_at, cited_by, appointment_date, reagendo_count,
@@ -459,38 +410,69 @@ export const getSolicitudById = async (id) => {
   );
   if (result.rows.length === 0) return null;
   const row = result.rows[0];
-  const citasRes = await query(
-    'SELECT id, tipo, appointment_date, created_at, created_by, resultado FROM module_miauto_solicitud_cita WHERE solicitud_id = $1 ORDER BY created_at ASC',
-    [id]
-  );
+
+  const [citasRes, cronoRes, vehRes, compRes, otrosGastos, validadoPack] = await Promise.all([
+    query(
+      'SELECT id, tipo, appointment_date, created_at, created_by, resultado FROM module_miauto_solicitud_cita WHERE solicitud_id = $1 ORDER BY created_at ASC',
+      [id]
+    ),
+    row.cronograma_id
+      ? query(
+          'SELECT id, name, country, active, tasa_interes_mora, bono_tiempo_activo FROM module_miauto_cronograma WHERE id = $1',
+          [row.cronograma_id]
+        )
+      : Promise.resolve({ rows: [] }),
+    row.cronograma_vehiculo_id
+      ? query(
+          'SELECT id, name, inicial, inicial_moneda, cuotas_semanales, image FROM module_miauto_cronograma_vehiculo WHERE id = $1',
+          [row.cronograma_vehiculo_id]
+        )
+      : Promise.resolve({ rows: [] }),
+    query(
+      'SELECT id, monto, file_name, file_path, created_at, estado, validated_at, validated_by, rechazado_at, rechazo_razon, rechazado_by FROM module_miauto_comprobante_pago WHERE solicitud_id = $1 ORDER BY created_at ASC',
+      [id]
+    ),
+    listOtrosGastosBySolicitud(id),
+    getTotalValidado(id),
+  ]);
+
   row.citas_historial = citasRes.rows || [];
 
-  if (row.cronograma_id) {
-    const cronoRes = await query('SELECT id, name, country, active, tasa_interes_mora, bono_tiempo_activo FROM module_miauto_cronograma WHERE id = $1', [row.cronograma_id]);
-    const crono = cronoRes.rows[0];
-    row.cronograma = crono ? { id: crono.id, name: crono.name, country: crono.country, active: crono.active, tasa_interes_mora: crono.tasa_interes_mora != null ? parseFloat(crono.tasa_interes_mora) : 0, bono_tiempo_activo: !!crono.bono_tiempo_activo } : null;
-  } else {
-    row.cronograma = null;
-  }
-  if (row.cronograma_vehiculo_id) {
-    const vehRes = await query('SELECT id, name, inicial, inicial_moneda, cuotas_semanales, image FROM module_miauto_cronograma_vehiculo WHERE id = $1', [row.cronograma_vehiculo_id]);
-    const v = vehRes.rows[0];
-    row.cronograma_vehiculo = v ? { id: v.id, name: v.name, inicial: parseFloat(v.inicial) || 0, inicial_moneda: v.inicial_moneda || 'USD', cuotas_semanales: parseInt(v.cuotas_semanales, 10) || 0, image: v.image } : null;
-  } else {
-    row.cronograma_vehiculo = null;
-  }
+  const crono = cronoRes.rows[0];
+  row.cronograma = crono
+    ? {
+        id: crono.id,
+        name: crono.name,
+        country: crono.country,
+        active: crono.active,
+        tasa_interes_mora: crono.tasa_interes_mora != null ? parseFloat(crono.tasa_interes_mora) : 0,
+        bono_tiempo_activo: !!crono.bono_tiempo_activo,
+      }
+    : null;
 
-  const compRes = await query('SELECT id, monto, file_name, file_path, created_at, estado, validated_at, validated_by, rechazado_at, rechazo_razon, rechazado_by FROM module_miauto_comprobante_pago WHERE solicitud_id = $1 ORDER BY created_at ASC', [id]);
+  const v = vehRes.rows[0];
+  row.cronograma_vehiculo = v
+    ? {
+        id: v.id,
+        name: v.name,
+        inicial: parseFloat(v.inicial) || 0,
+        inicial_moneda: v.inicial_moneda || 'USD',
+        cuotas_semanales: parseInt(v.cuotas_semanales, 10) || 0,
+        image: v.image,
+      }
+    : null;
+
   row.comprobantes_pago = compRes.rows || [];
-
-  row.otros_gastos = await listOtrosGastosBySolicitud(id);
-
-  const { total: totalValidado, totalUsd: totalValidadoUsd } = await getTotalValidado(id);
-  row.total_validado = totalValidado;
-  row.total_validado_usd = totalValidadoUsd;
+  row.otros_gastos = otrosGastos;
+  row.total_validado = validadoPack.total;
+  row.total_validado_usd = validadoPack.totalUsd;
 
   let licenseNumber = row.license_number;
-  if ((!licenseNumber || String(licenseNumber).trim() === '') && row.phone) {
+  if (
+    !skipYangoLicenseLookup &&
+    (!licenseNumber || String(licenseNumber).trim() === '') &&
+    row.phone
+  ) {
     const { licenses } = await getDriverInfoByPhones(MIAUTO_PARK_ID, [row.phone]);
     const { digits, last9 } = normalizePhoneForDriversMatch(row.phone);
     const fromDrv = licenses[digits] || licenses[last9];
@@ -750,7 +732,9 @@ export const noVinoRechazar = async (id, userId = null) => {
 };
 
 /**
- * Generar Yego Mi Auto: setea fecha_inicio_cobro_semanal al día de generación y crea la primera cuota con vencimiento ese mismo día.
+ * Generar Yego Mi Auto: setea fecha_inicio_cobro_semanal (día del depósito / inicio cobro) y crea la primera cuota.
+ * Opciones: `fecha_inicio_cobro_semanal` (YYYY-MM-DD) = fecha real del depósito; si no viene, se usa el lunes de la semana actual en Lima.
+ * La fila semanal usa `week_start_date` = lunes de la semana civil que contiene esa fecha.
  * Permitido si: aprobado, cronograma/vehículo asignados, y (pago_estado completo O pago parcial con al menos 500 USD validados).
  * Con pago parcial: crea 26 cuotas "otros gastos" (saldo pendiente); vencimientos en lunes desde semana 2 del plan.
  */
@@ -785,9 +769,21 @@ export const generarYegoMiAuto = async (id, options = {}) => {
     }
   }
 
-  /** Inicio alineado al job Lun–Dom Lima: lunes de la semana que contiene “hoy” en Lima (no UTC ni día suelto). */
-  const dateStr = mondayOfWeekContainingYmd(getLimaYmd(new Date()));
-  const updated = await updateSolicitud(id, { fecha_inicio_cobro_semanal: dateStr, placa_asignada: placa });
+  const optFi =
+    options.fecha_inicio_cobro_semanal != null
+      ? String(options.fecha_inicio_cobro_semanal).trim().slice(0, 10)
+      : '';
+  let fechaInicioStored;
+  let weekStartFirstCuota;
+  if (optFi && /^\d{4}-\d{2}-\d{2}$/.test(optFi)) {
+    fechaInicioStored = optFi;
+    weekStartFirstCuota = mondayOfWeekContainingYmd(optFi);
+  } else {
+    weekStartFirstCuota = mondayOfWeekContainingYmd(getLimaYmd(new Date()));
+    fechaInicioStored = weekStartFirstCuota;
+  }
+
+  const updated = await updateSolicitud(id, { fecha_inicio_cobro_semanal: fechaInicioStored, placa_asignada: placa });
 
   // Primera cuota semanal (depósito): due_date = fecha_inicio (computeDueDateForMiAutoCuota).
   try {
@@ -795,7 +791,7 @@ export const generarYegoMiAuto = async (id, options = {}) => {
       id,
       s.cronograma_id,
       s.cronograma_vehiculo_id,
-      dateStr,
+      weekStartFirstCuota,
       { count_completed: 0, partner_fees: 0 }
     );
   } catch (err) {

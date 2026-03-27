@@ -15,6 +15,26 @@ function fleetParkId() {
   return trimCookie(process.env.YANGO_FLEET_PARK_ID) || '08e20910d81d42658d4334d3f6d10ac0';
 }
 
+/**
+ * Yego Mi Auto: `X-Park-Id` y sesión para `driver/income` y cobro de cuota (withdraw/saldo).
+ * Si `YANGO_FLEET_PARK_ID_MIAUTO` está definido, tiene prioridad sobre el `park_id` del conductor en BD.
+ */
+export function fleetParkIdForMiAuto(parkIdFromDb) {
+  const m = trimCookie(process.env.YANGO_FLEET_PARK_ID_MIAUTO);
+  if (m) return m;
+  const fromDb = parkIdFromDb && String(parkIdFromDb).trim();
+  if (fromDb) return fromDb;
+  return fleetParkId();
+}
+
+/** Cookie de cobro para Mi Auto; si `YANGO_FLEET_COOKIE_COBRO_MIAUTO` existe, se usa antes que `YANGO_FLEET_COOKIE_COBRO`. */
+export function fleetCookieCobroForMiAuto(cookieOverride) {
+  if (cookieOverride && String(cookieOverride).trim()) return String(cookieOverride).trim();
+  const m = trimCookie(process.env.YANGO_FLEET_COOKIE_COBRO_MIAUTO);
+  if (m) return m;
+  return fleetCookieCobro();
+}
+
 /** Reintentos ante 429 / Too many requests (con o sin proxies). */
 const MAX_RATE_LIMIT_RETRIES = Number(process.env.YANGO_RATE_LIMIT_MAX_RETRIES || 8);
 
@@ -158,10 +178,55 @@ export async function getContractorBalance(contractorProfileId, parkId = null, c
   }
 }
 
+/** Redondeo a 2 decimales (montos PEN). */
+function round2(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.round((x + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Tributo Yango usado en Mi Auto para el 83,33% sobre `partner_fees_raw`.
+ * Por defecto: solo **`balances.partner_fees`** en magnitud positiva (`|…|`). Los viajes vienen de
+ * **`orders.count_completed`** (aparte). `balances.platform_fees` es otra línea; opcionalmente se puede
+ * sumar con modo `platform_plus_partner`.
+ *
+ * Modo env `YANGO_DRIVER_INCOME_PARTNER_FEES_MODE`:
+ * - `partner_line` (default): `|balances.partner_fees|`
+ * - `platform_plus_partner`: `|platform_fees| + |partner_fees|`
+ * - `price_minus_total`: `max(0, orders.price - balances.total)` si ambos existen
+ * - `price_ratio`: `orders.price * YANGO_DRIVER_INCOME_PARTNER_FEES_PRICE_RATIO`
+ */
+export function extractPartnerFeesTributoFromIncomeData(data) {
+  const mode = String(process.env.YANGO_DRIVER_INCOME_PARTNER_FEES_MODE || 'partner_line').trim();
+  const b = data?.balances || {};
+  const o = data?.orders || {};
+  const pf = parseFloat(b.partner_fees);
+  const plat = parseFloat(b.platform_fees);
+  const price = parseFloat(o.price);
+  const total = parseFloat(b.total);
+
+  if (mode === 'price_minus_total') {
+    if (Number.isFinite(price) && Number.isFinite(total)) return round2(Math.max(0, price - total));
+    return 0;
+  }
+  if (mode === 'price_ratio') {
+    const ratio = parseFloat(process.env.YANGO_DRIVER_INCOME_PARTNER_FEES_PRICE_RATIO || '');
+    if (Number.isFinite(price) && Number.isFinite(ratio) && ratio > 0) return round2(price * ratio);
+    return 0;
+  }
+  if (mode === 'platform_plus_partner') {
+    const a = Number.isFinite(plat) ? Math.abs(plat) : 0;
+    const c = Number.isFinite(pf) ? Math.abs(pf) : 0;
+    return round2(a + c);
+  }
+  return round2(Number.isFinite(pf) ? Math.abs(pf) : 0);
+}
+
 /**
  * Driver income (Mi Auto): viajes e ingresos por rango de fechas.
  * POST fleet.yango.com/api/v1/cards/driver/income con date_from, date_to, driver_id.
- * dateFrom/dateTo: ISO -05:00; usar limaWeekStartToIncomeRange (lunes 00:00 … domingo 23:59).
+ * dateFrom/dateTo: ISO -05:00. Mi Auto: `limaWeekStartToMiAutoIncomeRange(week_start cuota)` en utils/miautoLimaWeekRange.js.
  */
 export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null, cookieOverride = null) {
   const id = String(driverId || '').trim();
@@ -172,32 +237,38 @@ export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null,
     date_to: dateTo || '',
     driver_id: id
   };
-  const resolvedPark = (parkId && String(parkId).trim()) ? String(parkId).trim() : fleetParkId();
+  const resolvedPark = fleetParkIdForMiAuto(parkId);
+  const resolvedCookie = fleetCookieCobroForMiAuto(cookieOverride);
   const headers = {
     'Accept-Language': 'es-ES,es',
-    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : fleetCookieCobro(),
+    Cookie: resolvedCookie,
     'X-Park-Id': resolvedPark,
     'Content-Type': 'application/json'
   };
   const logIncome = process.env.YANGO_LOG_DRIVER_INCOME !== '0';
   if (logIncome) {
     logger.info(
-      `[Yango driver/income] POST body: date_from=${body.date_from} date_to=${body.date_to} driver_id=${id} X-Park-Id=${resolvedPark}`
+      `[Yango driver/income] POST body: date_from=${body.date_from} date_to=${body.date_to} driver_id=${id} X-Park-Id=${resolvedPark} (Mi Auto env si aplica)`
     );
   }
   try {
     const res = await postWithProxyRetry(url, body, headers);
     const countCompleted = res.data?.orders?.count_completed != null ? Number(res.data.orders.count_completed) : 0;
-    const partnerFees = res.data?.balances?.partner_fees != null ? parseFloat(res.data.balances.partner_fees) : 0;
+    const partnerFeesLine = res.data?.balances?.partner_fees != null ? parseFloat(res.data.balances.partner_fees) : 0;
+    const platformFeesLine = res.data?.balances?.platform_fees != null ? parseFloat(res.data.balances.platform_fees) : 0;
+    const partnerFeesTributo = extractPartnerFeesTributoFromIncomeData(res.data);
     if (logIncome) {
       logger.info(
-        `[Yango driver/income] response: count_completed=${countCompleted} partner_fees=${Number.isFinite(partnerFees) ? partnerFees : 0}`
+        `[Yango driver/income] response: count_completed=${countCompleted} platform_fees=${Number.isFinite(platformFeesLine) ? platformFeesLine : 0} partner_fees_line=${Number.isFinite(partnerFeesLine) ? partnerFeesLine : 0} tributo_mi_auto=${partnerFeesTributo} (mode=${String(process.env.YANGO_DRIVER_INCOME_PARTNER_FEES_MODE || 'partner_line')})`
       );
     }
     return {
       success: true,
       count_completed: countCompleted,
-      partner_fees: Number.isFinite(partnerFees) ? partnerFees : 0,
+      /** Tributo positivo para Mi Auto (83,33% en `miautoCuotaSemanalService`); por defecto `|balances.partner_fees|`. */
+      partner_fees: partnerFeesTributo,
+      partner_fees_line: Number.isFinite(partnerFeesLine) ? partnerFeesLine : 0,
+      platform_fees_line: Number.isFinite(platformFeesLine) ? platformFeesLine : 0,
       request: {
         date_from: body.date_from,
         date_to: body.date_to,

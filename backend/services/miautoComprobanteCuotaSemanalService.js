@@ -6,6 +6,28 @@
 import { query } from '../config/database.js';
 import { uploadFileToMedia } from './voucherService.js';
 import { montoEnPEN, normalizePenUsd, round2 } from './miautoMoneyUtils.js';
+import { persistPaidAmountCapsForSolicitud, updateMoraDiaria } from './miautoCuotaSemanalService.js';
+
+/** PostgreSQL 42703 = undefined_column; si no hay columna `origen`, inferimos desde file_path. */
+function isUndefinedColumnError(err) {
+  const code = err?.code;
+  const msg = String(err?.message || '');
+  return code === '42703' || /column.*origen|origen.*does not exist/i.test(msg);
+}
+
+function inferOrigenFromRow(r) {
+  if (!r) return 'conductor';
+  if (r.file_path === 'manual') return 'pago_manual';
+  return 'conductor';
+}
+
+const SELECT_CUOTA_COMP_BASE = `SELECT id, solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado,
+            validated_at, validated_by, rechazado_at, rechazo_razon, created_at`;
+
+async function refreshMoraTrasPagoValidado(solicitudId) {
+  await updateMoraDiaria(solicitudId, { includePartial: true });
+  await persistPaidAmountCapsForSolicitud(solicitudId);
+}
 
 /** Actualiza cuota con nuevo paid_amount y status; aplica beneficio 4 seguidas si queda pagada. */
 async function aplicarPagoACuota(solicitudId, cuotaSemanalId, amountDue, paid, lateFee, montoAplicar) {
@@ -23,16 +45,28 @@ async function aplicarPagoACuota(solicitudId, cuotaSemanalId, amountDue, paid, l
   return { newPaid, newStatus };
 }
 
-/** Lista comprobantes de cuota semanal por solicitud. */
+/** Lista comprobantes de cuota semanal por solicitud. `origen`: conductor | admin_confirmacion | pago_manual */
 export async function listBySolicitud(solicitudId) {
-  const res = await query(
-    `SELECT id, solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado,
-            validated_at, validated_by, rechazado_at, rechazo_razon, created_at
+  try {
+    const res = await query(
+      `${SELECT_CUOTA_COMP_BASE},
+            COALESCE(origen, 'conductor') AS origen
      FROM module_miauto_comprobante_cuota_semanal
      WHERE solicitud_id = $1 ORDER BY created_at ASC`,
-    [solicitudId]
-  );
-  return res.rows || [];
+      [solicitudId]
+    );
+    return res.rows || [];
+  } catch (e) {
+    if (!isUndefinedColumnError(e)) throw e;
+    const res = await query(
+      `${SELECT_CUOTA_COMP_BASE}
+     FROM module_miauto_comprobante_cuota_semanal
+     WHERE solicitud_id = $1 ORDER BY created_at ASC`,
+      [solicitudId]
+    );
+    const rows = res.rows || [];
+    return rows.map((r) => ({ ...r, origen: inferOrigenFromRow(r) }));
+  }
 }
 
 /** Conductor sube comprobante para una cuota semanal (monto y moneda opcionales; el admin puede fijarlos al validar). */
@@ -54,24 +88,130 @@ export async function createComprobanteCuotaSemanal(solicitudId, cuotaSemanalId,
     throw new Error('Esta cuota ya está pagada o bonificada');
   }
 
-  await query(
-    `INSERT INTO module_miauto_comprobante_cuota_semanal (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [solicitudId, cuotaSemanalId, montoVal, monedaVal, fileName, path]
+  try {
+    await query(
+      `INSERT INTO module_miauto_comprobante_cuota_semanal (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, origen)
+       VALUES ($1, $2, $3, $4, $5, $6, 'conductor')`,
+      [solicitudId, cuotaSemanalId, montoVal, monedaVal, fileName, path]
+    );
+  } catch (e) {
+    if (!isUndefinedColumnError(e)) throw e;
+    await query(
+      `INSERT INTO module_miauto_comprobante_cuota_semanal (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [solicitudId, cuotaSemanalId, montoVal, monedaVal, fileName, path]
+    );
+  }
+  return listBySolicitud(solicitudId);
+}
+
+/**
+ * Admin sube comprobante de conformidad del pago (documento oficial para el conductor).
+ * Solo permitido cuando la cuota ya está pagada o bonificada; no aplica monto ni validación adicional.
+ */
+export async function createComprobanteConformidadAdmin(solicitudId, cuotaSemanalId, file, userId) {
+  const cuota = await query(
+    `SELECT id, status, paid_amount, amount_due, late_fee, moneda
+     FROM module_miauto_cuota_semanal WHERE id = $1 AND solicitud_id = $2`,
+    [cuotaSemanalId, solicitudId]
   );
+  if (cuota.rows.length === 0) {
+    throw new Error('Cuota semanal no encontrada o no pertenece a esta solicitud');
+  }
+  const c = cuota.rows[0];
+  const st = (c.status || '').toLowerCase();
+  if (st !== 'paid' && st !== 'bonificada') {
+    throw new Error('El comprobante de conformidad solo se puede subir cuando la cuota está pagada o bonificada');
+  }
+
+  const totalDue = round2(Number(c.amount_due || 0) + Number(c.late_fee || 0));
+  const paid = round2(Number(c.paid_amount || 0));
+  /** Referencia informativa (la columna es NOT NULL); no aplica un pago nuevo. */
+  const montoVal = paid > 0 ? paid : totalDue;
+  const monedaVal = normalizePenUsd(c.moneda || 'PEN');
+
+  const path = await uploadFileToMedia(file);
+  const fileName = file.originalname || `conformidad_pago_${Date.now()}.pdf`;
+
+  try {
+    await query(
+      `INSERT INTO module_miauto_comprobante_cuota_semanal
+       (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado, validated_at, validated_by, origen)
+       VALUES ($1, $2, $3, $4, $5, $6, 'validado', CURRENT_TIMESTAMP, $7, 'admin_confirmacion')`,
+      [solicitudId, cuotaSemanalId, montoVal, monedaVal, fileName, path, userId]
+    );
+  } catch (e) {
+    if (!isUndefinedColumnError(e)) throw e;
+    await query(
+      `INSERT INTO module_miauto_comprobante_cuota_semanal
+       (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado, validated_at, validated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, 'validado', CURRENT_TIMESTAMP, $7)`,
+      [solicitudId, cuotaSemanalId, montoVal, monedaVal, fileName, path, userId]
+    );
+  }
+  return listBySolicitud(solicitudId);
+}
+
+/**
+ * Elimina solo el comprobante de conformidad del administrador (origen admin_confirmacion).
+ * Permite volver a subir un archivo nuevo.
+ */
+export async function deleteComprobanteConformidadAdmin(solicitudId, comprobanteId) {
+  let row;
+  try {
+    const res = await query(
+      `SELECT id, COALESCE(origen, 'conductor') AS origen
+       FROM module_miauto_comprobante_cuota_semanal
+       WHERE solicitud_id = $1 AND id = $2`,
+      [solicitudId, comprobanteId]
+    );
+    row = res.rows[0];
+  } catch (e) {
+    if (!isUndefinedColumnError(e)) throw e;
+    const res = await query(
+      `SELECT id, file_path FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2`,
+      [solicitudId, comprobanteId]
+    );
+    row = res.rows[0] ? { ...res.rows[0], origen: inferOrigenFromRow(res.rows[0]) } : null;
+  }
+  if (!row) {
+    throw new Error('Comprobante no encontrado');
+  }
+  if ((row.origen || '').toLowerCase() !== 'admin_confirmacion') {
+    throw new Error('Solo se puede eliminar el comprobante de conformidad de pago del administrador');
+  }
+  await query(`DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2`, [
+    comprobanteId,
+    solicitudId,
+  ]);
   return listBySolicitud(solicitudId);
 }
 
 /** Rechazar comprobante (solo si está pendiente). */
 export async function rejectComprobanteCuotaSemanal(solicitudId, comprobanteId, userId, { motivo } = {}) {
-  const comp = await query(
-    'SELECT id, estado FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2',
-    [solicitudId, comprobanteId]
-  );
-  if (comp.rows.length === 0) {
+  let row;
+  try {
+    const comp = await query(
+      `SELECT id, estado, COALESCE(origen, 'conductor') AS origen, file_path
+       FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2`,
+      [solicitudId, comprobanteId]
+    );
+    row = comp.rows[0];
+  } catch (e) {
+    if (!isUndefinedColumnError(e)) throw e;
+    const comp = await query(
+      `SELECT id, estado, file_path FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2`,
+      [solicitudId, comprobanteId]
+    );
+    row = comp.rows[0] ? { ...comp.rows[0], origen: inferOrigenFromRow(comp.rows[0]) } : null;
+  }
+  if (!row) {
     throw new Error('Comprobante no encontrado');
   }
-  const estado = (comp.rows[0].estado || '').toLowerCase();
+  const origen = (row.origen || 'conductor').toLowerCase();
+  if (origen === 'admin_confirmacion') throw new Error('No se puede rechazar el comprobante de conformidad del administrador');
+  if (origen === 'pago_manual') throw new Error('No se puede rechazar un registro de pago manual');
+  const estado = (row.estado || '').toLowerCase();
   if (estado === 'validado') throw new Error('No se puede rechazar un comprobante ya validado');
   if (estado === 'rechazado') throw new Error('El comprobante ya está rechazado');
 
@@ -86,13 +226,14 @@ export async function rejectComprobanteCuotaSemanal(solicitudId, comprobanteId, 
 
 /**
  * Cuenta la racha actual: cuántas cuotas consecutivas desde la más antigua (due_date ASC)
- * están pagadas o bonificadas y sin mora. Mismo criterio que calcularRacha en miautoCuotaSemanalService.
+ * están pagadas o bonificadas (la mora en BD puede ser >0 aunque ya esté saldada). Mismo criterio que calcularRacha.
  */
 function contarRachaConsecutiva(rows) {
   const porFechaAsc = [...rows].sort((a, b) => new Date(a.due_date) - new Date(b.due_date));
   let racha = 0;
   for (const r of porFechaAsc) {
-    const ok = (r.status === 'paid' || r.status === 'bonificada') && (parseFloat(r.late_fee) || 0) === 0;
+    const st = (r.status || '').toLowerCase();
+    const ok = st === 'paid' || st === 'bonificada';
     if (!ok) break;
     racha++;
   }
@@ -150,12 +291,28 @@ async function tryGrantBenefit4Consecutive(solicitudId) {
  * Si con este pago la cuota queda pagada y sin mora, evalúa beneficio 4 seguidas.
  */
 export async function validateComprobanteCuotaSemanal(solicitudId, comprobanteId, userId, { monto, moneda } = {}) {
-  const comp = await query(
-    'SELECT id, cuota_semanal_id, monto, moneda, estado FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2',
-    [solicitudId, comprobanteId]
-  );
-  if (comp.rows.length === 0) throw new Error('Comprobante no encontrado');
-  const compRow = comp.rows[0];
+  let compRow;
+  try {
+    const comp = await query(
+      `SELECT id, cuota_semanal_id, monto, moneda, estado, COALESCE(origen, 'conductor') AS origen
+       FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2`,
+      [solicitudId, comprobanteId]
+    );
+    compRow = comp.rows[0];
+  } catch (e) {
+    if (!isUndefinedColumnError(e)) throw e;
+    const comp = await query(
+      `SELECT id, cuota_semanal_id, monto, moneda, estado, file_path
+       FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2`,
+      [solicitudId, comprobanteId]
+    );
+    const r = comp.rows[0];
+    compRow = r ? { ...r, origen: inferOrigenFromRow(r) } : null;
+  }
+  if (!compRow) throw new Error('Comprobante no encontrado');
+  const origen = (compRow.origen || 'conductor').toLowerCase();
+  if (origen === 'admin_confirmacion') throw new Error('No se valida el comprobante de conformidad; ya está registrado');
+  if (origen === 'pago_manual') throw new Error('No se valida un registro de pago manual');
   if ((compRow.estado || '').toLowerCase() === 'validado') throw new Error('El comprobante ya está validado');
   if ((compRow.estado || '').toLowerCase() === 'rechazado') throw new Error('No se puede validar un comprobante rechazado');
 
@@ -189,6 +346,7 @@ export async function validateComprobanteCuotaSemanal(solicitudId, comprobanteId
   );
 
   await aplicarPagoACuota(solicitudId, compRow.cuota_semanal_id, amountDue, paid, lateFee, montoAplicar);
+  await refreshMoraTrasPagoValidado(solicitudId);
 
   return listBySolicitud(solicitudId);
 }
@@ -212,16 +370,26 @@ export async function addPagoManualCuotaSemanal(solicitudId, cuotaSemanalId, use
   const montoAplicar = await montoEnPEN(solicitudId, num, moneda);
   if (montoAplicar == null) throw new Error('No se pudo convertir el monto');
 
-  await query(
-    `INSERT INTO module_miauto_comprobante_cuota_semanal (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado, validated_at, validated_by)
-     VALUES ($1, $2, $3, 'PEN', 'Pago manual', 'manual', 'validado', CURRENT_TIMESTAMP, $4)`,
-    [solicitudId, cuotaSemanalId, montoAplicar, userId]
-  );
+  try {
+    await query(
+      `INSERT INTO module_miauto_comprobante_cuota_semanal (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado, validated_at, validated_by, origen)
+       VALUES ($1, $2, $3, 'PEN', 'Pago manual', 'manual', 'validado', CURRENT_TIMESTAMP, $4, 'pago_manual')`,
+      [solicitudId, cuotaSemanalId, montoAplicar, userId]
+    );
+  } catch (e) {
+    if (!isUndefinedColumnError(e)) throw e;
+    await query(
+      `INSERT INTO module_miauto_comprobante_cuota_semanal (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado, validated_at, validated_by)
+       VALUES ($1, $2, $3, 'PEN', 'Pago manual', 'manual', 'validado', CURRENT_TIMESTAMP, $4)`,
+      [solicitudId, cuotaSemanalId, montoAplicar, userId]
+    );
+  }
 
   const amountDue = parseFloat(c.amount_due) || 0;
   const paid = parseFloat(c.paid_amount) || 0;
   const lateFee = parseFloat(c.late_fee) || 0;
   await aplicarPagoACuota(solicitudId, cuotaSemanalId, amountDue, paid, lateFee, montoAplicar);
+  await refreshMoraTrasPagoValidado(solicitudId);
 
   return listBySolicitud(solicitudId);
 }

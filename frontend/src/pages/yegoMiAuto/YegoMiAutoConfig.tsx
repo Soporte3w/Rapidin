@@ -16,7 +16,6 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
-
 /** Moneda de la cuota inicial */
 export type MonedaInicial = 'USD' | 'PEN';
 

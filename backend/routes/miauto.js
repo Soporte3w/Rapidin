@@ -29,10 +29,12 @@ import { getTipoCambioByCountry, setTipoCambio, listTiposCambio } from '../servi
 import { getPartnerNameById } from '../services/partnersService.js';
 import { listBySolicitud, createAdjunto } from '../services/miautoAdjuntoService.js';
 import { listBySolicitud as listComprobantesPago, createComprobantePago, validateComprobante, rejectComprobante, addPagoManual } from '../services/miautoComprobantePagoService.js';
-import { getCuotasSemanalesConRacha } from '../services/miautoCuotaSemanalService.js';
+import { getCuotasSemanalesConRacha, recalcularMoraGlobal } from '../services/miautoCuotaSemanalService.js';
 import {
   listBySolicitud as listComprobantesCuotaSemanal,
   createComprobanteCuotaSemanal,
+  createComprobanteConformidadAdmin,
+  deleteComprobanteConformidadAdmin,
   validateComprobanteCuotaSemanal,
   rejectComprobanteCuotaSemanal,
   addPagoManualCuotaSemanal,
@@ -80,7 +82,11 @@ function sameFlota(activeParkId, currentParkId) {
 /** Si el usuario es conductor, verifica que la solicitud sea suya (por phone + country). Retorna true si OK, false si no. */
 async function ensureSolicitudOwnedByDriver(solicitudId, req, res) {
   if (req.user?.role !== 'driver') return true;
-  const sol = await getSolicitudById(solicitudId);
+  const ownRes = await pool.query(
+    'SELECT phone, country FROM module_miauto_solicitud WHERE id = $1 LIMIT 1',
+    [solicitudId]
+  );
+  const sol = ownRes.rows[0];
   if (!sol) return true;
   const driverPhone = (req.user?.phone || '').toString().trim();
   const driverCountry = (req.user?.country || 'PE').toString().trim();
@@ -209,7 +215,9 @@ router.post('/solicitudes', async (req, res) => {
 
 router.get('/solicitudes/:id', validateUUID, async (req, res) => {
   try {
-    const solicitud = await getSolicitudById(req.params.id);
+    const solicitud = await getSolicitudById(req.params.id, {
+      skipYangoLicenseLookup: req.user?.role !== 'driver',
+    });
     if (!solicitud) {
       return errorResponse(res, 'Solicitud no encontrada', 404);
     }
@@ -341,6 +349,20 @@ router.get('/tipo-cambio/all', async (req, res) => {
   }
 });
 
+// POST /api/miauto/admin/recalcular-mora (admin: alinear mora en BD para todas las cuotas vencidas, incl. parciales)
+router.post('/admin/recalcular-mora', async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'Sin permisos para recalcular mora', 403);
+    }
+    const { updated } = await recalcularMoraGlobal();
+    return successResponse(res, { updated }, 'Mora recalculada en todas las cuotas vencidas');
+  } catch (error) {
+    logger.error('Error recalculando mora Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al recalcular mora', 500);
+  }
+});
+
 // PUT /api/miauto/tipo-cambio (admin: actualizar valor del dólar por país)
 router.put('/tipo-cambio', async (req, res) => {
   try {
@@ -360,11 +382,12 @@ router.put('/tipo-cambio', async (req, res) => {
   }
 });
 
-// PATCH /api/miauto/solicitudes/:id/generar-yego-mi-auto  body: { placa_asignada: string } (obligatorio)
+// PATCH /api/miauto/solicitudes/:id/generar-yego-mi-auto  body: { placa_asignada, fecha_inicio_cobro_semanal? }
 router.patch('/solicitudes/:id/generar-yego-mi-auto', validateUUID, async (req, res) => {
   try {
     const placa_asignada = req.body?.placa_asignada;
-    const solicitud = await generarYegoMiAuto(req.params.id, { placa_asignada });
+    const fecha_inicio_cobro_semanal = req.body?.fecha_inicio_cobro_semanal;
+    const solicitud = await generarYegoMiAuto(req.params.id, { placa_asignada, fecha_inicio_cobro_semanal });
     if (!solicitud) return errorResponse(res, 'Solicitud no encontrada', 404);
     return successResponse(res, solicitud, 'Yego Mi Auto generado; cobro semanal iniciado');
   } catch (error) {
@@ -632,6 +655,53 @@ router.post(
     } catch (error) {
       logger.error('Error subiendo comprobante cuota semanal Mi Auto:', error);
       return errorResponse(res, error.message || 'Error al subir comprobante', 400);
+    }
+  }
+);
+
+/** Comprobante de conformidad del pago (solo admin; solo si la cuota ya está pagada o bonificada). */
+router.post(
+  '/solicitudes/:id/cuotas-semanales/:cuotaSemanalId/comprobantes-conformidad-admin',
+  validateUUID,
+  uploadVoucher.single('file'),
+  async (req, res) => {
+    try {
+      if (req.user?.role === 'driver') {
+        return errorResponse(res, 'No autorizado', 403);
+      }
+      if (!req.file) {
+        return errorResponse(res, 'Archivo requerido', 400);
+      }
+      if (!(await ensureSolicitudOwnedByDriver(req.params.id, req, res))) return;
+      const list = await createComprobanteConformidadAdmin(
+        req.params.id,
+        req.params.cuotaSemanalId,
+        req.file,
+        req.user?.id
+      );
+      return successResponse(res, list, 'Comprobante de conformidad subido', 201);
+    } catch (error) {
+      logger.error('Error subiendo conformidad cuota semanal Mi Auto:', error);
+      return errorResponse(res, error.message || 'Error al subir comprobante de conformidad', 400);
+    }
+  }
+);
+
+/** Eliminar comprobante de conformidad del admin (solo staff; para poder subir uno nuevo). */
+router.delete(
+  '/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId/conformidad-admin',
+  validateUUID,
+  async (req, res) => {
+    try {
+      if (req.user?.role === 'driver') {
+        return errorResponse(res, 'No autorizado', 403);
+      }
+      if (!(await ensureSolicitudOwnedByDriver(req.params.id, req, res))) return;
+      const list = await deleteComprobanteConformidadAdmin(req.params.id, req.params.comprobanteId);
+      return successResponse(res, list, 'Comprobante de conformidad eliminado');
+    } catch (error) {
+      logger.error('Error eliminando conformidad cuota semanal Mi Auto:', error);
+      return errorResponse(res, error.message || 'Error al eliminar comprobante de conformidad', 400);
     }
   }
 );

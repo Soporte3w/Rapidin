@@ -23,7 +23,7 @@ function trimOrUndefined(x) {
 }
 
 /** Normaliza placa para almacenamiento (mayúsculas, sin espacios internos). */
-export function normalizePlacaAsignada(value) {
+function normalizePlacaAsignada(value) {
   if (value == null) return '';
   return String(value).trim().toUpperCase().replace(/\s+/g, '');
 }
@@ -490,7 +490,6 @@ export const getSolicitudById = async (id, options = {}) => {
     otros_gastos: row.otros_gastos,
     total_validado: row.total_validado,
     total_validado_usd: row.total_validado_usd,
-    apps: row.apps,
   };
 };
 
@@ -786,8 +785,11 @@ export const generarYegoMiAuto = async (id, options = {}) => {
   const updated = await updateSolicitud(id, { fecha_inicio_cobro_semanal: fechaInicioStored, placa_asignada: placa });
 
   // Primera cuota semanal (depósito): due_date = fecha_inicio (computeDueDateForMiAutoCuota).
+  // Sin esta fila no debe crearse "otros gastos" (pago parcial): antes el catch tragaba el error y
+  // ensureCuotaSemanalForWeek podía devolver null sin lanzar → quedaba solo otros gastos y sin cronograma semanal.
+  let primeraCuotaId;
   try {
-    await ensureCuotaSemanalForWeek(
+    primeraCuotaId = await ensureCuotaSemanalForWeek(
       id,
       s.cronograma_id,
       s.cronograma_vehiculo_id,
@@ -795,7 +797,15 @@ export const generarYegoMiAuto = async (id, options = {}) => {
       { count_completed: 0, partner_fees: 0 }
     );
   } catch (err) {
-    logger.warn('Mi Auto: no se pudo crear la primera cuota al generar Yego Mi Auto:', err.message);
+    await updateSolicitud(id, { fecha_inicio_cobro_semanal: null });
+    logger.error('Mi Auto: no se pudo crear la primera cuota al generar Yego Mi Auto:', err);
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+  if (!primeraCuotaId) {
+    await updateSolicitud(id, { fecha_inicio_cobro_semanal: null });
+    throw new Error(
+      'No se pudo crear la primera cuota semanal. Revise que el vehículo asignado exista en el cronograma y que las reglas de viajes sean válidas.'
+    );
   }
 
   // Pago parcial: guardar saldo y N en solicitud; crear solo la fila de semana 2 (resto se crea lazy al listar).

@@ -2,9 +2,17 @@ import crypto from 'crypto';
 import axios from 'axios';
 import { getNextProxyConfig, hasProxies, loadProxiesFromUrlIfConfigured } from './proxyLoader.js';
 import { logger } from '../utils/logger.js';
+import { round2 } from './miautoMoneyUtils.js';
 
 // Lectura en cada request: los scripts pueden cargar .env después del import sin quedar valores vacíos.
 const trimCookie = (v) => (v || '').replace(/^["']|["']$/g, '').trim();
+
+/** Base URL Fleet (sin barra final). `YANGO_FLEET_BASE_URL` en .env; por defecto https://fleet.yango.com */
+export function fleetBaseUrl() {
+  const u = String(process.env.YANGO_FLEET_BASE_URL || 'https://fleet.yango.com').trim().replace(/\/$/, '');
+  return u || 'https://fleet.yango.com';
+}
+
 function fleetCookiePagar() {
   return trimCookie(process.env.YANGO_FLEET_COOKIE);
 }
@@ -12,12 +20,14 @@ function fleetCookieCobro() {
   return trimCookie(process.env.YANGO_FLEET_COOKIE_COBRO) || fleetCookiePagar();
 }
 function fleetParkId() {
-  return trimCookie(process.env.YANGO_FLEET_PARK_ID) || '08e20910d81d42658d4334d3f6d10ac0';
+  return trimCookie(process.env.YANGO_FLEET_PARK_ID);
 }
 
 /**
- * Yego Mi Auto: `X-Park-Id` y sesión para `driver/income` y cobro de cuota (withdraw/saldo).
- * Si `YANGO_FLEET_PARK_ID_MIAUTO` está definido, tiene prioridad sobre el `park_id` del conductor en BD.
+ * Yego Mi Auto — parque Flota para **toda** integración Mi Auto (`driver/income`, saldo, withdraw cuota).
+ * Orden: `YANGO_FLEET_PARK_ID_MIAUTO` (.env) → `park_id` del conductor en BD → fallback genérico `YANGO_FLEET_PARK_ID`.
+ * En producción Yego Mi Auto conviene fijar siempre `YANGO_FLEET_PARK_ID_MIAUTO` al UUID del parque **Yego Mi Auto**
+ * para no mezclar con otro parque por defecto.
  */
 export function fleetParkIdForMiAuto(parkIdFromDb) {
   const m = trimCookie(process.env.YANGO_FLEET_PARK_ID_MIAUTO);
@@ -27,7 +37,10 @@ export function fleetParkIdForMiAuto(parkIdFromDb) {
   return fleetParkId();
 }
 
-/** Cookie de cobro para Mi Auto; si `YANGO_FLEET_COOKIE_COBRO_MIAUTO` existe, se usa antes que `YANGO_FLEET_COOKIE_COBRO`. */
+/**
+ * Cookie de sesión Flota para Mi Auto (misma flota que `YANGO_FLEET_PARK_ID_MIAUTO`).
+ * Prioridad: override explícito → `YANGO_FLEET_COOKIE_COBRO_MIAUTO` → `YANGO_FLEET_COOKIE_COBRO` → `YANGO_FLEET_COOKIE`.
+ */
 export function fleetCookieCobroForMiAuto(cookieOverride) {
   if (cookieOverride && String(cookieOverride).trim()) return String(cookieOverride).trim();
   const m = trimCookie(process.env.YANGO_FLEET_COOKIE_COBRO_MIAUTO);
@@ -110,7 +123,7 @@ export async function withdrawFromContractor(id, amount, description, cookieOver
     'Content-Type': 'text/plain'
   };
   try {
-    const response = await postWithProxyRetry('https://fleet.yango.com/api/v1/quickbar/transaction/withdraw', body, headers);
+    const response = await postWithProxyRetry(`${fleetBaseUrl()}/api/v1/quickbar/transaction/withdraw`, body, headers);
     return { success: true, data: response.data };
   } catch (error) {
     if (error.response) {
@@ -143,7 +156,7 @@ export async function addToContractor(id, amount, description, cookieOverride, p
     'Content-Type': 'text/plain'
   };
   try {
-    const response = await postWithProxyRetry('https://fleet.yango.com/api/v1/quickbar/transaction/add', body, headers);
+    const response = await postWithProxyRetry(`${fleetBaseUrl()}/api/v1/quickbar/transaction/add`, body, headers);
     return { success: true, data: response.data };
   } catch (error) {
     if (error.response) {
@@ -158,7 +171,7 @@ export async function addToContractor(id, amount, description, cookieOverride, p
 export async function getContractorBalance(contractorProfileId, parkId = null, cookieOverride = null) {
   const id = String(contractorProfileId || '').trim();
   if (!id) return { success: false, error: 'external_driver_id vacío' };
-  const url = `https://fleet.yango.com/api/fleet/contractor-profiles-manager/v1/contractor-balances/by-pro-id?contractor_profile_id=${encodeURIComponent(id)}`;
+  const url = `${fleetBaseUrl()}/api/fleet/contractor-profiles-manager/v1/contractor-balances/by-pro-id?contractor_profile_id=${encodeURIComponent(id)}`;
   const headers = {
     'Accept-Language': 'es-ES,es',
     'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : fleetCookieCobro(),
@@ -178,15 +191,10 @@ export async function getContractorBalance(contractorProfileId, parkId = null, c
   }
 }
 
-/** Redondeo a 2 decimales (montos PEN). */
-function round2(n) {
-  const x = Number(n);
-  if (!Number.isFinite(x)) return 0;
-  return Math.round((x + Number.EPSILON) * 100) / 100;
-}
-
 /**
  * Tributo Yango usado en Mi Auto para el 83,33% sobre `partner_fees_raw`.
+ * En PE/CO el importe de `balances.partner_fees` viene en **moneda local** (PEN/COP); si la cuota del cronograma
+ * está en USD, `ensureCuotaSemanalForWeek` lo pasa a USD con el tipo de cambio de la solicitud antes de restarlo.
  * Por defecto: solo **`balances.partner_fees`** en magnitud positiva (`|…|`). Los viajes vienen de
  * **`orders.count_completed`** (aparte). `balances.platform_fees` es otra línea; opcionalmente se puede
  * sumar con modo `platform_plus_partner`.
@@ -197,7 +205,7 @@ function round2(n) {
  * - `price_minus_total`: `max(0, orders.price - balances.total)` si ambos existen
  * - `price_ratio`: `orders.price * YANGO_DRIVER_INCOME_PARTNER_FEES_PRICE_RATIO`
  */
-export function extractPartnerFeesTributoFromIncomeData(data) {
+function extractPartnerFeesTributoFromIncomeData(data) {
   const mode = String(process.env.YANGO_DRIVER_INCOME_PARTNER_FEES_MODE || 'partner_line').trim();
   const b = data?.balances || {};
   const o = data?.orders || {};
@@ -225,13 +233,14 @@ export function extractPartnerFeesTributoFromIncomeData(data) {
 
 /**
  * Driver income (Mi Auto): viajes e ingresos por rango de fechas.
- * POST fleet.yango.com/api/v1/cards/driver/income con date_from, date_to, driver_id.
+ * POST `/api/v1/cards/driver/income` sobre `fleetBaseUrl()` (env `YANGO_FLEET_BASE_URL`).
+ * `X-Park-Id` y cookie salen de {@link fleetParkIdForMiAuto} / {@link fleetCookieCobroForMiAuto} — deben ser la flota **Yego Mi Auto**.
  * dateFrom/dateTo: ISO -05:00. Mi Auto: `limaWeekStartToMiAutoIncomeRange(week_start cuota)` en utils/miautoLimaWeekRange.js.
  */
 export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null, cookieOverride = null) {
   const id = String(driverId || '').trim();
   if (!id) return { success: false, error: 'driver_id vacío' };
-  const url = 'https://fleet.yango.com/api/v1/cards/driver/income';
+  const url = `${fleetBaseUrl()}/api/v1/cards/driver/income`;
   const body = {
     date_from: dateFrom || '',
     date_to: dateTo || '',

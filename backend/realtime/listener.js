@@ -6,12 +6,17 @@ let pgClient = null;
 
 export const initializeDatabaseListener = async () => {
     try {
+        const dbPassword = process.env.DB_PASSWORD;
+        if (dbPassword == null || dbPassword === '') {
+            logger.warn('DB_PASSWORD no definido; se omite el listener de notificaciones PostgreSQL');
+            return;
+        }
         pgClient = new Client({
             host: process.env.DB_HOST || 'localhost',
-            port: process.env.DB_PORT || 5432,
+            port: Number(process.env.DB_PORT || 5432),
             database: process.env.DB_NAME || 'rapidin_db',
             user: process.env.DB_USER || 'postgres',
-            password: process.env.DB_PASSWORD || 'postgres',
+            password: dbPassword,
             connectionTimeoutMillis: 5000,
         });
 

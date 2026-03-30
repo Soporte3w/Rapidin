@@ -1,19 +1,25 @@
 #!/bin/bash
+# Aplica schema vía psql. Requiere variables de entorno (o export manual):
+#   PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE
+set -euo pipefail
 
-# Script para ejecutar el schema en la base de datos remota
-# Base de datos: yego_integral
-# Host: 168.119.226.236
+: "${PGHOST:?Defina PGHOST}"
+: "${PGUSER:?Defina PGUSER}"
+: "${PGDATABASE:?Defina PGDATABASE}"
+: "${PGPASSWORD:?Defina PGPASSWORD}"
 
-echo "🔄 Conectando a la base de datos yego_integral..."
+PGPORT="${PGPORT:-5432}"
 
-PGPASSWORD='37>MNA&-35+' psql -h 168.119.226.236 -U yego_user -d yego_integral -p 5432 << 'EOF'
+echo "🔄 Conectando a PostgreSQL ${PGHOST}:${PGPORT}/${PGDATABASE}..."
+
+psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" << 'EOF'
 
 -- Verificar si las tablas ya existen
-DO $$ 
+DO $$
 BEGIN
     IF EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
+        SELECT FROM information_schema.tables
+        WHERE table_schema = 'public'
         AND table_name = 'module_rapidin_users'
     ) THEN
         RAISE NOTICE '⚠️  Las tablas module_rapidin_* ya existen. Saltando creación...';
@@ -35,20 +41,14 @@ END $$;
 \i database/functions/calculate_late_fee.sql
 
 -- Verificar tablas creadas
-SELECT 
+SELECT
     table_name,
     (SELECT COUNT(*) FROM information_schema.columns WHERE table_name = t.table_name) as column_count
 FROM information_schema.tables t
-WHERE table_schema = 'public' 
+WHERE table_schema = 'public'
 AND table_name LIKE 'module_rapidin_%'
 ORDER BY table_name;
 
 EOF
 
 echo "✅ Schema aplicado correctamente!"
-
-
-
-
-
-

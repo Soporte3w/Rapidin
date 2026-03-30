@@ -7,20 +7,28 @@ import dotenv from 'dotenv';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Cargar variables de entorno
 dotenv.config();
 
+const dbHost = process.env.DB_HOST;
+const dbName = process.env.DB_NAME;
+const dbUser = process.env.DB_USER;
+const dbPassword = process.env.DB_PASSWORD;
+if (!dbHost || !dbName || !dbUser || dbPassword == null || dbPassword === '') {
+    console.error('Falta DB_HOST, DB_NAME, DB_USER o DB_PASSWORD en .env');
+    process.exit(1);
+}
+
 const client = new Client({
-    host: process.env.DB_HOST || '168.119.226.236',
-    port: process.env.DB_PORT || 5432,
-    database: process.env.DB_NAME || 'yego_integral',
-    user: process.env.DB_USER || 'yego_user',
-    password: process.env.DB_PASSWORD || '37>MNA&-35+',
+    host: dbHost,
+    port: Number(process.env.DB_PORT || 5432),
+    database: dbName,
+    user: dbUser,
+    password: dbPassword,
 });
 
 async function applySchema() {
     try {
-        console.log('🔄 Conectando a la base de datos yego_integral...');
+        console.log(`🔄 Conectando a PostgreSQL ${dbHost}/${dbName}...`);
         await client.connect();
         console.log('✅ Conectado exitosamente\n');
 

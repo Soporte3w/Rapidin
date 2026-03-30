@@ -5,7 +5,7 @@ export function getMiautoAdjuntoUrl(filePath: string | undefined): string {
   return `${window.location.origin}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
 }
 
-export interface SolicitudRentSaleHeader {
+interface SolicitudRentSaleHeader {
   dni?: string;
   phone?: string;
   email?: string;
@@ -27,58 +27,10 @@ export function formatKpiMixPenUsd(pen: number, usd: number): string {
   return parts.join(' · ');
 }
 
-/** Misma aritmética que backend/utils/miautoLimaWeekRange.js (semanas Lun–Dom civil UTC). */
-function addDaysYmd(yyyyMmDd: string, deltaDays: number): string {
-  const [y, m, d] = yyyyMmDd.split('-').map(Number);
-  const t = Date.UTC(y, m - 1, d) + deltaDays * 86400000;
-  return new Date(t).toISOString().slice(0, 10);
-}
-
-function weekdaysSinceMondayMon0(yyyyMmDd: string): number {
-  const [y, m, d] = yyyyMmDd.split('-').map(Number);
-  const dowSun0 = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-  return (dowSun0 + 6) % 7;
-}
-
-/** Lunes de la semana civil que contiene la fecha YYYY-MM-DD. */
-function mondayOfWeekContainingYmd(yyyyMmDd: string): string {
-  const sinceMon = weekdaysSinceMondayMon0(yyyyMmDd);
-  return addDaysYmd(yyyyMmDd, -sinceMon);
-}
-
 function ymdPrefix(s: unknown): string | null {
   if (s == null) return null;
   const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(s).trim());
   return m ? m[1] : null;
-}
-
-/**
- * Número de cuota semanal (1-based) alineado al job Yango: ambas fechas se normalizan al lunes de su semana civil.
- * Preferir {@link miautoSemanaLista} en UI: la primera fila del listado es siempre "Semana 1".
- */
-export function miautoSemanaContrato(
-  fechaInicioCobro: string | null | undefined,
-  weekStartDate: string | null | undefined
-): number | null {
-  const rawA = ymdPrefix(fechaInicioCobro);
-  const rawB = ymdPrefix(weekStartDate);
-  if (!rawA || !rawB) return null;
-  const mondayA = mondayOfWeekContainingYmd(rawA);
-  const mondayB = mondayOfWeekContainingYmd(rawB);
-  const ta = Date.UTC(
-    +mondayA.slice(0, 4),
-    +mondayA.slice(5, 7) - 1,
-    +mondayA.slice(8, 10)
-  );
-  const tb = Date.UTC(
-    +mondayB.slice(0, 4),
-    +mondayB.slice(5, 7) - 1,
-    +mondayB.slice(8, 10)
-  );
-  const diffDays = Math.round((tb - ta) / (24 * 60 * 60 * 1000));
-  if (diffDays < 0) return null;
-  const n = Math.floor(diffDays / 7) + 1;
-  return n >= 1 ? n : null;
 }
 
 /**
@@ -129,6 +81,14 @@ export function miautoSemanaOrdinalPorVencimiento(
   return idx >= 0 ? idx + 1 : null;
 }
 
+/** Sincronizar con backend `miautoCuotaSemanalService.js` (`MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER`). */
+const MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER = '2026-03-30';
+
+function miautoSkipBonoReductionForDueYmd(dueYmd: string | null): boolean {
+  if (!dueYmd || !/^\d{4}-\d{2}-\d{2}$/.test(dueYmd)) return false;
+  return dueYmd >= MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER;
+}
+
 /** Normaliza montos que vienen de la API como number o string (PostgreSQL/JSON). */
 export function miautoNum(v: unknown): number {
   if (v == null || v === '') return 0;
@@ -142,15 +102,40 @@ export function miautoFmtMonto(sym: string, monto: unknown): string {
 }
 
 /**
- * Monto mostrado en columna "Pagado": `paid_amount` de la cuota (BD actualiza al validar comprobantes o cobrar fleet).
- * Así coincide con bono/cuota/cuota final y con el estado de la fila.
+ * Suma real abonada (BD / API). Para totales contables y comprobantes.
  */
 export function miautoMontoPagadoCuotaSemanal(paidAmount: unknown): number {
   return miautoNum(paidAmount);
 }
 
 /**
- * Cronograma semanal — columna «Cuota a pagar»: (cuota del plan − bono auto) − tributo 83% Yango (`partner_fees_83`).
+ * Columna «Pagado» en cronograma semanal: si `due_date` es **antes** del mismo corte que bono (`2026-03-30`),
+ * muestra neto tipo Excel: `max(0, paid_amount − late_fee)`. Desde esa fecha en adelante, solo `paid_amount`.
+ */
+export function miautoMontoPagadoColumnaMiAuto(c: {
+  paid_amount?: unknown;
+  late_fee?: unknown;
+  due_date?: unknown;
+}): number {
+  const paid = miautoNum(c.paid_amount);
+  const mora = miautoNum(c.late_fee);
+  const due = ymdPrefix(c.due_date);
+  if (due && due < MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER) {
+    return Math.max(0, Math.round((paid - mora) * 100) / 100);
+  }
+  return paid;
+}
+
+/** Texto auxiliar «Excel» bajo Pagado cuando había mora y el neto aplica solo antes del corte. */
+export function miautoPagadoMuestraEtiquetaExcel(c: { late_fee?: unknown; due_date?: unknown }): boolean {
+  const due = ymdPrefix(c.due_date);
+  if (!due || due >= MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER) return false;
+  return miautoNum(c.late_fee) > 0.005;
+}
+
+/**
+ * Cronograma semanal — columna «Cuota a pagar»: (cuota del plan − bono auto) − tributo 83% Yango (`partner_fees_83`),
+ * salvo vencimiento ≥ corte sin bono: cuota del plan − solo `partner_fees_83`.
  * Misma base que `cuota_neta` en la API (`miautoCuotaSemanalService.computeCuotaDerivedForRow`).
  */
 export function miautoCuotaAPagarCronogramaSemanal(c: {
@@ -158,9 +143,14 @@ export function miautoCuotaAPagarCronogramaSemanal(c: {
   bono_auto?: unknown;
   partner_fees_83?: unknown;
   cuota_neta?: unknown;
+  due_date?: unknown;
 }): number {
   if (c.cuota_neta != null && c.cuota_neta !== '') {
     return miautoNum(c.cuota_neta);
+  }
+  const due = ymdPrefix(c.due_date);
+  if (due && miautoSkipBonoReductionForDueYmd(due)) {
+    return Math.max(0, miautoNum(c.cuota_semanal) - miautoNum(c.partner_fees_83));
   }
   return Math.max(0, miautoNum(c.cuota_semanal) - miautoNum(c.bono_auto) - miautoNum(c.partner_fees_83));
 }
@@ -174,6 +164,7 @@ export function miautoCuotaFinalCronogramaSemanal(c: {
   bono_auto?: unknown;
   partner_fees_83?: unknown;
   cuota_neta?: unknown;
+  due_date?: unknown;
   late_fee?: unknown;
   paid_amount?: unknown;
   status?: string;
@@ -192,25 +183,6 @@ export function miautoCuotaFinalCronogramaSemanal(c: {
     return Math.round((moraRest + cuotaRest) * 100) / 100;
   }
   return Math.max(0, Math.round((cuotaNet - paid) * 100) / 100);
-}
-
-/**
- * Saldo total del periodo (cuota + mora pendientes). La API envía `cuota_final`; `late_fee` es mora del periodo (intacta) y no debe sumarse a `pending_total`.
- */
-export function miautoCuotaFinalSemana(c: {
-  cuota_final?: unknown;
-  pending_total?: unknown;
-  late_fee?: unknown;
-  status?: string;
-}): number {
-  if (c.cuota_final != null && c.cuota_final !== '') {
-    return miautoNum(c.cuota_final);
-  }
-  const st = (c.status || '').toLowerCase();
-  if (st === 'paid' || st === 'bonificada') {
-    return 0;
-  }
-  return miautoNum(c.pending_total) + miautoNum(c.late_fee);
 }
 
 export const MIAUTO_CUOTA_STATUS_LABELS: Record<string, string> = {

@@ -5,12 +5,22 @@ import { logger } from '../utils/logger.js';
 const { Pool } = pkg;
 dotenv.config();
 
+const dbHost = process.env.DB_HOST;
+const dbName = process.env.DB_NAME;
+const dbUser = process.env.DB_USER;
+const dbPassword = process.env.DB_PASSWORD;
+if (!dbHost || !dbName || !dbUser || dbPassword == null || dbPassword === '') {
+    throw new Error(
+        'Configuración DB incompleta: defina DB_HOST, DB_NAME, DB_USER y DB_PASSWORD en .env (sin credenciales por defecto en código).'
+    );
+}
+
 const pool = new Pool({
-    host: process.env.DB_HOST || '168.119.226.236',
-    port: process.env.DB_PORT || 5432,
-    database: process.env.DB_NAME || 'yego_integral',
-    user: process.env.DB_USER || 'yego_user',
-    password: process.env.DB_PASSWORD || '37>MNA&-35+',
+    host: dbHost,
+    port: Number(process.env.DB_PORT || 5432),
+    database: dbName,
+    user: dbUser,
+    password: dbPassword,
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 30000,

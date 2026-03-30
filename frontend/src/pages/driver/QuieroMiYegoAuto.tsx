@@ -13,6 +13,8 @@ import { symMoneda } from '../../utils/miautoAlquilerVentaList';
 import {
   miautoFmtMonto,
   miautoMontoPagadoCuotaSemanal,
+  miautoMontoPagadoColumnaMiAuto,
+  miautoPagadoMuestraEtiquetaExcel,
   miautoSemanaLista,
   miautoSemanaOrdinalPorVencimiento,
   miautoCuotaAPagarCronogramaSemanal,
@@ -797,7 +799,7 @@ function AprobadoBlock({
                         const compsPanelConductor = comps.filter((cp) => !esComprobanteAdminPago(cp));
                         const cuotaCerrada = c.status === 'paid' || c.status === 'bonificada';
                         const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(c);
-                        const montoPagadoDisplay = miautoMontoPagadoCuotaSemanal(c.paid_amount);
+                        const montoPagadoDisplay = miautoMontoPagadoColumnaMiAuto(c);
                         const saldoSemanaNeto = cuotaFinalSemana;
                         const pendienteMonto = Math.max(0, saldoSemanaNeto);
                         const pendiente = pendienteMonto > 0;
@@ -861,8 +863,13 @@ function AprobadoBlock({
                               <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-[13px] text-green-700">
                                 {miautoFmtMonto(symCuota, cuotaFinalSemana)}
                               </td>
-                              <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-[13px] text-green-800">
-                                {miautoFmtMonto(symCuota, montoPagadoDisplay)}
+                              <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-800">
+                                <div className="flex flex-col items-end gap-0.5 tabular-nums">
+                                  <span className="font-medium">{miautoFmtMonto(symCuota, montoPagadoDisplay)}</span>
+                                  {miautoPagadoMuestraEtiquetaExcel(c) && (
+                                    <span className="text-[10px] font-medium text-emerald-700">Excel</span>
+                                  )}
+                                </div>
                               </td>
                               <td className="py-2.5 pr-2 align-middle whitespace-nowrap">
                                 <div className="flex flex-col items-center gap-0.5">

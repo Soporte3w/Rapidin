@@ -45,6 +45,69 @@ async function aplicarPagoACuota(solicitudId, cuotaSemanalId, amountDue, paid, l
   return { newPaid, newStatus };
 }
 
+function restanteFilaCuota(r) {
+  if (!r || r.status === 'paid' || r.status === 'bonificada') return 0;
+  const ad = parseFloat(r.amount_due) || 0;
+  const pd = parseFloat(r.paid_amount) || 0;
+  const lf = parseFloat(r.late_fee) || 0;
+  return Math.max(0, round2(ad + lf - pd));
+}
+
+/**
+ * Reparte `montoAplicar` en PEN: primero la cuota prioritaria (la del comprobante / pago manual),
+ * luego el resto en orden due_date ASC. Relee cada fila tras cada aplicación.
+ */
+async function aplicarPagoEnCuotasCascada(solicitudId, cuotaPrioritariaId, montoAplicar) {
+  const cuotasRes = await query(
+    `SELECT id, due_date, amount_due, paid_amount, late_fee, status
+     FROM module_miauto_cuota_semanal
+     WHERE solicitud_id = $1
+     ORDER BY due_date ASC NULLS LAST, id ASC`,
+    [solicitudId]
+  );
+  const rows = cuotasRes.rows || [];
+  const totalPendiente = round2(rows.reduce((s, r) => s + restanteFilaCuota(r), 0));
+  if (montoAplicar > totalPendiente) {
+    throw new Error(
+      `El monto a aplicar (S/. ${montoAplicar.toFixed(2)}) supera el total pendiente del cronograma (S/. ${totalPendiente.toFixed(2)})`
+    );
+  }
+
+  const orderedIds = [];
+  const seen = new Set();
+  if (cuotaPrioritariaId != null) {
+    orderedIds.push(cuotaPrioritariaId);
+    seen.add(cuotaPrioritariaId);
+  }
+  for (const r of rows) {
+    if (!seen.has(r.id)) {
+      orderedIds.push(r.id);
+      seen.add(r.id);
+    }
+  }
+
+  let saldo = round2(montoAplicar);
+  for (const cuotaId of orderedIds) {
+    if (saldo <= 0) break;
+    const cu = await query(
+      'SELECT id, amount_due, paid_amount, late_fee, status FROM module_miauto_cuota_semanal WHERE id = $1 AND solicitud_id = $2',
+      [cuotaId, solicitudId]
+    );
+    if (cu.rows.length === 0) continue;
+    const c = cu.rows[0];
+    if (c.status === 'paid' || c.status === 'bonificada') continue;
+    const amountDue = parseFloat(c.amount_due) || 0;
+    const paid = parseFloat(c.paid_amount) || 0;
+    const lateFee = parseFloat(c.late_fee) || 0;
+    const restante = Math.max(0, round2(amountDue + lateFee - paid));
+    if (restante <= 0) continue;
+    const chunk = round2(Math.min(saldo, restante));
+    if (chunk <= 0) continue;
+    await aplicarPagoACuota(solicitudId, cuotaId, amountDue, paid, lateFee, chunk);
+    saldo = round2(saldo - chunk);
+  }
+}
+
 /** Lista comprobantes de cuota semanal por solicitud. `origen`: conductor | admin_confirmacion | pago_manual */
 export async function listBySolicitud(solicitudId) {
   try {
@@ -332,20 +395,12 @@ export async function validateComprobanteCuotaSemanal(solicitudId, comprobanteId
   const montoAplicar = await montoEnPEN(solicitudId, montoIngreso, monedaIngreso);
   if (montoAplicar == null) throw new Error('No se pudo convertir el monto');
 
-  const amountDue = parseFloat(c.amount_due) || 0;
-  const paid = parseFloat(c.paid_amount) || 0;
-  const lateFee = parseFloat(c.late_fee) || 0;
-  const restanteCuota = Math.max(0, amountDue + lateFee - paid);
-  if (montoAplicar > restanteCuota) {
-    throw new Error(`El monto a validar (S/. ${montoAplicar.toFixed(2)}) no puede superar lo que falta por pagar en esta cuota (S/. ${restanteCuota.toFixed(2)})`);
-  }
-
   await query(
     `UPDATE module_miauto_comprobante_cuota_semanal SET monto = $1, moneda = $2, estado = 'validado', validated_at = CURRENT_TIMESTAMP, validated_by = $3 WHERE id = $4`,
     [montoAplicar, 'PEN', userId, comprobanteId]
   );
 
-  await aplicarPagoACuota(solicitudId, compRow.cuota_semanal_id, amountDue, paid, lateFee, montoAplicar);
+  await aplicarPagoEnCuotasCascada(solicitudId, compRow.cuota_semanal_id, montoAplicar);
   await refreshMoraTrasPagoValidado(solicitudId);
 
   return listBySolicitud(solicitudId);
@@ -385,10 +440,7 @@ export async function addPagoManualCuotaSemanal(solicitudId, cuotaSemanalId, use
     );
   }
 
-  const amountDue = parseFloat(c.amount_due) || 0;
-  const paid = parseFloat(c.paid_amount) || 0;
-  const lateFee = parseFloat(c.late_fee) || 0;
-  await aplicarPagoACuota(solicitudId, cuotaSemanalId, amountDue, paid, lateFee, montoAplicar);
+  await aplicarPagoEnCuotasCascada(solicitudId, cuotaSemanalId, montoAplicar);
   await refreshMoraTrasPagoValidado(solicitudId);
 
   return listBySolicitud(solicitudId);

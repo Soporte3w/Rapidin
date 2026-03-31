@@ -63,10 +63,9 @@ export const getCurrentUser = async (userId) => {
     return result.rows[0];
 };
 
-// Almacenamiento temporal de códigos OTP (en producción usar Redis o base de datos)
+
 const otpStore = new Map();
 
-// Normalizar teléfono para usar siempre la misma clave (evitar "no encontrado" por formato distinto)
 function normalizePhone(phone) {
     if (!phone || typeof phone !== 'string') return phone;
     const digits = phone.replace(/\s/g, '').replace(/\D/g, '');

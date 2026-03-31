@@ -7,11 +7,19 @@
     @apply antialiased;
   }
 
+  html {
+    @apply bg-gray-50 h-full;
+  }
+
   body {
-    @apply bg-gray-50 text-gray-900;
+    @apply bg-gray-50 text-gray-900 min-h-full;
     font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  #root {
+    @apply min-h-full;
   }
 
   code {

@@ -32,6 +32,7 @@ interface CuotaSemanal {
   amount_due: number;
   paid_amount: number;
   late_fee: number;
+  mora_pendiente?: number;
   status: string;
   /** Solo cuota pendiente (sin mora). */
   pending_total: number;
@@ -211,13 +212,11 @@ export default function YegoMiAutoPayments() {
       const lista = Array.isArray(payload) ? payload : (payload?.data ?? []);
       const conPendiente = lista.filter((c: CuotaSemanal) => {
         if (c.status !== 'pending' && c.status !== 'overdue') return false;
+        const moraPend = c.mora_pendiente != null ? Number(c.mora_pendiente) : Number(c.late_fee || 0);
         const total =
           c.cuota_final != null
             ? Number(c.cuota_final)
-            : Math.max(
-                0,
-                Number(c.amount_due || 0) + Number(c.late_fee || 0) - Number(c.paid_amount || 0)
-              );
+            : Math.max(0, Number(c.amount_due || 0) + moraPend - Number(c.paid_amount || 0));
         return total > 0;
       });
       setCuotas(conPendiente);
@@ -602,19 +601,20 @@ export default function YegoMiAutoPayments() {
                   onChange={(e) => setCuotaSeleccionadaId(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm mb-4"
                 >
-                  {cuotas.map((c) => (
+                  {cuotas.map((c) => {
+                    const moraPendOpt = c.mora_pendiente != null ? Number(c.mora_pendiente) : Number(c.late_fee || 0);
+                    const saldoOpt =
+                      c.cuota_final != null
+                        ? Number(c.cuota_final)
+                        : Math.max(0, Number(c.amount_due || 0) + moraPendOpt - Number(c.paid_amount || 0));
+                    return (
                     <option key={c.id} value={c.id}>
                       Vence {formatDate(c.due_date || c.week_start_date, 'es-ES')} — {symMoneda(c.moneda)}{' '}
-                      {(c.cuota_final != null
-                        ? Number(c.cuota_final)
-                        : Math.max(
-                            0,
-                            Number(c.amount_due || 0) + Number(c.late_fee || 0) - Number(c.paid_amount || 0)
-                          )
-                      ).toFixed(2)}{' '}
+                      {saldoOpt.toFixed(2)}{' '}
                       saldo total
                     </option>
-                  ))}
+                    );
+                  })}
                 </select>
 
                 <label className="block text-sm font-medium text-gray-700 mb-1">Monto</label>

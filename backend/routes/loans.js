@@ -1,6 +1,5 @@
 import express from 'express';
-import pool from '../database/connection.js';
-import { getLoans, getLoanById, getInstallmentSchedule } from '../services/loanService.js';
+import { getLoans, getLoanById, getInstallmentSchedule, getLoansExportBundle } from '../services/loanService.js';
 import { sendWhatsAppMessage } from '../services/authService.js';
 import { verifyToken } from '../middleware/auth.js';
 import { filterByCountry } from '../middleware/permissions.js';
@@ -39,6 +38,30 @@ router.get('/', async (req, res) => {
   } catch (error) {
     logger.error('Error obteniendo préstamos:', error);
     return errorResponse(res, 'Error obteniendo préstamos', 500);
+  }
+});
+
+router.get('/export', async (req, res) => {
+  try {
+    const { status, country, driver, loan_id, date_from, date_to } = req.query;
+    const filters = {};
+    if (status) filters.status = status;
+    if (country && req.allowedCountries?.includes(country)) {
+      filters.country = country;
+    }
+    if (driver && typeof driver === 'string') filters.driver = driver;
+    if (loan_id && typeof loan_id === 'string') filters.loan_id = loan_id;
+    if (date_from && typeof date_from === 'string') filters.date_from = date_from;
+    if (date_to && typeof date_to === 'string') filters.date_to = date_to;
+
+    const bundle = await getLoansExportBundle(filters);
+    return successResponse(res, bundle, 'Export listo');
+  } catch (error) {
+    if (error.code === 'EXPORT_LIMIT_EXCEEDED') {
+      return errorResponse(res, error.message, 400);
+    }
+    logger.error('Error exportando préstamos:', error);
+    return errorResponse(res, 'Error al exportar préstamos', 500);
   }
 });
 

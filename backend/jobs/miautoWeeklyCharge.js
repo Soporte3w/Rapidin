@@ -5,7 +5,12 @@
 import cron from 'node-cron';
 import { logger } from '../utils/logger.js';
 import { round2 } from '../services/miautoMoneyUtils.js';
-import { getDriverIncome } from '../services/yangoService.js';
+import {
+  getContractorBalance,
+  fleetCookieCobroForMiAuto,
+  fleetParkIdForMiAuto,
+  getDriverIncome,
+} from '../services/yangoService.js';
 import {
   getSolicitudesParaCobroSemanal,
   ensureCuotaSemanalForWeek,
@@ -166,17 +171,90 @@ export async function regenerateMiAutoCuotaForWeekMonday(solicitudId, cuotaWeekY
   };
 }
 
+/** Agrupa filas consecutivas mismo conductor/parque Fleet (tras resolver parque Mi Auto). */
+function chunkCuotasFleetMismaCuenta(cuotas) {
+  if (!cuotas || cuotas.length === 0) return [];
+  const chunks = [];
+  let cur = [];
+  let prevKey = null;
+  for (const c of cuotas) {
+    const ext = String(c.external_driver_id || '').trim().toLowerCase();
+    const park = String(fleetParkIdForMiAuto(c.park_id) || '').trim().toLowerCase();
+    const k = `${ext}|${park}`;
+    if (prevKey !== null && k !== prevKey) {
+      chunks.push(cur);
+      cur = [];
+    }
+    cur.push(c);
+    prevKey = k;
+  }
+  if (cur.length) chunks.push(cur);
+  return chunks;
+}
+
+/**
+ * Cola Fleet: **un solo** `getContractorBalance` por conductor+parque; el total retirado en la pasada
+ * no supera ese snapshot (p. ej. saldo 780 → reparto entre cuotas hasta agotar, sin reconsultar saldo inflado).
+ */
 async function processCobroCuotaQueue(cuotas) {
   let success = 0;
   let partial = 0;
   let failed = 0;
-  for (let i = 0; i < cuotas.length; i++) {
-    const result = await processCobroCuota(cuotas[i]);
-    if (result.failed) failed++;
-    else if (result.partial) partial++;
-    else success++;
-    if (i < cuotas.length - 1) await delay(FLEET_MS_BETWEEN_COBROS);
+  if (!cuotas || cuotas.length === 0) return { success, partial, failed };
+
+  const chunks = chunkCuotasFleetMismaCuenta(cuotas);
+  let processedGlobal = 0;
+  const total = cuotas.length;
+
+  for (const chunk of chunks) {
+    const head = chunk[0];
+    const parkId = fleetParkIdForMiAuto(head.park_id);
+    const ext = String(head.external_driver_id || '').trim();
+    const cookieMiAuto = fleetCookieCobroForMiAuto(null);
+    const br = await getContractorBalance(ext, parkId, cookieMiAuto);
+
+    if (!br.success) {
+      for (const c of chunk) {
+        failed += 1;
+        logger.warn(`Mi Auto cobro Fleet cuota ${c?.id}: falló — ${br.error}`);
+      }
+      processedGlobal += chunk.length;
+      continue;
+    }
+
+    const snapshot = round2(Math.max(0, Number(br.balance) || 0));
+    if (snapshot <= 0) {
+      logger.warn(
+        `Mi Auto cobro Fleet: ${[head.first_name, head.last_name].filter(Boolean).join(' ').trim() || 'Conductor'} saldo snapshot 0 (${chunk.length} cuota(s) en cola)`
+      );
+      for (const c of chunk) {
+        failed += 1;
+        logger.warn(`Mi Auto cobro Fleet cuota ${c?.id}: falló — Sin saldo disponible`);
+      }
+      processedGlobal += chunk.length;
+      continue;
+    }
+
+    logger.info(
+      `Mi Auto cobro Fleet: saldo único ${snapshot.toFixed(2)} (moneda local Yango) para ${chunk.length} cuota(s) mismo perfil`
+    );
+
+    const sharedFleetBalancePEN = { remaining: snapshot };
+
+    for (let j = 0; j < chunk.length; j++) {
+      const result = await processCobroCuota(chunk[j], null, null, { sharedFleetBalancePEN });
+      if (result.failed) {
+        failed += 1;
+        const rid = chunk[j]?.id;
+        const why = result.reason || result.error || '(sin motivo)';
+        logger.warn(`Mi Auto cobro Fleet cuota ${rid}: falló — ${why}`);
+      } else if (result.partial) partial += 1;
+      else success += 1;
+      processedGlobal += 1;
+      if (processedGlobal < total) await delay(FLEET_MS_BETWEEN_COBROS);
+    }
   }
+
   return { success, partial, failed };
 }
 

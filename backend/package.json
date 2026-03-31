@@ -18,7 +18,10 @@
     "miauto:backup-registros-fecha": "node scripts/miauto-backup-registros-por-fecha.js",
     "miauto:cargar-cuotas-excel-entrega": "node scripts/miauto-cargar-cuotas-excel-entrega-inmediata.js",
     "miauto:sync-pagado-monto-excel": "node scripts/miauto-sync-pagado-igual-monto-excel.js",
-    "miauto:restaurar-pagado-menos-mora": "node scripts/miauto-restaurar-pagado-menos-mora.js"
+    "miauto:restaurar-pagado-menos-mora": "node scripts/miauto-restaurar-pagado-menos-mora.js",
+    "miauto:realign-primera-cuota-deposito": "node scripts/miauto-realign-primera-cuota-deposito.js",
+    "miauto:simular-cuotas-vencidas": "node scripts/miauto-simular-n-cuotas-vencidas.js",
+    "miauto:simular-cobro-vence-hoy": "node scripts/miauto-simular-cobro-vence-hoy.js"
   },
   "keywords": [
     "rapidin",

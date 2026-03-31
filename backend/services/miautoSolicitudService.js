@@ -732,8 +732,8 @@ export const noVinoRechazar = async (id, userId = null) => {
 
 /**
  * Generar Yego Mi Auto: setea fecha_inicio_cobro_semanal (día del depósito / inicio cobro) y crea la primera cuota.
- * Opciones: `fecha_inicio_cobro_semanal` (YYYY-MM-DD) = fecha real del depósito; si no viene, se usa el lunes de la semana actual en Lima.
- * La fila semanal usa `week_start_date` = lunes de la semana civil que contiene esa fecha.
+ * Opciones: `fecha_inicio_cobro_semanal` (YYYY-MM-DD) = fecha real del depósito; si no viene, se usa **hoy en Lima** (`getLimaYmd`).
+ * La fila semanal usa `week_start_date` = lunes de la semana civil que contiene esa fecha (puede coincidir con el depósito si cae lunes).
  * Permitido si: aprobado, cronograma/vehículo asignados, y (pago_estado completo O pago parcial con al menos 500 USD validados).
  * Con pago parcial: crea 26 cuotas "otros gastos" (saldo pendiente); vencimientos en lunes desde semana 2 del plan.
  */
@@ -778,8 +778,9 @@ export const generarYegoMiAuto = async (id, options = {}) => {
     fechaInicioStored = optFi;
     weekStartFirstCuota = mondayOfWeekContainingYmd(optFi);
   } else {
-    weekStartFirstCuota = mondayOfWeekContainingYmd(getLimaYmd(new Date()));
-    fechaInicioStored = weekStartFirstCuota;
+    /** Día civil actual en Lima = inicio de cobro / depósito (no forzar al lunes: el vencimiento de la 1.ª cuota es esta fecha). */
+    fechaInicioStored = getLimaYmd(new Date());
+    weekStartFirstCuota = mondayOfWeekContainingYmd(fechaInicioStored);
   }
 
   const updated = await updateSolicitud(id, { fecha_inicio_cobro_semanal: fechaInicioStored, placa_asignada: placa });

@@ -81,14 +81,6 @@ export function miautoSemanaOrdinalPorVencimiento(
   return idx >= 0 ? idx + 1 : null;
 }
 
-/** Sincronizar con backend `miautoCuotaSemanalService.js` (`MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER`). */
-const MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER = '2026-03-30';
-
-function miautoSkipBonoReductionForDueYmd(dueYmd: string | null): boolean {
-  if (!dueYmd || !/^\d{4}-\d{2}-\d{2}$/.test(dueYmd)) return false;
-  return dueYmd >= MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER;
-}
-
 /** Normaliza montos que vienen de la API como number o string (PostgreSQL/JSON). */
 export function miautoNum(v: unknown): number {
   if (v == null || v === '') return 0;
@@ -96,9 +88,179 @@ export function miautoNum(v: unknown): number {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
 
+/**
+ * Columna «Cuota sem. (plan)» / cuota de referencia en tabla: siempre **`cuota_semanal`** del cronograma en la fila.
+ * El abono real va en la columna «Pagado» (`paid_amount`).
+ */
+export function miautoCuotaSemanalOAbonoDisplay(c: { cuota_semanal?: unknown }): number {
+  return miautoNum(c.cuota_semanal);
+}
+
 /** Celda de monto: `S/. 0.00` / `$ 0.00` (espacio fino no rompible entre símbolo y número). */
 export function miautoFmtMonto(sym: string, monto: unknown): string {
   return `${sym}\u00A0${miautoNum(monto).toFixed(2)}`;
+}
+
+/**
+ * Columna «Cobro por ingresos»: el **tributo 83% de la semana según Yango** (`partner_fees_yango_83`) para que el monto siga visible
+ * aunque tras cascada en BD quede `partner_fees_83` = 0. Si no hay Yango (sem. depósito / semana abierta en API), se usa `partner_fees_83`.
+ * «Cuota a pagar» sigue alineada con la API (`cuota_neta`); el bloque «Imputación del cobro» indica a qué semanas se aplicó el pool.
+ */
+export function miautoCobroPorIngresosTributoDisplay(c: {
+  partner_fees_83?: unknown;
+  partner_fees_yango_83?: unknown;
+}): number {
+  const y83 = miautoNum(c.partner_fees_yango_83);
+  if (y83 > 0.005) return y83;
+  return miautoNum(c.partner_fees_83);
+}
+
+/**
+ * Cuando el plan está en USD, el cobro en Fleet sigue en moneda local: `partner_fees_yango_83` (USD) × TC de la solicitud.
+ * No hace falta columna extra en BD; mismo dato que ya usa el backend al convertir antes de descontar la cuota.
+ */
+export function miautoCobroPorIngresosFleetLocalEquivalente(c: {
+  moneda?: unknown;
+  partner_fees_yango_83?: unknown;
+  tipo_cambio_ref?: { valor_usd_a_local?: unknown; moneda_local?: string | null } | null;
+}): { monto: number; sym: string } | null {
+  if (String(c.moneda || '').toUpperCase() !== 'USD') return null;
+  const tc = miautoNum(c.tipo_cambio_ref?.valor_usd_a_local);
+  const y83 = miautoNum(c.partner_fees_yango_83);
+  if (tc <= 0 || y83 <= 0.005) return null;
+  const ml = String(c.tipo_cambio_ref?.moneda_local || 'PEN').toUpperCase();
+  const sym = ml === 'COP' ? 'COP' : 'S/.';
+  return { monto: Math.round(y83 * tc * 100) / 100, sym };
+}
+
+/** Tooltip columna «Cobro por ingresos»: Yango reportado vs imputación tras cascada a cuotas anteriores. */
+export function miautoTooltipCobroPorIngresos(
+  sym: string,
+  c: {
+    id?: string;
+    moneda?: unknown;
+    partner_fees_83?: unknown;
+    partner_fees_yango_83?: unknown;
+    tipo_cambio_ref?: { valor_usd_a_local?: unknown; moneda_local?: string | null } | null;
+    partner_fees_cascada_aplicado_a?: {
+      cuota_semanal_id?: string;
+      week_start_date?: string | null;
+      monto?: unknown;
+    }[] | null;
+  },
+  cuotas?: { id?: string; week_start_date?: string | null; due_date?: string | null }[]
+): string | undefined {
+  const parts: string[] = [];
+  const y83 = miautoNum(c.partner_fees_yango_83);
+  const p83 = miautoNum(c.partner_fees_83);
+  if (y83 > p83 + 0.02) {
+    parts.push(
+      `Yango (83,33%): ${miautoFmtMonto(sym, y83)}. Tras cascada en esta fila queda ${miautoFmtMonto(sym, p83)}.`
+    );
+  }
+  const dest = c.partner_fees_cascada_aplicado_a;
+  const origenId = c.id != null && String(c.id).trim() !== '' ? String(c.id).trim() : null;
+  const destOtros =
+    Array.isArray(dest) && origenId
+      ? dest.filter((x) => String(x.cuota_semanal_id || '').trim() !== origenId)
+      : Array.isArray(dest)
+        ? [...dest]
+        : [];
+  if (destOtros.length > 0) {
+    if (cuotas && cuotas.length > 0) {
+      const filas = miautoCascadaCobroIngresosFilasParaUi(cuotas, c);
+      if (filas.length > 0) {
+        parts.push(
+          'Imputado a: ' +
+            filas
+              .map((f) =>
+                f.semana != null
+                  ? `Semana ${f.semana} (${miautoFmtMonto(sym, f.monto)})`
+                  : `${f.week_start_ymd || '—'} · ${miautoFmtMonto(sym, f.monto)}`
+              )
+              .join(' · ')
+        );
+      }
+    } else {
+      parts.push(
+        'Imputado a cuotas anteriores: ' +
+          destOtros
+            .map((x) => `${x.week_start_date || '—'} · ${miautoFmtMonto(sym, miautoNum(x.monto))}`)
+            .join(' · ')
+      );
+    }
+  }
+  const fleetEq = miautoCobroPorIngresosFleetLocalEquivalente(c);
+  if (fleetEq) {
+    parts.push(
+      `Referencia Yango/Fleet (moneda local): ${miautoFmtMonto(fleetEq.sym, fleetEq.monto)}.`
+    );
+  }
+  return parts.length ? parts.join(' ') : undefined;
+}
+
+/** Filas para mostrar bajo «Cobro por ingresos»: a qué `week_start` se imputó el pool (cascada). */
+export function miautoCascadaCobroIngresosItems(c: {
+  partner_fees_cascada_aplicado_a?: { week_start_date?: string | null; monto?: unknown }[] | null;
+}): { week_start_date: string | null; monto: number }[] {
+  const dest = c.partner_fees_cascada_aplicado_a;
+  if (!Array.isArray(dest) || dest.length === 0) return [];
+  return dest
+    .map((x) => ({
+      week_start_date: x.week_start_date != null && String(x.week_start_date).trim() !== '' ? String(x.week_start_date).trim().slice(0, 10) : null,
+      monto: miautoNum(x.monto),
+    }))
+    .filter((x) => x.monto > 0.005);
+}
+
+export type MiautoCascadaCobroFilaUi = {
+  semana: number | null;
+  monto: number;
+  /** YYYY-MM-DD del lunes de cuota (para desempate / fallback). */
+  week_start_ymd: string | null;
+};
+
+/**
+ * Misma numeración «Semana N» que la tabla del cronograma: busca la fila destino por `cuota_semanal_id` si viene en la API.
+ */
+export function miautoCascadaCobroIngresosFilasParaUi(
+  cuotas: { id?: string; week_start_date?: string | null; due_date?: string | null }[],
+  c: {
+    id?: string;
+    partner_fees_cascada_aplicado_a?: {
+      cuota_semanal_id?: string;
+      week_start_date?: string | null;
+      monto?: unknown;
+    }[] | null;
+  }
+): MiautoCascadaCobroFilaUi[] {
+  const dest = c.partner_fees_cascada_aplicado_a;
+  if (!Array.isArray(dest) || dest.length === 0) return [];
+  const out: MiautoCascadaCobroFilaUi[] = [];
+  const origenId = c.id != null && String(c.id).trim() !== '' ? String(c.id).trim() : null;
+  for (const x of dest) {
+    const monto = miautoNum(x.monto);
+    if (monto <= 0.005) continue;
+    if (
+      origenId &&
+      x.cuota_semanal_id != null &&
+      String(x.cuota_semanal_id).trim() === origenId
+    ) {
+      continue;
+    }
+    const byId =
+      x.cuota_semanal_id != null && String(x.cuota_semanal_id).trim() !== ''
+        ? cuotas.find((q) => String(q.id) === String(x.cuota_semanal_id).trim())
+        : undefined;
+    const wsYmd = ymdPrefix(byId?.week_start_date ?? x.week_start_date);
+    const dueYmd = ymdPrefix(byId?.due_date);
+    const semana =
+      miautoSemanaLista(cuotas, wsYmd || undefined) ??
+      (dueYmd && wsYmd ? miautoSemanaOrdinalPorVencimiento(cuotas, dueYmd, wsYmd) : null) ??
+      miautoSemanaLista(cuotas, x.week_start_date);
+    out.push({ semana, monto, week_start_ymd: wsYmd });
+  }
+  return out;
 }
 
 /**
@@ -109,34 +271,75 @@ export function miautoMontoPagadoCuotaSemanal(paidAmount: unknown): number {
 }
 
 /**
- * Columna «Pagado» en cronograma semanal: si `due_date` es **antes** del mismo corte que bono (`2026-03-30`),
- * muestra neto tipo Excel: `max(0, paid_amount − late_fee)`. Desde esa fecha en adelante, solo `paid_amount`.
+ * Columna «Pagado»: total abonado registrado en la fila (`paid_amount`), mismo criterio que Fleet/comprobantes.
+ * La obligación y lo que falta van en «Cuota a pagar», «Mora» y «Cuota final» (saldo del periodo).
  */
-export function miautoMontoPagadoColumnaMiAuto(c: {
-  paid_amount?: unknown;
-  late_fee?: unknown;
-  due_date?: unknown;
-}): number {
-  const paid = miautoNum(c.paid_amount);
-  const mora = miautoNum(c.late_fee);
-  const due = ymdPrefix(c.due_date);
-  if (due && due < MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER) {
-    return Math.max(0, Math.round((paid - mora) * 100) / 100);
-  }
-  return paid;
+export function miautoMontoPagadoColumnaMiAuto(c: { paid_amount?: unknown }): number {
+  return miautoNum(c.paid_amount);
 }
 
-/** Texto auxiliar «Excel» bajo Pagado cuando había mora y el neto aplica solo antes del corte. */
-export function miautoPagadoMuestraEtiquetaExcel(c: { late_fee?: unknown; due_date?: unknown }): boolean {
-  const due = ymdPrefix(c.due_date);
-  if (!due || due >= MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER) return false;
-  return miautoNum(c.late_fee) > 0.005;
+/** Inicio de cobro semanal antes de esta fecha (Lima): bajo «Pagado» se muestra referencia Excel (neto). Alineado con backend `MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER`. */
+export const MIAUTO_EXCEL_REFERENCIA_SOLICITUD_CORTE = '2026-03-30';
+
+/** ¿La solicitud entra en el grupo que muestra línea Excel? Por `fecha_inicio_cobro_semanal` estrictamente anterior al corte. */
+export function miautoSolicitudUsaReferenciaExcel(fechaInicioCobroSemanal: unknown): boolean {
+  const y = ymdPrefix(fechaInicioCobroSemanal);
+  return !!y && y < MIAUTO_EXCEL_REFERENCIA_SOLICITUD_CORTE;
 }
 
 /**
- * Cronograma semanal — columna «Cuota a pagar»: (cuota del plan − bono auto) − tributo 83% Yango (`partner_fees_83`),
- * salvo vencimiento ≥ corte sin bono: cuota del plan − solo `partner_fees_83`.
- * Misma base que `cuota_neta` en la API (`miautoCuotaSemanalService.computeCuotaDerivedForRow`).
+ * Columna «Pagado» en la tabla del cronograma semanal.
+ * Legado Excel (vencimiento antes del 30-mar-2026 + solicitud en corte): sin abono en BD → monto de la celda (`amount_due`);
+ * con abono parcial o total → **paid_amount** real (p. ej. 171.69 frente a cuota 450).
+ */
+export function miautoMontoPagadoColumnaCronograma(
+  c: { paid_amount?: unknown; amount_due?: unknown; due_date?: unknown; status?: unknown },
+  fechaInicioCobroSolicitud: unknown
+): number {
+  const due = ymdPrefix(c.due_date);
+  const vencimientoAntesCorteExcel = !!due && due < MIAUTO_EXCEL_REFERENCIA_SOLICITUD_CORTE;
+  const legadoExcel =
+    miautoSolicitudUsaReferenciaExcel(fechaInicioCobroSolicitud) && vencimientoAntesCorteExcel;
+  if (legadoExcel) {
+    const paid = miautoNum(c.paid_amount);
+    if (paid > 0.005) return paid;
+    return miautoNum(c.amount_due);
+  }
+  return miautoMontoPagadoColumnaMiAuto(c);
+}
+
+/** Monto neto como en la hoja Excel: `max(0, paid_amount − mora_pendiente)` si viene del API; si no, `− late_fee`. */
+export function miautoMontoNetoReferenciaExcel(c: {
+  paid_amount?: unknown;
+  late_fee?: unknown;
+  mora_pendiente?: unknown;
+}): number {
+  const moraNeto =
+    c.mora_pendiente != null && c.mora_pendiente !== '' ? miautoNum(c.mora_pendiente) : miautoNum(c.late_fee);
+  return Math.max(0, Math.round((miautoNum(c.paid_amount) - moraNeto) * 100) / 100);
+}
+
+/**
+ * Mostrar bloque «Excel» + neto (pagado − mora): solo si la solicitud es legado Excel **y** el vencimiento de la fila
+ * es estrictamente anterior al 30-mar-2026. Desde esa fecha en adelante solo aplica el valor cobrado en «Pagado» (`paid_amount`), sin etiqueta Excel.
+ */
+export function miautoMostrarBloqueReferenciaExcel(opts: {
+  fechaInicioCobroSolicitud: unknown;
+  cuota: { paid_amount?: unknown; due_date?: unknown };
+}): boolean {
+  const due = ymdPrefix(opts.cuota.due_date);
+  const vencimientoAntesCorteExcel = !!due && due < MIAUTO_EXCEL_REFERENCIA_SOLICITUD_CORTE;
+  return (
+    miautoSolicitudUsaReferenciaExcel(opts.fechaInicioCobroSolicitud) &&
+    vencimientoAntesCorteExcel &&
+    miautoNum(opts.cuota.paid_amount) > 0.005
+  );
+}
+
+/**
+ * Cronograma semanal — columna «Cuota a pagar»: cuota del plan − tributo 83% Yango (`partner_fees_83`).
+ * No resta `bono_auto` (el bono es solo informativo en columna Bono).
+ * Misma base que `cuota_neta` en la API.
  */
 export function miautoCuotaAPagarCronogramaSemanal(c: {
   cuota_semanal?: unknown;
@@ -148,16 +351,12 @@ export function miautoCuotaAPagarCronogramaSemanal(c: {
   if (c.cuota_neta != null && c.cuota_neta !== '') {
     return miautoNum(c.cuota_neta);
   }
-  const due = ymdPrefix(c.due_date);
-  if (due && miautoSkipBonoReductionForDueYmd(due)) {
-    return Math.max(0, miautoNum(c.cuota_semanal) - miautoNum(c.partner_fees_83));
-  }
-  return Math.max(0, miautoNum(c.cuota_semanal) - miautoNum(c.bono_auto) - miautoNum(c.partner_fees_83));
+  return Math.max(0, miautoNum(c.cuota_semanal) - miautoNum(c.partner_fees_83));
 }
 
 /**
- * Columna «Cuota final»: saldo pendiente del periodo alineado con «Cuota a pagar» + «Mora».
- * Obligación teórica = neto + mora; se resta `paid_amount` aplicando primero a mora y luego al neto (misma cascada que el backend).
+ * Columna «Cuota final»: saldo pendiente del periodo. Si la API envía `cuota_final`, se usa (alineado con backend).
+ * Si no, se aproxima con neto + mora pendiente y `paid_amount` (cascada).
  */
 export function miautoCuotaFinalCronogramaSemanal(c: {
   cuota_semanal?: unknown;
@@ -166,14 +365,23 @@ export function miautoCuotaFinalCronogramaSemanal(c: {
   cuota_neta?: unknown;
   due_date?: unknown;
   late_fee?: unknown;
+  mora_interes_periodo?: unknown;
+  mora_pendiente?: unknown;
   paid_amount?: unknown;
   status?: string;
+  cuota_final?: unknown;
 }): number {
   const st = (c.status || '').toLowerCase();
   if (st === 'paid' || st === 'bonificada') return 0;
+  if (c.cuota_final != null && c.cuota_final !== '' && Number.isFinite(Number(c.cuota_final))) {
+    return Math.max(0, Math.round(miautoNum(c.cuota_final) * 100) / 100);
+  }
 
   const cuotaNet = miautoCuotaAPagarCronogramaSemanal(c);
-  const mora = miautoNum(c.late_fee);
+  const mora =
+    c.mora_pendiente != null && c.mora_pendiente !== ''
+      ? miautoNum(c.mora_pendiente)
+      : miautoNum(c.late_fee);
   const paid = miautoNum(c.paid_amount);
 
   if (mora > 0.005) {

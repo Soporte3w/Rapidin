@@ -16,13 +16,18 @@ import {
   getMiautoAdjuntoUrl,
   miautoFmtMonto,
   miautoMontoPagadoCuotaSemanal,
-  miautoMontoPagadoColumnaMiAuto,
-  miautoPagadoMuestraEtiquetaExcel,
+  miautoMontoPagadoColumnaCronograma,
+  miautoMostrarBloqueReferenciaExcel,
+  miautoMontoNetoReferenciaExcel,
   miautoNum,
   miautoSemanaLista,
   miautoSemanaOrdinalPorVencimiento,
   miautoCuotaAPagarCronogramaSemanal,
   miautoCuotaFinalCronogramaSemanal,
+  miautoCuotaSemanalOAbonoDisplay,
+  miautoTooltipCobroPorIngresos,
+  miautoCobroPorIngresosTributoDisplay,
+  miautoCascadaCobroIngresosFilasParaUi,
   MIAUTO_CUOTA_STATUS_LABELS,
   MIAUTO_CUOTA_STATUS_PILL,
   parseCuotasSemanalesPayload,
@@ -30,6 +35,7 @@ import {
 import { MiautoComprobantePagoActions } from '../../components/yegoMiAuto/MiautoComprobantePagoActions';
 import { MiautoComprobantesResumenSemana } from '../../components/yegoMiAuto/MiautoComprobantesResumenSemana';
 import { useAuth } from '../../contexts/AuthContext';
+import { roundToTwoDecimals } from '../../utils/currency';
 
 interface CuotaSemanal {
   id: string;
@@ -41,6 +47,12 @@ interface CuotaSemanal {
   amount_due: number;
   paid_amount: number;
   late_fee: number;
+  /** Días civiles tras el vencimiento (Lima); el día de vencimiento es 0. */
+  late_fee_calendar_days?: number;
+  /** Interés devengado del periodo (misma cifra que `late_fee` en API cuando la pendiente es 0). */
+  mora_interes_periodo?: number;
+  /** Saldo mora pendiente tras pagos (API); para neto Excel. */
+  mora_pendiente?: number;
   status: string;
   pending_total?: number;
   moneda?: string;
@@ -48,6 +60,14 @@ interface CuotaSemanal {
   cuota_neta?: number;
   cuota_final?: number;
   partner_fees_83?: number;
+  partner_fees_yango_raw?: number | null;
+  partner_fees_yango_83?: number;
+  tipo_cambio_ref?: { valor_usd_a_local?: number; moneda_local?: string };
+  partner_fees_cascada_aplicado_a?: {
+    cuota_semanal_id?: string;
+    week_start_date?: string | null;
+    monto: number;
+  }[];
   pct_comision?: number;
 }
 
@@ -117,6 +137,21 @@ export default function YegoMiAutoRentSaleDetail() {
   const toggleComprobantesSemana = useCallback((cuotaId: string) => {
     setComprobantesSemanaAbierta((prev) => ({ ...prev, [cuotaId]: !prev[cuotaId] }));
   }, []);
+
+  /** Tope al validar un comprobante: el backend reparte el excedente en otras cuotas (misma solicitud). */
+  const pendienteTotalCronogramaValidar = useMemo(() => {
+    const sum = cuotas.reduce((acc, row) => {
+      if (row.status === 'paid' || row.status === 'bonificada') return acc;
+      if (row.cuota_final != null && Number.isFinite(Number(row.cuota_final))) {
+        return acc + Math.max(0, roundToTwoDecimals(Number(row.cuota_final)));
+      }
+      const ad = Number(row.amount_due) || 0;
+      const moraP = row.mora_pendiente != null ? Number(row.mora_pendiente) : Number(row.late_fee) || 0;
+      const pd = Number(row.paid_amount) || 0;
+      return acc + Math.max(0, roundToTwoDecimals(ad + moraP - pd));
+    }, 0);
+    return roundToTwoDecimals(sum);
+  }, [cuotas]);
 
   const handleCopyId = useCallback(() => {
     if (!id) return;
@@ -571,66 +606,79 @@ export default function YegoMiAutoRentSaleDetail() {
           <>
           <div className="px-4 pt-3 pb-1">
             <div className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0 rounded-lg border border-gray-100 bg-white">
-            <table className="w-full min-w-[1080px] table-fixed border-collapse text-sm">
+            <table className="w-full min-w-[1180px] table-fixed border-collapse text-sm">
               <colgroup>
-                {/* Suma 100%: Vence más ancho para la fecha; montos con anchos parejos */}
-                <col style={{ width: '10%' }} />
+                {/* Suma exacta 100%: más ancho a Viajes / Cobro ingresos (texto largo + imputación cascada); Vence compacto */}
+                <col style={{ width: '9.5%' }} />
+                <col style={{ width: '7.5%' }} />
+                <col style={{ width: '8%' }} />
+                <col style={{ width: '10.5%' }} />
                 <col style={{ width: '14%' }} />
+                <col style={{ width: '7%' }} />
+                <col style={{ width: '9%' }} />
+                <col style={{ width: '7%' }} />
                 <col style={{ width: '8%' }} />
                 <col style={{ width: '9%' }} />
-                <col style={{ width: '8%' }} />
-                <col style={{ width: '8%' }} />
-                <col style={{ width: '9%' }} />
-                <col style={{ width: '8%' }} />
-                <col style={{ width: '8%' }} />
-                <col style={{ width: '8%' }} />
-                <col style={{ width: '10%' }} />
+                <col style={{ width: '10.5%' }} />
               </colgroup>
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50/80">
-                  <th className="sticky left-0 z-[1] bg-gray-50/95 py-3 pl-3 pr-2 align-middle text-left text-xs font-semibold uppercase tracking-wide text-gray-700 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)]">
+                  <th className="sticky left-0 z-[1] bg-gray-50/95 py-2.5 pl-3 pr-1.5 align-middle text-left text-[11px] font-semibold uppercase tracking-wide text-gray-700 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)] leading-tight">
                     Semana
                   </th>
-                  <th className="py-3 pr-3 align-middle text-left text-xs font-semibold uppercase tracking-wide text-gray-600 whitespace-nowrap">
+                  <th className="py-2.5 pr-1.5 align-middle text-left text-[11px] font-semibold uppercase tracking-wide text-gray-600 whitespace-nowrap leading-tight">
                     Vence
                   </th>
-                  <th className="py-3 pr-2 align-middle text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-gray-900 whitespace-nowrap">
-                    Cuota sem. (plan)
+                  <th
+                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-gray-900 leading-tight"
+                    title="Cuota del cronograma en la fila (cuota_semanal). El abono registrado está en la columna Pagado."
+                  >
+                    <span className="inline-block text-right">Cuota sem. (plan)</span>
                   </th>
-                  <th className="py-3 pr-2 align-middle text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap">
-                    Viajes — B.A
+                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight">
+                    <span className="inline-block text-right">Viajes — B.A</span>
                   </th>
-                  <th className="py-3 pr-2 align-middle text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap">
-                    Comisión
+                  <th
+                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
+                    title="Lo que se retiene al conductor sobre los ingresos de la semana (83% del fee de socio Yango por viajes)."
+                  >
+                    <span className="inline-block text-right">Cobro por ingresos</span>
                   </th>
-                  <th className="py-3 pr-2 align-middle text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap">
+                  <th
+                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
+                    title="Cargo fijo de la regla del cronograma (cobro saldo), aparte del cobro por ingresos Yango."
+                  >
                     Cobro saldo
                   </th>
-                  <th className="py-3 pr-2 align-middle text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-gray-900 whitespace-nowrap">
-                    Cuota a pagar
+                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-gray-900 leading-tight">
+                    <span className="inline-block text-right">Cuota a pagar</span>
                   </th>
-                  <th className="py-3 pr-2 align-middle text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-red-600 whitespace-nowrap">
+                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-red-600 leading-tight">
                     Mora
                     {solicitud?.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0
                       ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}%)`
                       : ''}
                   </th>
-                  <th className="py-3 pr-2 align-middle text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap">
+                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight">
                     Cuota final
                   </th>
-                  <th className="py-3 pr-2 align-middle text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap">
+                  <th
+                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
+                    title="Legado Excel: sin abono, monto hoja (amount_due); con abono, paid_amount. Fuera de legado: paid_amount."
+                  >
                     Pagado
                   </th>
-                  <th className="py-3 pr-3 align-middle text-center text-xs font-semibold uppercase tracking-wide text-gray-700 whitespace-nowrap">
+                  <th className="py-2.5 pl-1 pr-3 align-middle text-center text-[11px] font-semibold uppercase tracking-wide text-gray-700 leading-tight">
                     Estado
                   </th>
                 </tr>
               </thead>
               <tbody>
                 {cronPg.paginatedItems.map((c, index) => {
+                  /** Número por lunes de cuota (orden cronológico del plan); evita invertir 4/5 si varias filas comparten el mismo vencimiento. */
                   const numeroSemana =
-                    miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date) ??
                     miautoSemanaLista(cuotas, c.week_start_date) ??
+                    miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date) ??
                     (cronPg.page - 1) * cronPg.limit + index + 1;
                   const comps = comprobantesByCuotaId[c.id] ?? [];
                   const origenComp = (cp: ComprobanteCuotaSemanal) => (cp.origen || 'conductor').toLowerCase();
@@ -640,12 +688,23 @@ export default function YegoMiAutoRentSaleDetail() {
                   const cuotaPagadaOBonificada = c.status === 'paid' || c.status === 'bonificada';
                   const mostrarPanelComprobantes = comps.length > 0 || cuotaPagadaOBonificada;
                   const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(c);
-                  const montoPagadoDisplay = miautoMontoPagadoColumnaMiAuto(c);
-                  /** Cuota a pagar (plan − bono − tributo 83%); no es `amount_due` de BD (incluye cobro saldo y comisión). */
+                  const montoPagadoDisplay = miautoMontoPagadoColumnaCronograma(
+                    c,
+                    solicitud?.fecha_inicio_cobro_semanal
+                  );
+                  const mostrarExcelRef = miautoMostrarBloqueReferenciaExcel({
+                    fechaInicioCobroSolicitud: solicitud?.fecha_inicio_cobro_semanal,
+                    cuota: c,
+                  });
+                  const montoNetoExcel = miautoMontoNetoReferenciaExcel(c);
+                  /** Cuota a pagar: plan − tributo 83% Yango (cuota_neta); el bono no resta. */
                   const cuotaAPagarDisplay = miautoCuotaAPagarCronogramaSemanal(c);
                   const abierto = comprobantesSemanaAbierta[c.id] === true;
                   const symCuota = symMoneda(c.moneda);
                   const bonoAutoVal = miautoNum(c.bono_auto);
+                  const tributoCobroIngresos = miautoCobroPorIngresosTributoDisplay(c);
+                  const titleCobroIngresos = miautoTooltipCobroPorIngresos(symCuota, c, cuotas);
+                  const filasCascadaCobro = miautoCascadaCobroIngresosFilasParaUi(cuotas, c);
                   return (
                   <Fragment key={c.id}>
                   <tr className="group border-b border-gray-100 hover:bg-gray-50/60">
@@ -672,13 +731,13 @@ export default function YegoMiAutoRentSaleDetail() {
                         </div>
                       )}
                     </td>
-                    <td className="py-2.5 pr-3 align-middle text-[13px] leading-snug text-gray-700 whitespace-nowrap">
+                    <td className="py-2.5 pr-1.5 align-middle text-[12px] leading-snug text-gray-700 whitespace-nowrap">
                       {c.due_date ? formatDate(c.due_date, 'es-ES') : c.week_start_date ? formatDate(c.week_start_date, 'es-ES') : '—'}
                     </td>
-                    <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-gray-900 text-right text-[13px]">
-                      {miautoFmtMonto(symCuota, c.cuota_semanal)}
+                    <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-gray-900 text-right text-[12px]">
+                      {miautoFmtMonto(symCuota, miautoCuotaSemanalOAbonoDisplay(c))}
                     </td>
-                    <td className="py-2.5 pr-2 align-middle text-xs tabular-nums text-right">
+                    <td className="py-2.5 px-1 align-middle text-[11px] tabular-nums text-right leading-snug">
                       {c.num_viajes != null ? (
                         <>
                           <span className="text-gray-700">{c.num_viajes} — </span>
@@ -690,17 +749,56 @@ export default function YegoMiAutoRentSaleDetail() {
                         <span className="text-gray-500">—</span>
                       )}
                     </td>
-                    <td className="py-2.5 pr-2 align-middle text-xs tabular-nums text-right text-green-700">
-                      {miautoFmtMonto(symCuota, c.partner_fees_83)}
+                    <td
+                      className="py-2.5 px-1 align-top text-[11px] tabular-nums text-right text-green-700"
+                      title={titleCobroIngresos}
+                    >
+                      <div className="flex min-w-0 flex-col items-end gap-1">
+                        <span className="shrink-0">{miautoFmtMonto(symCuota, tributoCobroIngresos)}</span>
+                        {filasCascadaCobro.length > 0 ? (
+                          <div className="w-full min-w-0 text-[10px] font-normal leading-snug text-gray-600">
+                            <span className="block text-gray-500">Imputación del cobro</span>
+                            {filasCascadaCobro.map((it, idx) => (
+                              <span key={idx} className="block tabular-nums">
+                                →{' '}
+                                {it.semana != null ? (
+                                  <>
+                                    Semana {it.semana}
+                                    {it.week_start_ymd ? (
+                                      <span className="text-gray-500">
+                                        {' '}
+                                        (lunes{' '}
+                                        {formatDate(`${it.week_start_ymd}T12:00:00`, 'es-ES')})
+                                      </span>
+                                    ) : null}
+                                  </>
+                                ) : it.week_start_ymd ? (
+                                  <>Lunes {formatDate(`${it.week_start_ymd}T12:00:00`, 'es-ES')}</>
+                                ) : (
+                                  '—'
+                                )}
+                                : {miautoFmtMonto(symCuota, it.monto)}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
                     </td>
-                    <td className="py-2.5 pr-2 align-middle text-xs tabular-nums text-right text-green-700">
+                    <td className="py-2.5 px-1 align-middle text-[11px] tabular-nums text-right text-green-700">
                       {miautoFmtMonto(symCuota, c.cobro_saldo)}
                     </td>
-                    <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-gray-900 text-[13px]">
+                    <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-gray-900 text-[12px]">
                       {miautoFmtMonto(symCuota, cuotaAPagarDisplay)}
                     </td>
-                    <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-[13px] text-red-600">
-                      {miautoFmtMonto(symCuota, c.late_fee)}
+                    <td
+                      className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-[12px] text-red-600"
+                      title={
+                        c.due_date
+                          ? `Vence ${formatDate(c.due_date, 'es-ES')}. Columna Mora: interés devengado si la mora pendiente ya fue cubierta por pagos (ver mora_pendiente en API).`
+                          : undefined
+                      }
+                    >
+                      <span className="block">{miautoFmtMonto(symCuota, c.late_fee)}</span>
                     </td>
                     <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-[13px] text-green-700">
                       {miautoFmtMonto(symCuota, cuotaFinalSemana)}
@@ -708,12 +806,19 @@ export default function YegoMiAutoRentSaleDetail() {
                     <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-800">
                       <div className="flex flex-col items-end gap-0.5 tabular-nums">
                         <span className="font-medium">{miautoFmtMonto(symCuota, montoPagadoDisplay)}</span>
-                        {miautoPagadoMuestraEtiquetaExcel(c) && (
-                          <span className="text-[10px] font-medium text-emerald-700">Excel</span>
+                        {mostrarExcelRef && (
+                          <>
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                              Excel
+                            </span>
+                            <span className="text-[11px] font-medium text-emerald-800" title="Neto tipo Excel: pagado − mora">
+                              {miautoFmtMonto(symCuota, montoNetoExcel)}
+                            </span>
+                          </>
                         )}
                       </div>
                     </td>
-                    <td className="py-2.5 pr-3 align-middle whitespace-nowrap">
+                    <td className="py-2.5 pl-1 pr-2 align-middle whitespace-nowrap">
                       <div className="flex flex-col items-center gap-0.5">
                         <span
                           className={`inline-flex w-fit whitespace-nowrap px-1.5 py-0.5 rounded text-xs font-medium ${
@@ -755,11 +860,6 @@ export default function YegoMiAutoRentSaleDetail() {
                             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
                               {compsConductor.map((comp, idxCond) => {
                                 const isPendiente = (comp.estado || '').toLowerCase() === 'pendiente';
-                                const totalCuota = cuotaFinalSemana;
-                                const validadoSum = comps
-                                  .filter((cp) => origenComp(cp) === 'conductor' && (cp.estado || '').toLowerCase() === 'validado')
-                                  .reduce((s, cp) => s + (Number(cp.monto) || 0), 0);
-                                const montoMaximo = Math.max(0, totalCuota - validadoSum);
                                 const compLabel = `Comprobante del conductor ${idxCond + 1}`;
                                 const estado = (comp.estado || '').toLowerCase();
                                 const cardBg =
@@ -797,7 +897,6 @@ export default function YegoMiAutoRentSaleDetail() {
                                   !/\.pdf$/i.test(comp.file_name || '') &&
                                   /\.(jpe?g|png|gif|webp)$/i.test(comp.file_name || '');
                                 const openPreview = () => url && setComprobantePreview({ url, fileName: compLabel, isImage: !!isImage });
-                                const symComp = symMoneda(comp.moneda);
                                 return (
                                   <div key={comp.id} className={`rounded-xl border-2 p-3 ${cardBg} hover:shadow-md transition-all flex flex-col gap-2`}>
                                     <div className="flex gap-3">
@@ -822,7 +921,11 @@ export default function YegoMiAutoRentSaleDetail() {
                                           <p className="text-xs text-gray-500 mt-0.5">{formatDateTime(comp.created_at, 'es-ES')}</p>
                                         )}
                                         <p className="text-xs text-gray-600">
-                                          {isPendiente ? '—' : comp.monto != null ? `${symComp} ${Number(comp.monto).toFixed(2)}` : '—'}
+                                          {isPendiente
+                                            ? '—'
+                                            : comp.monto != null
+                                              ? `${symMoneda(comp.moneda)} ${Number(comp.monto).toFixed(2)}`
+                                              : '—'}
                                         </p>
                                         <span className={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium mt-1 ${labelClass}`}>
                                           {estado === 'validado'
@@ -857,7 +960,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                           rechazando={rechazandoCompId === comp.id}
                                           onValidar={handleValidarComprobante}
                                           onRechazar={handleRechazarComprobante}
-                                          montoMaximo={montoMaximo}
+                                          montoMaximo={pendienteTotalCronogramaValidar}
                                           defaultMoneda={monedaCuotasLabel(c.moneda)}
                                         />
                                       </div>
@@ -1032,7 +1135,6 @@ export default function YegoMiAutoRentSaleDetail() {
                                       /\.(jpe?g|png|gif|webp)$/i.test(comp.file_name || '');
                                     const openPreview = () =>
                                       url && setComprobantePreview({ url, fileName: compLabel, isImage: !!isImage });
-                                    const symComp = symMoneda(comp.moneda);
                                     return (
                                       <div key={comp.id} className={`rounded-xl border-2 p-3 ${cardBg} hover:shadow-md transition-all flex flex-col gap-2`}>
                                         <div className="flex gap-3">
@@ -1057,7 +1159,9 @@ export default function YegoMiAutoRentSaleDetail() {
                                               <p className="text-xs text-gray-500 mt-0.5">{formatDateTime(comp.created_at, 'es-ES')}</p>
                                             )}
                                             <p className="text-xs text-gray-600">
-                                              {comp.monto != null ? `${symComp} ${Number(comp.monto).toFixed(2)}` : '—'}
+                                              {comp.monto != null
+                                                ? `${symMoneda(comp.moneda)} ${Number(comp.monto).toFixed(2)}`
+                                                : '—'}
                                             </p>
                                             <span className={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium mt-1 ${labelClass}`}>
                                               {estado === 'validado'
@@ -1093,11 +1197,11 @@ export default function YegoMiAutoRentSaleDetail() {
 
                             {compsConductor.length > 0 && (
                               <MiautoComprobantesResumenSemana
-                                sym={symCuota}
                                 comps={comps}
-                                amountDue={c.amount_due || 0}
-                                lateFee={c.late_fee ?? 0}
-                                totalCuotaSemana={cuotaFinalSemana}
+                                symCronograma={symCuota}
+                                saldoPendienteSemanaCronograma={roundToTwoDecimals(
+                                  Math.max(0, Number(cuotaFinalSemana))
+                                )}
                               />
                             )}
                           </div>

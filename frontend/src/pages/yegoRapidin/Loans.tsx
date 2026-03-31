@@ -1,9 +1,28 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { Eye, FileText, DollarSign, AlertCircle, CheckCircle, XCircle, Copy, Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import {
+  Eye,
+  FileText,
+  DollarSign,
+  AlertCircle,
+  CheckCircle,
+  XCircle,
+  Copy,
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Download,
+  Loader2,
+  X,
+} from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
+import { format } from 'date-fns';
+import { writeRapidinLoansStyledExcel } from '../../utils/rapidinLoansExcelExport';
 import { DateRangePicker } from '../../components/DateRangePicker';
 
 interface Loan {
@@ -34,6 +53,75 @@ export type LoansSearchState = {
   limit?: number;
 };
 
+interface ExportLoanRow {
+  id: string;
+  country: string;
+  status: string;
+  disbursed_amount: unknown;
+  total_amount: unknown;
+  pending_balance: unknown;
+  dni: string | null;
+  driver_phone: string | null;
+  driver_first_name: string | null;
+  driver_last_name: string | null;
+  driver_total_loans: number;
+  total_late_fee: unknown;
+  disbursed_date_display: string | null;
+  cancellation_date_display: string | null;
+}
+
+interface ExportInstallmentRow {
+  loan_id: string;
+  installment_number: number;
+  due_date: unknown;
+  installment_amount: unknown;
+  paid_amount: unknown;
+  late_fee: unknown;
+  paid_late_fee: unknown;
+  installment_status: string;
+  paid_date: unknown;
+  driver_first_name: string | null;
+  driver_last_name: string | null;
+  dni: string | null;
+}
+
+function loanStatusLabel(s: string): string {
+  const m: Record<string, string> = {
+    active: 'Activo',
+    cancelled: 'Cancelado',
+    defaulted: 'Vencido',
+  };
+  return m[s] || s;
+}
+
+function installmentStatusLabel(s: string): string {
+  const m: Record<string, string> = {
+    pending: 'Pendiente',
+    paid: 'Pagada',
+    overdue: 'Vencida',
+    cancelled: 'Cancelada',
+  };
+  return m[s] || s;
+}
+
+function numExcel(v: unknown): number {
+  if (v == null || v === '') return 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function formatExcelDate(val: unknown): string {
+  if (val == null || val === '') return '';
+  if (typeof val === 'string') {
+    if (val.includes('T')) return val.split('T')[0];
+    return val.length >= 10 ? val.slice(0, 10) : val;
+  }
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    return val.toISOString().slice(0, 10);
+  }
+  return String(val);
+}
+
 const Loans = () => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -63,6 +151,13 @@ const Loans = () => {
     totalPages: 0,
   });
   const [paginationLoading, setPaginationLoading] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportModalFilters, setExportModalFilters] = useState({
+    date_from: '',
+    date_to: '',
+    country: '',
+  });
   const PAGE_SIZES = [5, 10, 20, 50];
 
   // Al volver del detalle: restaurar página (ej. 2) y limpiar state para que un refresh no restaure
@@ -175,6 +270,120 @@ const Loans = () => {
 
   const countryName = user?.country === 'PE' ? 'Perú' : user?.country === 'CO' ? 'Colombia' : '';
 
+  const buildExportQueryParams = (dateCountry: { date_from: string; date_to: string; country: string }) => {
+    const params = new URLSearchParams();
+    if (filters.status) params.append('status', filters.status);
+    if (dateCountry.country) params.append('country', dateCountry.country);
+    if (filters.driver?.trim()) params.append('driver', filters.driver.trim());
+    if (filters.loan_id?.trim()) params.append('loan_id', filters.loan_id.trim());
+    if (dateCountry.date_from) params.append('date_from', dateCountry.date_from);
+    if (dateCountry.date_to) params.append('date_to', dateCountry.date_to);
+    return params;
+  };
+
+  const openExportModal = () => {
+    setExportModalFilters({
+      date_from: filters.date_from,
+      date_to: filters.date_to,
+      country: filters.country,
+    });
+    setExportModalOpen(true);
+  };
+
+  const runExportExcel = async (params: URLSearchParams) => {
+    if (exportLoading) return;
+    const toastId = toast.loading('Generando Excel…');
+    setExportLoading(true);
+    try {
+      const response = await api.get(`/loans/export?${params.toString()}`);
+      const payload = response.data?.data ?? response.data;
+      const loanRows = (payload?.loans ?? []) as ExportLoanRow[];
+      const installmentRows = (payload?.installments ?? []) as ExportInstallmentRow[];
+
+      const loanHeader = [
+        'Nombre',
+        'DNI',
+        'Teléfono',
+        'ID préstamo',
+        'País',
+        'Total préstamos (conductor)',
+        'Estado',
+        'Fecha desembolso',
+        'Fecha cancelación',
+        'Monto desembolsado',
+        'Monto total crédito',
+        'Deuda pendiente',
+        'Mora total',
+      ];
+      const loanData: (string | number)[][] = [];
+      for (const row of loanRows) {
+        const nombre = [row.driver_first_name, row.driver_last_name].filter(Boolean).join(' ').trim();
+        loanData.push([
+          nombre,
+          row.dni ?? '',
+          row.driver_phone ?? '',
+          row.id,
+          row.country ?? '',
+          row.driver_total_loans ?? 0,
+          loanStatusLabel(row.status || ''),
+          row.disbursed_date_display ?? '',
+          row.cancellation_date_display ?? '',
+          numExcel(row.disbursed_amount),
+          numExcel(row.total_amount),
+          numExcel(row.pending_balance),
+          numExcel(row.total_late_fee),
+        ]);
+      }
+
+      const instHeader = [
+        'ID préstamo',
+        'Nombre',
+        'DNI',
+        'Número cuota',
+        'Fecha vencimiento',
+        'Monto cuota',
+        'Monto pagado',
+        'Mora',
+        'Mora pagada',
+        'Estado cuota',
+        'Fecha pago',
+      ];
+      const instData: (string | number)[][] = [];
+      for (const row of installmentRows) {
+        const nombre = [row.driver_first_name, row.driver_last_name].filter(Boolean).join(' ').trim();
+        instData.push([
+          row.loan_id,
+          nombre,
+          row.dni ?? '',
+          row.installment_number,
+          formatExcelDate(row.due_date),
+          numExcel(row.installment_amount),
+          numExcel(row.paid_amount),
+          numExcel(row.late_fee),
+          numExcel(row.paid_late_fee),
+          installmentStatusLabel(row.installment_status || ''),
+          formatExcelDate(row.paid_date),
+        ]);
+      }
+
+      const fname = `prestamos-yego-rapidin-${format(new Date(), 'yyyy-MM-dd')}.xlsx`;
+      writeRapidinLoansStyledExcel(loanHeader, loanData, instHeader, instData, fname);
+      toast.success('Excel descargado', { id: toastId });
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { message?: string } } })?.response?.data?.message ||
+        'Error al generar el Excel';
+      toast.error(msg, { id: toastId });
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
+  const confirmExportExcel = async () => {
+    setExportModalOpen(false);
+    await runExportExcel(buildExportQueryParams(exportModalFilters));
+  };
+
   const handleCopyId = async (id: string) => {
     try {
       await navigator.clipboard.writeText(id);
@@ -238,8 +447,104 @@ const Loans = () => {
               </p>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={openExportModal}
+            disabled={exportLoading}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white text-[#8B1A1A] font-semibold text-sm hover:bg-white/95 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
+            title="Descargar Excel (elegir fecha y país)"
+          >
+            {exportLoading ? (
+              <Loader2 className="w-5 h-5 animate-spin shrink-0" aria-hidden />
+            ) : (
+              <Download className="w-5 h-5 shrink-0" aria-hidden />
+            )}
+            <span>{exportLoading ? 'Generando Excel…' : 'Descargar Excel'}</span>
+          </button>
         </div>
       </div>
+
+      {exportModalOpen &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/50 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="export-excel-modal-title"
+            onClick={() => !exportLoading && setExportModalOpen(false)}
+          >
+            <div
+              className="bg-white rounded-xl shadow-xl max-w-lg w-full overflow-hidden flex flex-col shrink-0"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 bg-gray-50">
+                <h3 id="export-excel-modal-title" className="text-lg font-semibold text-gray-900">
+                  Exportar a Excel
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => !exportLoading && setExportModalOpen(false)}
+                  className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 disabled:opacity-50"
+                  disabled={exportLoading}
+                  aria-label="Cerrar"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-5">
+                <div className="flex flex-row flex-wrap items-end gap-3 sm:gap-4">
+                  <div className="w-36 flex-shrink-0">
+                    <label htmlFor="export-country" className="block text-xs font-semibold text-gray-900 mb-1.5">
+                      País
+                    </label>
+                    <select
+                      id="export-country"
+                      value={exportModalFilters.country}
+                      onChange={(e) => setExportModalFilters((f) => ({ ...f, country: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
+                      disabled={exportLoading}
+                    >
+                      <option value="">Todos</option>
+                      <option value="PE">Perú</option>
+                      <option value="CO">Colombia</option>
+                    </select>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <DateRangePicker
+                      label="Rango de fechas"
+                      value={{ date_from: exportModalFilters.date_from, date_to: exportModalFilters.date_to }}
+                      onChange={(r) =>
+                        setExportModalFilters((f) => ({ ...f, date_from: r.date_from, date_to: r.date_to }))
+                      }
+                      placeholder="Fechas"
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="flex gap-3 px-5 py-4 border-t border-gray-200 bg-gray-50">
+                <button
+                  type="button"
+                  onClick={() => !exportLoading && setExportModalOpen(false)}
+                  disabled={exportLoading}
+                  className="flex-1 px-4 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-60"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmExportExcel()}
+                  disabled={exportLoading}
+                  className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-semibold text-white bg-[#8B1A1A] hover:bg-[#6B1515] disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {exportLoading ? <Loader2 className="w-5 h-5 animate-spin" aria-hidden /> : <Download className="w-5 h-5 shrink-0" aria-hidden />}
+                  {exportLoading ? 'Generando…' : 'Descargar'}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
 
       {/* Filtros */}
       <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">

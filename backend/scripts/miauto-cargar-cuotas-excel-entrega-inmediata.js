@@ -2,9 +2,10 @@
  * Carga cuotas Mi Auto desde hoja Cuotas Semanales (Excel ENTREGA INMEDIATA).
  * Uso: npm run miauto:cargar-cuotas-excel-entrega -- --dry-run
  *
- * Corte: solo celdas con due_date calculado desde Excel < --cutoff-date.
- * Si ya existe fila para esa semana, se actualiza (monto, check/X, late_fee=0)
- * aunque el due_date anterior en BD fuera >= corte.
+ * Corte: solo celdas con due_date calculado desde Excel < --cutoff-date (default 2026-03-30).
+ * Para esas filas el monto del Excel es la obligación total del periodo (cuota + mora ya mezclada):
+ * `late_fee` siempre 0 en BD; `amount_due` y `paid_amount` (si ✓) = monto Excel.
+ * No se usa el monto derivado del cronograma para cuotas impagas bajo el corte.
  */
 import fs from 'fs';
 import path from 'path';
@@ -17,7 +18,6 @@ import { mondayOfWeekContainingYmd, computeDueDateForMiAutoCuota } from '../util
 import {
   isSemanaDepositoMiAuto,
   planCuotaFromCronogramaViajes,
-  amountDueSemanalFromPlanForImport,
   persistPaidAmountCapsForSolicitud,
 } from '../services/miautoCuotaSemanalService.js';
 
@@ -314,15 +314,6 @@ async function main() {
       }
 
       const bonoStored = isPrimera ? 0 : plan.bonoAuto;
-      const amountDueCalc = amountDueSemanalFromPlanForImport(plan, dueYmd, {
-        isPrimeraCuota: isPrimera,
-        partnerFeesRaw: 0,
-      });
-
-      if (amountDueCalc == null) {
-        stats.skipped_no_plan++;
-        continue;
-      }
 
       let montoExcel;
       try {
@@ -347,9 +338,17 @@ async function main() {
           stats.warnings.push({ row, block: k + 1, msg: 'moneda Excel ' + monedaRow + ' vs plan ' + plan.moneda, solicitud_id: sol.id });
         }
       } else {
-        amountDue = amountDueCalc;
+        amountDue = montoExcel.monto;
         ({ status, paid_amount: paidAmount } = statusForUnpaid(dueYmd, limaToday));
-        monedaRow = plan.moneda;
+        monedaRow = montoExcel.moneda;
+        if (String(plan.moneda || '').toUpperCase() !== String(monedaRow || '').toUpperCase()) {
+          stats.warnings.push({
+            row,
+            block: k + 1,
+            msg: 'moneda Excel ' + monedaRow + ' vs plan ' + plan.moneda + ' (se usa Excel para monto)',
+            solicitud_id: sol.id,
+          });
+        }
       }
 
       const payload = {
@@ -452,7 +451,7 @@ async function main() {
   if (!dryRun) {
     for (const sid of touchedSolicitudes) {
       try {
-        await persistPaidAmountCapsForSolicitud(sid);
+        await persistPaidAmountCapsForSolicitud(sid, { onlyCapDueBeforeYmd: cutoff });
       } catch (e) {
         stats.errors.push({ solicitud_id: sid, msg: String(e.message || e) });
       }

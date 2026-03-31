@@ -57,6 +57,7 @@ function RedirectSolicitudToRequest() {
 function App() {
   return (
     <AuthProvider>
+      <div className="min-h-[100dvh] min-h-screen bg-gray-50">
       <BrowserRouter
         future={{
           v7_startTransition: true,
@@ -256,6 +257,7 @@ function App() {
             <Route path="/admin/yego-mi-moto/loan-requests/new" element={<ProtectedRoute><Layout><YegoMiMotoNewRequest /></Layout></ProtectedRoute>} />
         </Routes>
       </BrowserRouter>
+      </div>
     </AuthProvider>
   );
 }

@@ -8,7 +8,7 @@ import { round2 } from './miautoMoneyUtils.js';
 const trimCookie = (v) => (v || '').replace(/^["']|["']$/g, '').trim();
 
 /** Base URL Fleet (sin barra final). `YANGO_FLEET_BASE_URL` en .env; por defecto https://fleet.yango.com */
-export function fleetBaseUrl() {
+function fleetBaseUrl() {
   const u = String(process.env.YANGO_FLEET_BASE_URL || 'https://fleet.yango.com').trim().replace(/\/$/, '');
   return u || 'https://fleet.yango.com';
 }
@@ -233,7 +233,7 @@ function extractPartnerFeesTributoFromIncomeData(data) {
 
 /**
  * Driver income (Mi Auto): viajes e ingresos por rango de fechas.
- * POST `/api/v1/cards/driver/income` sobre `fleetBaseUrl()` (env `YANGO_FLEET_BASE_URL`).
+ * POST driver/income; base URL desde env `YANGO_FLEET_BASE_URL`.
  * `X-Park-Id` y cookie salen de {@link fleetParkIdForMiAuto} / {@link fleetCookieCobroForMiAuto} — deben ser la flota **Yego Mi Auto**.
  * dateFrom/dateTo: ISO -05:00. Mi Auto: `limaWeekStartToMiAutoIncomeRange(week_start cuota)` en utils/miautoLimaWeekRange.js.
  */

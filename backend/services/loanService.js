@@ -477,6 +477,122 @@ export const getLoans = async (filters = {}) => {
   return result.rows;
 };
 
+const LOANS_EXPORT_MAX = 50000;
+
+const buildLoanListFilterSql = (filters) => {
+  let sql = '';
+  const params = [];
+  let p = 1;
+  if (filters.status) {
+    sql += ` AND l.status = $${p++}`;
+    params.push(filters.status);
+  }
+  if (filters.country) {
+    sql += ` AND l.country = $${p++}`;
+    params.push(filters.country);
+  }
+  if (filters.driver && filters.driver.trim()) {
+    const driverTerm = `%${filters.driver.trim()}%`;
+    sql += ` AND (d.first_name ILIKE $${p} OR d.last_name ILIKE $${p} OR d.dni ILIKE $${p})`;
+    params.push(driverTerm);
+    p += 1;
+  }
+  if (filters.loan_id && filters.loan_id.trim()) {
+    const loanIdTerm = `%${filters.loan_id.trim()}%`;
+    sql += ` AND l.id::text ILIKE $${p++}`;
+    params.push(loanIdTerm);
+  }
+  if (filters.date_from) {
+    sql += ` AND l.created_at::date >= $${p++}`;
+    params.push(filters.date_from);
+  }
+  if (filters.date_to) {
+    sql += ` AND l.created_at::date <= $${p++}`;
+    params.push(filters.date_to);
+  }
+  return { filterSql: sql, filterParams: params };
+};
+
+/**
+ * Export masivo: préstamos + cuotas con los mismos filtros que getLoans (sin paginación).
+ * @throws Error con code EXPORT_LIMIT_EXCEEDED si hay más de LOANS_EXPORT_MAX préstamos.
+ */
+export const getLoansExportBundle = async (filters = {}) => {
+  const { filterSql, filterParams } = buildLoanListFilterSql(filters);
+
+  const countRes = await query(
+    `SELECT COUNT(*)::int AS c
+     FROM module_rapidin_loans l
+     LEFT JOIN module_rapidin_drivers d ON d.id = l.driver_id
+     WHERE 1=1 ${filterSql}`,
+    filterParams
+  );
+  const total = countRes.rows[0]?.c ?? 0;
+  if (total > LOANS_EXPORT_MAX) {
+    const err = new Error(
+      `El export admite como máximo ${LOANS_EXPORT_MAX} préstamos. Hay ${total} con los filtros actuales; refiná los filtros.`
+    );
+    err.code = 'EXPORT_LIMIT_EXCEEDED';
+    throw err;
+  }
+
+  const loansSql = `
+    SELECT
+      l.id,
+      l.country,
+      l.status,
+      l.disbursed_amount,
+      l.total_amount,
+      l.pending_balance,
+      d.dni,
+      d.phone AS driver_phone,
+      d.first_name AS driver_first_name,
+      d.last_name AS driver_last_name,
+      COUNT(*) OVER (PARTITION BY l.driver_id)::int AS driver_total_loans,
+      COALESCE((SELECT SUM(COALESCE(i2.late_fee, 0)) FROM module_rapidin_installments i2 WHERE i2.loan_id = l.id), 0)::numeric AS total_late_fee,
+      (CASE
+        WHEN l.disbursed_at IS NOT NULL AND l.country = 'PE' THEN (l.disbursed_at AT TIME ZONE 'America/Lima')::date::text
+        WHEN l.disbursed_at IS NOT NULL AND l.country = 'CO' THEN (l.disbursed_at AT TIME ZONE 'America/Bogota')::date::text
+        WHEN l.disbursed_at IS NOT NULL THEN (l.disbursed_at AT TIME ZONE 'UTC')::date::text
+        ELSE NULL END) AS disbursed_date_display,
+      (CASE
+        WHEN l.status = 'cancelled' AND l.country = 'PE' THEN (l.updated_at AT TIME ZONE 'America/Lima')::date::text
+        WHEN l.status = 'cancelled' AND l.country = 'CO' THEN (l.updated_at AT TIME ZONE 'America/Bogota')::date::text
+        WHEN l.status = 'cancelled' THEN (l.updated_at AT TIME ZONE 'UTC')::date::text
+        ELSE NULL END) AS cancellation_date_display
+    FROM module_rapidin_loans l
+    LEFT JOIN module_rapidin_drivers d ON d.id = l.driver_id
+    WHERE 1=1 ${filterSql}
+    ORDER BY l.created_at DESC`;
+
+  const loansRes = await query(loansSql, filterParams);
+
+  const installmentsSql = `
+    SELECT
+      i.loan_id,
+      i.installment_number,
+      i.due_date,
+      i.installment_amount,
+      i.paid_amount,
+      i.late_fee,
+      i.paid_late_fee,
+      i.status AS installment_status,
+      i.paid_date,
+      d.first_name AS driver_first_name,
+      d.last_name AS driver_last_name,
+      d.dni,
+      l.country AS loan_country
+    FROM module_rapidin_installments i
+    INNER JOIN module_rapidin_loans l ON l.id = i.loan_id
+    LEFT JOIN module_rapidin_drivers d ON d.id = l.driver_id
+    WHERE 1=1 ${filterSql}
+    ORDER BY l.id, i.installment_number`;
+
+  const installmentsRes = await query(installmentsSql, filterParams);
+
+  return { loans: loansRes.rows, installments: installmentsRes.rows };
+};
+
 /** next_installment_amount = solo cuota pendiente (sin mora). next_installment_late_fee = mora. next_installment_total = cuota + mora. */
 export const getLoanById = async (id) => {
   const result = await query(

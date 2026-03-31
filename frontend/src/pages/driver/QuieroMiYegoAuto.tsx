@@ -9,16 +9,22 @@ import { getStoredSession, getStoredRapidinDriverId, getStoredSelectedParkId } f
 import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateFlex, formatDateTime } from '../../utils/date';
-import { symMoneda } from '../../utils/miautoAlquilerVentaList';
+import { monedaCuotasLabel, symMoneda } from '../../utils/miautoAlquilerVentaList';
+import { roundToTwoDecimals } from '../../utils/currency';
 import {
   miautoFmtMonto,
   miautoMontoPagadoCuotaSemanal,
-  miautoMontoPagadoColumnaMiAuto,
-  miautoPagadoMuestraEtiquetaExcel,
+  miautoMontoPagadoColumnaCronograma,
+  miautoMostrarBloqueReferenciaExcel,
+  miautoMontoNetoReferenciaExcel,
   miautoSemanaLista,
   miautoSemanaOrdinalPorVencimiento,
   miautoCuotaAPagarCronogramaSemanal,
   miautoCuotaFinalCronogramaSemanal,
+  miautoCuotaSemanalOAbonoDisplay,
+  miautoTooltipCobroPorIngresos,
+  miautoCobroPorIngresosTributoDisplay,
+  miautoCascadaCobroIngresosFilasParaUi,
 } from '../../utils/miautoRentSaleHelpers';
 
 const APPS_OPTIONS = [
@@ -186,14 +192,24 @@ interface CuotaSemanal {
   amount_due: number;
   paid_amount: number;
   late_fee: number;
+  mora_interes_periodo?: number;
+  mora_pendiente?: number;
   status: string;
-  /** Solo cuota pendiente (sin mora); saldo total del periodo = `cuota_final` (mora+cuota pendiente). `late_fee` = mora del periodo (intacta, como `amount_due`). */
+  /** Solo cuota pendiente (sin mora); saldo total = `cuota_final`. `late_fee` en API = mora mostrada (devengada si la pendiente es 0); `mora_pendiente` = saldo mora tras pagos. */
   pending_total: number;
   cuota_final?: number;
   moneda?: string;
   cobro_saldo?: number;
   cuota_neta?: number;
   partner_fees_83?: number;
+  partner_fees_yango_raw?: number | null;
+  partner_fees_yango_83?: number;
+  tipo_cambio_ref?: { valor_usd_a_local?: number; moneda_local?: string };
+  partner_fees_cascada_aplicado_a?: {
+    cuota_semanal_id?: string;
+    week_start_date?: string | null;
+    monto: number;
+  }[];
   pct_comision?: number;
 }
 
@@ -753,16 +769,25 @@ function AprobadoBlock({
                         <th className="py-3 pr-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-600 whitespace-nowrap min-w-[7.5rem]">
                           Vence
                         </th>
-                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-gray-900 whitespace-nowrap w-[7.25rem]">
+                        <th
+                          className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-gray-900 whitespace-nowrap w-[7.25rem]"
+                          title="Cuota del cronograma en la fila (cuota_semanal). El abono registrado está en la columna Pagado."
+                        >
                           Cuota sem. (plan)
                         </th>
                         <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap min-w-[8.5rem]">
                           Viajes — B.A
                         </th>
-                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap w-[5.5rem]">
-                          Comisión
+                        <th
+                          className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap w-[5.5rem]"
+                          title="Lo que se retiene sobre los ingresos de la semana (83% del fee Yango por viajes)."
+                        >
+                          Cobro por ingresos
                         </th>
-                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap min-w-[6.5rem]">
+                        <th
+                          className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap min-w-[6.5rem]"
+                          title="Cargo fijo de la regla del cronograma (cobro saldo), aparte del cobro por ingresos."
+                        >
                           Cobro saldo
                         </th>
                         <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-gray-900 whitespace-nowrap w-[6.5rem]">
@@ -777,7 +802,10 @@ function AprobadoBlock({
                         <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap w-[6.5rem]">
                           Cuota final
                         </th>
-                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap w-[6.5rem]">
+                        <th
+                          className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap w-[6.5rem]"
+                          title="Legado Excel: sin abono, monto hoja (amount_due); con abono, paid_amount. Fuera de legado: paid_amount."
+                        >
                           Pagado
                         </th>
                         <th className="py-3 pr-2 text-center text-xs font-semibold uppercase tracking-wide text-gray-700 whitespace-nowrap w-[5.5rem]">
@@ -791,21 +819,32 @@ function AprobadoBlock({
                     <tbody>
                       {cuotasPg.paginatedItems.map((c, index) => {
                         const numeroSemana =
-                          miautoSemanaOrdinalPorVencimiento(cuotasSemanales, c.due_date, c.week_start_date) ??
                           miautoSemanaLista(cuotasSemanales, c.week_start_date) ??
+                          miautoSemanaOrdinalPorVencimiento(cuotasSemanales, c.due_date, c.week_start_date) ??
                           (cuotasPg.page - 1) * cuotasPg.limit + index + 1;
                         const comps = comprobantesByCuotaId[c.id] ?? [];
                         const conformidadesAdmin = comps.filter(esComprobanteAdminPago);
                         const compsPanelConductor = comps.filter((cp) => !esComprobanteAdminPago(cp));
                         const cuotaCerrada = c.status === 'paid' || c.status === 'bonificada';
                         const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(c);
-                        const montoPagadoDisplay = miautoMontoPagadoColumnaMiAuto(c);
+                        const montoPagadoDisplay = miautoMontoPagadoColumnaCronograma(
+                          c,
+                          solicitud?.fecha_inicio_cobro_semanal
+                        );
+                        const mostrarExcelRef = miautoMostrarBloqueReferenciaExcel({
+                          fechaInicioCobroSolicitud: solicitud?.fecha_inicio_cobro_semanal,
+                          cuota: c,
+                        });
+                        const montoNetoExcel = miautoMontoNetoReferenciaExcel(c);
                         const saldoSemanaNeto = cuotaFinalSemana;
                         const pendienteMonto = Math.max(0, saldoSemanaNeto);
                         const pendiente = pendienteMonto > 0;
                         const mostrarPanelComprobantes = comps.length > 0 || cuotaCerrada;
                         const abierto = comprobantesSemanaAbierta[c.id] === true;
                         const symCuota = symMoneda(c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda);
+                        const tributoCobroIngresos = miautoCobroPorIngresosTributoDisplay(c);
+                        const titleCobroIngresos = miautoTooltipCobroPorIngresos(symCuota, c, cuotasSemanales);
+                        const filasCascadaCobro = miautoCascadaCobroIngresosFilasParaUi(cuotasSemanales, c);
                         return (
                           <Fragment key={c.id}>
                             <tr className="group border-b border-gray-100 hover:bg-gray-50/60">
@@ -834,7 +873,7 @@ function AprobadoBlock({
                               </td>
                               <td className="py-2.5 pr-3 align-middle text-[13px] text-gray-700 whitespace-nowrap">{formatDate(c.due_date, 'es-ES')}</td>
                               <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-gray-900 text-right text-[13px]">
-                                {miautoFmtMonto(symCuota, c.cuota_semanal)}
+                                {miautoFmtMonto(symCuota, miautoCuotaSemanalOAbonoDisplay(c))}
                               </td>
                               <td className="py-2.5 pr-2 align-middle text-xs tabular-nums text-right">
                                 {c.num_viajes != null ? (
@@ -848,8 +887,40 @@ function AprobadoBlock({
                                   <span className="text-gray-500">—</span>
                                 )}
                               </td>
-                              <td className="py-2.5 pr-2 align-middle text-xs tabular-nums text-right text-green-700">
-                                {miautoFmtMonto(symCuota, c.partner_fees_83)}
+                              <td
+                                className="py-2.5 pr-2 align-top text-xs tabular-nums text-right text-green-700"
+                                title={titleCobroIngresos}
+                              >
+                                <div className="flex flex-col items-end gap-1">
+                                  <span>{miautoFmtMonto(symCuota, tributoCobroIngresos)}</span>
+                                  {filasCascadaCobro.length > 0 ? (
+                                    <div className="max-w-[12rem] text-[10px] font-normal leading-snug text-gray-600">
+                                      <span className="block text-gray-500">Imputación del cobro</span>
+                                      {filasCascadaCobro.map((it, idx) => (
+                                        <span key={idx} className="block tabular-nums">
+                                          →{' '}
+                                          {it.semana != null ? (
+                                            <>
+                                              Semana {it.semana}
+                                              {it.week_start_ymd ? (
+                                                <span className="text-gray-500">
+                                                  {' '}
+                                                  (lunes{' '}
+                                                  {formatDate(`${it.week_start_ymd}T12:00:00`, 'es-ES')})
+                                                </span>
+                                              ) : null}
+                                            </>
+                                          ) : it.week_start_ymd ? (
+                                            <>Lunes {formatDate(`${it.week_start_ymd}T12:00:00`, 'es-ES')}</>
+                                          ) : (
+                                            '—'
+                                          )}
+                                          : {miautoFmtMonto(symCuota, it.monto)}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                </div>
                               </td>
                               <td className="py-2.5 pr-2 align-middle text-xs tabular-nums text-right text-green-700">
                                 {miautoFmtMonto(symCuota, c.cobro_saldo)}
@@ -866,8 +937,18 @@ function AprobadoBlock({
                               <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-800">
                                 <div className="flex flex-col items-end gap-0.5 tabular-nums">
                                   <span className="font-medium">{miautoFmtMonto(symCuota, montoPagadoDisplay)}</span>
-                                  {miautoPagadoMuestraEtiquetaExcel(c) && (
-                                    <span className="text-[10px] font-medium text-emerald-700">Excel</span>
+                                  {mostrarExcelRef && (
+                                    <>
+                                      <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                                        Excel
+                                      </span>
+                                      <span
+                                        className="text-[11px] font-medium text-emerald-800"
+                                        title="Neto tipo Excel: pagado − mora"
+                                      >
+                                        {miautoFmtMonto(symCuota, montoNetoExcel)}
+                                      </span>
+                                    </>
                                   )}
                                 </div>
                               </td>
@@ -1036,7 +1117,7 @@ function AprobadoBlock({
                                         {compsPanelConductor.map((cp, compIdx) => {
                                           const esPagoManual = origenComprobanteCuota(cp) === 'pago_manual';
                                           const estado = parseEstadoComprobante(cp.estado);
-                                          const sym = cp.moneda === 'USD' ? '$' : 'S/.';
+                                          const symMontoComp = symMoneda(cp.moneda);
                                           const puedeVer = !!cp.file_path && cp.file_path !== 'manual';
                                           const url = puedeVer ? getComprobanteUrl(cp.file_path) : '';
                                           const isImage = puedeVer && comprobanteArchivoEsImagen(cp.file_name, cp.file_path);
@@ -1107,7 +1188,7 @@ function AprobadoBlock({
                                                         ? '—'
                                                         : estado === 'pendiente'
                                                           ? '—'
-                                                          : (cp.monto != null ? `${sym} ${Number(cp.monto).toFixed(2)}` : '—')}
+                                                          : (cp.monto != null ? `${symMontoComp} ${Number(cp.monto).toFixed(2)}` : '—')}
                                                     </span>
                                                   </div>
                                                 </div>
@@ -1144,14 +1225,30 @@ function AprobadoBlock({
                                         const rechazado = compsSinOficial
                                           .filter((cp) => parseEstadoComprobante(cp.estado) === 'rechazado')
                                           .reduce((s, cp) => s + (cp.monto != null ? Number(cp.monto) : 0), 0);
-                                        const totalCuota = miautoCuotaFinalCronogramaSemanal(c);
-                                        const restantePorPagar = Math.max(0, totalCuota - verificado);
+                                        const monedasComp = [...new Set(compsSinOficial.map((cp) => monedaCuotasLabel(cp.moneda)))];
+                                        const symMontosComp =
+                                          monedasComp.length === 1 ? symMoneda(monedasComp[0]) : symCuota;
+                                        const saldoPlanSemana = roundToTwoDecimals(
+                                          Math.max(0, Number(cuotaFinalSemana))
+                                        );
                                         return (
                                           <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl bg-white border border-gray-200 px-4 py-3 text-sm text-gray-700 shadow-sm">
-                                            <span><strong className="text-gray-800">Total enviado:</strong> S/. {totalEnv.toFixed(2)}</span>
-                                            <span><strong className="text-gray-800">Verificado:</strong> S/. {verificado.toFixed(2)}</span>
-                                            <span><strong className="text-gray-800">Rechazado:</strong> S/. {rechazado.toFixed(2)}</span>
-                                            <span><strong className="text-gray-800">Pendiente:</strong> S/. {restantePorPagar.toFixed(2)}</span>
+                                            <span title="Montos según cada comprobante (p. ej. soles si se validó en PEN).">
+                                              <strong className="text-gray-800">Total enviado:</strong> {symMontosComp}{' '}
+                                              {totalEnv.toFixed(2)}
+                                            </span>
+                                            <span title="Montos según cada comprobante.">
+                                              <strong className="text-gray-800">Verificado:</strong> {symMontosComp}{' '}
+                                              {verificado.toFixed(2)}
+                                            </span>
+                                            <span title="Montos según cada comprobante.">
+                                              <strong className="text-gray-800">Rechazado:</strong> {symMontosComp}{' '}
+                                              {rechazado.toFixed(2)}
+                                            </span>
+                                            <span title="Saldo de esta semana en la moneda del cronograma.">
+                                              <strong className="text-gray-800">Saldo pendiente (plan):</strong> {symCuota}{' '}
+                                              {saldoPlanSemana.toFixed(2)}
+                                            </span>
                                           </div>
                                         );
                                       })()}

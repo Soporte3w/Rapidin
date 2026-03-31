@@ -31,7 +31,7 @@ export function MiautoComprobantePagoActions({
       return;
     }
     if (montoMaximo != null && montoMaximo > 0 && n > montoMaximo) {
-      toast.error(`El monto no puede superar lo que falta por pagar (${sym} ${montoMaximo.toFixed(2)})`);
+      toast.error(`El monto no puede superar el total pendiente del cronograma (${sym} ${montoMaximo.toFixed(2)})`);
       return;
     }
     onValidar(comprobanteId, n, moneda);
@@ -41,7 +41,8 @@ export function MiautoComprobantePagoActions({
     if (motivo === null) return;
     onRechazar(comprobanteId, motivo.trim());
   };
-  const placeholder = montoMaximo != null && montoMaximo > 0 ? `Máx. ${sym} ${montoMaximo.toFixed(2)}` : 'Monto';
+  const placeholder =
+    montoMaximo != null && montoMaximo > 0 ? `Máx. cronograma ${sym} ${montoMaximo.toFixed(2)}` : 'Monto';
   return (
     <span className="flex flex-wrap items-center gap-1">
       <input

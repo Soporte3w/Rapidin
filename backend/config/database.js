@@ -5,26 +5,40 @@ import { logger } from '../utils/logger.js';
 const { Pool } = pkg;
 dotenv.config();
 
-const dbHost = process.env.DB_HOST;
-const dbName = process.env.DB_NAME;
-const dbUser = process.env.DB_USER;
-const dbPassword = process.env.DB_PASSWORD;
-if (!dbHost || !dbName || !dbUser || dbPassword == null || dbPassword === '') {
-    throw new Error(
-        'Configuración DB incompleta: defina DB_HOST, DB_NAME, DB_USER y DB_PASSWORD en .env (sin credenciales por defecto en código).'
-    );
-}
-
-const pool = new Pool({
-    host: dbHost,
-    port: Number(process.env.DB_PORT || 5432),
-    database: dbName,
-    user: dbUser,
-    password: dbPassword,
+const poolOpts = {
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 30000,
-});
+};
+
+const databaseUrl = process.env.DATABASE_URL?.trim();
+
+let pool;
+if (databaseUrl) {
+    pool = new Pool({
+        connectionString: databaseUrl,
+        ...poolOpts,
+    });
+} else {
+    const dbHost = process.env.DB_HOST;
+    const dbName = process.env.DB_NAME;
+    const dbUser = process.env.DB_USER;
+    const dbPassword = process.env.DB_PASSWORD;
+    if (!dbHost || !dbName || !dbUser || dbPassword == null || dbPassword === '') {
+        throw new Error(
+            'Configuración DB incompleta: defina DATABASE_URL o bien DB_HOST, DB_NAME, DB_USER y DB_PASSWORD en .env ' +
+                '(sin credenciales por defecto en código). Si usa PM2, arranque con cwd en backend/ o pase env en ecosystem.'
+        );
+    }
+    pool = new Pool({
+        host: dbHost,
+        port: Number(process.env.DB_PORT || 5432),
+        database: dbName,
+        user: dbUser,
+        password: dbPassword,
+        ...poolOpts,
+    });
+}
 
 // Cache para evitar establecer search_path múltiples veces por conexión
 const connectionSearchPathSet = new WeakSet();

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, User, FileText, Calculator, CheckCircle, AlertCircle, Copy, Clock, XCircle, Image as ImageIcon, CreditCard, Loader2, RefreshCw, MessageCircle } from 'lucide-react';
+import { ArrowLeft, User, FileText, Calculator, CheckCircle, AlertCircle, Copy, Clock, XCircle, Image as ImageIcon, CreditCard, Loader2, RefreshCw } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../contexts/AuthContext';
@@ -328,8 +328,6 @@ const LoanRequestDetail = () => {
   const [loading, setLoading] = useState(true);
   const [simulationOptions, setSimulationOptions] = useState<any>(null);
   const [showRejectForm, setShowRejectForm] = useState(false);
-  const [showRejectDisbursedModal, setShowRejectDisbursedModal] = useState(false);
-  const [rapidinMessage, setRapidinMessage] = useState('');
   const [loadingSendMessage, setLoadingSendMessage] = useState(false);
   const [showConfirmApproveModal, setShowConfirmApproveModal] = useState(false);
   const [showConfirmDisburseModal, setShowConfirmDisburseModal] = useState(false);
@@ -342,6 +340,8 @@ const LoanRequestDetail = () => {
   const [loadingApprove, setLoadingApprove] = useState(false);
   const [loadingDisburse, setLoadingDisburse] = useState(false);
   const [loadingRecharge, setLoadingRecharge] = useState(false);
+  const [fleetRechargeUseManual, setFleetRechargeUseManual] = useState(false);
+  const [fleetRechargeErrorMessage, setFleetRechargeErrorMessage] = useState('');
   const fetchedIdRef = useRef<string | null>(null);
   const isApprovingRef = useRef(false);
   const isDisbursingRef = useRef(false);
@@ -530,21 +530,6 @@ const LoanRequestDetail = () => {
       throw error;
     } finally {
       setLoadingSendMessage(false);
-    }
-  };
-
-  const handleContactDisbursed = async () => {
-    const msg = rapidinMessage.trim();
-    if (!msg) {
-      toast.error('Escribe el mensaje');
-      return;
-    }
-    try {
-      await sendMessageViaRapidin(msg);
-      setRapidinMessage('');
-      setShowRejectDisbursedModal(false);
-    } catch {
-      // sendMessageViaRapidin ya muestra toast
     }
   };
 
@@ -953,6 +938,8 @@ const LoanRequestDetail = () => {
                   setDisburseAmount(String(parseFloat(request?.requested_amount || '0') || ''));
                   setDisburseComment('');
                   setRechargeSuccess(false);
+                  setFleetRechargeUseManual(false);
+                  setFleetRechargeErrorMessage('');
                   setShowConfirmDisburseModal(true);
                 }}
                 disabled={loadingDisburse || isSunday}
@@ -962,31 +949,6 @@ const LoanRequestDetail = () => {
                 {loadingDisburse ? 'Procesando...' : isSunday ? 'Desembolsar (no disponible domingos)' : 'Desembolsar'}
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Desembolsado: contactar conductor (ej. cuenta equivocada) */}
-      {request.status === 'disbursed' && (
-        <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-          <div className="border-b border-gray-200 px-4 py-3 bg-amber-50">
-            <div className="flex items-center gap-2">
-              <MessageCircle className="h-5 w-5 text-amber-600" />
-              <h2 className="text-base font-semibold text-gray-900">Contactar al conductor</h2>
-            </div>
-          </div>
-          <div className="p-4">
-            <p className="text-sm text-gray-600 mb-4">
-              Si puede que se haya equivocado de cuenta bancaria, envía un mensaje al conductor por Rapidín (sin salir de esta pantalla).
-            </p>
-            <button
-              type="button"
-              onClick={() => { setRapidinMessage(''); setShowRejectDisbursedModal(true); }}
-              className="px-5 py-2.5 text-sm font-semibold text-gray-700 bg-white border-2 border-amber-400 hover:border-amber-500 rounded-lg flex items-center gap-2 transition-colors"
-            >
-              <MessageCircle className="h-4 w-4" />
-              Contactar por Rapidín
-            </button>
           </div>
         </div>
       )}
@@ -1047,6 +1009,8 @@ const LoanRequestDetail = () => {
               setDisburseComment('');
               setDisburseAmount('');
               setRechargeSuccess(false);
+              setFleetRechargeUseManual(false);
+              setFleetRechargeErrorMessage('');
             }
           }}
         >
@@ -1099,11 +1063,15 @@ const LoanRequestDetail = () => {
                   {rechargeSuccess ? (
                     <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
                       <CheckCircle className="h-5 w-5 flex-shrink-0" />
-                      Recarga a Yango Pro realizada. Ya puedes proceder con el desembolso.
+                      Recarga lista (Yango Pro o registro manual). Ya puedes proceder con el desembolso.
                     </div>
                   ) : (
                     <>
-                      <p className="text-xs text-amber-700 mb-2">Para desembolsar con Yango Pro primero debe recargar el saldo del conductor.</p>
+                      <p className="text-xs text-amber-700 mb-2">
+                        {fleetRechargeUseManual
+                          ? 'Fleet tiene una transacción en curso o similar. Puedes registrar la recarga solo en el sistema con el botón de abajo (no se llama de nuevo a Yango).'
+                          : 'Para desembolsar con Yango Pro primero debe recargar el saldo del conductor.'}
+                      </p>
                       <button
                         type="button"
                         disabled={loadingRecharge || rechargeSuccess || !disburseAmount || Number(disburseAmount) <= 0}
@@ -1117,13 +1085,23 @@ const LoanRequestDetail = () => {
                           setLoadingRecharge(true);
                           (e.currentTarget as HTMLButtonElement).blur();
                           try {
-                            await api.post('/yango/recharge', {
-                              request_id: id,
-                              amount: amount.toFixed(2),
-                              description: (disburseComment && disburseComment.trim()) ? disburseComment.trim() : 'Recarga Rapidín'
-                            });
+                            if (fleetRechargeUseManual) {
+                              await api.post('/yango/recharge-manual', {
+                                request_id: id,
+                                amount: amount.toFixed(2),
+                                note: disburseComment?.trim() || undefined,
+                                fleet_error_snapshot: fleetRechargeErrorMessage || undefined,
+                              });
+                              toast.success('Recarga registrada en el sistema. Confirmando desembolso automáticamente...');
+                            } else {
+                              await api.post('/yango/recharge', {
+                                request_id: id,
+                                amount: amount.toFixed(2),
+                                description: (disburseComment && disburseComment.trim()) ? disburseComment.trim() : 'Recarga Rapidín'
+                              });
+                              toast.success('Recarga enviada a Yango Pro. Confirmando desembolso automáticamente...');
+                            }
                             setRechargeSuccess(true);
-                            toast.success('Recarga enviada a Yango Pro. Confirmando desembolso automáticamente...');
                             setLoadingRecharge(false);
                             await handleDisburse();
                             setShowConfirmDisburseModal(false);
@@ -1131,8 +1109,22 @@ const LoanRequestDetail = () => {
                             setDisburseComment('');
                             setDisburseAmount('');
                             setRechargeSuccess(false);
+                            setFleetRechargeUseManual(false);
+                            setFleetRechargeErrorMessage('');
                           } catch (err: any) {
-                            toast.error(err.response?.data?.message || 'Error al recargar en Yango Pro');
+                            const code = err.response?.data?.code;
+                            const msg = err.response?.data?.message || 'Error al recargar en Yango Pro';
+                            // Solo esta solicitud (aprobada + Yango Pro): no activar modo manual en otros contextos
+                            if (
+                              !fleetRechargeUseManual &&
+                              code === 'FLEET_PENDING_TRANSACTION' &&
+                              request?.status === 'approved' &&
+                              isYangoPro
+                            ) {
+                              setFleetRechargeUseManual(true);
+                              setFleetRechargeErrorMessage(String(err.response?.data?.message || ''));
+                            }
+                            toast.error(msg);
                           } finally {
                             setLoadingRecharge(false);
                           }
@@ -1140,11 +1132,17 @@ const LoanRequestDetail = () => {
                         className={`w-full px-4 py-2.5 text-sm font-medium rounded-lg flex items-center justify-center gap-2 transition-colors ${
                           loadingRecharge
                             ? 'bg-amber-100 text-amber-600 cursor-not-allowed opacity-70 pointer-events-none'
-                            : 'text-amber-800 bg-amber-100 hover:bg-amber-200 disabled:opacity-50 disabled:cursor-not-allowed'
+                            : fleetRechargeUseManual
+                              ? 'text-slate-800 bg-slate-200 hover:bg-slate-300 disabled:opacity-50 disabled:cursor-not-allowed'
+                              : 'text-amber-800 bg-amber-100 hover:bg-amber-200 disabled:opacity-50 disabled:cursor-not-allowed'
                         }`}
                       >
                         {loadingRecharge ? <Loader2 className="h-4 w-4 animate-spin flex-shrink-0" /> : <RefreshCw className="h-4 w-4" />}
-                        {loadingRecharge ? 'Enviando recarga...' : 'Recargar a Yango Pro'}
+                        {loadingRecharge
+                          ? (fleetRechargeUseManual ? 'Registrando...' : 'Enviando recarga...')
+                          : fleetRechargeUseManual
+                            ? 'Registrar recarga manual (solo sistema)'
+                            : 'Recargar a Yango Pro'}
                       </button>
                     </>
                   )}
@@ -1176,6 +1174,8 @@ const LoanRequestDetail = () => {
                   setDisburseComment('');
                   setDisburseAmount('');
                   setRechargeSuccess(false);
+                  setFleetRechargeUseManual(false);
+                  setFleetRechargeErrorMessage('');
                 }}
                 disabled={(isYangoPro && rechargeSuccess) || loadingDisburse}
                 className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
@@ -1189,6 +1189,8 @@ const LoanRequestDetail = () => {
                   setDisburseComment('');
                   setDisburseAmount('');
                   setRechargeSuccess(false);
+                  setFleetRechargeUseManual(false);
+                  setFleetRechargeErrorMessage('');
                   await handleDisburse();
                   setFirstPaymentToday(false);
                 }}
@@ -1288,54 +1290,6 @@ const LoanRequestDetail = () => {
               >
                 {loadingSendMessage ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
                 {loadingSendMessage ? 'Enviando...' : 'Confirmar rechazo'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal desembolsado: contactar por Rapidín */}
-      {showRejectDisbursedModal && request && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => { setShowRejectDisbursedModal(false); setRapidinMessage(''); }}>
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
-                <MessageCircle className="h-5 w-5 text-amber-600" />
-              </div>
-              <h3 className="text-lg font-semibold text-gray-900">Contactar al conductor</h3>
-            </div>
-            <p className="text-sm text-gray-600 mb-4">
-              Si puede que se haya equivocado de cuenta bancaria, escribe el mensaje. Se enviará por Rapidín sin abrir otras pestañas.
-            </p>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Mensaje</label>
-            <textarea
-              value={rapidinMessage}
-              onChange={(e) => setRapidinMessage(e.target.value)}
-              placeholder="Escribe el mensaje..."
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-500 resize-none mb-4"
-              rows={3}
-            />
-            <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200">
-              <p className="text-sm font-medium text-amber-800">
-                El mensaje se envía por Rapidín; permaneces en esta vista.
-              </p>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => { setShowRejectDisbursedModal(false); setRapidinMessage(''); }}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
-              >
-                Cerrar
-              </button>
-              <button
-                type="button"
-                onClick={handleContactDisbursed}
-                disabled={!rapidinMessage.trim() || loadingSendMessage}
-                className="px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loadingSendMessage ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageCircle className="h-4 w-4" />}
-                {loadingSendMessage ? 'Enviando...' : 'Enviar'}
               </button>
             </div>
           </div>

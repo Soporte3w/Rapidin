@@ -113,12 +113,11 @@ function miAutoOpenStatusSaldoVencimiento(dueYmd, pend, paidDb) {
 }
 
 /**
- * Hermana misma solicitud con vencimiento **estrictamente anterior** a `miDueYmd`, saldo en columnas
- * (cuota+mora − pagado) y **vencida** (`overdue` o `due_date` antes de hoy Lima): el pool comisión/PF debe
- * atender primero esa fila (`applyPartnerFeesWaterfallToSolicitud` ya ordena por `due_date` ASC); esta cuota
- * no debe quedar «pagada» solo porque el neto del periodo (PF) llegó a ~0.
+ * Hermana misma solicitud con vencimiento **estrictamente anterior** a `miDueYmd`, **saldo pendiente** según
+ * motor (`options.pendienteEconomico`) o, si no viene, fallback columnas cuota+mora − pagado.
+ * **Vencida** (`overdue` o `due_date` antes de hoy Lima): el pool comisión/PF debe atender primero esa fila.
  */
-function cuotaHermanaBloqueaPorDeudaMasAntigua(o, miDueYmd, todayYmd) {
+function cuotaHermanaBloqueaPorDeudaMasAntigua(o, miDueYmd, todayYmd, options = {}) {
   if (!o || miDueYmd == null) return false;
   const dueO = ymdFromDbDate(o.due_date);
   if (!dueO || !/^\d{4}-\d{2}-\d{2}$/.test(dueO) || !/^\d{4}-\d{2}-\d{2}$/.test(String(miDueYmd).slice(0, 10))) {
@@ -129,9 +128,12 @@ function cuotaHermanaBloqueaPorDeudaMasAntigua(o, miDueYmd, todayYmd) {
   const st = String(o.status || '').toLowerCase();
   if (st === 'bonificada') return false;
   const paid = round2(parseFloat(o.paid_amount) || 0);
-  const pendCol = round2(
-    Math.max(0, round2(parseFloat(o.amount_due) || 0) + round2(parseFloat(o.late_fee) || 0) - paid)
-  );
+  const pendCol =
+    options.pendienteEconomico != null && Number.isFinite(Number(options.pendienteEconomico))
+      ? round2(Math.max(0, Number(options.pendienteEconomico)))
+      : round2(
+          Math.max(0, round2(parseFloat(o.amount_due) || 0) + round2(parseFloat(o.late_fee) || 0) - paid)
+        );
   if (pendCol <= 0.02) return false;
   const vencidaPorEstado = st === 'overdue';
   const todayOk = todayYmd && /^\d{4}-\d{2}-\d{2}$/.test(String(todayYmd).slice(0, 10));
@@ -301,7 +303,19 @@ export async function applyPartnerFeesWaterfallToSolicitud(solicitudId, poolDelt
   let pool = round2(Number(poolDelta) || 0);
   if (pool <= 0.005) return { applied: 0, remainingPool: 0 };
 
-  let sql = `SELECT c.id, c.amount_due, c.late_fee, c.paid_amount, c.status, c.due_date, c.week_start_date
+  const solRes = await query(
+    `SELECT cronograma_id, cronograma_vehiculo_id, fecha_inicio_cobro_semanal FROM module_miauto_solicitud WHERE id = $1::uuid`,
+    [solicitudId]
+  );
+  const solMeta = solRes.rows?.[0];
+  const cronogramaW =
+    solMeta?.cronograma_id != null ? await getCronogramaById(solMeta.cronograma_id) : null;
+  const vehIdW = solMeta?.cronograma_vehiculo_id;
+  const fiW = solMeta?.fecha_inicio_cobro_semanal;
+
+  let sql = `SELECT c.id, c.amount_due, c.late_fee, c.paid_amount, c.status, c.due_date, c.week_start_date,
+                    c.num_viajes, c.bono_auto, c.cuota_semanal, c.partner_fees_raw, c.partner_fees_83,
+                    c.cobro_saldo, c.pct_comision, c.moneda, c.partner_fees_cascada_destino
      FROM module_miauto_cuota_semanal c
      WHERE c.solicitud_id = $1::uuid
        AND (c.status IN ('pending', 'overdue', 'partial') OR ${SQL_WATERFALL_UNDERPAID_PAID})`;
@@ -317,15 +331,43 @@ export async function applyPartnerFeesWaterfallToSolicitud(solicitudId, poolDelt
   const allocations = [];
   for (const row of res.rows || []) {
     if (pool <= 0.005) break;
+    const paid = round2(parseFloat(row.paid_amount) || 0);
     const amountDue = round2(parseFloat(row.amount_due) || 0);
     const lateFee = round2(parseFloat(row.late_fee) || 0);
-    const paid = round2(parseFloat(row.paid_amount) || 0);
-    const totalDue = round2(amountDue + lateFee);
-    const pending = round2(totalDue - paid);
+    const totalDueCol = round2(amountDue + lateFee);
+    let pending;
+    if (cronogramaW && vehIdW != null) {
+      const w = ymdFromDbDate(row.week_start_date);
+      const isPrimera = w ? isSemanaDepositoMiAuto(w, fiW) : false;
+      const stLow = (row.status || '').toLowerCase();
+      const dW = computeCuotaDerivedForRow(row, cronogramaW, vehIdW, {
+        isPrimeraCuotaSemanal: !!isPrimera,
+        fechaInicioCobroSemanal: fiW,
+        /** `paid` en SQL por columnas: recalcular como fila abierta para obtener el pendiente real. */
+        ignoreClosedStatusForDerived: stLow === 'paid',
+      });
+      pending = round2(Math.max(0, dW.cuota_final));
+    } else {
+      pending = round2(totalDueCol - paid);
+    }
     if (pending <= 0.005) continue;
     const applyAmt = round2(Math.min(pool, pending));
     const newPaid = round2(paid + applyAmt);
-    const pendRow = round2(Math.max(0, totalDue - newPaid));
+    let pendRow;
+    if (cronogramaW && vehIdW != null) {
+      const w2 = ymdFromDbDate(row.week_start_date);
+      const isP2 = w2 ? isSemanaDepositoMiAuto(w2, fiW) : false;
+      const rowAfter = { ...row, paid_amount: newPaid };
+      const stAfter = (rowAfter.status || '').toLowerCase();
+      const dAfter = computeCuotaDerivedForRow(rowAfter, cronogramaW, vehIdW, {
+        isPrimeraCuotaSemanal: !!isP2,
+        fechaInicioCobroSemanal: fiW,
+        ignoreClosedStatusForDerived: stAfter === 'paid',
+      });
+      pendRow = round2(Math.max(0, dAfter.cuota_final));
+    } else {
+      pendRow = round2(Math.max(0, totalDueCol - newPaid));
+    }
     const newStatus = miAutoOpenStatusSaldoVencimiento(ymdFromDbDate(row.due_date), pendRow, newPaid);
     await query(
       `UPDATE module_miauto_cuota_semanal SET paid_amount = $1, status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
@@ -438,14 +480,8 @@ function computeLateFeeDisplay(cronograma, dueDateStr, baseCuota) {
   const daysOverdue = calendarDaysLateLima(dueDateStr);
   if (daysOverdue <= 0) return round2(0);
   const factorDia = tasa / 7;
-  let saldo = round2(baseCuota);
-  let moraAcum = 0;
-  for (let d = 0; d < daysOverdue; d++) {
-    const moraDia = round2(saldo * factorDia);
-    moraAcum = round2(moraAcum + moraDia);
-    saldo = round2(saldo + moraDia);
-  }
-  return round2(moraAcum);
+  const moraDia = round2(baseCuota * factorDia);
+  return round2(moraDia * daysOverdue);
 }
 
 /**
@@ -540,7 +576,8 @@ function amountDueAndLateForOpen(
   bono_auto,
   pct_comision,
   cobro_saldo,
-  isPrimeraCuotaSemanal
+  isPrimeraCuotaSemanal,
+  cascadeReceived
 ) {
   const amount_due_sched = resolvedAmountDueSchedForOpenRow(
     r,
@@ -552,17 +589,24 @@ function amountDueAndLateForOpen(
   );
   const paid = round2(parseFloat(r.paid_amount) || 0);
 
+  /** Pago del conductor (sin cascada) para calcular mora sobre capital realmente pendiente durante el periodo. */
+  const cascadeRcv = round2(Number(cascadeReceived) || 0);
+  const paidSinCascada = round2(Math.max(0, paid - cascadeRcv));
+  const aplicadoCuotaSinCascada = round2(Math.min(paidSinCascada, amount_due_sched));
+  const capitalParaMora = round2(Math.max(0, amount_due_sched - aplicadoCuotaSinCascada));
+
   const aplicadoCuotaPrimero = round2(Math.min(paid, amount_due_sched));
   const capitalPendiente = round2(Math.max(0, amount_due_sched - aplicadoCuotaPrimero));
   const paidRemanenteTrasCuota = round2(Math.max(0, paid - aplicadoCuotaPrimero));
 
-  const mora_sched = computeLateFeeDisplay(cronograma, r.due_date, capitalPendiente);
+  const mora_sched = computeLateFeeDisplay(cronograma, r.due_date, capitalParaMora);
   const mora_full = round2(mora_sched);
 
   let late_fee_remaining;
   let amount_due_remaining;
 
   if (mora_full > 0.005) {
+    /** Pagos cubren mora primero (tras cubrir cuota), luego capital restante. */
     late_fee_remaining = round2(Math.max(0, mora_full - paidRemanenteTrasCuota));
     amount_due_remaining = capitalPendiente;
   } else {
@@ -1150,12 +1194,13 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       OR (c.due_date IS NOT NULL AND c.due_date::date < ${SQL_LIMA_TODAY})
     )`;
 
+  /** Solo corrige estado; no pisa `late_fee` (mora histórica en cuotas pagadas). */
+  /** Total registrado cuota+mora en columnas vs pagado (sin SQL del cronograma). */
   const revertOverdueSql = `
     UPDATE module_miauto_cuota_semanal c
-    SET late_fee = 0,
-        status = CASE
+    SET status = CASE
           WHEN COALESCE(c.paid_amount, 0)::numeric <= 0.005 THEN 'pending'
-          WHEN COALESCE(c.paid_amount, 0)::numeric >= COALESCE(c.amount_due, 0)::numeric - 0.005 THEN 'paid'
+          WHEN COALESCE(c.paid_amount, 0)::numeric >= COALESCE(c.amount_due, 0)::numeric + COALESCE(c.late_fee, 0)::numeric - 0.005 THEN 'paid'
           ELSE 'partial'
         END,
         updated_at = CURRENT_TIMESTAMP
@@ -1164,12 +1209,13 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       AND (c.due_date IS NULL OR c.due_date::date >= ${SQL_LIMA_TODAY})${scopeSql}`;
   await query(revertOverdueSql, scopeParams);
 
-  const clearPaidLateFeeSql = `
+  /** Bonificada: anular mora en columna; en `paid` se conserva devengo/histórico. */
+  const clearBonificadaLateFeeSql = `
     UPDATE module_miauto_cuota_semanal c
     SET late_fee = 0, updated_at = CURRENT_TIMESTAMP
-    WHERE c.status IN ('paid', 'bonificada')
+    WHERE c.status = 'bonificada'
       AND COALESCE(c.late_fee, 0)::numeric > 0.005${scopeSql}`;
-  await query(clearPaidLateFeeSql, scopeParams);
+  await query(clearBonificadaLateFeeSql, scopeParams);
 
   const clearPartialSql = `
     UPDATE module_miauto_cuota_semanal c
@@ -1209,9 +1255,13 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
   const hermanasPorSolicitud = new Map();
   if (solIds.length > 0) {
     const herRes = await query(
-      `SELECT id, solicitud_id, due_date, status, amount_due, late_fee, paid_amount
-       FROM module_miauto_cuota_semanal
-       WHERE solicitud_id = ANY($1::uuid[])`,
+      `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.status, c.amount_due, c.late_fee, c.paid_amount,
+              c.num_viajes, c.bono_auto, c.cuota_semanal, c.partner_fees_raw, c.partner_fees_83,
+              c.cobro_saldo, c.pct_comision, c.moneda, c.partner_fees_cascada_destino,
+              s.fecha_inicio_cobro_semanal
+       FROM module_miauto_cuota_semanal c
+       INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
+       WHERE c.solicitud_id = ANY($1::uuid[])`,
       [solIds]
     );
     for (const h of herRes.rows || []) {
@@ -1221,6 +1271,12 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     }
   }
   const todayYForBlocking = limaTodayYmdSync();
+
+  /** Mapa cuota_id → monto cascada recibida (para excluir del cálculo de mora). */
+  const cascadeReceivedBySol = new Map();
+  for (const [solKey, hRows] of hermanasPorSolicitud) {
+    cascadeReceivedBySol.set(solKey, buildCascadeReceivedMap(hRows));
+  }
 
   const cronogramaById = new Map();
   const cronogramaFor = async (cronoId) => {
@@ -1265,29 +1321,53 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       continue;
     }
     const rowForDerived = patchDue ? { ...row, due_date: canonicalDueYmd } : row;
+    const cascRecvMap = cascadeReceivedBySol.get(String(row.solicitud_id));
+    const cascRecv = cascRecvMap ? (cascRecvMap.get(String(row.id)) || 0) : 0;
     const d = computeCuotaDerivedForRow(rowForDerived, cronograma, vehId, {
       isPrimeraCuotaSemanal: !!isPrimera,
       fechaInicioCobroSemanal: row.fecha_inicio_cobro_semanal,
+      cascadeReceived: cascRecv,
     });
     const lateFeeOut = round2(d.late_fee);
+    const lateFeeDb = round2(parseFloat(row.late_fee) || 0);
+    const moraFullD = round2(parseFloat(d.mora_full) || 0);
+    const moraSchedD = round2(parseFloat(d.mora_sched_periodo) || 0);
     const paidDb = round2(parseFloat(row.paid_amount) || 0);
     const oblig = round2(d.obligacion_total);
     const pendDerived = round2(Math.max(0, oblig - paidDb));
-    /** Si en fila aún hay cuota+mora en columnas por encima del abono, mantener vencida/parcial aunque la cascada reduzca la obligación derivada. */
-    const amountDueCol = round2(parseFloat(row.amount_due) || 0);
-    const pendCols = round2(Math.max(0, amountDueCol + lateFeeOut - paidDb));
+    /** Pendiente según motor (cuota remanente + mora pendiente), no `amount_due` persistido a secas. */
+    const pendCols = round2(Math.max(0, d.cuota_final));
     const hermanas = hermanasPorSolicitud.get(String(row.solicitud_id)) || [];
-    const hasOlderBlockingDebt = hermanas.some((o) =>
-      String(o.id) !== String(row.id) && cuotaHermanaBloqueaPorDeudaMasAntigua(o, dueEffYmd, todayYForBlocking)
-    );
+    const hasOlderBlockingDebt = hermanas.some((o) => {
+      if (String(o.id) === String(row.id)) return false;
+      const wsH = ymdFromDbDate(o.week_start_date);
+      const fiH = o.fecha_inicio_cobro_semanal ?? row.fecha_inicio_cobro_semanal;
+      const isPH = wsH ? isSemanaDepositoMiAuto(wsH, fiH) : false;
+      const cascRecvMapH = cascadeReceivedBySol.get(String(row.solicitud_id));
+      const dH = computeCuotaDerivedForRow(o, cronograma, row.cronograma_vehiculo_id, {
+        isPrimeraCuotaSemanal: !!isPH,
+        fechaInicioCobroSemanal: fiH,
+        cascadeReceived: cascRecvMapH ? (cascRecvMapH.get(String(o.id)) || 0) : 0,
+      });
+      const pendEconHermana = round2(Math.max(0, dH.cuota_final));
+      return cuotaHermanaBloqueaPorDeudaMasAntigua(o, dueEffYmd, todayYForBlocking, {
+        pendienteEconomico: pendEconHermana,
+      });
+    });
     const pend = pendienteStatusCuotaAbiertaPostCorte(d, pendDerived, pendCols, { hasOlderBlockingDebt });
     const statusOut = miAutoOpenStatusSaldoVencimiento(dueEffYmd, pend, paidDb);
+    const stRow = (row.status || '').toLowerCase();
+    /** Cuota pagada: conservar en columna el devengo/histórico; no dejar `late_fee` en 0 si hubo mora del periodo. */
+    let lateFeePersist = lateFeeOut;
+    if (statusOut === 'paid' && stRow !== 'bonificada') {
+      lateFeePersist = round2(Math.max(lateFeeDb, lateFeeOut, moraFullD, moraSchedD));
+    }
 
     await query(
       patchDue
         ? `UPDATE module_miauto_cuota_semanal SET late_fee = $1, status = $4, due_date = $3::date, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
         : `UPDATE module_miauto_cuota_semanal SET late_fee = $1, status = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-      patchDue ? [lateFeeOut, row.id, canonicalDueYmd, statusOut] : [lateFeeOut, row.id, statusOut]
+      patchDue ? [lateFeePersist, row.id, canonicalDueYmd, statusOut] : [lateFeePersist, row.id, statusOut]
     );
     updated++;
   }
@@ -1425,7 +1505,8 @@ function computeCuotaDerivedForRow(r, cronograma, vehId, options = {}) {
       bono_auto,
       pct_comision,
       cobro_saldo,
-      isPrimera
+      isPrimera,
+      options.cascadeReceived
     );
     mora_full = round2(mOpen.mora_full);
     amount_due_sched = round2(mOpen.amount_due_sched);
@@ -1439,7 +1520,8 @@ function computeCuotaDerivedForRow(r, cronograma, vehId, options = {}) {
       bono_auto,
       pct_comision,
       cobro_saldo,
-      isPrimera
+      isPrimera,
+      options.cascadeReceived
     );
     mora_full = round2(mOpen.mora_full);
     amount_due_sched = round2(mOpen.amount_due_sched);
@@ -1496,6 +1578,23 @@ export function parsePartnerFeesCascadaDestinoDb(v) {
 }
 
 /**
+ * Mapa cuota_id → monto total recibido vía cascada PF desde otras cuotas.
+ * Se usa para excluir la cascada del cálculo de mora (la mora debe calcularse
+ * sobre el capital pendiente según el pago real del conductor, no la cascada).
+ */
+function buildCascadeReceivedMap(cuotaRows) {
+  const map = new Map();
+  for (const r of cuotaRows) {
+    const entries = parsePartnerFeesCascadaDestinoDb(r.partner_fees_cascada_destino);
+    for (const e of entries) {
+      const id = String(e.cuota_semanal_id);
+      map.set(id, round2((map.get(id) || 0) + (Number(e.monto) || 0)));
+    }
+  }
+  return map;
+}
+
+/**
  * Fila **origen** de cascada de cobro por ingresos: imputó el pool a otras semanas y ya no tiene PF en columna.
  * En ese caso el `paid` en BD no debe cerrar la fila como «cuota pagada» si solo se descontó/reasignó el tributo:
  * la obligación se recalcula como cuota abierta (plan sin crédito PF en esta fila).
@@ -1520,6 +1619,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     isPrimeraCuotaSemanal: isPrimera,
     fechaInicioCobroSemanal: fi,
     ignoreClosedStatusForDerived: ignoreClosedForDerived,
+    cascadeReceived: options.cascadeReceived,
   });
   let paid_amount = round2(parseFloat(r.paid_amount) || 0);
   const filaCerrada = (st === 'paid' || st === 'bonificada') && !ignoreClosedForDerived;
@@ -1541,26 +1641,37 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
    * `pending_total`: saldo pendiente de esa cuota (sin mora).
    */
   const amountDueApi = round2(d.amount_due_sched);
-  /** `mora_pendiente`: saldo mora tras cascada (BD/cobro). `late_fee` en API: mismo valor si hay pendiente; si no, interés devengado del periodo para que la columna no muestre 0 con días de retraso. */
+  const lateFeeColDb = round2(parseFloat(r.late_fee) || 0);
+  const moraFullDer = round2(parseFloat(d.mora_full) || 0);
+  const moraSchedDer = round2(parseFloat(d.mora_sched_periodo) || 0);
+  /** `paid`: mostrar mora devengada/histórica en columna aunque el saldo esté cubierto. `bonificada`: sin mora. */
+  const lateFeeHistoricaPagada =
+    filaCerrada && st !== 'bonificada'
+      ? round2(Math.max(lateFeeColDb, moraFullDer, moraSchedDer))
+      : round2(0);
+  /** `mora_pendiente`: saldo mora económico. `late_fee` API: pendiente, devengo si no hay pendiente, o histórico si fila pagada. */
   const lateFeePendiente = filaCerrada ? round2(0) : round2(d.late_fee);
-  const moraSchedApi = filaCerrada ? round2(0) : round2(d.mora_sched_periodo || 0);
-  const lateFeeApi =
-    filaCerrada
+  const moraSchedApi = filaCerrada ? round2(0) : moraSchedDer;
+  const lateFeeApi = filaCerrada
+    ? lateFeeHistoricaPagada
+    : lateFeePendiente > 0.005
+      ? lateFeePendiente
+      : moraSchedApi > 0.005
+        ? moraSchedApi
+        : round2(0);
+  const moraInteresPeriodoApi = filaCerrada
+    ? st === 'bonificada'
       ? round2(0)
-      : lateFeePendiente > 0.005
-        ? lateFeePendiente
-        : moraSchedApi > 0.005
-          ? moraSchedApi
-          : round2(0);
+      : lateFeeHistoricaPagada
+    : moraSchedDer;
   const lateFeeCalendarDays = filaCerrada ? 0 : calendarDaysLateLima(r.due_date);
   const cuotaFinalApi = filaCerrada ? paid_amount : d.cuota_final;
   const pendingTotalApi = filaCerrada ? round2(0) : round2(Math.max(0, d.amount_due_remaining));
   let statusApi = r.status;
   if (!filaCerrada) {
     const pendDerived = round2(Math.max(0, d.obligacion_total - paid_amount));
-    const pendCols = round2(
-      Math.max(0, round2(parseFloat(r.amount_due) || 0) + round2(parseFloat(r.late_fee) || 0) - paid_amount)
-    );
+    /** Pendiente según motor (`cuota_final`), no columnas `amount_due`+mora crudas. */
+    const pendCols = round2(Math.max(0, d.cuota_final));
     const pendStat = pendienteStatusCuotaAbiertaPostCorte(d, pendDerived, pendCols, {
       hasOlderBlockingDebt: !!options.hasOlderBlockingDebt,
     });
@@ -1607,7 +1718,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     late_fee: lateFeeApi,
     mora_pendiente: lateFeePendiente,
     late_fee_calendar_days: lateFeeCalendarDays,
-    mora_interes_periodo: filaCerrada ? 0 : round2(d.mora_sched_periodo || 0),
+    mora_interes_periodo: moraInteresPeriodoApi,
     status: statusApi,
     moneda: d.moneda,
     pct_comision: d.pct_comision,
@@ -1664,6 +1775,7 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
   const rowsAll = res.rows || [];
   const fiRaw = solRow.fecha_inicio_cobro_semanal;
   const todayYBlocking = limaTodayYmdSync();
+  const cascRecvMap = buildCascadeReceivedMap(rowsAll);
 
   let updated = 0;
   let realignedOrigenCascada = false;
@@ -1681,6 +1793,7 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
     const d = computeCuotaDerivedForRow(r, cronograma, vehId, {
       isPrimeraCuotaSemanal: isPrimera,
       fechaInicioCobroSemanal: fiRaw,
+      cascadeReceived: cascRecvMap.get(String(r.id)) || 0,
     });
     const paidDb = round2(parseFloat(r.paid_amount) || 0);
     const rawOblig = d.obligacion_total;
@@ -1719,21 +1832,28 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
     const w = ymdFromDbDate(r.week_start_date);
     const isPrimera = w ? isSemanaDepositoMiAuto(w, fiRaw) : false;
     const dueR = ymdFromDbDate(r.due_date);
-    const hasOlderBlockingDebt = rowsAll.some(
-      (o) =>
-        String(o.id) !== String(r.id) &&
-        cuotaHermanaBloqueaPorDeudaMasAntigua(o, dueR, todayYBlocking)
-    );
+    const hasOlderBlockingDebt = rowsAll.some((o) => {
+      if (String(o.id) === String(r.id)) return false;
+      const wO = ymdFromDbDate(o.week_start_date);
+      const isPO = wO ? isSemanaDepositoMiAuto(wO, fiRaw) : false;
+      const dH = computeCuotaDerivedForRow(o, cronograma, vehId, {
+        isPrimeraCuotaSemanal: !!isPO,
+        fechaInicioCobroSemanal: fiRaw,
+        cascadeReceived: cascRecvMap.get(String(o.id)) || 0,
+      });
+      return cuotaHermanaBloqueaPorDeudaMasAntigua(o, dueR, todayYBlocking, {
+        pendienteEconomico: round2(Math.max(0, dH.cuota_final)),
+      });
+    });
     const dOpen = computeCuotaDerivedForRow(r, cronograma, vehId, {
       isPrimeraCuotaSemanal: isPrimera,
       fechaInicioCobroSemanal: fiRaw,
       ignoreClosedStatusForDerived: true,
+      cascadeReceived: cascRecvMap.get(String(r.id)) || 0,
     });
     const paidDb = round2(parseFloat(r.paid_amount) || 0);
     const pendDerived = round2(Math.max(0, dOpen.obligacion_total - paidDb));
-    const pendCols = round2(
-      Math.max(0, round2(parseFloat(r.amount_due) || 0) + round2(parseFloat(r.late_fee) || 0) - paidDb)
-    );
+    const pendCols = round2(Math.max(0, dOpen.cuota_final));
     const pendStat = pendienteStatusCuotaAbiertaPostCorte(dOpen, pendDerived, pendCols, { hasOlderBlockingDebt });
     const statusRe = miAutoOpenStatusSaldoVencimiento(ymdFromDbDate(r.due_date), pendStat, paidDb);
     if (statusRe === 'paid') continue;
@@ -1789,23 +1909,33 @@ async function fetchCuotasSemanalesPayload(solicitudId) {
 
   const rows = res.rows || [];
   const todayYBlocking = limaTodayYmdSync();
+  const cascRecvMap = buildCascadeReceivedMap(rows);
   const cuotas = [];
   for (const r of rows) {
     const w = ymdFromDbDate(r.week_start_date);
     const isPrimera = w ? isSemanaDepositoMiAuto(w, fiRaw) : false;
     const rNorm = await cuotaRowWithPartnerFeesUsdNormalizedIfNeeded(solicitudId, r);
     const dueR = ymdFromDbDate(rNorm.due_date);
-    const hasOlderBlockingDebt = rows.some(
-      (o) =>
-        String(o.id) !== String(rNorm.id) &&
-        cuotaHermanaBloqueaPorDeudaMasAntigua(o, dueR, todayYBlocking)
-    );
+    const hasOlderBlockingDebt = rows.some((o) => {
+      if (String(o.id) === String(rNorm.id)) return false;
+      const wO = ymdFromDbDate(o.week_start_date);
+      const isPO = wO ? isSemanaDepositoMiAuto(wO, fiRaw) : false;
+      const dH = computeCuotaDerivedForRow(o, cronograma, vehId, {
+        isPrimeraCuotaSemanal: !!isPO,
+        fechaInicioCobroSemanal: fiRaw,
+        cascadeReceived: cascRecvMap.get(String(o.id)) || 0,
+      });
+      return cuotaHermanaBloqueaPorDeudaMasAntigua(o, dueR, todayYBlocking, {
+        pendienteEconomico: round2(Math.max(0, dH.cuota_final)),
+      });
+    });
     cuotas.push(
       buildCuotaSemanalApiRow(rNorm, cronograma, vehId, {
         isPrimeraCuotaSemanal: isPrimera,
         fechaInicioCobroSemanal: fiRaw,
         tipoCambioUsd,
         hasOlderBlockingDebt,
+        cascadeReceived: cascRecvMap.get(String(rNorm.id)) || 0,
       })
     );
   }

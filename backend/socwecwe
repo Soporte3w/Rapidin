@@ -1,0 +1,69 @@
+# Desarrollo - Yego Rapidín Backend
+NODE_ENV=development
+
+# Servidor
+PORT=3000
+
+# Base de Datos PostgreSQL
+DB_HOST=168.119.226.236
+DB_PORT=5432
+DB_NAME=yego_integral
+DB_USER=yego_user
+DB_PASSWORD=37>MNA&-35+
+
+# JWT
+JWT_SECRET=dev_secret_key_change_in_production_12345
+JWT_EXPIRES_IN=24h
+
+# WhatsApp - Token para enviar código OTP por WhatsApp (API 3W)
+WHATSAPP_OTP_TOKEN=bb93cdf6-7bdd-4bbe-a728-e785bcbc93bd
+
+# Twilio (WhatsApp/SMS) - Desarrollo. Número WhatsApp: 908 934 574 (formato whatsapp:+51908934574)
+TWILIO_ACCOUNT_SID=your_dev_account_sid
+TWILIO_AUTH_TOKEN=your_dev_auth_token
+TWILIO_WHATSAPP_NUMBER=whatsapp:+51908934574
+TWILIO_PHONE_NUMBER=+51908934574
+
+# SMTP (Email) - Desarrollo
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your_dev_email@gmail.com
+SMTP_PASSWORD=your_dev_app_password
+SMTP_FROM=noreply@rapidin.dev
+
+# API Yego - Desarrollo
+YEGO_API_URL=https://api-dev.yego.com
+YEGO_API_KEY=your_dev_api_key
+
+# Factiliza - Consulta DNI/RUC (Perú)
+# Obtener token en https://factiliza.com/
+FACTILIZA_API_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2NTkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJjb25zdWx0b3IifQ.NaoAXramusCzks7mRCzWFWcMiBaSA0d8rNBgw-OVeYg
+
+# API Partners (flotas) - opcional; por defecto http://162.55.214.109:6000/v2/partners
+# PARTNERS_API_URL=http://162.55.214.109:6000/v2/partners
+
+# Yango Fleet: dos cookies. COOKIE = pagar/recarga (add). COOKIE_COBRO = cobro automático (withdraw + consulta saldo en job).
+YANGO_FLEET_BASE_URL=https://fleet.yango.com
+YANGO_FLEET_PARK_ID=08e20910d81d42658d4334d3f6d10ac0
+
+# Yego Mi Auto: park + cookie para driver/income y cobro cuota (prioridad sobre park_id del conductor)
+YANGO_FLEET_PARK_ID_MIAUTO=fafd623109d740f8a1f15af7c3dd86c6
+YANGO_FLEET_COOKIE_COBRO_MIAUTO="i=nOvRJ2K/cZwWkUf8kHuUrHWLCzY44glVytXeWCF8UjS0SnNco2YVTIDg8AGF5VTgKfZpWwEgwj6jgfVAZT4CTM4GaRw=; yandexuid=2622840871772483002; yashr=7273643541772483002; yuidss=2622840871772483002; ymex=2087843007.yrts.1772483007; gdpr=0; _ym_uid=1772483007632502910; _ym_d=1772483008; yandex_login=giomarortega; Session_id=3:1774442763.5.0.1772483086636:WbD9Jg:6f7d.1.2:1|2223153146.1959677.2.0:3.2:1959677.3:1774442763|60:11798385.480979.JYPTGmu58GOQPKLBMu9rRkEHrr4; sessar=1.1719225.CiAOZ6ib9gwbFlcv0qu857wUi0jhWNkeP48249Vo8T9AKg.RQziCqX7K3iUtu4q9olsJ5CslGkIPLX95kQrckocJho; sessionid2=3:1774442763.5.0.1772483086636:WbD9Jg:6f7d.1.2:1|2223153146.1959677.2.0:3.2:1959677.3:1774442763|60:11798385.480979.fakesign0000000000000000000; yp=2089802763.udn.cDpnaW9tYXJvcnRlZ2E%3D; ys=udn.cDpnaW9tYXJvcnRlZ2E%3D; L=QxhlAnNeXUZAYQIAVWxjZ0Bte3FZBHNzVV4oASoTBgYDNikF.1774442763.1791208.32.2e81a1506afacf8869b3eed098c3419d; _ym_isad=2; _ym_visorc=b; _yasc=2nEKt6AH4Kx3NAeSQoc9Lt5tYBzjTrnuJAIP2ELCvbEL9JkyhkUYMs4ixPpbDjTQ8Hk=; bh=EkEiTm90KEE6QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjE0NCIsICJNaWNyb3NvZnQgRWRnZSI7dj0iMTQ0IhoDeDg2Ig4xNDQuMC4zNzE5LjExNSoCPzA6ByJMaW51eCJKAjY0UlsiTm90KEE6QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTQ0LjAuNzU1OS4xMzMiLCJNaWNyb3NvZnQgRWRnZSI7dj0iMTQ0LjAuMzcxOS4xMTUiYJmnms4GahzcyumIDvKst6UL+/rw5w3r//32D573zYcIv4MD"
+
+# Cookie para PAGAR / recarga (add) — carmenvargas
+YANGO_FLEET_COOKIE="yashr=3955792381761663860; receive-cookie-deprecation=1; gdpr=0; _ym_uid=1761663862703201412; _ym_d=1761663863; yandexuid=371370361761663254; yuidss=371370361761663254; yandex_login=carmenvargas; i=/qBvhsCqgSouVDIy5AxybtXvt1OZnELmvzKZgGskUj5d76q2R4jz6qPkw54ntpfKDA8SGg9mWwdF9I81W38alAG1E9k=; Session_id=3:1770051606.5.0.1770051606528:WbD9Jg:8291.1.2:1|2135387495.0.2.0:3.3:1770051606|60:11679279.190656.47frBqZR_sNAc6twXV_Fse17048; sessar=1.1615350.CiCcIO3l7vDiBRY01th6zY9UfYgRmECOa3kPmsCe-t3wBg.K1ejmkMq73_PeVyPXC30iVfoQiUXxG_B0klPmlQd2Qo; sessionid2=3:1770051606.5.0.1770051606528:WbD9Jg:8291.1.2:1|2135387495.0.2.0:3.3:1770051606|60:11679279.190656.fakesign0000000000000000000; L=Ui1HfnteZwVyDFJWVXBLW09yVXp2XARXMTscHFc4RAlBISgZ.1770051606.1673249.369775.2f4aa7443b78a74ea7adf93f245ed41c; _ym_isad=2; yp=2085411606.udn.cDpjYXJtZW52YXJnYXM%3D#1771711121.yu.371370361761663254; ymex=1774216721.oyu.371370361761663254#2077023862.yrts.1761663862; _ym_visorc=b; bh=Ej8iTm90OkEtQnJhbmQiO3Y9Ijk5IiwiR29vZ2xlIENocm9tZSI7dj0iMTQ1IiwiQ2hyb21pdW0iO3Y9IjE0NSIaA3g4NiINMTQ1LjAuNzYzMi43NioCPzA6B1dpbmRvd3NCBjE5LjAuMEoCNjRSWSJOb3Q6QS1CcmFuZCI7dj0iOTkuMC4wLjAiLCJHb29nbGUgQ2hyb21lIjt2PSIxNDUuMC43NjMyLjc2IiwiQ2hyb21pdW0iO3Y9IjE0NS4wLjc2MzIuNzYiYO+y48wGah7cyuH/CJLYobEDn8/h6gP7+vDnDev//fYPnafMhwg=; _yasc=QX9RrYVphPXxkMuqRRkrKo6dPOb16WDdJQuXsujnguHGQyjagbMeXmzSNEDLx4uTQZz+"
+
+# Cookie para COBRO AUTOMÁTICO (withdraw + saldo en job) — Jhajaira.ochoa
+YANGO_FLEET_COOKIE_COBRO="i=nOvRJ2K/cZwWkUf8kHuUrHWLCzY44glVytXeWCF8UjS0SnNco2YVTIDg8AGF5VTgKfZpWwEgwj6jgfVAZT4CTM4GaRw=; yandexuid=2622840871772483002; yashr=7273643541772483002; yuidss=2622840871772483002; ymex=2087843007.yrts.1772483007; gdpr=0; _ym_uid=1772483007632502910; _ym_d=1772483008; yandex_login=giomarortega; Session_id=3:1774442763.5.0.1772483086636:WbD9Jg:6f7d.1.2:1|2223153146.1959677.2.0:3.2:1959677.3:1774442763|60:11798385.480979.JYPTGmu58GOQPKLBMu9rRkEHrr4; sessar=1.1719225.CiAOZ6ib9gwbFlcv0qu857wUi0jhWNkeP48249Vo8T9AKg.RQziCqX7K3iUtu4q9olsJ5CslGkIPLX95kQrckocJho; sessionid2=3:1774442763.5.0.1772483086636:WbD9Jg:6f7d.1.2:1|2223153146.1959677.2.0:3.2:1959677.3:1774442763|60:11798385.480979.fakesign0000000000000000000; yp=2089802763.udn.cDpnaW9tYXJvcnRlZ2E%3D; ys=udn.cDpnaW9tYXJvcnRlZ2E%3D; L=QxhlAnNeXUZAYQIAVWxjZ0Bte3FZBHNzVV4oASoTBgYDNikF.1774442763.1791208.32.2e81a1506afacf8869b3eed098c3419d; _ym_isad=2; _ym_visorc=b; _yasc=2nEKt6AH4Kx3NAeSQoc9Lt5tYBzjTrnuJAIP2ELCvbEL9JkyhkUYMs4ixPpbDjTQ8Hk=; bh=EkEiTm90KEE6QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjE0NCIsICJNaWNyb3NvZnQgRWRnZSI7dj0iMTQ0IhoDeDg2Ig4xNDQuMC4zNzE5LjExNSoCPzA6ByJMaW51eCJKAjY0UlsiTm90KEE6QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTQ0LjAuNzU1OS4xMzMiLCJNaWNyb3NvZnQgRWRnZSI7dj0iMTQ0LjAuMzcxOS4xMTUiYMSjms4GahzcyumIDvKst6UL+/rw5w3r//32D573zYcIv4MD"
+
+# Webshare: lista de proxies (descarga al arrancar; formato host:puerto:user:pass por línea)
+YANGO_PROXIES_URL="https://proxy.webshare.io/api/v2/proxy/list/download/kqqbnmtybqubwyebpnzxicsgnsxuqgujgwljqowo/-/any/username/direct/-/?plan_id=12298298"
+
+# WebSocket
+WS_PORT=3001
+
+# CORS
+#CORS_ORIGIN=http://localhost:5173
+CORS_ORIGIN=https://rapidin.yego.pro
+# Logging
+LOG_LEVEL=debug

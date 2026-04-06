@@ -75,6 +75,9 @@ web_modules/
 # Yarn Integrity file
 .yarn-integrity
 
+# Respaldos locales Mi Auto (PII / datos operativos)
+backend/backups/
+
 # dotenv environment variable files
 .env
 .env.development.local

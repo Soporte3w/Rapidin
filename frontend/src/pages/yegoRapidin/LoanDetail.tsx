@@ -127,11 +127,13 @@ const LoanDetail = () => {
     if (count > 0) {
       const lineas = overdueInstallments.slice(0, 10).map((c) => {
         const cuota = parseFloat(c.installment_amount || 0);
-        const mora = Math.max(0, parseFloat(c.late_fee ?? 0));
-        const total = cuota + mora;
+        const pagado = parseFloat(c.paid_amount || 0);
+        const pendiente = Math.max(0, cuota - pagado);
+        const mora = Math.max(0, parseFloat(c.late_fee ?? 0) - parseFloat(c.paid_late_fee ?? 0));
+        const total = pendiente + mora;
         const fecha = c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '';
         if (mora > 0) {
-          return `• Cuota ${c.installment_number}: ${pref} ${cuota.toFixed(2)} + ${pref} ${mora.toFixed(2)} mora = ${pref} ${total.toFixed(2)} total (venció ${fecha})`;
+          return `• Cuota ${c.installment_number}: ${pref} ${pendiente.toFixed(2)} + ${pref} ${mora.toFixed(2)} mora = ${pref} ${total.toFixed(2)} total (venció ${fecha})`;
         }
         return `• Cuota ${c.installment_number}: ${pref} ${total.toFixed(2)} (venció ${fecha})`;
       });
@@ -499,8 +501,10 @@ const LoanDetail = () => {
                     {overdueInstallments.slice(0, 10).map((c) => {
                       const pref = loan?.country === 'PE' ? 'S/.' : loan?.country === 'CO' ? 'COP' : '';
                       const cuota = parseFloat(c.installment_amount || 0);
-                      const mora = Math.max(0, parseFloat(c.late_fee ?? 0));
-                      const total = cuota + mora;
+                      const pagado = parseFloat(c.paid_amount || 0);
+                      const pendiente = Math.max(0, cuota - pagado);
+                      const mora = Math.max(0, parseFloat(c.late_fee ?? 0) - parseFloat(c.paid_late_fee ?? 0));
+                      const total = pendiente + mora;
                       return (
                         <li key={c.id} className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
                           <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5">
@@ -508,7 +512,7 @@ const LoanDetail = () => {
                             <span>Vence {c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '—'}</span>
                           </div>
                           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-sm">
-                            <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{pref} {cuota.toFixed(2)}</span></span>
+                            <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{pref} {pendiente.toFixed(2)}</span></span>
                             {mora > 0 && (
                               <span><span className="text-gray-500">Mora:</span> <span className="font-medium text-red-600">{pref} {mora.toFixed(2)}</span></span>
                             )}

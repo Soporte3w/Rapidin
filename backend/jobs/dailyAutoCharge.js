@@ -391,7 +391,13 @@ const processInstallmentsList = async (installments) => {
         logger.info(`⚠️ Cobro parcial de ${driverName}: S/ ${amountToCharge.toFixed(2)} de S/ ${pendingAmount.toFixed(2)} (se aplica primero a mora, luego a cuota)`);
         await logAutoPaymentAttempt(inst, pendingAmount, amountToCharge, 'partial', 'Cobro parcial (saldo insuficiente)', balance, paymentResult?.id);
         cobrosTxtLines.push(`${driverName.trim()} | ${inst.country || 'PE'} | ${amountToCharge.toFixed(2)}`);
-        await markInstallmentOverdueOnly(inst.installment_id);
+        // No forzar 'overdue' tras cobro parcial: distributePayment ya actualizó paid_amount y status.
+        // La mora diaria (00:05) marcará overdue al día siguiente si due_date ya pasó.
+        const dueDateStr = inst.due_date ? new Date(inst.due_date).toISOString().slice(0, 10) : null;
+        const todayStr = new Date().toISOString().slice(0, 10);
+        if (dueDateStr && dueDateStr < todayStr) {
+          await markInstallmentOverdueOnly(inst.installment_id);
+        }
         await updateLoanBalance(inst.loan_id);
         partial++;
       }
@@ -435,18 +441,20 @@ export const runRetryAutoChargeFromLog = async (driverIdFilter = null) => {
   logger.info(`${installments.length} cuota(s) a reintentar (log del día con estado failed/partial)`);
   const result = await processInstallmentsList(installments);
 
-  // Tras el reintento: marcar como vencido (overdue) todo lo que siga con saldo pendiente (no cobrado o cobro parcial)
+  // Tras el reintento: marcar como vencido (overdue) solo cuotas con saldo pendiente cuyo due_date ya pasó
+  const todayStr = new Date().toISOString().slice(0, 10);
   const loanIdsToUpdate = new Set();
   for (const inst of installments) {
     const row = await query(
-      `SELECT installment_amount, paid_amount, late_fee, status
+      `SELECT installment_amount, paid_amount, late_fee, status, due_date
        FROM module_rapidin_installments WHERE id = $1`,
       [inst.installment_id]
     );
     if (row.rows.length === 0) continue;
     const r = row.rows[0];
     const pending = (parseFloat(r.installment_amount) - parseFloat(r.paid_amount || 0)) + parseFloat(r.late_fee || 0);
-    if (pending > 0) {
+    const dueDateStr = r.due_date ? new Date(r.due_date).toISOString().slice(0, 10) : null;
+    if (pending > 0 && dueDateStr && dueDateStr < todayStr) {
       await markInstallmentOverdueAndLateFee(inst.installment_id);
       loanIdsToUpdate.add(inst.loan_id);
     }

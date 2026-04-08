@@ -3,8 +3,10 @@ import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
 import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, Copy, Check, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2 } from 'lucide-react';
+import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
-import { formatDate, formatDateTime } from '../../utils/date';
+import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
+import { CUENTAS_BANCARIAS_WHATSAPP } from '../yegoRapidin/LoanDetail';
 import { TablePaginationBar } from '../../components/TablePaginationBar';
 import { useTablePagination } from '../../hooks/useTablePagination';
 import { labelOtrosGastoStatus, type MiautoOtrosGastoRow, type ComprobanteOtrosGastos } from '../../utils/miautoOtrosGastos';
@@ -76,6 +78,7 @@ interface SolicitudSummary {
   dni: string;
   phone?: string;
   email?: string;
+  country?: string;
   status: string;
   fecha_inicio_cobro_semanal?: string;
   placa_asignada?: string;
@@ -133,6 +136,9 @@ export default function YegoMiAutoRentSaleDetail() {
   const [racha, setRacha] = useState<number | null>(null);
   const [bonoAplicado, setBonoAplicado] = useState<number>(0);
   const [tabCronograma, setTabCronograma] = useState<'semanales' | 'otros_gastos'>('semanales');
+  const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
+  const [whatsAppMessage, setWhatsAppMessage] = useState('');
+  const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
 
   const toggleComprobantesSemana = useCallback((cuotaId: string) => {
     setComprobantesSemanaAbierta((prev) => ({ ...prev, [cuotaId]: !prev[cuotaId] }));
@@ -152,6 +158,75 @@ export default function YegoMiAutoRentSaleDetail() {
     }, 0);
     return roundToTwoDecimals(sum);
   }, [cuotas]);
+
+  const overdueCuotas = useMemo(() => cuotas.filter((c) => c.status === 'overdue'), [cuotas]);
+  const pendingCuotasHoy = useMemo(() => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    return cuotas.filter((c) => c.status === 'pending' && c.due_date?.slice(0, 10) === hoy);
+  }, [cuotas]);
+
+  function getWhatsAppPhone(phone: string | undefined, country: string): string {
+    if (!phone) return '';
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length >= 10 && (digits.startsWith('51') || digits.startsWith('57'))) return digits;
+    if (country === 'PE' && digits.length === 9) return '51' + digits;
+    if (country === 'CO' && digits.length === 10) return '57' + digits;
+    return digits;
+  }
+
+  const whatsAppPhone = solicitud ? getWhatsAppPhone(solicitud.phone, solicitud.country || 'PE') : '';
+
+  const openWhatsAppModal = () => {
+    const name = driverNameFromState || 'Conductor';
+    const country = solicitud?.country || 'PE';
+    const pref = country === 'PE' ? 'S/.' : country === 'CO' ? 'COP' : '';
+    let defaultText: string;
+
+    if (overdueCuotas.length > 0) {
+      const lineas = overdueCuotas.slice(0, 10).map((c) => {
+        const cuotaNeta = Number(c.cuota_neta ?? c.amount_due) || 0;
+        const pagado = Number(c.paid_amount) || 0;
+        const pendiente = Math.max(0, cuotaNeta - pagado);
+        const moraPendiente = Number(c.mora_pendiente ?? c.late_fee) || 0;
+        const total = pendiente + moraPendiente;
+        const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
+        const fecha = c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '';
+        if (moraPendiente > 0) {
+          return `• Semana ${semana}: ${pref} ${pendiente.toFixed(2)} + ${pref} ${moraPendiente.toFixed(2)} mora = ${pref} ${total.toFixed(2)} total (venció ${fecha})`;
+        }
+        return `• Semana ${semana}: ${pref} ${total.toFixed(2)} (venció ${fecha})`;
+      });
+      const mas = overdueCuotas.length > 10 ? `\n• Y ${overdueCuotas.length - 10} cuota(s) más.` : '';
+      defaultText = `Hola ${name}, tienes ${overdueCuotas.length} cuota(s) vencida(s) en tu contrato Yego Mi Auto:\n\n${lineas.join('\n')}${mas}\n\nPor favor regulariza tu situación lo antes posible. Gracias.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
+    } else if (pendingCuotasHoy.length > 0) {
+      const lineas = pendingCuotasHoy.map((c) => {
+        const cuotaNeta = Number(c.cuota_neta ?? c.amount_due) || 0;
+        const pagado = Number(c.paid_amount) || 0;
+        const pendiente = Math.max(0, cuotaNeta - pagado);
+        const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
+        return `• Semana ${semana}: ${pref} ${pendiente.toFixed(2)}`;
+      });
+      defaultText = `Hola ${name}, recuerda que hoy se vence tu cuota de Yego Mi Auto:\n\n${lineas.join('\n')}\n\nPor favor realiza tu pago a tiempo. Gracias.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
+    } else {
+      defaultText = `Hola ${name}, te contactamos respecto a tu contrato Yego Mi Auto. Cualquier duda estamos a tu disposición.`;
+    }
+    setWhatsAppMessage(defaultText);
+    setShowWhatsAppModal(true);
+  };
+
+  const handleSendWhatsApp = async () => {
+    if (!id || !whatsAppMessage.trim() || !whatsAppPhone) return;
+    setSendingWhatsApp(true);
+    try {
+      await api.post(`/miauto/solicitudes/${id}/send-whatsapp`, { message: whatsAppMessage });
+      toast.success('Mensaje enviado por WhatsApp');
+      setShowWhatsAppModal(false);
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Error al enviar el mensaje');
+    } finally {
+      setSendingWhatsApp(false);
+    }
+  };
 
   const handleCopyId = useCallback(() => {
     if (!id) return;
@@ -421,15 +496,26 @@ export default function YegoMiAutoRentSaleDetail() {
               </div>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={handleCopyId}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium"
-            title="Copiar ID del contrato (alquiler/venta)"
-          >
-            {idCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-            {idCopied ? 'Copiado' : 'Copiar ID'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={openWhatsAppModal}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-[#25D366]/20 hover:bg-[#25D366]/40 text-white text-sm font-medium transition-colors"
+              title="Enviar mensaje por WhatsApp"
+            >
+              <FaWhatsapp className="w-4 h-4" />
+              WhatsApp
+            </button>
+            <button
+              type="button"
+              onClick={handleCopyId}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium"
+              title="Copiar ID del contrato (alquiler/venta)"
+            >
+              {idCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+              {idCopied ? 'Copiado' : 'Copiar ID'}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1540,6 +1626,102 @@ export default function YegoMiAutoRentSaleDetail() {
           </div>,
           document.body
         )}
+
+      {showWhatsAppModal && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setShowWhatsAppModal(false)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 bg-gray-50">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 bg-[#25D366] rounded-lg flex items-center justify-center">
+                  <FaWhatsapp className="w-5 h-5 text-white" />
+                </div>
+                <h3 className="text-lg font-semibold text-gray-900">Enviar por WhatsApp</h3>
+              </div>
+              <button type="button" onClick={() => setShowWhatsAppModal(false)} className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4 overflow-y-auto flex-1">
+              <div>
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conductor</span>
+                <p className="mt-1 text-gray-900 font-medium">
+                  {driverNameFromState || solicitud?.phone || solicitud?.dni || '—'}
+                </p>
+                {solicitud?.phone && (
+                  <p className="text-sm text-gray-500 mt-0.5">{solicitud.phone}</p>
+                )}
+              </div>
+              <div>
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                  {overdueCuotas.length > 0 ? 'Cuotas vencidas' : pendingCuotasHoy.length > 0 ? 'Cuotas que vencen hoy' : 'Estado'}
+                </span>
+                {overdueCuotas.length === 0 && pendingCuotasHoy.length === 0 ? (
+                  <p className="mt-1 text-gray-600 text-sm">No hay cuotas vencidas ni pendientes hoy</p>
+                ) : (
+                  <ul className="mt-2 space-y-2">
+                    {(overdueCuotas.length > 0 ? overdueCuotas : pendingCuotasHoy).slice(0, 10).map((c) => {
+                      const pref = (solicitud?.country || 'PE') === 'PE' ? 'S/.' : 'COP';
+                      const cuotaNeta = Number(c.cuota_neta ?? c.amount_due) || 0;
+                      const pagado = Number(c.paid_amount) || 0;
+                      const pendiente = Math.max(0, cuotaNeta - pagado);
+                      const moraPendiente = Number(c.mora_pendiente ?? c.late_fee) || 0;
+                      const total = pendiente + moraPendiente;
+                      const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
+                      return (
+                        <li key={c.id} className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+                          <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5">
+                            <span className="font-semibold text-gray-700">Semana {semana}</span>
+                            <span>{c.status === 'overdue' ? 'Venció' : 'Vence'} {c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '—'}</span>
+                          </div>
+                          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-sm">
+                            <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{pref} {pendiente.toFixed(2)}</span></span>
+                            {moraPendiente > 0 && (
+                              <span><span className="text-gray-500">Mora:</span> <span className="font-medium text-red-600">{pref} {moraPendiente.toFixed(2)}</span></span>
+                            )}
+                            <span><span className="text-gray-500">Total:</span> <span className="font-semibold text-gray-900">{pref} {total.toFixed(2)}</span></span>
+                          </div>
+                        </li>
+                      );
+                    })}
+                    {(overdueCuotas.length > 10 || pendingCuotasHoy.length > 10) && (
+                      <li className="text-sm text-gray-500 py-1">y {Math.max(overdueCuotas.length, pendingCuotasHoy.length) - 10} cuota(s) más</li>
+                    )}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Mensaje que verá el conductor</label>
+                <textarea
+                  value={whatsAppMessage}
+                  onChange={(e) => setWhatsAppMessage(e.target.value)}
+                  rows={5}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  placeholder="Escribe el mensaje..."
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 px-5 py-4 border-t border-gray-200 bg-gray-50">
+              <button
+                type="button"
+                onClick={() => setShowWhatsAppModal(false)}
+                className="flex-1 px-4 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg font-medium hover:bg-gray-50"
+              >
+                Cerrar
+              </button>
+              <button
+                type="button"
+                onClick={handleSendWhatsApp}
+                disabled={!whatsAppPhone || !whatsAppMessage.trim() || sendingWhatsApp}
+                className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium text-white ${whatsAppPhone && whatsAppMessage.trim() && !sendingWhatsApp ? 'bg-[#25D366] hover:bg-[#20BD5A]' : 'bg-gray-300 cursor-not-allowed'}`}
+              >
+                <FaWhatsapp className="w-5 h-5" />
+                {sendingWhatsApp ? 'Enviando...' : whatsAppPhone ? 'Enviar por WhatsApp' : 'Sin número'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }

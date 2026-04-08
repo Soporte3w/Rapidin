@@ -46,6 +46,7 @@ import {
   rejectComprobanteOtrosGastos,
 } from '../services/miautoComprobanteOtrosGastosService.js';
 import { listBySolicitud as listOtrosGastosBySolicitud } from '../services/miautoOtrosGastosService.js';
+import { sendWhatsAppMessage } from '../services/authService.js';
 import pool from '../database/connection.js';
 import { uploadVoucher } from '../middleware/upload.js';
 
@@ -467,6 +468,35 @@ router.post('/solicitudes/:id/no-vino-rechazar', validateUUID, async (req, res) 
   } catch (error) {
     logger.error('Error rechazando por inasistencia:', error);
     return errorResponse(res, error.message || 'Error al rechazar', 400);
+  }
+});
+
+router.post('/solicitudes/:id/send-whatsapp', validateUUID, async (req, res) => {
+  try {
+    const sol = await getSolicitudById(req.params.id);
+    if (!sol) return errorResponse(res, 'Solicitud no encontrada', 404);
+    const rawPhone = sol.phone;
+    if (!rawPhone || !String(rawPhone).trim()) {
+      return errorResponse(res, 'La solicitud no tiene número de teléfono asociado', 400);
+    }
+    const digits = String(rawPhone).replace(/\D/g, '');
+    const country = sol.country || 'PE';
+    let phone = digits;
+    if (digits.length >= 10 && (digits.startsWith('51') || digits.startsWith('57'))) {
+      phone = digits;
+    } else if (country === 'PE' && digits.length === 9) {
+      phone = '51' + digits;
+    } else if (country === 'CO' && digits.length === 10) {
+      phone = '57' + digits;
+    }
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    if (!message) return errorResponse(res, 'El mensaje no puede estar vacío', 400);
+    const result = await sendWhatsAppMessage(phone, message);
+    if (!result.success) return errorResponse(res, result.error || 'Error al enviar WhatsApp', 400);
+    return successResponse(res, { sent: true }, 'Mensaje enviado por WhatsApp');
+  } catch (error) {
+    logger.error('Error enviando WhatsApp MiAuto:', error);
+    return errorResponse(res, error.message || 'Error al enviar', 500);
   }
 });
 

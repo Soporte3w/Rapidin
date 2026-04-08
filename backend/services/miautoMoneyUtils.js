@@ -86,6 +86,24 @@ export async function montoEnUSD(solicitudId, monto, moneda) {
 }
 
 /**
+ * Monto declarado en un comprobante (misma ruta que al validar: primero a moneda local del país vía `montoEnPEN`,
+ * luego a USD si la cuota del cronograma está en dólares).
+ */
+export async function montoComprobanteCuotaALaMonedaFila(solicitudId, monto, monedaIngreso, monedaFilaCuota) {
+  const localAmt = await montoEnPEN(solicitudId, monto, monedaIngreso);
+  if (localAmt == null || localAmt <= 0) return 0;
+  const mc = String(monedaFilaCuota || 'PEN').toUpperCase();
+  if (mc === 'USD') {
+    const sol = await query('SELECT country FROM module_miauto_solicitud WHERE id = $1', [solicitudId]);
+    const country = String(sol.rows[0]?.country || 'PE').toUpperCase() === 'CO' ? 'CO' : 'PE';
+    const { valorUsdALocal, monedaLocal } = await tipoCambioUsdALocalEfectivo(country);
+    const c = convertirMontoEntreMonedas(localAmt, monedaLocal, 'USD', valorUsdALocal);
+    return c != null ? round2(c) : 0;
+  }
+  return round2(localAmt);
+}
+
+/**
  * El tributo `partner_fees` de Yango driver/income viene en moneda local del país (PEN en PE, COP en CO).
  * Si la cuota del cronograma está en USD, hay que pasar ese monto a USD (tipo de cambio de la solicitud)
  * antes del 83,33 % y del descuento sobre la cuota; si no, se restan “soles como si fueran dólares”.

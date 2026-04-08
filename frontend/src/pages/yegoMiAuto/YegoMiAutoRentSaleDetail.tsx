@@ -38,6 +38,10 @@ import { MiautoComprobantePagoActions } from '../../components/yegoMiAuto/Miauto
 import { MiautoComprobantesResumenSemana } from '../../components/yegoMiAuto/MiautoComprobantesResumenSemana';
 import { useAuth } from '../../contexts/AuthContext';
 import { roundToTwoDecimals } from '../../utils/currency';
+import {
+  montoConvertidoPenUsdFormatted,
+  resolveTipoCambioUsdALocalFromRows,
+} from '../../utils/miautoPenUsdConversion';
 
 interface CuotaSemanal {
   id: string;
@@ -104,6 +108,16 @@ interface ComprobanteCuotaSemanal {
   origen?: string | null;
 }
 
+/** Monto pendiente sugerido para etiquetar el comprobante de conformidad (admin). */
+function defaultMontoConformidadCuota(c: CuotaSemanal): string {
+  const pend = c.pending_total != null ? Number(c.pending_total) : NaN;
+  if (Number.isFinite(pend) && pend >= 0) return roundToTwoDecimals(pend).toFixed(2);
+  const ad = Number(c.amount_due) || 0;
+  const moraP = c.mora_pendiente != null ? Number(c.mora_pendiente) : Number(c.late_fee) || 0;
+  const pd = Number(c.paid_amount) || 0;
+  return roundToTwoDecimals(Math.max(0, ad + moraP - pd)).toFixed(2);
+}
+
 export default function YegoMiAutoRentSaleDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -130,6 +144,9 @@ export default function YegoMiAutoRentSaleDetail() {
   const [subiendoConformidadCuotaId, setSubiendoConformidadCuotaId] = useState<string | null>(null);
   /** Archivo elegido por cuota; la subida es explícita con el botón «Subir». */
   const [conformidadArchivoPendiente, setConformidadArchivoPendiente] = useState<Record<string, File | null>>({});
+  /** Sobrescritura opcional de monto/moneda mostrados al subir conformidad (por defecto = pendiente de la cuota). */
+  const [conformidadMontoInput, setConformidadMontoInput] = useState<Record<string, string>>({});
+  const [conformidadMonedaInput, setConformidadMonedaInput] = useState<Record<string, 'PEN' | 'USD'>>({});
   const conformidadFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [conformidadEliminarModal, setConformidadEliminarModal] = useState<{ comprobanteId: string } | null>(null);
   const [eliminandoConformidadId, setEliminandoConformidadId] = useState<string | null>(null);
@@ -145,6 +162,11 @@ export default function YegoMiAutoRentSaleDetail() {
   }, []);
 
   /** Tope al validar un comprobante: el backend reparte el excedente en otras cuotas (misma solicitud). */
+  const tipoCambioUsdLocal = useMemo(
+    () => resolveTipoCambioUsdALocalFromRows(cuotas, solicitud?.country),
+    [cuotas, solicitud?.country]
+  );
+
   const pendienteTotalCronogramaValidar = useMemo(() => {
     const sum = cuotas.reduce((acc, row) => {
       if (row.status === 'paid' || row.status === 'bonificada') return acc;
@@ -328,10 +350,17 @@ export default function YegoMiAutoRentSaleDetail() {
       errorMsg: 'Error al rechazar',
     });
 
-  const handleSubirConformidadAdmin = async (cuotaSemanalId: string, file: File) => {
+  const handleSubirConformidadAdmin = async (
+    cuotaSemanalId: string,
+    file: File,
+    monto: number,
+    moneda: 'PEN' | 'USD'
+  ) => {
     if (!id) return;
     const fd = new FormData();
     fd.append('file', file);
+    fd.append('monto', String(monto));
+    fd.append('moneda', moneda);
     try {
       setSubiendoConformidadCuotaId(cuotaSemanalId);
       await api.post(`/miauto/solicitudes/${id}/cuotas-semanales/${cuotaSemanalId}/comprobantes-conformidad-admin`, fd, {
@@ -339,6 +368,16 @@ export default function YegoMiAutoRentSaleDetail() {
       });
       toast.success('Comprobante de pago (documento para el conductor) subido');
       setConformidadArchivoPendiente((prev) => ({ ...prev, [cuotaSemanalId]: null }));
+      setConformidadMontoInput((prev) => {
+        const next = { ...prev };
+        delete next[cuotaSemanalId];
+        return next;
+      });
+      setConformidadMonedaInput((prev) => {
+        const next = { ...prev };
+        delete next[cuotaSemanalId];
+        return next;
+      });
       await fetchDetail(undefined, { refresh: true });
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
@@ -1047,6 +1086,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                           onRechazar={handleRechazarComprobante}
                                           montoMaximo={pendienteTotalCronogramaValidar}
                                           defaultMoneda={monedaCuotasLabel(c.moneda)}
+                                          valorUsdALocal={tipoCambioUsdLocal}
                                         />
                                       </div>
                                     )}
@@ -1062,9 +1102,59 @@ export default function YegoMiAutoRentSaleDetail() {
                             <div className="mb-4 rounded-lg border border-gray-200 bg-white px-3 py-3 shadow-sm">
                                 <h5 className="text-xs font-semibold text-gray-900">Comprobante de pago (Yego)</h5>
                                 <p className="text-[11px] text-gray-500 mt-1 mb-3">
-                                  Documento de respaldo que ve el conductor en la app (no sustituye la validación de sus comprobantes).
+                                  Documento de respaldo que ve el conductor en la app. Indica el monto y la moneda que refleja el voucher antes de subirlo.
                                 </p>
-                                  <div className="mb-3 flex flex-wrap items-end gap-3 justify-between gap-y-2 border-b border-gray-100 pb-3">
+                                  <div className="mb-3 flex flex-wrap items-end gap-3 gap-y-2 border-b border-gray-100 pb-3">
+                                    <div className="flex flex-wrap items-end gap-2">
+                                      <div>
+                                        <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Monto</label>
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          min="0"
+                                          value={conformidadMontoInput[c.id] ?? defaultMontoConformidadCuota(c)}
+                                          onChange={(e) =>
+                                            setConformidadMontoInput((prev) => ({ ...prev, [c.id]: e.target.value }))
+                                          }
+                                          className="w-24 px-2 py-1 border border-gray-300 rounded text-[11px] text-gray-900"
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Moneda</label>
+                                        <select
+                                          value={conformidadMonedaInput[c.id] ?? monedaCuotasLabel(c.moneda)}
+                                          onChange={(e) => {
+                                            const newMon = e.target.value as 'PEN' | 'USD';
+                                            const prevMon = conformidadMonedaInput[c.id] ?? monedaCuotasLabel(c.moneda);
+                                            if (prevMon === newMon) return;
+                                            const montoStr = conformidadMontoInput[c.id]?.trim();
+                                            const defaultStr = defaultMontoConformidadCuota(c);
+                                            const raw = (montoStr || defaultStr).replace(',', '.');
+                                            const num = parseFloat(raw);
+                                            if (Number.isFinite(num) && num > 0) {
+                                              const convStr = montoConvertidoPenUsdFormatted(
+                                                num,
+                                                prevMon,
+                                                newMon,
+                                                tipoCambioUsdLocal
+                                              );
+                                              setConformidadMontoInput((prev) => ({
+                                                ...prev,
+                                                [c.id]: convStr,
+                                              }));
+                                            }
+                                            setConformidadMonedaInput((prev) => ({
+                                              ...prev,
+                                              [c.id]: newMon,
+                                            }));
+                                          }}
+                                          className="px-2 py-1 border border-gray-300 rounded text-[11px] text-gray-900"
+                                        >
+                                          <option value="PEN">PEN (S/.)</option>
+                                          <option value="USD">USD</option>
+                                        </select>
+                                      </div>
+                                    </div>
                                     <input
                                       ref={(el) => { conformidadFileRefs.current[c.id] = el; }}
                                       type="file"
@@ -1093,7 +1183,16 @@ export default function YegoMiAutoRentSaleDetail() {
                                         }
                                         onClick={() => {
                                           const f = conformidadArchivoPendiente[c.id];
-                                          if (f) void handleSubirConformidadAdmin(c.id, f);
+                                          if (!f) return;
+                                          const montoStr =
+                                            conformidadMontoInput[c.id]?.trim() || defaultMontoConformidadCuota(c);
+                                          const montoNum = parseFloat(montoStr.replace(',', '.'));
+                                          if (Number.isNaN(montoNum) || montoNum <= 0) {
+                                            toast.error('Indica un monto válido para el comprobante');
+                                            return;
+                                          }
+                                          const mon = conformidadMonedaInput[c.id] ?? monedaCuotasLabel(c.moneda);
+                                          void handleSubirConformidadAdmin(c.id, f, montoNum, mon);
                                         }}
                                         className="inline-flex items-center gap-1.5 rounded-md border border-[#8B1A1A] bg-[#8B1A1A] px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-[#7a1717] disabled:opacity-50 disabled:pointer-events-none transition-colors"
                                       >
@@ -1112,6 +1211,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                       <thead>
                                         <tr className="border-b border-gray-200 text-left text-gray-600">
                                           <th className="py-2 pr-3 font-medium">Archivo</th>
+                                          <th className="py-2 pr-3 font-medium whitespace-nowrap">Monto</th>
                                           <th className="py-2 pr-3 font-medium whitespace-nowrap">Fecha</th>
                                           <th className="py-2 text-right font-medium whitespace-nowrap">Acciones</th>
                                         </tr>
@@ -1135,6 +1235,11 @@ export default function YegoMiAutoRentSaleDetail() {
                                             <tr key={comp.id} className="border-b border-gray-100 last:border-0">
                                               <td className="py-2 pr-3 align-middle text-gray-900 max-w-[10rem] truncate" title={comp.file_name || undefined}>
                                                 {comp.file_name || '—'}
+                                              </td>
+                                              <td className="py-2 pr-3 align-middle text-gray-800 whitespace-nowrap">
+                                                {comp.monto != null && Number.isFinite(Number(comp.monto))
+                                                  ? `${symMoneda(comp.moneda)} ${Number(comp.monto).toFixed(2)}`
+                                                  : '—'}
                                               </td>
                                               <td className="py-2 pr-3 align-middle text-gray-600 whitespace-nowrap">
                                                 {comp.created_at ? formatDateTime(comp.created_at, 'es-ES') : '—'}
@@ -1482,6 +1587,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                                     onRechazar={handleRechazarComprobanteOg}
                                                     montoMaximo={montoMaximo}
                                                     defaultMoneda={monedaCuotasLabel(solicitud?.cronograma_vehiculo?.inicial_moneda)}
+                                                    valorUsdALocal={tipoCambioUsdLocal}
                                                   />
                                                 </div>
                                               )}

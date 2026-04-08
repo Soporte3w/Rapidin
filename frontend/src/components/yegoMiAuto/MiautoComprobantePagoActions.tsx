@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import toast from 'react-hot-toast';
 import { symMoneda } from '../../utils/miautoAlquilerVentaList';
+import { convertMontoPenUsd } from '../../utils/miautoPenUsdConversion';
+import { roundToTwoDecimals } from '../../utils/currency';
 
 type Moneda = 'PEN' | 'USD';
 
@@ -12,6 +14,8 @@ export function MiautoComprobantePagoActions({
   onRechazar,
   montoMaximo,
   defaultMoneda = 'PEN',
+  /** 1 USD = N moneda local; si se indica, al cambiar S/./USD se recalcula el monto en el input. */
+  valorUsdALocal,
 }: {
   comprobanteId: string;
   validando: boolean;
@@ -20,6 +24,7 @@ export function MiautoComprobantePagoActions({
   onRechazar: (id: string, motivo: string) => void;
   montoMaximo?: number;
   defaultMoneda?: Moneda;
+  valorUsdALocal?: number;
 }) {
   const [monto, setMonto] = useState('');
   const [moneda, setMoneda] = useState<Moneda>(defaultMoneda);
@@ -57,7 +62,18 @@ export function MiautoComprobantePagoActions({
       />
       <select
         value={moneda}
-        onChange={(e) => setMoneda(e.target.value as Moneda)}
+        onChange={(e) => {
+          const newMon = e.target.value as Moneda;
+          const prevMon = moneda;
+          if (prevMon === newMon) return;
+          setMoneda(newMon);
+          const tc = valorUsdALocal;
+          if (tc == null || tc <= 0 || !monto.trim()) return;
+          const num = parseFloat(monto);
+          if (Number.isNaN(num) || num <= 0) return;
+          const conv = convertMontoPenUsd(num, prevMon, newMon, tc);
+          setMonto(roundToTwoDecimals(conv).toFixed(2));
+        }}
         className="px-1.5 py-0.5 border border-gray-300 rounded text-[11px]"
       >
         <option value="PEN">S/.</option>

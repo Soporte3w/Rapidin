@@ -640,7 +640,11 @@ router.patch(
 router.get('/solicitudes/:id/cuotas-semanales', validateUUID, async (req, res) => {
   try {
     if (!(await ensureSolicitudOwnedByDriver(req.params.id, req, res))) return;
-    const { data: list, racha, cuotas_semanales_bonificadas } = await getCuotasSemanalesConRacha(req.params.id);
+    /** Conductor: saldos sin descontar comprobantes pendientes; staff/admin: sí reflejan monto declarado en revisión. */
+    const incluirAbonoComprobantePendiente = req.user?.role !== 'driver';
+    const { data: list, racha, cuotas_semanales_bonificadas } = await getCuotasSemanalesConRacha(req.params.id, {
+      incluirAbonoComprobantePendiente,
+    });
     const rachaNum = typeof racha === 'number' && Number.isFinite(racha) ? Math.max(0, Math.floor(racha)) : 0;
     const bonoAplicado = typeof cuotas_semanales_bonificadas === 'number' && Number.isFinite(cuotas_semanales_bonificadas) ? Math.max(0, Math.floor(cuotas_semanales_bonificadas)) : 0;
     return successResponse(res, { data: list, racha: rachaNum, cuotas_semanales_bonificadas: bonoAplicado });
@@ -689,7 +693,7 @@ router.post(
   }
 );
 
-/** Comprobante de conformidad del pago (solo admin; solo si la cuota ya está pagada o bonificada). */
+/** Comprobante de conformidad del pago (solo admin). Con monto en cuota abierta se acredita el pago además del archivo. */
 router.post(
   '/solicitudes/:id/cuotas-semanales/:cuotaSemanalId/comprobantes-conformidad-admin',
   validateUUID,
@@ -707,7 +711,8 @@ router.post(
         req.params.id,
         req.params.cuotaSemanalId,
         req.file,
-        req.user?.id
+        req.user?.id,
+        { monto: req.body?.monto, moneda: req.body?.moneda }
       );
       return successResponse(res, list, 'Comprobante de conformidad subido', 201);
     } catch (error) {

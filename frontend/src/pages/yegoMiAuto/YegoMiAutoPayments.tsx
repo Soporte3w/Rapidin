@@ -271,6 +271,8 @@ export default function YegoMiAutoPayments() {
       if (comprobanteFile) {
         const fd = new FormData();
         fd.append('file', comprobanteFile);
+        fd.append('monto', String(monto));
+        fd.append('moneda', pagoMoneda);
         try {
           await api.post(
             `/miauto/solicitudes/${modalPagar.id}/cuotas-semanales/${cuotaSeleccionadaId}/comprobantes-conformidad-admin`,

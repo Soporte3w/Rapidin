@@ -278,8 +278,8 @@ export function miautoMontoPagadoColumnaMiAuto(c: { paid_amount?: unknown }): nu
   return miautoNum(c.paid_amount);
 }
 
-/** Inicio de cobro semanal antes de esta fecha (Lima): bajo «Pagado» se muestra referencia Excel (neto). Alineado con backend `MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER`. */
-export const MIAUTO_EXCEL_REFERENCIA_SOLICITUD_CORTE = '2026-03-30';
+/** Corte legado Excel desactivado (misma fecha mínima que backend): no se aplica UI de referencia Excel por antigüedad. */
+export const MIAUTO_EXCEL_REFERENCIA_SOLICITUD_CORTE = '1900-01-01';
 
 /** ¿La solicitud entra en el grupo que muestra línea Excel? Por `fecha_inicio_cobro_semanal` estrictamente anterior al corte. */
 export function miautoSolicitudUsaReferenciaExcel(fechaInicioCobroSemanal: unknown): boolean {
@@ -289,7 +289,7 @@ export function miautoSolicitudUsaReferenciaExcel(fechaInicioCobroSemanal: unkno
 
 /**
  * Columna «Pagado» en la tabla del cronograma semanal.
- * Legado Excel (vencimiento antes del 30-mar-2026 + solicitud en corte): sin abono en BD → monto de la celda (`amount_due`);
+ * Legado Excel (corte desactivado; antes: vencimiento antes del corte + solicitud en corte): sin abono en BD → monto de la celda (`amount_due`);
  * con abono parcial o total → **paid_amount** real (p. ej. 171.69 frente a cuota 450).
  */
 export function miautoMontoPagadoColumnaCronograma(
@@ -320,8 +320,7 @@ export function miautoMontoNetoReferenciaExcel(c: {
 }
 
 /**
- * Mostrar bloque «Excel» + neto (pagado − mora): solo si la solicitud es legado Excel **y** el vencimiento de la fila
- * es estrictamente anterior al 30-mar-2026. Desde esa fecha en adelante solo aplica el valor cobrado en «Pagado» (`paid_amount`), sin etiqueta Excel.
+ * Mostrar bloque «Excel» + neto (pagado − mora): solo si la solicitud y el vencimiento caen bajo el corte legado (hoy desactivado).
  */
 export function miautoMostrarBloqueReferenciaExcel(opts: {
   fechaInicioCobroSolicitud: unknown;

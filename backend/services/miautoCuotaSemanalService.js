@@ -1638,7 +1638,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   const cobroSaldoDesdeFila = round2(parseFloat(r.cobro_saldo) || 0);
   /**
    * `amount_due` API: derivado; `paid_amount` en pagada/bonificada = BD (acotado arriba), no `obligacion_total` + mora teórica.
-   * `pending_total`: saldo pendiente de esa cuota (sin mora).
+   * `pending_total`: saldo pendiente neto (cuota_neta - paid + mora).
    */
   const amountDueApi = round2(d.amount_due_sched);
   const lateFeeColDb = round2(parseFloat(r.late_fee) || 0);
@@ -1666,7 +1666,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     : moraSchedDer;
   const lateFeeCalendarDays = filaCerrada ? 0 : calendarDaysLateLima(r.due_date);
   const cuotaFinalApi = filaCerrada ? paid_amount : d.cuota_final;
-  const pendingTotalApi = filaCerrada ? round2(0) : round2(Math.max(0, d.amount_due_remaining));
+  const pendingTotalApi = filaCerrada ? round2(0) : round2(Math.max(0, d.cuota_neta - paid_amount + lateFeePendiente));
   let statusApi = r.status;
   if (!filaCerrada) {
     const pendDerived = round2(Math.max(0, d.obligacion_total - paid_amount));
@@ -1735,7 +1735,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     partner_fees_cascada_aplicado_a: partnerFeesCascadaApi,
     cuota_neta: d.cuota_neta,
     cuota_final: cuotaFinalApi,
-    /** Saldo pendiente de cuota (sin mora). */
+    /** Saldo pendiente de cuota + mora. */
     pending_total: pendingTotalApi,
     ...refUsdPen,
     created_at: r.created_at,

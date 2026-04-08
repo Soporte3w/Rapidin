@@ -11,6 +11,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  Upload,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatDate } from '../../utils/date';
@@ -94,6 +95,8 @@ export default function YegoMiAutoPayments() {
   const [pagoMoneda, setPagoMoneda] = useState<'PEN' | 'USD'>('PEN');
   const [cuotaSeleccionadaId, setCuotaSeleccionadaId] = useState<string>('');
   const [enviando, setEnviando] = useState(false);
+  const [comprobanteFile, setComprobanteFile] = useState<File | null>(null);
+  const comprobanteInputRef = useRef<HTMLInputElement>(null);
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [cronogramaId, setCronogramaId] = useState('');
@@ -246,6 +249,7 @@ export default function YegoMiAutoPayments() {
     setCuotas([]);
     setCuotaSeleccionadaId('');
     setPagoMonto('');
+    setComprobanteFile(null);
   }, []);
 
   const registrarPago = async () => {
@@ -264,6 +268,19 @@ export default function YegoMiAutoPayments() {
         `/miauto/solicitudes/${modalPagar.id}/cuotas-semanales/${cuotaSeleccionadaId}/pago-manual`,
         { monto, moneda: pagoMoneda }
       );
+      if (comprobanteFile) {
+        const fd = new FormData();
+        fd.append('file', comprobanteFile);
+        try {
+          await api.post(
+            `/miauto/solicitudes/${modalPagar.id}/cuotas-semanales/${cuotaSeleccionadaId}/comprobantes-conformidad-admin`,
+            fd,
+            { headers: { 'Content-Type': 'multipart/form-data' } }
+          );
+        } catch {
+          toast.error('Pago registrado, pero falló la subida del comprobante');
+        }
+      }
       toast.success('Pago manual registrado');
       cerrarModal();
       const ref = paginationRef.current;
@@ -637,6 +654,42 @@ export default function YegoMiAutoPayments() {
                   <option value="PEN">S/. Soles</option>
                   <option value="USD">USD Dólares</option>
                 </select>
+
+                <label className="block text-sm font-medium text-gray-700 mb-1">Comprobante (opcional)</label>
+                <div className="mb-4">
+                  <input
+                    ref={comprobanteInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,application/pdf"
+                    onChange={(e) => setComprobanteFile(e.target.files?.[0] ?? null)}
+                    className="hidden"
+                  />
+                  {comprobanteFile ? (
+                    <div className="flex items-center gap-2 px-3 py-2 border border-green-300 bg-green-50 rounded-lg text-sm">
+                      <Upload className="w-4 h-4 text-green-600 flex-shrink-0" />
+                      <span className="truncate text-green-800 flex-1">{comprobanteFile.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setComprobanteFile(null);
+                          if (comprobanteInputRef.current) comprobanteInputRef.current.value = '';
+                        }}
+                        className="p-0.5 text-green-600 hover:text-red-600 rounded"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => comprobanteInputRef.current?.click()}
+                      className="w-full flex items-center justify-center gap-2 px-3 py-2 border-2 border-dashed border-gray-300 rounded-lg text-sm text-gray-500 hover:border-[#8B1A1A] hover:text-[#8B1A1A] transition-colors"
+                    >
+                      <Upload className="w-4 h-4" />
+                      Adjuntar comprobante
+                    </button>
+                  )}
+                </div>
 
                 <div className="flex gap-2 justify-end pt-2">
                   <button

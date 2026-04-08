@@ -685,8 +685,7 @@ export default function YegoMiAutoRentSaleDetail() {
                   const compsConductor = comps.filter((cp) => origenComp(cp) === 'conductor');
                   const conformidadesAdmin = comps.filter((cp) => origenComp(cp) === 'admin_confirmacion');
                   const pagosManualReg = comps.filter((cp) => origenComp(cp) === 'pago_manual');
-                  const cuotaPagadaOBonificada = c.status === 'paid' || c.status === 'bonificada';
-                  const mostrarPanelComprobantes = comps.length > 0 || cuotaPagadaOBonificada;
+                  const mostrarPanelComprobantes = true;
                   const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(c);
                   const montoPagadoDisplay = miautoMontoPagadoColumnaCronograma(
                     c,
@@ -974,13 +973,11 @@ export default function YegoMiAutoRentSaleDetail() {
                               )}
                             </div>
 
-                            {(cuotaPagadaOBonificada || conformidadesAdmin.length > 0) && (
-                              <div className="mb-4 rounded-lg border border-gray-200 bg-white px-3 py-3 shadow-sm">
+                            <div className="mb-4 rounded-lg border border-gray-200 bg-white px-3 py-3 shadow-sm">
                                 <h5 className="text-xs font-semibold text-gray-900">Comprobante de pago (Yego)</h5>
                                 <p className="text-[11px] text-gray-500 mt-1 mb-3">
-                                  Documento de respaldo que ve el conductor en la app (no sustituye la validación de sus comprobantes). Solo aplica si la cuota está pagada o bonificada.
+                                  Documento de respaldo que ve el conductor en la app (no sustituye la validación de sus comprobantes).
                                 </p>
-                                {cuotaPagadaOBonificada && (
                                   <div className="mb-3 flex flex-wrap items-end gap-3 justify-between gap-y-2 border-b border-gray-100 pb-3">
                                     <input
                                       ref={(el) => { conformidadFileRefs.current[c.id] = el; }}
@@ -1023,7 +1020,6 @@ export default function YegoMiAutoRentSaleDetail() {
                                       </p>
                                     )}
                                   </div>
-                                )}
                                 {conformidadesAdmin.length > 0 ? (
                                   <div className="overflow-x-auto -mx-1 px-1">
                                     <table className="w-full min-w-[280px] text-xs border-collapse">
@@ -1086,11 +1082,10 @@ export default function YegoMiAutoRentSaleDetail() {
                                       </tbody>
                                     </table>
                                   </div>
-                                ) : cuotaPagadaOBonificada ? (
+                                ) : (
                                   <p className="text-xs text-gray-500">Aún no hay documento de conformidad subido.</p>
-                                ) : null}
+                                )}
                               </div>
-                            )}
 
                             {pagosManualReg.length > 0 && (
                               <div className="mb-1">

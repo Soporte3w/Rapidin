@@ -1,23 +1,23 @@
 /**
  * Carga cuotas Mi Auto desde hoja Cuotas Semanales (Excel ENTREGA INMEDIATA).
  * Uso: npm run miauto:cargar-cuotas-excel-entrega -- --dry-run
+ *      npm run miauto:cargar-cuotas-excel-entrega -- --delete-first
  *
- * Corte: solo celdas con due_date calculado desde Excel < --cutoff-date (default 2026-03-30).
- * Para esas filas el monto del Excel es la obligación total del periodo (cuota + mora ya mezclada):
- * `late_fee` siempre 0 en BD; `amount_due` y `paid_amount` (si ✓) = monto Excel.
- * No se usa el monto derivado del cronograma para cuotas impagas bajo el corte.
+ * --delete-first: borra TODAS las cuotas existentes antes de importar.
+ * No depende de cronograma rules; usa el monto del Excel directamente.
+ * Moneda se determina por el cronograma vinculado a la solicitud.
+ *
+ * Corte: solo celdas con due_date calculado desde Excel < --cutoff-date.
  */
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import XLSX from 'xlsx';
 import { query } from '../config/database.js';
-import { getCronogramaById } from '../services/miautoCronogramaService.js';
 import { round2 } from '../services/miautoMoneyUtils.js';
 import { mondayOfWeekContainingYmd, computeDueDateForMiAutoCuota } from '../utils/miautoLimaWeekRange.js';
 import {
   isSemanaDepositoMiAuto,
-  planCuotaFromCronogramaViajes,
   persistPaidAmountCapsForSolicitud,
 } from '../services/miautoCuotaSemanalService.js';
 
@@ -26,17 +26,24 @@ const SHEET_NAME = 'Cuotas Semanales';
 const CUOTA_BASE_COL = 15;
 const COL_PLACA = 4;
 const COL_DNI = 6;
+const COL_PHONE = 7;
 const FIRST_DATA_ROW = 3;
-const DEFAULT_CUTOFF = '2026-03-30';
-const DEFAULT_XLSX = path.join(__dirname, '../../ENTREGA INMEDIATA - GIOMAR SISTEMAS - FINAL.xlsx');
+const DEFAULT_CUTOFF = '2026-04-13';
+const DEFAULT_XLSX = path.join(__dirname, '../../ENTREGA INMEDIATA  - GIOMAR SISTEMA - YEGO MI AUTO ACTUALIZADO 07.xlsx');
 
 function normalizePlacaAsignada(value) {
   if (value == null) return '';
   return String(value).trim().toUpperCase().replace(/\s+/g, '');
 }
 
+function normalizePhone(value) {
+  if (value == null) return '';
+  return String(value).replace(/\D/g, '');
+}
+
 function parseArgs(argv) {
   const dryRun = argv.includes('--dry-run');
+  const deleteFirst = argv.includes('--delete-first');
   let cutoff = DEFAULT_CUTOFF;
   let xlsxPath = null;
   for (let i = 0; i < argv.length; i++) {
@@ -51,7 +58,7 @@ function parseArgs(argv) {
   }
   if (!xlsxPath) xlsxPath = DEFAULT_XLSX;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoff)) throw new Error('--cutoff-date invalida: ' + cutoff);
-  return { dryRun, cutoff, xlsxPath };
+  return { dryRun, deleteFirst, cutoff, xlsxPath };
 }
 
 function excelSerialToYmd(n) {
@@ -120,15 +127,20 @@ function parseViajesCell(raw) {
 function parseMontoYMoneda(montoStr, defaultMoneda) {
   const s = String(montoStr ?? '').trim();
   if (s === '' && typeof montoStr === 'number') {
-    return { monto: round2(Number(montoStr)), moneda: defaultMoneda || 'USD' };
+    return { monto: round2(Number(montoStr)), moneda: defaultMoneda || 'PEN' };
   }
   if (s === '') throw new Error('Monto vacio');
-  let moneda = defaultMoneda || 'USD';
+  let moneda = defaultMoneda || 'PEN';
   let numPart = s;
   if (/^S\//i.test(s)) {
     moneda = 'PEN';
     numPart = s.replace(/^S\//i, '').trim();
-  } else numPart = s.replace(/^\$/i, '').trim();
+  } else if (/^\$/i.test(s)) {
+    moneda = 'USD';
+    numPart = s.replace(/^\$/i, '').trim();
+  } else {
+    numPart = s;
+  }
   const n = parseFloat(numPart.replace(/,/g, ''));
   if (Number.isNaN(n)) throw new Error('Monto no numerico: ' + montoStr);
   return { monto: round2(n), moneda };
@@ -137,7 +149,7 @@ function parseMontoYMoneda(montoStr, defaultMoneda) {
 function parseMontoCell(cell, defaultMoneda) {
   if (!cell) throw new Error('Sin celda monto');
   const v = cell.v;
-  if (typeof v === 'number') return { monto: round2(v), moneda: defaultMoneda || 'USD' };
+  if (typeof v === 'number') return { monto: round2(v), moneda: defaultMoneda || 'PEN' };
   return parseMontoYMoneda(cellToString(cell), defaultMoneda);
 }
 
@@ -155,7 +167,21 @@ function statusForUnpaid(dueYmd, limaToday) {
   return { status: 'pending', paid_amount: round2(0) };
 }
 
-async function findSolicitud(placaNorm, dniDigits) {
+async function loadMonedaPerCronograma() {
+  const monedaMap = new Map();
+  const res = await query(`
+    SELECT DISTINCT s.cronograma_id, cs.moneda
+    FROM module_miauto_cuota_semanal cs
+    JOIN module_miauto_solicitud s ON s.id = cs.solicitud_id
+    WHERE cs.moneda IS NOT NULL AND s.cronograma_id IS NOT NULL
+  `);
+  for (const r of res.rows) {
+    monedaMap.set(String(r.cronograma_id), r.moneda);
+  }
+  return monedaMap;
+}
+
+async function findSolicitud(placaNorm, dniDigits, phoneDigits) {
   if (placaNorm) {
     const r = await query(
       `SELECT s.id, s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal, s.placa_asignada
@@ -176,7 +202,17 @@ async function findSolicitud(placaNorm, dniDigits) {
        ORDER BY s.created_at DESC NULLS LAST LIMIT 1`,
       [dniDigits]
     );
-    return r2.rows[0] || null;
+    if (r2.rows[0]) return r2.rows[0];
+  }
+  if (phoneDigits && phoneDigits.length >= 7) {
+    const r3 = await query(
+      `SELECT s.id, s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal, s.placa_asignada
+       FROM module_miauto_solicitud s
+       WHERE REGEXP_REPLACE(COALESCE(TRIM(s.phone),''), '[^0-9]', '', 'g') LIKE '%' || $1
+       ORDER BY s.created_at DESC NULLS LAST LIMIT 1`,
+      [phoneDigits.slice(-9)]
+    );
+    return r3.rows[0] || null;
   }
   return null;
 }
@@ -187,10 +223,23 @@ function ymdFromFi(fi) {
 }
 
 async function main() {
-  const { dryRun, cutoff, xlsxPath } = parseArgs(process.argv.slice(2));
+  const { dryRun, deleteFirst, cutoff, xlsxPath } = parseArgs(process.argv.slice(2));
   if (!fs.existsSync(xlsxPath)) {
     console.error('No existe el archivo:', xlsxPath);
     process.exit(1);
+  }
+
+  console.log('=== Cargando moneda por cronograma desde cuotas existentes ===');
+  const monedaMap = await loadMonedaPerCronograma();
+  console.log('Moneda mapping:', Object.fromEntries(monedaMap));
+
+  if (deleteFirst && !dryRun) {
+    console.log('=== ELIMINANDO todas las cuotas semanales existentes ===');
+    const del = await query('DELETE FROM module_miauto_cuota_semanal');
+    console.log('Cuotas eliminadas:', del.rowCount);
+  } else if (deleteFirst && dryRun) {
+    const cnt = await query('SELECT COUNT(*) as total FROM module_miauto_cuota_semanal');
+    console.log('[DRY-RUN] Se eliminarian', cnt.rows[0].total, 'cuotas');
   }
 
   const wb = XLSX.readFile(xlsxPath, { cellDates: true, raw: true });
@@ -210,55 +259,38 @@ async function main() {
     skipped_promedio: 0,
     skipped_empty_validation: 0,
     skipped_no_solicitud: 0,
-    skipped_no_cronograma: 0,
-    skipped_no_plan: 0,
     skipped_bad_fecha: 0,
     skipped_bad_monto: 0,
+    db_inserts: 0,
     db_updates: 0,
     warnings: [],
     errors: [],
   };
 
-  const cronogramaCache = new Map();
   const touchedSolicitudes = new Set();
   const limaToday = limaTodayYmd();
 
   for (let row = FIRST_DATA_ROW; row <= maxRow; row++) {
     const placaRaw = cellToString(getCell(ws, row, COL_PLACA));
     const dniRaw = cellToString(getCell(ws, row, COL_DNI));
+    const phoneRaw = cellToString(getCell(ws, row, COL_PHONE));
     const placaNorm = normalizePlacaAsignada(placaRaw);
     const dniDigits = String(dniRaw || '').replace(/\D/g, '');
+    const phoneDigits = normalizePhone(phoneRaw);
 
-    if (!placaNorm && dniDigits.length < 4) continue;
+    if (!placaNorm && dniDigits.length < 4 && phoneDigits.length < 7) continue;
 
-    const sol = await findSolicitud(placaNorm, dniDigits);
+    const sol = await findSolicitud(placaNorm, dniDigits, phoneDigits);
     if (!sol) {
       stats.skipped_no_solicitud++;
-      stats.warnings.push({ row, msg: 'sin solicitud', placa: placaRaw, dni: dniRaw });
+      stats.warnings.push({ row, msg: 'sin solicitud', placa: placaRaw, dni: dniRaw, phone: phoneRaw });
       continue;
     }
 
-    const crId = sol.cronograma_id;
-    const vehId = sol.cronograma_vehiculo_id;
-    if (!crId || !vehId) {
-      stats.skipped_no_cronograma++;
-      stats.warnings.push({ row, solicitud_id: sol.id, msg: 'sin cronograma o vehiculo' });
-      continue;
-    }
-
-    let cronograma = cronogramaCache.get(String(crId));
-    if (!cronograma) {
-      cronograma = await getCronogramaById(crId);
-      cronogramaCache.set(String(crId), cronograma);
-    }
-    if (!cronograma?.rules?.length) {
-      stats.skipped_no_cronograma++;
-      continue;
-    }
-
+    const defaultMoneda = monedaMap.get(String(sol.cronograma_id)) || 'PEN';
     const fiYmd = ymdFromFi(sol.fecha_inicio_cobro_semanal);
 
-    for (let k = 0; k < 40; k++) {
+    for (let k = 0; k < 46; k++) {
       const c0 = CUOTA_BASE_COL + k * 4;
       const cFecha = getCell(ws, row, c0);
       const cViajes = getCell(ws, row, c0 + 1);
@@ -290,13 +322,7 @@ async function main() {
         continue;
       }
 
-      const numViajesPlan = isPrimera ? 0 : viajesParsed.num;
-      const plan = planCuotaFromCronogramaViajes(cronograma, vehId, numViajesPlan);
-      if (!plan) {
-        stats.skipped_no_plan++;
-        stats.warnings.push({ row, block: k + 1, msg: 'sin regla cronograma', viajes: numViajesPlan, solicitud_id: sol.id });
-        continue;
-      }
+      const numViajes = isPrimera ? 0 : viajesParsed.num;
 
       const dueDate = computeDueDateForMiAutoCuota(weekStart, fiYmd, isPrimera);
       const dueYmd = String(dueDate).trim().slice(0, 10);
@@ -313,11 +339,9 @@ async function main() {
         continue;
       }
 
-      const bonoStored = isPrimera ? 0 : plan.bonoAuto;
-
       let montoExcel;
       try {
-        montoExcel = parseMontoCell(cMonto, plan.moneda);
+        montoExcel = parseMontoCell(cMonto, defaultMoneda);
       } catch (e) {
         stats.skipped_bad_monto++;
         stats.warnings.push({ row, block: k + 1, msg: String(e.message) });
@@ -327,46 +351,38 @@ async function main() {
       let amountDue;
       let paidAmount;
       let status;
-      let monedaRow;
+      const monedaRow = montoExcel.moneda;
 
       if (paidFlag === true) {
         amountDue = montoExcel.monto;
         paidAmount = amountDue;
         status = 'paid';
-        monedaRow = montoExcel.moneda;
-        if (String(plan.moneda || '').toUpperCase() !== String(monedaRow || '').toUpperCase()) {
-          stats.warnings.push({ row, block: k + 1, msg: 'moneda Excel ' + monedaRow + ' vs plan ' + plan.moneda, solicitud_id: sol.id });
-        }
       } else {
         amountDue = montoExcel.monto;
         ({ status, paid_amount: paidAmount } = statusForUnpaid(dueYmd, limaToday));
-        monedaRow = montoExcel.moneda;
-        if (String(plan.moneda || '').toUpperCase() !== String(monedaRow || '').toUpperCase()) {
-          stats.warnings.push({
-            row,
-            block: k + 1,
-            msg: 'moneda Excel ' + monedaRow + ' vs plan ' + plan.moneda + ' (se usa Excel para monto)',
-            solicitud_id: sol.id,
-          });
-        }
       }
 
       const payload = {
         week_start_date: weekStart,
         due_date: dueYmd,
-        num_viajes: numViajesPlan,
+        num_viajes: numViajes,
         partner_fees_raw: 0,
         partner_fees_83: 0,
-        bono_auto: bonoStored,
-        cuota_semanal: plan.cuotaSemanal,
+        bono_auto: 0,
+        cuota_semanal: amountDue,
         amount_due: amountDue,
         paid_amount: paidAmount,
         status,
         moneda: monedaRow,
-        pct_comision: plan.pctComision,
-        cobro_saldo: plan.cobroSaldo,
+        pct_comision: 0,
+        cobro_saldo: 0,
         late_fee: 0,
       };
+
+      stats.aplicables++;
+      console.log(row + ':' + (k + 1) + ' sol=' + sol.id + ' ws=' + weekStart + ' due=' + dueYmd + ' ' + status + ' amt=' + amountDue + ' ' + monedaRow);
+
+      if (dryRun) continue;
 
       const ex = await query(
         `SELECT id FROM module_miauto_cuota_semanal
@@ -374,13 +390,8 @@ async function main() {
         [sol.id, weekStart]
       );
 
-      stats.aplicables++;
-      console.log(row + ':' + (k + 1) + ' sol=' + sol.id + ' ws=' + weekStart + ' due=' + dueYmd + ' ' + status + ' amt=' + amountDue);
-
-      if (dryRun) continue;
-
       if (ex.rows.length > 0) {
-        const upd = await query(
+        await query(
           `UPDATE module_miauto_cuota_semanal SET
             due_date = $1::date,
             num_viajes = $2,
@@ -414,10 +425,8 @@ async function main() {
             ex.rows[0].id,
           ]
         );
-        if (upd.rowCount > 0) {
-          stats.db_updates++;
-          touchedSolicitudes.add(String(sol.id));
-        } else stats.warnings.push({ row, id: ex.rows[0].id, msg: 'UPDATE 0 filas' });
+        stats.db_updates++;
+        touchedSolicitudes.add(String(sol.id));
       } else {
         await query(
           `INSERT INTO module_miauto_cuota_semanal
@@ -442,7 +451,7 @@ async function main() {
             payload.late_fee,
           ]
         );
-        stats.db_updates++;
+        stats.db_inserts++;
         touchedSolicitudes.add(String(sol.id));
       }
     }
@@ -458,7 +467,10 @@ async function main() {
     }
   }
 
-  console.log(JSON.stringify({ ok: true, dryRun, cutoff, xlsxPath, stats, solicitudes_tocadas: touchedSolicitudes.size }, null, 2));
+  console.log(JSON.stringify({
+    ok: true, dryRun, deleteFirst, cutoff, xlsxPath, stats,
+    solicitudes_tocadas: touchedSolicitudes.size,
+  }, null, 2));
   process.exit(0);
 }
 

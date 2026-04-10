@@ -33,10 +33,10 @@ import { MIAUTO_PARK_ID } from './miautoDriverLookup.js';
 const PARTNER_FEES_PCT = 0.8333;
 
 /**
- * Corte legado Excel / mora (vencimiento estrictamente antes de esta fecha).
- * Valor mínimo = desactivado: toda cuota usa plan + mora actual; no se fuerza `late_fee = 0` ni obligación solo desde `amount_due` persistido.
+ * Máx. días civiles de devengo de mora desde el vencimiento (Lima). Ej. venc. 16/03 → 06/04 = 21 días.
+ * Evita que la mora siga creciendo indefinidamente en columnas/Excel que suman cuota + late_fee.
  */
-export const MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER = '1900-01-01';
+const MORA_MAX_DIAS_ACUMULACION_MI_AUTO = 21;
 
 /** Fragmento SQL: fecha civil de hoy en Lima (misma región que cronos Mi Auto). */
 const SQL_LIMA_TODAY = `(CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date`;
@@ -108,12 +108,23 @@ function limaTodayYmdSync() {
   }).format(new Date());
 }
 
-/** Con saldo pendiente tras el vencimiento (Lima) → `overdue`; `partial` solo si aún no vence y hubo abono. */
+/** Con saldo pendiente tras el vencimiento (Lima) → `overdue`; `partial` solo si aún no vence y hubo abono. Umbral 1 céntimo (0.005 USD) para no marcar pagada con centavos pendientes. */
 function miAutoOpenStatusSaldoVencimiento(dueYmd, pend, paidDb) {
-  if (pend <= 0.02) return 'paid';
+  if (pend <= 0.005) return 'paid';
   const todayY = limaTodayYmdSync();
   if (dueYmd && /^\d{4}-\d{2}-\d{2}$/.test(dueYmd) && dueYmd < todayY) return 'overdue';
-  return paidDb > 0.02 ? 'partial' : 'pending';
+  return paidDb > 0.005 ? 'partial' : 'pending';
+}
+
+/**
+ * Carga desde Excel: si `paid_amount` coincide con `cuota_semanal` de la fila, se considera el periodo cubierto
+ * y no se aplica mora teórica (evita desvíos entre intereses calculados y montos importados).
+ */
+function excelPaidIgualCuotaSemanalIgnoraMora(r) {
+  if (!r || String(r.status || '').toLowerCase() === 'bonificada') return false;
+  const paid = round2(parseFloat(r.paid_amount) || 0);
+  const cs = round2(parseFloat(r.cuota_semanal) || 0);
+  return cs > 0.005 && Math.abs(paid - cs) <= 0.005;
 }
 
 /**
@@ -146,8 +157,7 @@ function cuotaHermanaBloqueaPorDeudaMasAntigua(o, miDueYmd, todayYmd, options = 
 }
 
 /**
- * Post-corte (due ≥ `MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER`): si la cuota programada del periodo
- * (`amount_due_sched`, p. ej. tras PF + cobro saldo) es ~0 y la obligación derivada no deja saldo,
+ * Si la cuota programada del periodo (`amount_due_sched`, p. ej. tras PF + cobro saldo) es ~0 y la obligación derivada no deja saldo,
  * no forzar pendiente con `amount_due` persistido aún alto (cascada/pool ya cubrió esta semana).
  * Si `hasOlderBlockingDebt`: hay cuota más antigua vencida con saldo → no dar por pagada esta fila con pend ~0.
  * @param {{ hasOlderBlockingDebt?: boolean }} [options]
@@ -166,13 +176,17 @@ function pendienteStatusCuotaAbiertaPostCorte(d, pendDerived, pendCols, options 
 }
 
 /**
- * Monto base semanal antes de mora: cuota neta + cobro del saldo (regla) + opcional (% comisión × partner_fees_83).
- * La **cuota del plan no resta `bono_auto`**: el bono es informativo en columna, no descuenta lo a pagar.
- * Si `partnerFeesApplyToCuotaReduction` es true (por defecto), la cuota neta es plan − 83,33% PF.
- * Si es false, el 83,33% no se resta de la fila: va en cascada vía `applyPartnerFeesWaterfallToSolicitud`.
- * Si `commissionGoesToWaterfall` es true, la comisión no suma a esta fila (pool cascada).
+ * Monto base semanal antes de mora (lo que “cuota a pagar” representa en hoja, sin mora).
+ *
+ * - **Cuota semanal** (`cuotaSemanal`): tramo del cronograma por viajes (bruta del plan).
+ * - **Cobro por ingresos** (en fila: `partner_fees_83` = 83,33% del raw Yango): lo retenido sobre ingresos de la semana;
+ *   con `partnerFeesApplyToCuotaReduction` (por defecto) la base es **cuota semanal − cobro por ingresos** (cuota neta).
+ * - **Cobro saldo** (`cobroSaldo`): cargo/alícuota de la **regla del cronograma** sobre el saldo / Fleet (puede ser negativo);
+ *   se **suma** a la cuota neta (no es lo mismo que el tributo por ingresos).
+ * - Opcional: % comisión sobre el tributo (`partner_fees_83`) según regla.
+ * La **cuota del plan no resta `bono_auto`**: el bono es informativo en columna.
  */
-function computeAmountDueSemanal({
+export function computeAmountDueSemanal({
   cuotaSemanal,
   partnerFeesRaw,
   pctComision,
@@ -195,7 +209,7 @@ function computeAmountDueSemanal({
 }
 
 /** Pool que la cascada aplica a deudas más antiguas: 83,33% PF + comisión % sobre ese tributo. */
-function partnerFeesPlusComisionPool(partnerFees83, pctComision) {
+export function partnerFeesPlusComisionPool(partnerFees83, pctComision) {
   const pf = round2(Number(partnerFees83) || 0);
   const pct = round2(Number(pctComision) || 0);
   const com = round2(pf * (pct / 100));
@@ -319,7 +333,8 @@ export async function applyPartnerFeesWaterfallToSolicitud(solicitudId, poolDelt
 
   let sql = `SELECT c.id, c.amount_due, c.late_fee, c.paid_amount, c.status, c.due_date, c.week_start_date,
                     c.num_viajes, c.bono_auto, c.cuota_semanal, c.partner_fees_raw, c.partner_fees_83,
-                    c.cobro_saldo, c.pct_comision, c.moneda, c.partner_fees_cascada_destino
+                    c.cobro_saldo, c.pct_comision, c.moneda, c.partner_fees_cascada_destino,
+                    c.fecha_ultimo_abono, c.fecha_primer_comprobante
      FROM module_miauto_cuota_semanal c
      WHERE c.solicitud_id = $1::uuid
        AND (c.status IN ('pending', 'overdue', 'partial') OR ${SQL_WATERFALL_UNDERPAID_PAID})`;
@@ -377,6 +392,7 @@ export async function applyPartnerFeesWaterfallToSolicitud(solicitudId, poolDelt
       `UPDATE module_miauto_cuota_semanal SET paid_amount = $1, status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
       [newPaid, newStatus, row.id]
     );
+    await touchFechaUltimoAbonoCuota(row.id, paid, newPaid);
     applied = round2(applied + applyAmt);
     pool = round2(pool - applyAmt);
     allocations.push({
@@ -397,7 +413,7 @@ export async function applyPartnerFeesWaterfallToSolicitud(solicitudId, poolDelt
  * Regla por tramo de viajes + montos del vehículo en el cronograma (misma base que ensureCuotaSemanalForWeek).
  * @returns {null|{ cuotaSemanal, moneda, bonoAuto, pctComision, cobroSaldo }}
  */
-function planFromCronograma(cronograma, cronogramaVehiculoId, numViajes) {
+export function planFromCronograma(cronograma, cronogramaVehiculoId, numViajes) {
   if (!cronograma?.rules?.length) return null;
   const vehicles = cronograma.vehicles || [];
   const vehicleIndex = vehicles.findIndex((v) => v.id === cronogramaVehiculoId);
@@ -415,28 +431,6 @@ function planFromCronograma(cronograma, cronogramaVehiculoId, numViajes) {
     pctComision: round2(Number(parseFloat(rule.pct_comision) || 0)),
     cobroSaldo: round2(parseFloat(rule.cobro_saldo) || 0),
   };
-}
-
-/** Misma regla que `ensureCuotaSemanalForWeek` — para importación Excel. */
-export function planCuotaFromCronogramaViajes(cronograma, cronogramaVehiculoId, numViajes) {
-  return planFromCronograma(cronograma, cronogramaVehiculoId, numViajes);
-}
-
-/** `amount_due` sin PF Yango (PF=0). No resta bono del plan en la base. */
-export function amountDueSemanalFromPlanForImport(
-  plan,
-  _dueDateYmd,
-  { isPrimeraCuota: _isPrimeraCuota = false, partnerFeesRaw = 0 } = {}
-) {
-  if (!plan) return null;
-  return computeAmountDueSemanal({
-    cuotaSemanal: plan.cuotaSemanal,
-    partnerFeesRaw,
-    pctComision: plan.pctComision,
-    cobroSaldo: plan.cobroSaldo,
-    partnerFeesApplyToCuotaReduction: true,
-    commissionGoesToWaterfall: false,
-  });
 }
 
 /** partner_fees_83 guardado o derivado de partner_fees_raw (misma lógica que al generar la cuota). */
@@ -490,23 +484,106 @@ function calendarDaysLateLima(dueDateStr) {
 
 /**
  * Mora por días de retraso (Lima). Interés proporcional a días calendario tras el vencimiento (`tasa` semanal → tasa/7 por día sobre capital moroso).
- * `baseCuota` = capital pendiente sobre el que corre la mora (p. ej. tras abonos a cuota).
+ * `baseCuota` = capital moroso sobre el que corre la mora (típ. saldo pendiente de cuota neta, no la bruta).
+ * @param {number|null} [maxDaysOverdue] Si viene, los días de mora son `min(días hasta hoy, max)` (p. ej. `MORA_MAX_DIAS_ACUMULACION_MI_AUTO`).
  */
-function computeLateFeeDisplay(cronograma, dueDateStr, baseCuota) {
+function computeLateFeeDisplay(cronograma, dueDateStr, baseCuota, maxDaysOverdue = null) {
   if (!dueDateStr || baseCuota <= 0) return round2(0);
   const tasa = round2(parseFloat(cronograma?.tasa_interes_mora) || 0);
   if (tasa <= 0) return round2(0);
-  const daysOverdue = calendarDaysLateLima(dueDateStr);
+  let daysOverdue = calendarDaysLateLima(dueDateStr);
+  if (maxDaysOverdue != null && Number.isFinite(maxDaysOverdue) && maxDaysOverdue > 0) {
+    daysOverdue = Math.min(daysOverdue, maxDaysOverdue);
+  }
   if (daysOverdue <= 0) return round2(0);
   const factorDia = tasa / 7;
   const moraDia = round2(baseCuota * factorDia);
   return round2(moraDia * daysOverdue);
 }
 
+/** Misma fórmula que `computeLateFeeDisplay` pero con número de días explícito (p. ej. mora sobre saldo desde una fecha guardada). */
+function computeLateFeeForDayCount(cronograma, baseCuota, daysOverdue) {
+  if (baseCuota <= 0 || daysOverdue <= 0) return round2(0);
+  const tasa = round2(parseFloat(cronograma?.tasa_interes_mora) || 0);
+  if (tasa <= 0) return round2(0);
+  let d = Math.floor(Number(daysOverdue) || 0);
+  if (d <= 0) return round2(0);
+  if (MORA_MAX_DIAS_ACUMULACION_MI_AUTO != null && Number.isFinite(MORA_MAX_DIAS_ACUMULACION_MI_AUTO) && MORA_MAX_DIAS_ACUMULACION_MI_AUTO > 0) {
+    d = Math.min(d, MORA_MAX_DIAS_ACUMULACION_MI_AUTO);
+  }
+  const factorDia = tasa / 7;
+  const moraDia = round2(baseCuota * factorDia);
+  return round2(moraDia * d);
+}
+
+function addOneCalendarDayYmd(ymd) {
+  const s = String(ymd || '').trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const [y, m, d] = s.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + 1);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
+/** Prioriza fecha del último abono; si no hay, la del primer comprobante (conductor). */
+function pickFechaReferenciaMoraSaldo(r) {
+  const fa = ymdFromDbDate(r.fecha_ultimo_abono);
+  const fc = ymdFromDbDate(r.fecha_primer_comprobante);
+  if (fa && /^\d{4}-\d{2}-\d{2}$/.test(fa)) return fa;
+  if (fc && /^\d{4}-\d{2}-\d{2}$/.test(fc)) return fc;
+  return null;
+}
+
 /**
- * Base semanal para mora, pendiente API y tope de cobro: **cuota neta** = plan − 83,33% PF (+ cobro saldo según regla); no resta bono.
- * Solo para vencimientos **estrictamente antes** de `MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER` se respeta `amount_due`
- * persistido (Excel legado). Desde el corte en adelante **siempre** la obligación viene del plan/PF, no de un neto guardado que pudiera traer bono descontado.
+ * Actualiza `fecha_ultimo_abono` (Lima) cuando sube `paid_amount`; si el abono vuelve a ~0, limpia la fecha.
+ * @param {string} cuotaId
+ * @param {number|string} previousPaid
+ * @param {number|string} newPaid
+ */
+export async function touchFechaUltimoAbonoCuota(cuotaId, previousPaid, newPaid) {
+  const prev = round2(parseFloat(previousPaid) || 0);
+  const neu = round2(parseFloat(newPaid) || 0);
+  try {
+    if (neu > prev + 0.005) {
+      const ymd = limaTodayYmdSync();
+      await query(
+        `UPDATE module_miauto_cuota_semanal SET fecha_ultimo_abono = $1::date, updated_at = CURRENT_TIMESTAMP WHERE id = $2::uuid`,
+        [ymd, cuotaId]
+      );
+    } else if (neu < prev - 0.005 && neu <= 0.005) {
+      await query(
+        `UPDATE module_miauto_cuota_semanal SET fecha_ultimo_abono = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`,
+        [cuotaId]
+      );
+    }
+  } catch (e) {
+    if (e?.code === '42703') return;
+    throw e;
+  }
+}
+
+/** Primera subida de comprobante por cuota: ancla civil Lima para mora sobre saldo si aún no hay `fecha_ultimo_abono`. */
+export async function touchFechaPrimerComprobanteCuota(cuotaSemanalId) {
+  const ymd = limaTodayYmdSync();
+  try {
+    await query(
+      `UPDATE module_miauto_cuota_semanal SET fecha_primer_comprobante = COALESCE(fecha_primer_comprobante, $1::date), updated_at = CURRENT_TIMESTAMP WHERE id = $2::uuid`,
+      [ymd, cuotaSemanalId]
+    );
+  } catch (e) {
+    if (e?.code === '42703') return;
+    throw e;
+  }
+}
+
+/**
+ * Cuota programada a cobrar (`amount_due_sched`): **cuota semanal − cobro por ingresos (PF83)** + **cobro saldo** de regla
+ * (y comisión % si aplica vía `computeAmountDueSemanal`).
+ * Con pool PF en cascada: `cuota_semanal − partner_fees_83 + cobro_saldo` en la fila origen.
+ * La **mora** se devenga aparte sobre la **cuota bruta** del plan (`cuota_semanal`) cuando existe; ver `amountDueAndLateForOpen`.
  */
 function resolvedAmountDueSchedForOpenRow(
   r,
@@ -523,7 +600,7 @@ function resolvedAmountDueSchedForOpenRow(
     const pf83 = partnerFees83FromRow(r);
     return round2(Math.max(0, baseCuota - pf83 + cobroSaldo));
   }
-  const computedSched = computeAmountDueSemanal({
+  return computeAmountDueSemanal({
     cuotaSemanal: cuotaSemanal,
     partnerFeesRaw: r.partner_fees_raw,
     pctComision: pctComision,
@@ -531,14 +608,6 @@ function resolvedAmountDueSchedForOpenRow(
     partnerFeesApplyToCuotaReduction: true,
     commissionGoesToWaterfall: false,
   });
-  const storedSched = round2(parseFloat(r.amount_due) || 0);
-  const dueYmd = ymdFromDbDate(r.due_date);
-  const legacyUsarPersistido =
-    dueYmd &&
-    /^\d{4}-\d{2}-\d{2}$/.test(dueYmd) &&
-    dueYmd < MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER &&
-    storedSched > 0.005;
-  return legacyUsarPersistido ? storedSched : computedSched;
 }
 
 /** Base `amount_due` efectiva para cola Fleet / pendiente (alinea API y retiro con cuota neta si hay PF en cascada). */
@@ -585,8 +654,15 @@ async function cuotaRowWithPartnerFeesUsdNormalizedIfNeeded(solicitudId, r) {
 }
 
 /**
- * Cronograma abierto: primero se imputa el pago a la **cuota del periodo** (hasta `amount_due_sched`); el remanente va a **mora**.
- * El interés diario corre sobre el **capital pendiente** (`sched − min(paid, sched)`), no sobre el sched entero si ya abonó en el vencimiento.
+ * Cronograma abierto: abonos cubren primero la **mora** y el remanente reduce la **cuota** (`amount_due_sched`).
+ * La mora devengada del periodo se calcula sobre la **cuota bruta del plan** (`cuota_semanal`, p. ej. 520) cuando existe;
+ * la cuota a pagar sigue siendo la **neta** (520 − PF83 + cobro saldo, etc.). Así el reparto 200 = mora(bruta) + abono cuota
+ * coincide con la hoja (mora sobre 520, tasa/7 × días).
+ * Días = min(atraso hasta hoy, tope `MORA_MAX_DIAS_ACUMULACION_MI_AUTO`).
+ *
+ * Si el abono cubre toda esa mora (bruta) y además baja capital (`paid > mora_full`), puede quedar cuota
+ * pendiente: sobre ese saldo se devenga **otra** mora (misma tasa/días) hasta pagar — coherente con “ya se cobró
+ * la mora del tramo bruto y al capital que sigue impago le corre mora”.
  */
 function amountDueAndLateForOpen(
   cronograma,
@@ -596,7 +672,7 @@ function amountDueAndLateForOpen(
   pct_comision,
   cobro_saldo,
   isPrimeraCuotaSemanal,
-  cascadeReceived,
+  _cascadeReceived,
   fechaInicioCobroSemanal
 ) {
   const amount_due_sched = resolvedAmountDueSchedForOpenRow(
@@ -609,33 +685,62 @@ function amountDueAndLateForOpen(
   );
   const paid = round2(parseFloat(r.paid_amount) || 0);
 
-  /** Pago del conductor (sin cascada) para calcular mora sobre capital realmente pendiente durante el periodo. */
-  const cascadeRcv = round2(Number(cascadeReceived) || 0);
-  const paidSinCascada = round2(Math.max(0, paid - cascadeRcv));
-  const aplicadoCuotaSinCascada = round2(Math.min(paidSinCascada, amount_due_sched));
-  const capitalParaMora = round2(Math.max(0, amount_due_sched - aplicadoCuotaSinCascada));
-
-  const aplicadoCuotaPrimero = round2(Math.min(paid, amount_due_sched));
-  const capitalPendiente = round2(Math.max(0, amount_due_sched - aplicadoCuotaPrimero));
-  const paidRemanenteTrasCuota = round2(Math.max(0, paid - aplicadoCuotaPrimero));
-
   const dueForMora =
     fechaInicioCobroSemanal != null
       ? dueDateYmdForMoraDesdeSemana(r, fechaInicioCobroSemanal) || ymdFromDbDate(r.due_date) || r.due_date
       : ymdFromDbDate(r.due_date) || r.due_date;
-  const mora_sched = computeLateFeeDisplay(cronograma, dueForMora, capitalParaMora);
-  const mora_full = round2(mora_sched);
+
+  const cuotaNetaProg = round2(Math.max(0, amount_due_sched));
+  const cuotaBruta = round2(Math.max(0, parseFloat(cuota_semanal) || 0));
+  /** Base para mora (tasa diaria × días): cuota bruta del tramo; si no hay bruta, neta. */
+  const baseReparto = cuotaBruta > 0.005 ? cuotaBruta : cuotaNetaProg;
+  const moraParaReparto = computeLateFeeDisplay(
+    cronograma,
+    dueForMora,
+    baseReparto,
+    MORA_MAX_DIAS_ACUMULACION_MI_AUTO
+  );
+  /** Misma cifra para imputación y columnas: no recalcular mora sobre saldo neto residual (eso subestimaba la mora). */
+  const mora_full = round2(moraParaReparto);
+  const mora_sched = round2(moraParaReparto);
 
   let late_fee_remaining;
   let amount_due_remaining;
 
   if (mora_full > 0.005) {
-    /** Pagos cubren mora primero (tras cubrir cuota), luego capital restante. */
-    late_fee_remaining = round2(Math.max(0, mora_full - paidRemanenteTrasCuota));
-    amount_due_remaining = capitalPendiente;
+    const abonoMora = round2(Math.min(paid, mora_full));
+    const abonoCuota = round2(Math.max(0, paid - abonoMora));
+    late_fee_remaining = round2(Math.max(0, mora_full - abonoMora));
+    amount_due_remaining = round2(Math.max(0, amount_due_sched - abonoCuota));
   } else {
     late_fee_remaining = round2(0);
     amount_due_remaining = round2(Math.max(0, amount_due_sched - paid));
+  }
+
+  /** Mora sobre capital de cuota aún pendiente tras haber cubierto la mora sobre cuota bruta y haber abonado algo a capital.
+   * Días: desde el día **siguiente** a `fecha_ultimo_abono` o `fecha_primer_comprobante` (Lima) hasta hoy; si no hay fecha en BD, mismo criterio que antes (días desde vencimiento). */
+  let mora_saldo_capital_pendiente = round2(0);
+  const abonoACapitalTrasMoraBruta = round2(paid - mora_full);
+  if (
+    mora_full > 0.005 &&
+    late_fee_remaining <= 0.005 &&
+    amount_due_remaining > 0.005 &&
+    abonoACapitalTrasMoraBruta > 0.005
+  ) {
+    const refYmd = pickFechaReferenciaMoraSaldo(r);
+    let daysSaldoRem;
+    if (refYmd) {
+      const startYmd = addOneCalendarDayYmd(refYmd);
+      const todayY = limaTodayYmdSync();
+      daysSaldoRem = startYmd > todayY ? 0 : Math.max(0, diffDaysYmdUtc(startYmd, todayY));
+      if (MORA_MAX_DIAS_ACUMULACION_MI_AUTO != null && MORA_MAX_DIAS_ACUMULACION_MI_AUTO > 0) {
+        daysSaldoRem = Math.min(daysSaldoRem, MORA_MAX_DIAS_ACUMULACION_MI_AUTO);
+      }
+    } else {
+      daysSaldoRem = calendarDaysLateLima(dueForMora);
+    }
+    mora_saldo_capital_pendiente = computeLateFeeForDayCount(cronograma, amount_due_remaining, daysSaldoRem);
+    late_fee_remaining = round2(late_fee_remaining + mora_saldo_capital_pendiente);
   }
 
   const obligacion_total_open = round2(amount_due_remaining + late_fee_remaining + paid);
@@ -644,9 +749,32 @@ function amountDueAndLateForOpen(
     amount_due_sched,
     mora_sched: round2(mora_sched),
     mora_full,
+    mora_saldo_capital_pendiente,
     late_fee_remaining,
     amount_due_remaining,
     obligacion_total_open,
+  };
+}
+
+/**
+ * Misma regla final que `amountDueAndLateForOpen` (abono primero a mora, luego a cuota)
+ * para alinear `mora_pendiente` + `cuota_pendiente` con `pending_total` cuando el derivado quedó desfasado.
+ */
+function imputacionMoraCuotaRemanenteFromPaid(paid, moraFull, amountDueSched) {
+  const p = round2(parseFloat(paid) || 0);
+  const mf = round2(parseFloat(moraFull) || 0);
+  const sched = round2(parseFloat(amountDueSched) || 0);
+  if (mf > 0.005) {
+    const abonoMora = round2(Math.min(p, mf));
+    const abonoCuota = round2(Math.max(0, p - abonoMora));
+    return {
+      late_fee_remaining: round2(Math.max(0, mf - abonoMora)),
+      amount_due_remaining: round2(Math.max(0, sched - abonoCuota)),
+    };
+  }
+  return {
+    late_fee_remaining: round2(0),
+    amount_due_remaining: round2(Math.max(0, sched - p)),
   };
 }
 
@@ -1071,47 +1199,6 @@ export async function ensureCuotaSemanalForWeek(
   return ins.rows[0]?.id || null;
 }
 
-/**
- * Vuelve a ejecutar `ensureCuotaSemanalForWeek` con la **última** fila que tiene `partner_fees_raw > 0` (mismos `num_viajes` / PF en BD).
- * Sirve si el PF quedó guardado sin repartir la cascada a cuotas más viejas. Si la cascada **ya** se aplicó, `ensure` con delta de pool 0 puede
- * volver a intentar reparto (riesgo de doble imputación): usar solo ante cuotas viejas claramente sin `paid_amount` del pool.
- */
-export async function reaplicarCascadaPartnerFeesDesdeUltimaFilaConPF(solicitudId) {
-  const sid = String(solicitudId || '').trim();
-  if (!sid) return { ok: false, error: 'solicitud_id vacío' };
-
-  const solRes = await query(
-    `SELECT s.cronograma_id, s.cronograma_vehiculo_id,
-            c.week_start_date, c.num_viajes,
-            GREATEST(COALESCE(c.partner_fees_yango_raw, 0), COALESCE(c.partner_fees_raw, 0))::numeric AS partner_fees_para_ensure
-     FROM module_miauto_solicitud s
-     INNER JOIN module_miauto_cuota_semanal c ON c.solicitud_id = s.id
-     WHERE s.id = $1::uuid
-       AND GREATEST(COALESCE(c.partner_fees_yango_raw, 0), COALESCE(c.partner_fees_raw, 0))::numeric > 0.005
-     ORDER BY c.week_start_date DESC NULLS LAST
-     LIMIT 1`,
-    [sid]
-  );
-  const row = solRes.rows[0];
-  if (!row?.cronograma_id) {
-    return { ok: false, error: 'sin_fila_con_partner_fees', solicitud_id: sid };
-  }
-  const ws = ymdFromDbDate(row.week_start_date);
-  if (!ws || !/^\d{4}-\d{2}-\d{2}$/.test(ws)) {
-    return { ok: false, error: 'week_start_invalido', solicitud_id: sid };
-  }
-  const ensuredId = await ensureCuotaSemanalForWeek(sid, row.cronograma_id, row.cronograma_vehiculo_id, ws, {
-    count_completed: Number(row.num_viajes) || 0,
-    partner_fees: round2(parseFloat(row.partner_fees_para_ensure) || 0),
-  });
-  return {
-    ok: ensuredId != null,
-    cuota_semanal_id: ensuredId,
-    week_start_date: ws,
-    solicitud_id: sid,
-  };
-}
-
 /** Alinea semana-depósito con `fecha_inicio_cobro_semanal`; opcional `options.fecha_inicio_cobro_semanal` (YYYY-MM-DD). */
 export async function realignPrimeraCuotaDepositoDesdeFechaInicio(solicitudId, options = {}) {
   const sid = String(solicitudId || '').trim();
@@ -1251,13 +1338,15 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
   await query(clearPartialSql, scopeParams);
 
   /** Incluir `paid` mal etiquetada: aún hay saldo en columnas cuota+mora respecto al abono (p. ej. cascada vs Excel). */
+  /** Columnas pueden marcar «pagado» sin mora persistida; el job re-deriva cuota+mora y corrige estado. */
   const underpaidPaidSql = `(c.status = 'paid' AND COALESCE(c.amount_due,0)::numeric + COALESCE(c.late_fee,0)::numeric > COALESCE(c.paid_amount,0)::numeric + 0.02)`;
   const statusSql = includePartial
-    ? `(c.status IN ('pending', 'overdue', 'partial') OR ${underpaidPaidSql})`
-    : `(c.status IN ('pending', 'overdue') OR ${underpaidPaidSql})`;
+    ? `(c.status IN ('pending', 'overdue', 'partial') OR ${underpaidPaidSql} OR c.status = 'paid')`
+    : `(c.status IN ('pending', 'overdue') OR ${underpaidPaidSql} OR c.status = 'paid')`;
   let sql = `SELECT c.id, c.solicitud_id, c.week_start_date, c.cuota_semanal, c.amount_due, c.due_date, c.num_viajes, c.bono_auto,
             c.paid_amount, c.late_fee, c.status, c.moneda, c.pct_comision, c.cobro_saldo,
             c.partner_fees_raw, c.partner_fees_83,
+            c.fecha_ultimo_abono, c.fecha_primer_comprobante,
             s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal
      FROM module_miauto_cuota_semanal c
      INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
@@ -1297,6 +1386,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.status, c.amount_due, c.late_fee, c.paid_amount,
               c.num_viajes, c.bono_auto, c.cuota_semanal, c.partner_fees_raw, c.partner_fees_83,
               c.cobro_saldo, c.pct_comision, c.moneda, c.partner_fees_cascada_destino,
+              c.fecha_ultimo_abono, c.fecha_primer_comprobante,
               s.fecha_inicio_cobro_semanal
        FROM module_miauto_cuota_semanal c
        INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
@@ -1340,26 +1430,15 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
         : null;
     const patchDue = canonicalDueYmd && /^\d{4}-\d{2}-\d{2}$/.test(String(canonicalDueYmd));
     const dueEffYmd = ymdFromDbDate(patchDue ? canonicalDueYmd : row.due_date);
-    if (
-      dueEffYmd &&
-      dueEffYmd < MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER
-    ) {
-      if (patchDue) {
-        await query(
-          `UPDATE module_miauto_cuota_semanal SET due_date = $1::date, late_fee = 0, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-          [canonicalDueYmd, row.id]
-        );
-        updated++;
-      } else {
-        const z = await query(
-          `UPDATE module_miauto_cuota_semanal SET late_fee = 0, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND COALESCE(late_fee, 0)::numeric > 0.005`,
-          [row.id]
-        );
-        if (z.rowCount > 0) updated++;
-      }
+    const rowForDerived = patchDue ? { ...row, due_date: canonicalDueYmd } : row;
+    if (excelPaidIgualCuotaSemanalIgnoraMora(row)) {
+      await query(
+        `UPDATE module_miauto_cuota_semanal SET late_fee = 0, status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`,
+        [row.id]
+      );
+      updated++;
       continue;
     }
-    const rowForDerived = patchDue ? { ...row, due_date: canonicalDueYmd } : row;
     const cascRecvMap = cascadeReceivedBySol.get(String(row.solicitud_id));
     const cascRecv = cascRecvMap ? (cascRecvMap.get(String(row.id)) || 0) : 0;
     const d = computeCuotaDerivedForRow(rowForDerived, cronograma, vehId, {
@@ -1405,9 +1484,14 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     const pend = pendienteStatusCuotaAbiertaPostCorte(d, pendDerivedUse, pendColsUse, { hasOlderBlockingDebt });
     const statusOut = miAutoOpenStatusSaldoVencimiento(dueEffYmd, pend, paidDb);
     const stRow = (row.status || '').toLowerCase();
-    /** Cuota pagada: conservar en columna el devengo/histórico; no dejar `late_fee` en 0 si hubo mora del periodo. */
+    /**
+     * Persistir mora completa (no solo la restante tras imputar pago) para que
+     * la aritmética de columnas `amount_due + late_fee − paid_amount` coincida
+     * con el pendiente real derivado. Aplica a pagadas (conservar devengo) y
+     * a abiertas (cobro Fleet, `processCobroCuota`, etc.).
+     */
     let lateFeePersist = lateFeeOut;
-    if (!freezeMoraPorComprobante && statusOut === 'paid' && stRow !== 'bonificada') {
+    if (!freezeMoraPorComprobante && stRow !== 'bonificada') {
       lateFeePersist = round2(Math.max(lateFeeDb, lateFeeOut, moraFullD, moraSchedD));
     }
     if (freezeMoraPorComprobante) {
@@ -1514,43 +1598,36 @@ function computeCuotaDerivedForRow(r, cronograma, vehId, options = {}) {
     bono_auto = 0;
   }
 
+  if (excelPaidIgualCuotaSemanalIgnoraMora(r)) {
+    const paidRow = round2(parseFloat(r.paid_amount) || 0);
+    const amount_due_sched_res = round2(
+      resolvedAmountDueSchedForOpenRow(r, cuota_semanal, bono_auto, pct_comision, cobro_saldo, isPrimera)
+    );
+    return {
+      cuota_semanal,
+      amount_due_sched: amount_due_sched_res,
+      amount_due_remaining: 0,
+      late_fee: 0,
+      bono_auto,
+      pct_comision,
+      cobro_saldo,
+      moneda,
+      /** Incluye PF y cobro saldo (misma base que `amount_due_sched`). */
+      cuota_neta: amount_due_sched_res,
+      cuota_final: 0,
+      obligacion_total: paidRow,
+      pf83,
+      mora_full: 0,
+      mora_saldo_capital_pendiente: 0,
+      mora_sched_periodo: 0,
+    };
+  }
+
   /** Mora teórica (para persistir en `late_fee` en BD). */
   let mora_full = round2(parseFloat(r.late_fee) || 0);
   let mOpen = null;
 
-  const dueYmdRow = ymdFromDbDate(r.due_date);
-  /** Corte legado (hoy desactivado): si activo, obligación = `amount_due` persistido sin mora aparte. */
-  const legacyExcelObligacionUnica =
-    dueYmdRow && dueYmdRow < MIAUTO_SKIP_BONO_IN_CUOTA_BASE_DUE_ON_OR_AFTER;
-
-  if (legacyExcelObligacionUnica) {
-    const sched = round2(parseFloat(r.amount_due) || 0);
-    const paid = round2(parseFloat(r.paid_amount) || 0);
-    mora_full = 0;
-    late_fee = 0;
-    amount_due_sched = sched;
-    if (cerrada) {
-      amount_due_remaining = 0;
-      mOpen = {
-        amount_due_sched: sched,
-        mora_full: 0,
-        mora_sched: 0,
-        late_fee_remaining: 0,
-        amount_due_remaining: 0,
-        obligacion_total_open: round2(sched),
-      };
-    } else {
-      amount_due_remaining = round2(Math.max(0, sched - paid));
-      mOpen = {
-        amount_due_sched: sched,
-        mora_full: 0,
-        mora_sched: 0,
-        late_fee_remaining: 0,
-        amount_due_remaining,
-        obligacion_total_open: round2(amount_due_remaining + paid),
-      };
-    }
-  } else if (cerrada && usoCronogramaParaMontos) {
+  if (cerrada && usoCronogramaParaMontos) {
     mOpen = amountDueAndLateForOpen(
       cronograma,
       rForFees,
@@ -1564,8 +1641,20 @@ function computeCuotaDerivedForRow(r, cronograma, vehId, options = {}) {
     );
     mora_full = round2(mOpen.mora_full);
     amount_due_sched = round2(mOpen.amount_due_sched);
-    amount_due_remaining = 0;
-    late_fee = 0;
+    /**
+     * «Pagada» en BD no implica saldo 0: la fuente de verdad es el remanente tras imputar mora→cuota (`amountDueAndLateForOpen`),
+     * no `paid < obligación` redondeada (evita colapsar 0,32¢ a «pagada» cuando la obligación total cuadra mal a 2 decimales).
+     */
+    const stLow = (r.status || '').toLowerCase();
+    const saldoRemanenteOpen = round2(mOpen.amount_due_remaining + mOpen.late_fee_remaining);
+    const underpaidEcon = stLow !== 'bonificada' && saldoRemanenteOpen > 0.005;
+    if (underpaidEcon) {
+      amount_due_remaining = round2(mOpen.amount_due_remaining);
+      late_fee = round2(mOpen.late_fee_remaining);
+    } else {
+      amount_due_remaining = 0;
+      late_fee = 0;
+    }
   } else if (!cerrada) {
     mOpen = amountDueAndLateForOpen(
       cronograma,
@@ -1586,7 +1675,51 @@ function computeCuotaDerivedForRow(r, cronograma, vehId, options = {}) {
       : 0;
   }
 
-  const cuota_neta = round2(Math.max(0, cuota_semanal - pf83));
+  /**
+   * Si `mOpen` nunca se asignó (p. ej. `paid` en BD pero sin tramo de plan → no entró a `cerrada && usoCronogramaParaMontos`),
+   * los remanentes quedaban como `amount_due`/`late_fee` en BD y desfasados respecto a `obligacion_total − paid`.
+   */
+  if (!mOpen && cronograma && vehId != null) {
+    mOpen = amountDueAndLateForOpen(
+      cronograma,
+      rForFees,
+      cuota_semanal,
+      bono_auto,
+      pct_comision,
+      cobro_saldo,
+      isPrimera,
+      options.cascadeReceived,
+      fi
+    );
+    mora_full = round2(mOpen.mora_full);
+    amount_due_sched = round2(mOpen.amount_due_sched);
+    const stLow = (r.status || '').toLowerCase();
+    const cerradaEff = stLow === 'paid' || stLow === 'bonificada';
+    if (cerradaEff) {
+      const saldoRemanenteOpen = round2(mOpen.amount_due_remaining + mOpen.late_fee_remaining);
+      const underpaidEcon = stLow !== 'bonificada' && saldoRemanenteOpen > 0.005;
+      if (underpaidEcon) {
+        amount_due_remaining = round2(mOpen.amount_due_remaining);
+        late_fee = round2(mOpen.late_fee_remaining);
+      } else {
+        amount_due_remaining = 0;
+        late_fee = 0;
+      }
+    } else {
+      amount_due_remaining = mOpen.amount_due_remaining;
+      late_fee = debeAplicarMoraCuotaSemanal(r.status) ? mOpen.late_fee_remaining : 0;
+    }
+  }
+
+  /**
+   * Cuota del plan a pagar (sin mora): programada = PF + cobro saldo + regla comisión según `resolvedAmountDueSchedForOpenRow` / `amount_due_sched`.
+   * No confundir con solo `cuota_semanal − PF` (faltaba restar/sumar cobro saldo).
+   */
+  const cuota_neta = mOpen
+    ? round2(mOpen.amount_due_sched)
+    : round2(
+        resolvedAmountDueSchedForOpenRow(rForFees, cuota_semanal, bono_auto, pct_comision, cobro_saldo, isPrimera)
+      );
   /** Tope de la deuda del periodo (cuota programada + mora generada), sin descontar pagos — para cap de paid_amount / persist. */
   const obligacion_total = mOpen
     ? round2(
@@ -1595,7 +1728,10 @@ function computeCuotaDerivedForRow(r, cronograma, vehId, options = {}) {
           : mOpen.amount_due_sched + mOpen.mora_full
       )
     : round2(amount_due_remaining + late_fee);
-  /** Saldo aún por cubrir: cuota pendiente + mora pendiente. */
+  /**
+   * Saldo aún por cubrir del periodo: **mora pendiente + cuota pendiente** (misma imputación que el pago: primero mora, luego capital).
+   * Si la mora queda cubierta, `late_fee` aquí es 0 y solo resta cuota.
+   */
   const cuota_final = round2(amount_due_remaining + late_fee);
   return {
     cuota_semanal,
@@ -1613,7 +1749,9 @@ function computeCuotaDerivedForRow(r, cronograma, vehId, options = {}) {
     obligacion_total,
     pf83,
     mora_full,
-    /** Interés devengado del periodo sobre capital pendiente tras abonos a cuota (días × tasa). */
+    /** Mora adicional sobre cuota neta pendiente cuando ya se cubrió la mora sobre cuota bruta y hubo abono a capital. */
+    mora_saldo_capital_pendiente: mOpen ? round2(parseFloat(mOpen.mora_saldo_capital_pendiente) || 0) : 0,
+    /** Interés devengado sobre cuota bruta (misma ventana de días). La mora sobre saldo de capital va en `mora_saldo_capital_pendiente`. */
     mora_sched_periodo: mOpen ? round2(parseFloat(mOpen.mora_sched) || 0) : 0,
   };
 }
@@ -1650,6 +1788,87 @@ function buildCascadeReceivedMap(cuotaRows) {
 }
 
 /**
+ * Contexto para imputar comprobantes / pagos manuales con la misma lógica que la API (cuota_final, no solo columnas).
+ */
+export async function loadMiautoComprobanteDerivacionContext(solicitudId) {
+  const solRes = await query(
+    `SELECT id, cronograma_id, cronograma_vehiculo_id, fecha_inicio_cobro_semanal FROM module_miauto_solicitud WHERE id = $1`,
+    [solicitudId]
+  );
+  const sol = solRes.rows[0];
+  if (!sol?.cronograma_id) return null;
+  const cronograma = await getCronogramaById(sol.cronograma_id);
+  const cascRes = await query(
+    `SELECT id, partner_fees_cascada_destino FROM module_miauto_cuota_semanal WHERE solicitud_id = $1`,
+    [solicitudId]
+  );
+  const cascadeMap = buildCascadeReceivedMap(cascRes.rows || []);
+  return { sol, cronograma, cascadeMap };
+}
+
+function computeDerivedForComprobanteRow(cuotaRow, ctx) {
+  if (!ctx) {
+    if (excelPaidIgualCuotaSemanalIgnoraMora(cuotaRow)) {
+      const sched = round2(parseFloat(cuotaRow.cuota_semanal) || 0);
+      return { cuota_final: 0, obligacion_total: sched };
+    }
+    const paid = round2(parseFloat(cuotaRow.paid_amount) || 0);
+    const ad = round2(parseFloat(cuotaRow.amount_due) || 0);
+    const lf = round2(parseFloat(cuotaRow.late_fee) || 0);
+    return { cuota_final: Math.max(0, round2(ad + lf - paid)) };
+  }
+  const { sol, cronograma, cascadeMap } = ctx;
+  const cascRecv = cascadeMap.get(String(cuotaRow.id)) || 0;
+  const ws = ymdFromDbDate(cuotaRow.week_start_date);
+  const isPrimera = ws ? isSemanaDepositoMiAuto(ws, sol.fecha_inicio_cobro_semanal) : false;
+  return computeCuotaDerivedForRow(cuotaRow, cronograma, sol.cronograma_vehiculo_id, {
+    isPrimeraCuotaSemanal: isPrimera,
+    fechaInicioCobroSemanal: sol.fecha_inicio_cobro_semanal,
+    cascadeReceived: cascRecv,
+  });
+}
+
+/**
+ * Piso por columnas BD: si `d.obligacion_total` subestima `amount_due`+`late_fee`, el pendiente no puede ser menor que
+ * `amount_due`+`late_fee` − `paidRaw`. Misma regla que `buildCuotaSemanalApiRow` y necesaria para cascada de comprobantes.
+ */
+function aplicarPisoColumnasPendienteCuota(cuotaRow, d, pendienteEconPrePiso) {
+  if (excelPaidIgualCuotaSemanalIgnoraMora(cuotaRow)) {
+    return round2(Math.max(0, pendienteEconPrePiso));
+  }
+  const obTot = d.obligacion_total;
+  if (obTot == null || !Number.isFinite(Number(obTot))) return pendienteEconPrePiso;
+  const paidRaw = round2(parseFloat(cuotaRow.paid_amount) || 0);
+  const obligacionColumnas = round2(parseFloat(cuotaRow.amount_due) || 0) + round2(parseFloat(cuotaRow.late_fee) || 0);
+  const pendientePorColumnas = round2(Math.max(0, obligacionColumnas - paidRaw));
+  /**
+   * Si `obligacion_total` del derivado queda por debajo de `amount_due`+`late_fee` (columnas), el pendiente no puede ser
+   * menor que columnas − pagado. Margen 1¢: con −2¢ solo se corregían huecos ≥2¢; un desfase de exactamente 1¢
+   * (p. ej. 170.31 vs 170.32) no aplicaba el piso y la UI mostraba «Pagada» con 0.01 faltante.
+   */
+  if (round2(obTot) <= round2(obligacionColumnas - 0.01)) {
+    return round2(Math.max(pendienteEconPrePiso, pendientePorColumnas));
+  }
+  return pendienteEconPrePiso;
+}
+
+/** Saldo pendiente económico (`cuota_final`) alineado con el cronograma y mora derivada. */
+export function miautoCuotaFinalDerivada(cuotaRow, ctx) {
+  const d = computeDerivedForComprobanteRow(cuotaRow, ctx);
+  const base = round2(Math.max(0, d.cuota_final));
+  return aplicarPisoColumnasPendienteCuota(cuotaRow, d, base);
+}
+
+/** Estado tras abonar `newPaid` según derivado (evita marcar pagada si solo cubre cuota en columnas y falta mora). */
+export function miautoStatusCuotaTrasAbonoDerivado(cuotaRow, newPaid, ctx) {
+  const row = { ...cuotaRow, paid_amount: newPaid };
+  const d = computeDerivedForComprobanteRow(row, ctx);
+  const pend = aplicarPisoColumnasPendienteCuota(row, d, round2(Math.max(0, d.cuota_final)));
+  const dueY = ymdFromDbDate(cuotaRow.due_date);
+  return miAutoOpenStatusSaldoVencimiento(dueY, pend, newPaid);
+}
+
+/**
  * Fila **origen** de cascada de cobro por ingresos: imputó el pool a otras semanas y ya no tiene PF en columna.
  * En ese caso el `paid` en BD no debe cerrar la fila como «cuota pagada» si solo se descontó/reasignó el tributo:
  * la obligación se recalcula como cuota abierta (plan sin crédito PF en esta fila).
@@ -1678,6 +1897,8 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   };
   const d0 = computeCuotaDerivedForRow(r, cronograma, vehId, derivedOpts);
   let paid_amount = round2(parseFloat(r.paid_amount) || 0);
+  /** Pago real en BD antes del cap API; para cotejar con `amount_due`+`late_fee` cuando el derivado subestima la obligación. */
+  const paidRaw = paid_amount;
   const filaCerrada = (st === 'paid' || st === 'bonificada') && !ignoreClosedForDerived;
   /**
    * Solo en **pagada/bonificada**: acotar `paid_amount` API a la obligación del periodo derivada.
@@ -1692,9 +1913,10 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   }
   /** Comprobante en revisión con monto: mismo efecto que al validar (tope de obligación), sin persistir aún en BD. */
   const creditoPend = round2(Math.max(0, Number(options.creditoComprobantePendienteMonedaCuota) || 0));
+  const pendPreDerivado = round2(Math.max(0, d0.obligacion_total - paid_amount));
   const extraAbonoRevision =
-    !filaCerrada && creditoPend > 0.005
-      ? round2(Math.min(creditoPend, Math.max(0, d0.obligacion_total - paid_amount)))
+    pendPreDerivado > 0.005 && creditoPend > 0.005
+      ? round2(Math.min(creditoPend, pendPreDerivado))
       : 0;
   const d =
     extraAbonoRevision > 0.005
@@ -1705,74 +1927,99 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
           derivedOpts
         )
       : d0;
+  /**
+   * Saldo pendiente: con comprobante en revisión (`extraAbonoRevision`) `d` ya usa `paid_amount` ficticio;
+   * la fuente coherente es `d.cuota_final`. Sin extra, obligación − pagado BD (evita desvíos históricos de `cuota_final`).
+   */
+  let pendienteEcon =
+    extraAbonoRevision > 0.005
+      ? round2(Math.max(0, d.cuota_final))
+      : round2(Math.max(0, d.obligacion_total - paid_amount));
+  if (extraAbonoRevision <= 0.005) {
+    pendienteEcon = aplicarPisoColumnasPendienteCuota(r, d, pendienteEcon);
+  }
+  const filaCerradaEfectiva = filaCerrada && pendienteEcon <= 0.005;
   /** Columna cronograma “cobro del saldo”: valor persistido en la fila (regla al generar la cuota), no el recalculado del cronograma actual. */
   const cobroSaldoDesdeFila = round2(parseFloat(r.cobro_saldo) || 0);
   /**
-   * `amount_due` API: derivado; `paid_amount` en pagada/bonificada = BD (acotado arriba), no `obligacion_total` + mora teórica.
-   * `pending_total`: saldo pendiente neto (cuota_neta - paid + mora).
+   * `amount_due` API: cuota del plan del periodo (programada), no el remanente.
+   * `cuota_pendiente`: lo que falta de esa cuota tras abonos (mora se descuenta primero del pago).
+   * `mora_pendiente` / `late_fee`: saldo mora pendiente; si hay atraso, el interés corre sobre capital cuota según cronograma.
+   * `cuota_final` / `pending_total`: mora pendiente + cuota pendiente (≈ obligación − pagado); comprobante en revisión puede congelar mora mostrada.
    */
   const amountDueApi = round2(d.amount_due_sched);
   const lateFeeColDb = round2(parseFloat(r.late_fee) || 0);
   const moraFullDer = round2(parseFloat(d.mora_full) || 0);
   const moraSchedDer = round2(parseFloat(d.mora_sched_periodo) || 0);
-  /** `paid`: mostrar mora devengada/histórica en columna aunque el saldo esté cubierto. `bonificada`: sin mora. */
+  const moraSaldoCapitalDer = round2(parseFloat(d.mora_saldo_capital_pendiente) || 0);
+  /** Fila pagada: mora histórica/devengo en columna para auditoría. `bonificada`: sin mora. */
   const lateFeeHistoricaPagada =
-    filaCerrada && st !== 'bonificada'
+    filaCerradaEfectiva && st !== 'bonificada'
       ? round2(Math.max(lateFeeColDb, moraFullDer, moraSchedDer))
       : round2(0);
-  /** `mora_pendiente`: saldo mora económico. `late_fee` API: pendiente, devengo si no hay pendiente, o histórico si fila pagada. */
-  let lateFeePendiente = filaCerrada ? round2(0) : round2(d.late_fee);
-  let moraSchedApi = filaCerrada ? round2(0) : moraSchedDer;
-  let lateFeeApi = filaCerrada
-    ? lateFeeHistoricaPagada
-    : lateFeePendiente > 0.005
-      ? lateFeePendiente
-      : moraSchedApi > 0.005
-        ? moraSchedApi
-        : round2(0);
-  let moraInteresPeriodoApi = filaCerrada
+  /** `mora_pendiente` / `late_fee` (fila abierta): saldo mora **pendiente** tras imputar pagos (mora primero). El devengo del periodo va en `mora_interes_periodo`. */
+  let lateFeePendiente = filaCerradaEfectiva ? round2(0) : round2(d.late_fee);
+  let lateFeeApi = filaCerradaEfectiva ? lateFeeHistoricaPagada : round2(lateFeePendiente);
+  let moraInteresPeriodoApi = filaCerradaEfectiva
     ? st === 'bonificada'
       ? round2(0)
       : lateFeeHistoricaPagada
-    : moraSchedDer;
+    : round2(moraSchedDer + moraSaldoCapitalDer);
   /** Comprobante en revisión: no mostrar mora teórica mayor que la persistida (el job no incrementa hasta validar/rechazar). */
-  if (options.congelaMoraComprobantePendiente && !filaCerrada) {
+  if (options.congelaMoraComprobantePendiente && !filaCerradaEfectiva) {
     const cap = lateFeeColDb;
     lateFeePendiente = round2(Math.min(lateFeePendiente, cap));
-    moraSchedApi = round2(Math.min(moraSchedApi, cap));
     moraInteresPeriodoApi = round2(Math.min(moraInteresPeriodoApi, cap));
-    lateFeeApi =
-      lateFeePendiente > 0.005
-        ? lateFeePendiente
-        : moraSchedApi > 0.005
-          ? moraSchedApi
-          : round2(0);
+    lateFeeApi = round2(lateFeePendiente);
   }
-  const lateFeeCalendarDays = filaCerrada ? 0 : calendarDaysLateLima(r.due_date);
-  let cuotaFinalApi = filaCerrada ? paid_amount : d.cuota_final;
-  const pendingTotalApi = filaCerrada
-    ? round2(0)
-    : round2(Math.max(0, d.cuota_neta - paid_amount + lateFeePendiente));
-  if (!filaCerrada && options.congelaMoraComprobantePendiente) {
-    const moraComputedStat = round2(d.late_fee);
-    cuotaFinalApi = round2(Math.max(0, d.cuota_final - moraComputedStat + lateFeeColDb));
+  const moraComputedStat = round2(d.late_fee);
+  let saldoPendienteApi = filaCerradaEfectiva ? round2(0) : pendienteEcon;
+  /** Con monto proyectado, `pendienteEcon` ya incorpora el abono; no restar solo `paid_amount` de BD. */
+  if (!filaCerradaEfectiva && options.congelaMoraComprobantePendiente && extraAbonoRevision <= 0.005) {
+    const obligFrozen = round2(d.obligacion_total - moraComputedStat + lateFeeColDb);
+    saldoPendienteApi = round2(Math.max(0, obligFrozen - paid_amount));
+  }
+  /**
+   * Sin saldo pendiente: no mostrar devengo/días de mora como si aún debiera (p. ej. «paid» económico con fila aún «abierta» en BD).
+   */
+  if (saldoPendienteApi <= 0.005) {
+    moraInteresPeriodoApi = round2(0);
+  }
+  const lateFeeCalendarDays =
+    saldoPendienteApi <= 0.005 ? 0 : filaCerradaEfectiva ? 0 : calendarDaysLateLima(r.due_date);
+  /** `cuota_final` = `pending_total` = saldo pendiente (no el monto pagado; evita confusión en UI). */
+  const cuotaFinalApi = saldoPendienteApi;
+  const pendingTotalApi = saldoPendienteApi;
+  /** Si mora+cuota derivados no cierran con `pending_total`, re-imputar con mora_full + sched + paid (misma regla que cascada). */
+  let moraPendienteApiOut = lateFeePendiente;
+  let cuotaPendienteApiOut = filaCerradaEfectiva ? round2(0) : round2(Math.max(0, d.amount_due_remaining));
+  if (!filaCerradaEfectiva && !options.congelaMoraComprobantePendiente && pendingTotalApi > 0.005) {
+    const sumParts = round2(moraPendienteApiOut + cuotaPendienteApiOut);
+    if (Math.abs(sumParts - pendingTotalApi) > 0.05) {
+      const paidParaImputar = round2(paid_amount + extraAbonoRevision);
+      const imp = imputacionMoraCuotaRemanenteFromPaid(paidParaImputar, d.mora_full, d.amount_due_sched);
+      const sImp = round2(imp.late_fee_remaining + imp.amount_due_remaining);
+      if (Math.abs(sImp - pendingTotalApi) <= 0.12) {
+        moraPendienteApiOut = imp.late_fee_remaining;
+        cuotaPendienteApiOut = imp.amount_due_remaining;
+        lateFeeApi = round2(moraPendienteApiOut);
+      }
+    }
   }
   let statusApi = r.status;
-  if (!filaCerrada) {
-    const moraComputedStat = round2(d.late_fee);
-    let pendDerived = round2(Math.max(0, d.obligacion_total - paid_amount));
+  /** Estado en API desde saldo derivado si la fila no está liquidada (`filaCerradaEfectiva`), no solo `status` en BD. */
+  if (!filaCerradaEfectiva && st !== 'bonificada') {
     /** Pendiente según motor (`cuota_final`), no columnas `amount_due`+mora crudas. */
     let pendCols = round2(Math.max(0, d.cuota_final));
-    if (options.congelaMoraComprobantePendiente) {
-      const obligFrozen = round2(d.obligacion_total - moraComputedStat + lateFeeColDb);
-      pendDerived = round2(Math.max(0, obligFrozen - paid_amount));
+    if (options.congelaMoraComprobantePendiente && extraAbonoRevision <= 0.005) {
       pendCols = round2(Math.max(0, d.cuota_final - moraComputedStat + lateFeeColDb));
     }
-    const pendStat = pendienteStatusCuotaAbiertaPostCorte(d, pendDerived, pendCols, {
+    const pendStat = pendienteStatusCuotaAbiertaPostCorte(d, saldoPendienteApi, pendCols, {
       hasOlderBlockingDebt: !!options.hasOlderBlockingDebt,
     });
     const dueYStat = ymdFromDbDate(r.due_date);
-    statusApi = miAutoOpenStatusSaldoVencimiento(dueYStat, pendStat, paid_amount);
+    const paidEfectivoApi = round2(paid_amount + extraAbonoRevision);
+    statusApi = miAutoOpenStatusSaldoVencimiento(dueYStat, pendStat, paidEfectivoApi);
   }
   const yangoRawCol =
     r.partner_fees_yango_raw != null && String(r.partner_fees_yango_raw).trim() !== ''
@@ -1814,13 +2061,17 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     /** Monto del comprobante en revisión ya descontado en `cuota_final` / `pending_total` (no está en `paid_amount` hasta validar). */
     abono_comprobante_en_revision: extraAbonoRevision > 0.005 ? extraAbonoRevision : 0,
     late_fee: lateFeeApi,
-    mora_pendiente: lateFeePendiente,
+    mora_pendiente: moraPendienteApiOut,
     late_fee_calendar_days: lateFeeCalendarDays,
     mora_interes_periodo: moraInteresPeriodoApi,
     status: statusApi,
     moneda: d.moneda,
     pct_comision: d.pct_comision,
     cobro_saldo: cobroSaldoDesdeFila,
+    /** Lima YYYY-MM-DD: último abono registrado en cuota (Fleet, validación, admin, cascada). Mora sobre saldo desde el día siguiente. */
+    fecha_ultimo_abono: ymdFromDbDate(r.fecha_ultimo_abono),
+    /** Primera subida de comprobante por el conductor (ancla si aún no hay `fecha_ultimo_abono`). */
+    fecha_primer_comprobante: ymdFromDbDate(r.fecha_primer_comprobante),
     /** Tras cascada: remanente imputable a esta fila (0 si todo el pool fue a cuotas anteriores). */
     partner_fees_raw: sinViajesYango ? 0 : round2(parseFloat(r.partner_fees_raw) || 0),
     /** 83,33% del `partner_fees_raw` de la fila (coherente con cuota neta / Fleet). */
@@ -1832,6 +2083,8 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     /** Imputación del pool PF+comisión a otras filas: `{ cuota_semanal_id, week_start_date, monto }[]`. */
     partner_fees_cascada_aplicado_a: partnerFeesCascadaApi,
     cuota_neta: d.cuota_neta,
+    /** Remanente del capital cuota (plan) tras imputar pagos con regla mora → cuota. */
+    cuota_pendiente: cuotaPendienteApiOut,
     cuota_final: cuotaFinalApi,
     /** Saldo pendiente de cuota + mora. */
     pending_total: pendingTotalApi,
@@ -1864,6 +2117,7 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
   const res = await query(
     `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, moneda, pct_comision, cobro_saldo,
             partner_fees_raw, partner_fees_83, partner_fees_cascada_destino,
+            fecha_ultimo_abono, fecha_primer_comprobante,
             created_at, updated_at
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1 ORDER BY due_date ASC`,
@@ -1914,6 +2168,7 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
       `UPDATE module_miauto_cuota_semanal SET paid_amount = $1, status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
       [paidNew, statusOut, r.id]
     );
+    await touchFechaUltimoAbonoCuota(r.id, paidDb, paidNew);
     updated++;
   }
 
@@ -1974,6 +2229,9 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
 
 /**
  * Cuotas API + bonificadas desde solicitud (un solo SELECT a `module_miauto_solicitud`).
+ * No ejecuta `updateMoraDiaria` ni `persistPaidAmountCapsForSolicitud` aquí: en cada GET ralentizaban mucho la vista
+ * (recalcular mora y posibles UPDATE por fila). La UI usa `buildCuotaSemanalApiRow` / derivados con los datos actuales;
+ * mora persistida y topes de pagado siguen actualizándose por job, POST recalcular-mora, y tras mutaciones (validar comprobante, etc.).
  * @param {{ incluirAbonoComprobantePendiente?: boolean }} [options] Si true (vista staff/admin), resta en UI el monto de comprobantes sin validar; el conductor no debe verlo hasta validación.
  * @returns {{ cuotas: object[], bonificadas_db: number }}
  */
@@ -1997,6 +2255,7 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
   const res = await query(
     `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, moneda, pct_comision, cobro_saldo,
             partner_fees_raw, partner_fees_83, partner_fees_yango_raw, partner_fees_cascada_destino,
+            fecha_ultimo_abono, fecha_primer_comprobante,
             created_at, updated_at
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1
@@ -2087,8 +2346,6 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
  * @param {{ incluirAbonoComprobantePendiente?: boolean }} [options] Solo staff/admin: proyectar abono de comprobantes en revisión en `cuota_final` / `pending_total`.
  */
 export async function getCuotasSemanalesConRacha(solicitudId, options = {}) {
-  await updateMoraDiaria(solicitudId, { includePartial: true });
-  await persistPaidAmountCapsForSolicitud(solicitudId);
   const { cuotas, bonificadas_db: fromDb } = await fetchCuotasSemanalesPayload(solicitudId, options);
   const racha = calcularRacha(cuotas);
   const fromCuotas = (cuotas || []).filter((c) => c.status === 'bonificada').length;
@@ -2105,6 +2362,7 @@ export async function getCuotasToCharge() {
   const res = await query(
     `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.status,
             c.cuota_semanal, c.bono_auto, c.cobro_saldo, c.pct_comision, c.partner_fees_raw, c.moneda,
+            c.fecha_ultimo_abono, c.fecha_primer_comprobante,
             s.cronograma_id, s.fecha_inicio_cobro_semanal,
             rd.id AS driver_id,
             COALESCE(NULLIF(TRIM(COALESCE(fl.driver_id::text, '')), ''), NULLIF(TRIM(COALESCE(rd.external_driver_id::text, '')), '')) AS external_driver_id,
@@ -2148,6 +2406,7 @@ export async function getCuotasToChargeForSolicitud(solicitudId) {
   const res = await query(
     `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.status,
             c.cuota_semanal, c.bono_auto, c.cobro_saldo, c.pct_comision, c.partner_fees_raw, c.moneda,
+            c.fecha_ultimo_abono, c.fecha_primer_comprobante,
             s.cronograma_id, s.fecha_inicio_cobro_semanal,
             rd.id AS driver_id,
             COALESCE(NULLIF(TRIM(COALESCE(fl.driver_id::text, '')), ''), NULLIF(TRIM(COALESCE(rd.external_driver_id::text, '')), '')) AS external_driver_id,
@@ -2459,6 +2718,7 @@ export async function processCobroCuota(
     `UPDATE module_miauto_cuota_semanal SET paid_amount = $1, status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
     [newPaid, newStatus, cuotaRow.id]
   );
+  await touchFechaUltimoAbonoCuota(cuotaRow.id, paid, newPaid);
 
   if (creditCuotaMoneda >= pendingAmount - 0.005) {
     logger.info(
@@ -2499,7 +2759,7 @@ export async function recalcMontosCuotasSemanalesDesdeCronograma(opts = {}) {
 
   let sql = `
     SELECT c.id, c.solicitud_id, c.week_start_date, c.num_viajes, c.partner_fees_raw, c.paid_amount, c.late_fee, c.status,
-           c.amount_due, s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal
+           c.amount_due, c.fecha_ultimo_abono, c.fecha_primer_comprobante, s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal
     FROM module_miauto_cuota_semanal c
     INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id`;
   const params = [];

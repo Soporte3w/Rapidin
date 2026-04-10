@@ -15,15 +15,16 @@ import {
   miautoFmtMonto,
   miautoMontoPagadoCuotaSemanal,
   miautoMontoPagadoColumnaCronograma,
-  miautoMostrarBloqueReferenciaExcel,
-  miautoMontoNetoReferenciaExcel,
+  miautoNum,
   miautoSemanaLista,
   miautoSemanaOrdinalPorVencimiento,
   miautoCuotaAPagarCronogramaSemanal,
+  miautoCuotaCapitalPendienteColumna,
   miautoCuotaFinalCronogramaSemanal,
   miautoCuotaSemanalOAbonoDisplay,
   miautoTooltipCobroPorIngresos,
   miautoCobroPorIngresosTributoDisplay,
+  miautoCobroSaldoDisplay,
   miautoCascadaCobroIngresosFilasParaUi,
 } from '../../utils/miautoRentSaleHelpers';
 
@@ -790,7 +791,10 @@ function AprobadoBlock({
                         >
                           Cobro saldo
                         </th>
-                        <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-gray-900 whitespace-nowrap w-[6.5rem]">
+                        <th
+                          className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-gray-900 whitespace-nowrap w-[6.5rem]"
+                          title="Saldo pendiente del capital cuota (sin mora). Los pagos cubren primero la mora; el resto reduce este saldo."
+                        >
                           Cuota a pagar
                         </th>
                         <th className="py-3 pr-2 text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-red-600 whitespace-nowrap min-w-[5.5rem]">
@@ -827,15 +831,16 @@ function AprobadoBlock({
                         const compsPanelConductor = comps.filter((cp) => !esComprobanteAdminPago(cp));
                         const cuotaCerrada = c.status === 'paid' || c.status === 'bonificada';
                         const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(c);
-                        const montoPagadoDisplay = miautoMontoPagadoColumnaCronograma(
-                          c,
-                          solicitud?.fecha_inicio_cobro_semanal
+                        const montoPagadoDisplay = miautoMontoPagadoColumnaCronograma(c);
+                        const totalPendienteFila = Math.max(
+                          0,
+                          Number(c.pending_total ?? c.cuota_final ?? cuotaFinalSemana) || 0
                         );
-                        const mostrarExcelRef = miautoMostrarBloqueReferenciaExcel({
-                          fechaInicioCobroSolicitud: solicitud?.fecha_inicio_cobro_semanal,
-                          cuota: c,
-                        });
-                        const montoNetoExcel = miautoMontoNetoReferenciaExcel(c);
+                        const cuotaNetaPlan = miautoCuotaAPagarCronogramaSemanal(c);
+                        const cuotaCapitalPendDisplay = miautoCuotaCapitalPendienteColumna(c);
+                        const mostrarSublinePlanCuota =
+                          totalPendienteFila > 0.005 && cuotaNetaPlan - cuotaCapitalPendDisplay > 0.005;
+                        const moraPendienteCol = Number(c.mora_pendiente ?? c.late_fee) || 0;
                         const saldoSemanaNeto = cuotaFinalSemana;
                         const pendienteMonto = Math.max(0, saldoSemanaNeto);
                         const pendiente = pendienteMonto > 0;
@@ -923,13 +928,18 @@ function AprobadoBlock({
                                 </div>
                               </td>
                               <td className="py-2.5 pr-2 align-middle text-xs tabular-nums text-right text-green-700">
-                                {miautoFmtMonto(symCuota, c.cobro_saldo)}
+                                {miautoFmtMonto(symCuota, miautoCobroSaldoDisplay(c))}
                               </td>
                               <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-gray-900 text-[13px]">
-                                {miautoFmtMonto(symCuota, miautoCuotaAPagarCronogramaSemanal(c))}
+                                <span className="block">{miautoFmtMonto(symCuota, cuotaCapitalPendDisplay)}</span>
+                                {mostrarSublinePlanCuota ? (
+                                  <span className="mt-0.5 block text-[10px] font-normal leading-snug text-gray-600 tabular-nums">
+                                    Plan {miautoFmtMonto(symCuota, cuotaNetaPlan)}
+                                  </span>
+                                ) : null}
                               </td>
                               <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-[13px] text-red-600">
-                                {miautoFmtMonto(symCuota, c.late_fee)}
+                                {miautoFmtMonto(symCuota, moraPendienteCol)}
                               </td>
                               <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-[13px] text-green-700">
                                 {miautoFmtMonto(symCuota, cuotaFinalSemana)}
@@ -937,19 +947,11 @@ function AprobadoBlock({
                               <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-800">
                                 <div className="flex flex-col items-end gap-0.5 tabular-nums">
                                   <span className="font-medium">{miautoFmtMonto(symCuota, montoPagadoDisplay)}</span>
-                                  {mostrarExcelRef && (
-                                    <>
-                                      <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
-                                        Excel
-                                      </span>
-                                      <span
-                                        className="text-[11px] font-medium text-emerald-800"
-                                        title="Neto tipo Excel: pagado − mora"
-                                      >
-                                        {miautoFmtMonto(symCuota, montoNetoExcel)}
-                                      </span>
-                                    </>
-                                  )}
+                                  {miautoNum(c.late_fee) > 0.005 ? (
+                                    <span className="text-[10px] font-normal leading-snug text-amber-700">
+                                      Mora: {miautoFmtMonto(symCuota, miautoNum(c.late_fee))}
+                                    </span>
+                                  ) : null}
                                 </div>
                               </td>
                               <td className="py-2.5 pr-2 align-middle whitespace-nowrap">

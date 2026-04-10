@@ -22,12 +22,8 @@ export type MonedaInicial = 'USD' | 'PEN';
 /** Moneda del bono mi auto por fila */
 export type BonoAutoMoneda = 'USD' | 'PEN';
 
-/** Fila del cronograma: % comisión, cobro saldo, viajes, bono auto y cuota semanal por cada carro */
+/** Fila del cronograma: viajes, bono auto y cuota semanal por cada carro */
 export interface CronogramaRule {
-  /** % de comisión (0–100) para esta fila */
-  pct_comision?: number;
-  /** Cobro del saldo (monto fijo asociado a la fila) */
-  cobro_saldo?: number;
   /** Intervalo de viajes, ej: "0 - 119" = entre 0 y 119 viajes usan este bono y estas cuotas por carro */
   viajes: string;
   bono_auto: number;
@@ -163,8 +159,6 @@ function generateId() {
 
 function createEmptyRule(vehicleCount: number): CronogramaRule {
   return {
-    pct_comision: 0,
-    cobro_saldo: 0,
     viajes: '',
     bono_auto: 0,
     bono_auto_moneda: 'PEN',
@@ -462,8 +456,6 @@ export default function YegoMiAutoConfig() {
             : [...(r.cuota_moneda_por_vehiculo || []), ...Array(Math.max(0, vehicles.length - (r.cuota_moneda_por_vehiculo?.length || 0))).fill('PEN') as BonoAutoMoneda[]];
           return {
             ...r,
-            pct_comision: r.pct_comision ?? 0,
-            cobro_saldo: r.cobro_saldo ?? 0,
             bono_auto_moneda: r.bono_auto_moneda ?? 'PEN',
             cuotas_por_vehiculo: cuotas,
             cuota_moneda_por_vehiculo: monedas,
@@ -632,7 +624,7 @@ export default function YegoMiAutoConfig() {
 
   const updateRule = (
     ruleIndex: number,
-    field: 'viajes' | 'bono_auto' | 'bono_auto_moneda' | 'pct_comision' | 'cobro_saldo',
+    field: 'viajes' | 'bono_auto' | 'bono_auto_moneda',
     value: string | number | BonoAutoMoneda
   ) => {
     setForm((f) => ({
@@ -1633,12 +1625,6 @@ export default function YegoMiAutoConfig() {
                       <table className="w-full text-sm table-fixed" style={{ minWidth: 520 }}>
                         <thead>
                           <tr className="bg-gray-100 border-b border-gray-200">
-                            {!isViewMode && (
-                              <>
-                                <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-[5.5rem]">% comisión</th>
-                                <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-[6.5rem]">Cobro del saldo</th>
-                              </>
-                            )}
                             <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-[7rem]">Viajes</th>
                             <th className="text-left py-2.5 px-2 font-semibold text-gray-700 w-[7rem]">Bono mi auto</th>
                             {form.vehicles.map((v, i) => (
@@ -1652,46 +1638,6 @@ export default function YegoMiAutoConfig() {
                         <tbody>
                           {form.rules.map((r, ri) => (
                             <tr key={ri} className="border-b border-gray-100 last:border-0 hover:bg-gray-50/50">
-                              {!isViewMode && (
-                                <>
-                                  <td className="py-2 px-2 align-top w-[5.5rem]">
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      max={100}
-                                      step={0.1}
-                                      value={r.pct_comision != null ? r.pct_comision : ''}
-                                      onChange={(e) => {
-                                        const v = parseFloat(e.target.value);
-                                        updateRule(ri, 'pct_comision', Number.isNaN(v) || v < 0 ? 0 : Math.min(100, v));
-                                      }}
-                                      readOnly={isViewMode}
-                                      className={`w-full rounded border border-gray-300 px-1.5 py-1 text-xs focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 box-border ${isViewMode ? 'bg-gray-50 cursor-default' : ''}`}
-                                      placeholder="0"
-                                    />
-                                  </td>
-                                  <td className="py-2 px-2 align-top w-[6.5rem]">
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      step={0.01}
-                                      value={r.cobro_saldo != null ? r.cobro_saldo : ''}
-                                      onChange={(e) => {
-                                        const raw = e.target.value;
-                                        const sanitized = sanitizeDecimalInput(raw);
-                                        const num = parseFloat(sanitized);
-                                        updateRule(ri, 'cobro_saldo', Number.isFinite(num) ? num : 0);
-                                      }}
-                                      onKeyDown={handleDecimalKeyDown}
-                                      onPaste={(e) => handleDecimalPaste(e, (n) => updateRule(ri, 'cobro_saldo', n))}
-                                      onWheel={(e) => e.currentTarget.blur()}
-                                      readOnly={isViewMode}
-                                      className={`w-full rounded border border-gray-300 px-1.5 py-1 text-xs focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 box-border${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50 cursor-default' : ''}`}
-                                      placeholder="0"
-                                    />
-                                  </td>
-                                </>
-                              )}
                               <td className="py-2 px-2 align-top w-[7rem]">
                                 <input
                                   type="text"

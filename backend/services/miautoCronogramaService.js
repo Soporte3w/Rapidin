@@ -348,7 +348,7 @@ export async function listCronogramas(filters = {}) {
       ids
     ),
     query(
-      `SELECT id, cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo
+      `SELECT id, cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision
        FROM module_miauto_cronograma_rule WHERE cronograma_id IN (${placeholders}) ORDER BY cronograma_id, orden`,
       ids
     ),
@@ -408,7 +408,7 @@ export async function getCronogramaById(id) {
     [id]
   );
   const rules = await query(
-    'SELECT id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo FROM module_miauto_cronograma_rule WHERE cronograma_id = $1 ORDER BY orden, created_at',
+    'SELECT id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision FROM module_miauto_cronograma_rule WHERE cronograma_id = $1 ORDER BY orden, created_at',
     [id]
   );
   return {
@@ -437,7 +437,6 @@ export async function getCronogramaById(id) {
       cuotas_por_vehiculo: Array.isArray(r.cuotas_por_vehiculo) ? r.cuotas_por_vehiculo : [],
       cuota_moneda_por_vehiculo: Array.isArray(r.cuota_moneda_por_vehiculo) ? r.cuota_moneda_por_vehiculo : [],
       pct_comision: r.pct_comision != null ? parseFloat(r.pct_comision) : 0,
-      cobro_saldo: r.cobro_saldo != null ? parseFloat(r.cobro_saldo) : 0,
     })),
   };
 }
@@ -469,7 +468,7 @@ export async function getCronogramasByIds(ids) {
       crIds
     ),
     query(
-      `SELECT id, cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo
+      `SELECT id, cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision
        FROM module_miauto_cronograma_rule WHERE cronograma_id IN (${placeholders}) ORDER BY cronograma_id, orden`,
       crIds
     ),
@@ -501,7 +500,6 @@ export async function getCronogramasByIds(ids) {
       cuotas_por_vehiculo: Array.isArray(r.cuotas_por_vehiculo) ? r.cuotas_por_vehiculo : [],
       cuota_moneda_por_vehiculo: Array.isArray(r.cuota_moneda_por_vehiculo) ? r.cuota_moneda_por_vehiculo : [],
       pct_comision: r.pct_comision != null ? parseFloat(r.pct_comision) : 0,
-      cobro_saldo: r.cobro_saldo != null ? parseFloat(r.cobro_saldo) : 0,
     });
   }
 
@@ -595,7 +593,7 @@ export async function createCronograma(data) {
             const monedas = Array.isArray(r.cuota_moneda_por_vehiculo) ? r.cuota_moneda_por_vehiculo : [];
             const base = rParams.length + 1;
             rPlaceholders.push(
-              `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::jsonb, $${base + 5}::jsonb, $${base + 6}, $${base + 7}, $${base + 8})`
+              `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::jsonb, $${base + 5}::jsonb, $${base + 6}, $${base + 7})`
             );
             rParams.push(
               cronogramaId,
@@ -605,12 +603,11 @@ export async function createCronograma(data) {
               JSON.stringify(cuotas),
               JSON.stringify(monedas),
               i,
-              parseFloat(r.pct_comision) || 0,
-              parseFloat(r.cobro_saldo) || 0
+              parseFloat(r.pct_comision) || 0
             );
           });
           return query(
-            `INSERT INTO module_miauto_cronograma_rule (cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo) VALUES ${rPlaceholders.join(', ')}`,
+            `INSERT INTO module_miauto_cronograma_rule (cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision) VALUES ${rPlaceholders.join(', ')}`,
             rParams
           );
         })()
@@ -693,7 +690,7 @@ export async function updateCronograma(id, data) {
             const monedas = Array.isArray(r.cuota_moneda_por_vehiculo) ? r.cuota_moneda_por_vehiculo : [];
             const base = rParams.length + 1;
             rPlaceholders.push(
-              `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::jsonb, $${base + 5}::jsonb, $${base + 6}, $${base + 7}, $${base + 8})`
+              `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::jsonb, $${base + 5}::jsonb, $${base + 6}, $${base + 7})`
             );
             rParams.push(
               id,
@@ -703,12 +700,11 @@ export async function updateCronograma(id, data) {
               JSON.stringify(cuotas),
               JSON.stringify(monedas),
               i,
-              parseFloat(r.pct_comision) || 0,
-              parseFloat(r.cobro_saldo) || 0
+              parseFloat(r.pct_comision) || 0
             );
           });
           return query(
-            `INSERT INTO module_miauto_cronograma_rule (cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo) VALUES ${rPlaceholders.join(', ')}`,
+            `INSERT INTO module_miauto_cronograma_rule (cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision) VALUES ${rPlaceholders.join(', ')}`,
             rParams
           );
         })()

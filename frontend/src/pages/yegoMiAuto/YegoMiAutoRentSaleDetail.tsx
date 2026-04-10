@@ -19,16 +19,16 @@ import {
   miautoFmtMonto,
   miautoMontoPagadoCuotaSemanal,
   miautoMontoPagadoColumnaCronograma,
-  miautoMostrarBloqueReferenciaExcel,
-  miautoMontoNetoReferenciaExcel,
   miautoNum,
   miautoSemanaLista,
   miautoSemanaOrdinalPorVencimiento,
   miautoCuotaAPagarCronogramaSemanal,
+  miautoCuotaCapitalPendienteColumna,
   miautoCuotaFinalCronogramaSemanal,
   miautoCuotaSemanalOAbonoDisplay,
   miautoTooltipCobroPorIngresos,
   miautoCobroPorIngresosTributoDisplay,
+  miautoCobroSaldoDisplay,
   miautoCascadaCobroIngresosFilasParaUi,
   MIAUTO_CUOTA_STATUS_LABELS,
   MIAUTO_CUOTA_STATUS_PILL,
@@ -52,6 +52,8 @@ interface CuotaSemanal {
   cuota_semanal?: number;
   amount_due: number;
   paid_amount: number;
+  /** Comprobante en revisión (staff): suma proyectada aún no persistida en `paid_amount`. */
+  abono_comprobante_en_revision?: number;
   late_fee: number;
   /** Días civiles tras el vencimiento (Lima); el día de vencimiento es 0. */
   late_fee_calendar_days?: number;
@@ -64,6 +66,8 @@ interface CuotaSemanal {
   moneda?: string;
   cobro_saldo?: number;
   cuota_neta?: number;
+  /** Saldo pendiente solo de la cuota del plan (sin mora), tras imputar abonos mora → cuota. */
+  cuota_pendiente?: number;
   cuota_final?: number;
   partner_fees_83?: number;
   partner_fees_yango_raw?: number | null;
@@ -108,14 +112,21 @@ interface ComprobanteCuotaSemanal {
   origen?: string | null;
 }
 
-/** Monto pendiente sugerido para etiquetar el comprobante de conformidad (admin). */
-function defaultMontoConformidadCuota(c: CuotaSemanal): string {
-  const pend = c.pending_total != null ? Number(c.pending_total) : NaN;
-  if (Number.isFinite(pend) && pend >= 0) return roundToTwoDecimals(pend).toFixed(2);
+/** Saldo pendiente numérico para conformidad admin (Yego): API primero, luego columnas − pagado. */
+function pendienteRestanteConformidadCuota(c: CuotaSemanal): number {
+  const saldoApi = c.pending_total ?? c.cuota_final;
+  if (saldoApi != null && Number.isFinite(Number(saldoApi))) {
+    return roundToTwoDecimals(Math.max(0, Number(saldoApi)));
+  }
   const ad = Number(c.amount_due) || 0;
   const moraP = c.mora_pendiente != null ? Number(c.mora_pendiente) : Number(c.late_fee) || 0;
   const pd = Number(c.paid_amount) || 0;
-  return roundToTwoDecimals(Math.max(0, ad + moraP - pd)).toFixed(2);
+  return roundToTwoDecimals(Math.max(0, ad + moraP - pd));
+}
+
+/** Monto pendiente sugerido para etiquetar el comprobante de conformidad (admin). */
+function defaultMontoConformidadCuota(c: CuotaSemanal): string {
+  return pendienteRestanteConformidadCuota(c).toFixed(2);
 }
 
 export default function YegoMiAutoRentSaleDetail() {
@@ -169,10 +180,13 @@ export default function YegoMiAutoRentSaleDetail() {
 
   const pendienteTotalCronogramaValidar = useMemo(() => {
     const sum = cuotas.reduce((acc, row) => {
-      if (row.status === 'paid' || row.status === 'bonificada') return acc;
-      if (row.cuota_final != null && Number.isFinite(Number(row.cuota_final))) {
-        return acc + Math.max(0, roundToTwoDecimals(Number(row.cuota_final)));
+      if (row.status === 'bonificada') return acc;
+      const saldoApi = row.pending_total ?? row.cuota_final;
+      if (saldoApi != null && Number.isFinite(Number(saldoApi))) {
+        const v = Math.max(0, roundToTwoDecimals(Number(saldoApi)));
+        if (v > 0.005) return acc + v;
       }
+      if (row.status === 'paid') return acc;
       const ad = Number(row.amount_due) || 0;
       const moraP = row.mora_pendiente != null ? Number(row.mora_pendiente) : Number(row.late_fee) || 0;
       const pd = Number(row.paid_amount) || 0;
@@ -464,7 +478,7 @@ export default function YegoMiAutoRentSaleDetail() {
     let totalVencidoPEN = 0;
     let totalVencidoUSD = 0;
     for (const c of cuotas) {
-      const pagado = miautoMontoPagadoCuotaSemanal(c.paid_amount);
+      const pagado = miautoMontoPagadoCuotaSemanal(c.paid_amount) + miautoNum(c.abono_comprobante_en_revision);
       const pendienteMostrar = Math.max(0, miautoCuotaFinalCronogramaSemanal(c));
       if (c.moneda === 'USD') {
         totalPagadoUSD += pagado;
@@ -776,21 +790,29 @@ export default function YegoMiAutoRentSaleDetail() {
                     Cobro saldo
                   </th>
                   <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-gray-900 leading-tight">
-                    <span className="inline-block text-right">Cuota a pagar</span>
+                    <span
+                      className="inline-block text-right"
+                      title="Saldo pendiente del capital cuota (sin mora). Los pagos cubren primero toda la mora posible; el resto reduce este saldo. Si hay «Plan» debajo, es la cuota neta original del periodo."
+                    >
+                      Cuota a pagar
+                    </span>
                   </th>
-                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-red-600 leading-tight">
+                  <th
+                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-red-600 leading-tight"
+                    title="Saldo mora pendiente. Si hay días de retraso respecto al vencimiento, el interés se calcula sobre el capital cuota según el cronograma."
+                  >
                     Mora
                     {solicitud?.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0
                       ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}%)`
                       : ''}
                   </th>
-                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight">
-                    Cuota final
-                  </th>
                   <th
                     className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
-                    title="Legado Excel: sin abono, monto hoja (amount_due); con abono, paid_amount. Fuera de legado: paid_amount."
+                    title="Total a pagar aún: mora pendiente + cuota pendiente (pago parcial: se descuenta primero de mora, luego de la cuota)."
                   >
+                    Cuota final
+                  </th>
+                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight">
                     Pagado
                   </th>
                   <th className="py-2.5 pl-1 pr-3 align-middle text-center text-[11px] font-semibold uppercase tracking-wide text-gray-700 leading-tight">
@@ -810,31 +832,40 @@ export default function YegoMiAutoRentSaleDetail() {
                   const compsConductor = comps.filter((cp) => origenComp(cp) === 'conductor');
                   const conformidadesAdmin = comps.filter((cp) => origenComp(cp) === 'admin_confirmacion');
                   const pagosManualReg = comps.filter((cp) => origenComp(cp) === 'pago_manual');
-                  const mostrarPanelComprobantes = true;
+                  const pendienteRestanteConformidad = pendienteRestanteConformidadCuota(c);
+                  const conformidadBloqueadaSinSaldo = pendienteRestanteConformidad <= 0.005;
                   const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(c);
-                  const montoPagadoDisplay = miautoMontoPagadoColumnaCronograma(
-                    c,
-                    solicitud?.fecha_inicio_cobro_semanal
-                  );
-                  const mostrarExcelRef = miautoMostrarBloqueReferenciaExcel({
-                    fechaInicioCobroSolicitud: solicitud?.fecha_inicio_cobro_semanal,
-                    cuota: c,
-                  });
-                  const montoNetoExcel = miautoMontoNetoReferenciaExcel(c);
-                  /** Cuota a pagar: plan − tributo 83% Yango (cuota_neta); el bono no resta. */
-                  const cuotaAPagarDisplay = miautoCuotaAPagarCronogramaSemanal(c);
+                  const montoPagadoDisplay = miautoMontoPagadoColumnaCronograma(c);
                   const abierto = comprobantesSemanaAbierta[c.id] === true;
                   const symCuota = symMoneda(c.moneda);
                   const bonoAutoVal = miautoNum(c.bono_auto);
                   const tributoCobroIngresos = miautoCobroPorIngresosTributoDisplay(c);
                   const titleCobroIngresos = miautoTooltipCobroPorIngresos(symCuota, c, cuotas);
                   const filasCascadaCobro = miautoCascadaCobroIngresosFilasParaUi(cuotas, c);
+                  const totalPendienteFila = Math.max(
+                    0,
+                    Number(c.pending_total ?? c.cuota_final ?? cuotaFinalSemana) || 0
+                  );
+                  /** Saldo mora pendiente (API); debe ser 0 si el pago ya absorbió la mora. */
+                  const moraPendienteColumna = Number(c.mora_pendiente ?? c.late_fee) || 0;
+                  /** Cuota neta del plan (referencia); la columna muestra el remanente tras imputar mora → cuota. */
+                  const cuotaNetaPlan = miautoCuotaAPagarCronogramaSemanal(c);
+                  const cuotaAPagarDisplay = miautoCuotaCapitalPendienteColumna(c);
+                  /** Solo mostrar desglose si mora + cuota cuadran con el total (evita «Mora 33 + Cuota 137» cuando el total es 20). */
+                  const desgloseSumaOk =
+                    totalPendienteFila <= 0.005 ||
+                    Math.abs(moraPendienteColumna + cuotaAPagarDisplay - totalPendienteFila) <= 0.12;
+                  const mostrarSublinePlanCuota =
+                    totalPendienteFila > 0.005 && cuotaNetaPlan - cuotaAPagarDisplay > 0.005;
+                  const mostrarDesgloseParcial =
+                    desgloseSumaOk &&
+                    totalPendienteFila > 0.005 &&
+                    (moraPendienteColumna > 0.005 || cuotaAPagarDisplay > 0.005);
                   return (
                   <Fragment key={c.id}>
                   <tr className="group border-b border-gray-100 hover:bg-gray-50/60">
                     <td className="sticky left-0 z-[1] bg-white py-2.5 pl-3 pr-2 align-middle shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)] group-hover:bg-gray-50/80">
-                      {mostrarPanelComprobantes ? (
-                        <button
+                      <button
                           type="button"
                           onClick={() => toggleComprobantesSemana(c.id)}
                           className="flex w-full min-w-0 items-center gap-1.5 rounded-md py-0 text-left text-[13px] leading-snug text-gray-700 transition-colors hover:bg-gray-100/90"
@@ -846,14 +877,6 @@ export default function YegoMiAutoRentSaleDetail() {
                           )}
                           <span className="min-w-0 truncate font-semibold text-[#8B1A1A]">Semana {numeroSemana}</span>
                         </button>
-                      ) : (
-                        <div className="min-w-0 py-0.5 text-[13px] leading-snug">
-                          <span className="block font-semibold text-[#8B1A1A]">Semana {numeroSemana}</span>
-                          {c.week_start_date && (
-                            <span className="mt-0.5 block text-[11px] leading-snug text-gray-500">{formatDate(c.week_start_date, 'es-ES')}</span>
-                          )}
-                        </div>
-                      )}
                     </td>
                     <td className="py-2.5 pr-1.5 align-middle text-[12px] leading-snug text-gray-700 whitespace-nowrap">
                       {c.due_date ? formatDate(c.due_date, 'es-ES') : c.week_start_date ? formatDate(c.week_start_date, 'es-ES') : '—'}
@@ -909,37 +932,62 @@ export default function YegoMiAutoRentSaleDetail() {
                       </div>
                     </td>
                     <td className="py-2.5 px-1 align-middle text-[11px] tabular-nums text-right text-green-700">
-                      {miautoFmtMonto(symCuota, c.cobro_saldo)}
+                      {miautoFmtMonto(symCuota, miautoCobroSaldoDisplay(c))}
                     </td>
-                    <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-gray-900 text-[12px]">
-                      {miautoFmtMonto(symCuota, cuotaAPagarDisplay)}
+                    <td
+                      className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-gray-900 text-[12px]"
+                      title="Saldo que falta de la cuota del plan (sin mora), tras imputar abonos: mora primero, luego capital cuota. «Plan» = cuota neta del cronograma si hubo abonos."
+                    >
+                      <span className="block">{miautoFmtMonto(symCuota, cuotaAPagarDisplay)}</span>
+                      {mostrarSublinePlanCuota ? (
+                        <span className="mt-0.5 block text-[10px] font-normal leading-snug text-gray-600 tabular-nums">
+                          Plan {miautoFmtMonto(symCuota, cuotaNetaPlan)}
+                        </span>
+                      ) : null}
                     </td>
                     <td
                       className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-[12px] text-red-600"
                       title={
                         c.due_date
-                          ? `Vence ${formatDate(c.due_date, 'es-ES')}. Columna Mora: interés devengado si la mora pendiente ya fue cubierta por pagos (ver mora_pendiente en API).`
+                          ? `Vence ${formatDate(c.due_date, 'es-ES')}. Mora: saldo pendiente tras abonos (interés del periodo en mora_interes_periodo si aplica).`
                           : undefined
                       }
                     >
-                      <span className="block">{miautoFmtMonto(symCuota, c.late_fee)}</span>
+                      <span className="block">{miautoFmtMonto(symCuota, moraPendienteColumna)}</span>
                     </td>
-                    <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-[13px] text-green-700">
-                      {miautoFmtMonto(symCuota, cuotaFinalSemana)}
+                    <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-700">
+                      <span className="font-medium tabular-nums block">{miautoFmtMonto(symCuota, cuotaFinalSemana)}</span>
+                      {mostrarDesgloseParcial ? (
+                        <span className="mt-0.5 block text-[10px] font-normal leading-snug text-gray-600 tabular-nums">
+                          {moraPendienteColumna > 0.005 ? (
+                            <>
+                              Mora {miautoFmtMonto(symCuota, moraPendienteColumna)}
+                            </>
+                          ) : null}
+                          {moraPendienteColumna > 0.005 && cuotaAPagarDisplay > 0.005 ? ' + ' : null}
+                          {cuotaAPagarDisplay > 0.005 ? (
+                            <>Cuota {miautoFmtMonto(symCuota, cuotaAPagarDisplay)}</>
+                          ) : null}
+                        </span>
+                      ) : null}
                     </td>
                     <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-800">
                       <div className="flex flex-col items-end gap-0.5 tabular-nums">
-                        <span className="font-medium">{miautoFmtMonto(symCuota, montoPagadoDisplay)}</span>
-                        {mostrarExcelRef && (
-                          <>
-                            <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
-                              Excel
-                            </span>
-                            <span className="text-[11px] font-medium text-emerald-800" title="Neto tipo Excel: pagado − mora">
-                              {miautoFmtMonto(symCuota, montoNetoExcel)}
-                            </span>
-                          </>
-                        )}
+                        <span
+                          className="font-medium"
+                          title={
+                            miautoNum(c.abono_comprobante_en_revision) > 0.005
+                              ? `Incluye ${symCuota}\u00A0${miautoNum(c.abono_comprobante_en_revision).toFixed(2)} declarado en comprobante pendiente de validar`
+                              : undefined
+                          }
+                        >
+                          {miautoFmtMonto(symCuota, montoPagadoDisplay)}
+                        </span>
+                        {miautoNum(c.late_fee) > 0.005 ? (
+                          <span className="text-[10px] font-normal leading-snug text-amber-700">
+                            Mora: {miautoFmtMonto(symCuota, miautoNum(c.late_fee))}
+                          </span>
+                        ) : null}
                       </div>
                     </td>
                     <td className="py-2.5 pl-1 pr-2 align-middle whitespace-nowrap">
@@ -958,8 +1006,7 @@ export default function YegoMiAutoRentSaleDetail() {
                       </div>
                     </td>
                   </tr>
-                  {mostrarPanelComprobantes && (
-                    <tr className="border-b border-gray-100">
+                  <tr className="border-b border-gray-100">
                       <td colSpan={11} className="p-0 align-top">
                         <div
                           className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
@@ -1076,7 +1123,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                         Ver archivo
                                       </button>
                                     )}
-                                    {isPendiente && (
+                                    {isPendiente && c.status !== 'paid' && c.status !== 'bonificada' && (
                                       <div className="pt-2 border-t border-gray-200/80">
                                         <MiautoComprobantePagoActions
                                           comprobanteId={comp.id}
@@ -1104,6 +1151,11 @@ export default function YegoMiAutoRentSaleDetail() {
                                 <p className="text-[11px] text-gray-500 mt-1 mb-3">
                                   Documento de respaldo que ve el conductor en la app. Indica el monto y la moneda que refleja el voucher antes de subirlo.
                                 </p>
+                                {conformidadBloqueadaSinSaldo && (
+                                  <p className="text-[11px] text-amber-800 bg-amber-50/90 border border-amber-100 rounded-md px-2 py-1.5 mb-3">
+                                    Cuota sin saldo pendiente
+                                  </p>
+                                )}
                                   <div className="mb-3 flex flex-wrap items-end gap-3 gap-y-2 border-b border-gray-100 pb-3">
                                     <div className="flex flex-wrap items-end gap-2">
                                       <div>
@@ -1112,11 +1164,13 @@ export default function YegoMiAutoRentSaleDetail() {
                                           type="number"
                                           step="0.01"
                                           min="0"
+                                          max={!conformidadBloqueadaSinSaldo ? pendienteRestanteConformidad : undefined}
+                                          disabled={conformidadBloqueadaSinSaldo || subiendoConformidadCuotaId === c.id}
                                           value={conformidadMontoInput[c.id] ?? defaultMontoConformidadCuota(c)}
                                           onChange={(e) =>
                                             setConformidadMontoInput((prev) => ({ ...prev, [c.id]: e.target.value }))
                                           }
-                                          className="w-24 px-2 py-1 border border-gray-300 rounded text-[11px] text-gray-900"
+                                          className="w-24 px-2 py-1 border border-gray-300 rounded text-[11px] text-gray-900 disabled:bg-gray-100 disabled:text-gray-500"
                                         />
                                       </div>
                                       <div>
@@ -1148,7 +1202,8 @@ export default function YegoMiAutoRentSaleDetail() {
                                               [c.id]: newMon,
                                             }));
                                           }}
-                                          className="px-2 py-1 border border-gray-300 rounded text-[11px] text-gray-900"
+                                          disabled={conformidadBloqueadaSinSaldo || subiendoConformidadCuotaId === c.id}
+                                          className="px-2 py-1 border border-gray-300 rounded text-[11px] text-gray-900 disabled:bg-gray-100 disabled:text-gray-500"
                                         >
                                           <option value="PEN">PEN (S/.)</option>
                                           <option value="USD">USD</option>
@@ -1169,7 +1224,9 @@ export default function YegoMiAutoRentSaleDetail() {
                                     <div className="flex flex-wrap items-center gap-2">
                                       <button
                                         type="button"
-                                        disabled={subiendoConformidadCuotaId === c.id}
+                                        disabled={
+                                          conformidadBloqueadaSinSaldo || subiendoConformidadCuotaId === c.id
+                                        }
                                         onClick={() => conformidadFileRefs.current[c.id]?.click()}
                                         className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-[11px] font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-400 disabled:opacity-50 transition-colors"
                                       >
@@ -1179,7 +1236,9 @@ export default function YegoMiAutoRentSaleDetail() {
                                       <button
                                         type="button"
                                         disabled={
-                                          subiendoConformidadCuotaId === c.id || !conformidadArchivoPendiente[c.id]
+                                          conformidadBloqueadaSinSaldo ||
+                                          subiendoConformidadCuotaId === c.id ||
+                                          !conformidadArchivoPendiente[c.id]
                                         }
                                         onClick={() => {
                                           const f = conformidadArchivoPendiente[c.id];
@@ -1189,6 +1248,14 @@ export default function YegoMiAutoRentSaleDetail() {
                                           const montoNum = parseFloat(montoStr.replace(',', '.'));
                                           if (Number.isNaN(montoNum) || montoNum <= 0) {
                                             toast.error('Indica un monto válido para el comprobante');
+                                            return;
+                                          }
+                                          const montoR = roundToTwoDecimals(montoNum);
+                                          const topeR = roundToTwoDecimals(pendienteRestanteConformidad);
+                                          if (montoR > topeR) {
+                                            toast.error(
+                                              `El monto no puede superar el saldo pendiente de esta cuota (${symCuota} ${topeR.toFixed(2)})`
+                                            );
                                             return;
                                           }
                                           const mon = conformidadMonedaInput[c.id] ?? monedaCuotasLabel(c.moneda);
@@ -1259,7 +1326,8 @@ export default function YegoMiAutoRentSaleDetail() {
                                                   <button
                                                     type="button"
                                                     onClick={() => setConformidadEliminarModal({ comprobanteId: comp.id })}
-                                                    disabled={eliminandoConformidadId === comp.id}
+                                                    disabled={eliminandoConformidadId === comp.id || c.status === 'paid' || c.status === 'bonificada'}
+                                                    title={c.status === 'paid' || c.status === 'bonificada' ? 'No se puede eliminar: la cuota ya está pagada' : undefined}
                                                     className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-white px-2 py-1 text-[11px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:pointer-events-none"
                                                   >
                                                     <Trash2 className="w-3 h-3.5" />
@@ -1394,7 +1462,6 @@ export default function YegoMiAutoRentSaleDetail() {
                         </div>
                       </td>
                     </tr>
-                  )}
                   </Fragment>
                 );
                 })}

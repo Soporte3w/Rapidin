@@ -115,6 +115,11 @@ export function miautoCobroPorIngresosTributoDisplay(c: {
   return miautoNum(c.partner_fees_83);
 }
 
+/** Columna «Cobro saldo»: siempre magnitud positiva en UI (en BD puede guardarse negativo por la cascada). */
+export function miautoCobroSaldoDisplay(c: { cobro_saldo?: unknown }): number {
+  return Math.abs(miautoNum(c.cobro_saldo));
+}
+
 /**
  * Cuando el plan está en USD, el cobro en Fleet sigue en moneda local: `partner_fees_yango_83` (USD) × TC de la solicitud.
  * No hace falta columna extra en BD; mismo dato que ya usa el backend al convertir antes de descontar la cuota.
@@ -199,20 +204,6 @@ export function miautoTooltipCobroPorIngresos(
   return parts.length ? parts.join(' ') : undefined;
 }
 
-/** Filas para mostrar bajo «Cobro por ingresos»: a qué `week_start` se imputó el pool (cascada). */
-export function miautoCascadaCobroIngresosItems(c: {
-  partner_fees_cascada_aplicado_a?: { week_start_date?: string | null; monto?: unknown }[] | null;
-}): { week_start_date: string | null; monto: number }[] {
-  const dest = c.partner_fees_cascada_aplicado_a;
-  if (!Array.isArray(dest) || dest.length === 0) return [];
-  return dest
-    .map((x) => ({
-      week_start_date: x.week_start_date != null && String(x.week_start_date).trim() !== '' ? String(x.week_start_date).trim().slice(0, 10) : null,
-      monto: miautoNum(x.monto),
-    }))
-    .filter((x) => x.monto > 0.005);
-}
-
 export type MiautoCascadaCobroFilaUi = {
   semana: number | null;
   monto: number;
@@ -271,91 +262,51 @@ export function miautoMontoPagadoCuotaSemanal(paidAmount: unknown): number {
 }
 
 /**
- * Columna «Pagado»: total abonado registrado en la fila (`paid_amount`), mismo criterio que Fleet/comprobantes.
- * La obligación y lo que falta van en «Cuota a pagar», «Mora» y «Cuota final» (saldo del periodo).
- */
-export function miautoMontoPagadoColumnaMiAuto(c: { paid_amount?: unknown }): number {
-  return miautoNum(c.paid_amount);
-}
-
-/** Corte legado Excel desactivado (misma fecha mínima que backend): no se aplica UI de referencia Excel por antigüedad. */
-export const MIAUTO_EXCEL_REFERENCIA_SOLICITUD_CORTE = '1900-01-01';
-
-/** ¿La solicitud entra en el grupo que muestra línea Excel? Por `fecha_inicio_cobro_semanal` estrictamente anterior al corte. */
-export function miautoSolicitudUsaReferenciaExcel(fechaInicioCobroSemanal: unknown): boolean {
-  const y = ymdPrefix(fechaInicioCobroSemanal);
-  return !!y && y < MIAUTO_EXCEL_REFERENCIA_SOLICITUD_CORTE;
-}
-
-/**
  * Columna «Pagado» en la tabla del cronograma semanal.
- * Legado Excel (corte desactivado; antes: vencimiento antes del corte + solicitud en corte): sin abono en BD → monto de la celda (`amount_due`);
- * con abono parcial o total → **paid_amount** real (p. ej. 171.69 frente a cuota 450).
+ * Incluye `abono_comprobante_en_revision` (staff): monto declarado en comprobante aún no validado, ya reflejado en saldos API.
  */
-export function miautoMontoPagadoColumnaCronograma(
-  c: { paid_amount?: unknown; amount_due?: unknown; due_date?: unknown; status?: unknown },
-  fechaInicioCobroSolicitud: unknown
-): number {
-  const due = ymdPrefix(c.due_date);
-  const vencimientoAntesCorteExcel = !!due && due < MIAUTO_EXCEL_REFERENCIA_SOLICITUD_CORTE;
-  const legadoExcel =
-    miautoSolicitudUsaReferenciaExcel(fechaInicioCobroSolicitud) && vencimientoAntesCorteExcel;
-  if (legadoExcel) {
-    const paid = miautoNum(c.paid_amount);
-    if (paid > 0.005) return paid;
-    return miautoNum(c.amount_due);
-  }
-  return miautoMontoPagadoColumnaMiAuto(c);
-}
-
-/** Monto neto como en la hoja Excel: `max(0, paid_amount − mora_pendiente)` si viene del API; si no, `− late_fee`. */
-export function miautoMontoNetoReferenciaExcel(c: {
+export function miautoMontoPagadoColumnaCronograma(c: {
   paid_amount?: unknown;
-  late_fee?: unknown;
-  mora_pendiente?: unknown;
+  abono_comprobante_en_revision?: unknown;
 }): number {
-  const moraNeto =
-    c.mora_pendiente != null && c.mora_pendiente !== '' ? miautoNum(c.mora_pendiente) : miautoNum(c.late_fee);
-  return Math.max(0, Math.round((miautoNum(c.paid_amount) - moraNeto) * 100) / 100);
+  return Math.round((miautoNum(c.paid_amount) + miautoNum(c.abono_comprobante_en_revision)) * 100) / 100;
 }
 
 /**
- * Mostrar bloque «Excel» + neto (pagado − mora): solo si la solicitud y el vencimiento caen bajo el corte legado (hoy desactivado).
- */
-export function miautoMostrarBloqueReferenciaExcel(opts: {
-  fechaInicioCobroSolicitud: unknown;
-  cuota: { paid_amount?: unknown; due_date?: unknown };
-}): boolean {
-  const due = ymdPrefix(opts.cuota.due_date);
-  const vencimientoAntesCorteExcel = !!due && due < MIAUTO_EXCEL_REFERENCIA_SOLICITUD_CORTE;
-  return (
-    miautoSolicitudUsaReferenciaExcel(opts.fechaInicioCobroSolicitud) &&
-    vencimientoAntesCorteExcel &&
-    miautoNum(opts.cuota.paid_amount) > 0.005
-  );
-}
-
-/**
- * Cronograma semanal — columna «Cuota a pagar»: cuota del plan − tributo 83% Yango (`partner_fees_83`).
- * No resta `bono_auto` (el bono es solo informativo en columna Bono).
- * Misma base que `cuota_neta` en la API.
+ * Cuota neta **del plan** (periodo): `cuota_neta` del API (incluye cobro saldo y regla de comisión como el backend) o fallback local.
+ * El bono no resta aquí. Para el **saldo de capital** tras pagos usar `miautoCuotaCapitalPendienteColumna` (`cuota_pendiente`).
+ *
+ * Modelo rent sale (backend `amountDueAndLateForOpen`): cada abono cubre **primero** toda la mora posible; el remanente baja el capital cuota.
  */
 export function miautoCuotaAPagarCronogramaSemanal(c: {
   cuota_semanal?: unknown;
   bono_auto?: unknown;
   partner_fees_83?: unknown;
   cuota_neta?: unknown;
+  /** Monto programado del periodo (si viene del API, alineado con cobro saldo). */
+  amount_due?: unknown;
+  cobro_saldo?: unknown;
   due_date?: unknown;
 }): number {
   if (c.cuota_neta != null && c.cuota_neta !== '') {
     return miautoNum(c.cuota_neta);
   }
-  return Math.max(0, miautoNum(c.cuota_semanal) - miautoNum(c.partner_fees_83));
+  if (c.amount_due != null && c.amount_due !== '' && Number.isFinite(Number(c.amount_due))) {
+    const ad = miautoNum(c.amount_due);
+    if (ad > 0.005) return ad;
+  }
+  const cs = miautoNum(c.cuota_semanal);
+  const pf = miautoNum(c.partner_fees_83);
+  const cobro = miautoNum(c.cobro_saldo);
+  return Math.max(0, Math.round((cs - pf + cobro) * 100) / 100);
 }
 
 /**
- * Columna «Cuota final»: saldo pendiente del periodo. Si la API envía `cuota_final`, se usa (alineado con backend).
- * Si no, se aproxima con neto + mora pendiente y `paid_amount` (cascada).
+ * Columna «Cuota final»: saldo total pendiente del periodo.
+ * Preferir `pending_total` / `cuota_final` del API; si no vienen pero sí `mora_pendiente` + `cuota_pendiente`, usar su suma
+ * (identidad: total = mora remanente + capital cuota remanente, tras imputar mora primero).
+ * Si faltan ambos, se aproxima con cuota neta, mora y `paid_amount`.
+ * Si el API envía saldo pendiente > 0, no anular por `status === 'paid'` en BD (pago parcial mal etiquetado).
  */
 export function miautoCuotaFinalCronogramaSemanal(c: {
   cuota_semanal?: unknown;
@@ -366,15 +317,34 @@ export function miautoCuotaFinalCronogramaSemanal(c: {
   late_fee?: unknown;
   mora_interes_periodo?: unknown;
   mora_pendiente?: unknown;
+  cuota_pendiente?: unknown;
   paid_amount?: unknown;
   status?: string;
   cuota_final?: unknown;
+  pending_total?: unknown;
 }): number {
+  const saldoApi = c.pending_total ?? c.cuota_final;
+  if (saldoApi != null && saldoApi !== '' && Number.isFinite(Number(saldoApi))) {
+    const v = Math.max(0, Math.round(miautoNum(saldoApi) * 100) / 100);
+    if (v > 0.005) return v;
+  }
+
+  if (
+    c.mora_pendiente != null &&
+    c.mora_pendiente !== '' &&
+    c.cuota_pendiente != null &&
+    c.cuota_pendiente !== '' &&
+    Number.isFinite(Number(c.cuota_pendiente))
+  ) {
+    const sum = Math.max(
+      0,
+      Math.round((miautoNum(c.mora_pendiente) + miautoNum(c.cuota_pendiente)) * 100) / 100
+    );
+    if (sum > 0.005) return sum;
+  }
+
   const st = (c.status || '').toLowerCase();
   if (st === 'paid' || st === 'bonificada') return 0;
-  if (c.cuota_final != null && c.cuota_final !== '' && Number.isFinite(Number(c.cuota_final))) {
-    return Math.max(0, Math.round(miautoNum(c.cuota_final) * 100) / 100);
-  }
 
   const cuotaNet = miautoCuotaAPagarCronogramaSemanal(c);
   const mora =
@@ -390,6 +360,82 @@ export function miautoCuotaFinalCronogramaSemanal(c: {
     return Math.round((moraRest + cuotaRest) * 100) / 100;
   }
   return Math.max(0, Math.round((cuotaNet - paid) * 100) / 100);
+}
+
+/**
+ * Remanente del capital «cuota del plan» tras abonos (mora primero, luego cuota).
+ * Prioridad: `cuota_pendiente` del API; si no, **total pendiente − mora** (mismas cifras que columnas Mora + Cuota final).
+ * Si faltan totales en el payload, se estima el total con `miautoCuotaFinalCronogramaSemanal` antes de restar mora.
+ */
+export function miautoCuotaPendienteSinMora(c: {
+  cuota_pendiente?: unknown;
+  pending_total?: unknown;
+  cuota_final?: unknown;
+  mora_pendiente?: unknown;
+  late_fee?: unknown;
+  status?: string;
+  cuota_semanal?: unknown;
+  bono_auto?: unknown;
+  partner_fees_83?: unknown;
+  cuota_neta?: unknown;
+  due_date?: unknown;
+  paid_amount?: unknown;
+}): number | null {
+  /** Total API primero: evita `cuota_pendiente: 0` con deuda real en `pending_total`. */
+  const totalRawPrimero = c.pending_total ?? c.cuota_final;
+  if (totalRawPrimero != null && totalRawPrimero !== '' && Number.isFinite(Number(totalRawPrimero))) {
+    const total = Math.max(0, Math.round(miautoNum(totalRawPrimero) * 100) / 100);
+    if (total > 0.005) {
+      const mora =
+        c.mora_pendiente != null && c.mora_pendiente !== ''
+          ? miautoNum(c.mora_pendiente)
+          : miautoNum(c.late_fee);
+      return Math.max(0, Math.round((total - mora) * 100) / 100);
+    }
+  }
+  if (c.cuota_pendiente != null && c.cuota_pendiente !== '' && Number.isFinite(Number(c.cuota_pendiente))) {
+    return Math.max(0, Math.round(miautoNum(c.cuota_pendiente) * 100) / 100);
+  }
+  const mora =
+    c.mora_pendiente != null && c.mora_pendiente !== ''
+      ? miautoNum(c.mora_pendiente)
+      : miautoNum(c.late_fee);
+  const totalRaw = c.pending_total ?? c.cuota_final;
+  let total: number;
+  if (totalRaw != null && totalRaw !== '' && Number.isFinite(Number(totalRaw))) {
+    total = Math.max(0, Math.round(miautoNum(totalRaw) * 100) / 100);
+  } else {
+    total = Math.max(0, Math.round(miautoCuotaFinalCronogramaSemanal(c) * 100) / 100);
+  }
+  if (total > 0.005 || mora > 0.005) {
+    return Math.max(0, Math.round((total - mora) * 100) / 100);
+  }
+  const st = (c.status || '').toLowerCase();
+  if (st === 'paid' || st === 'bonificada') {
+    return 0;
+  }
+  return null;
+}
+
+/**
+ * Columna «Cuota a pagar»: saldo pendiente del capital cuota del plan (sin incluir mora).
+ * Los abonos cubren primero toda la mora posible; el resto reduce este saldo. Coincide con `cuota_pendiente` del API.
+ */
+export function miautoCuotaCapitalPendienteColumna(c: {
+  cuota_pendiente?: unknown;
+  pending_total?: unknown;
+  cuota_final?: unknown;
+  mora_pendiente?: unknown;
+  late_fee?: unknown;
+  cuota_semanal?: unknown;
+  bono_auto?: unknown;
+  partner_fees_83?: unknown;
+  cuota_neta?: unknown;
+  due_date?: unknown;
+}): number {
+  const pend = miautoCuotaPendienteSinMora(c);
+  if (pend != null) return pend;
+  return miautoCuotaAPagarCronogramaSemanal(c);
 }
 
 export const MIAUTO_CUOTA_STATUS_LABELS: Record<string, string> = {

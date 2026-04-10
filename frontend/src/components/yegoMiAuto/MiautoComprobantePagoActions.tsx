@@ -35,11 +35,11 @@ export function MiautoComprobantePagoActions({
       toast.error('Indica un monto válido');
       return;
     }
-    if (montoMaximo != null && montoMaximo > 0 && n > montoMaximo) {
-      toast.error(`El monto no puede superar el total pendiente del cronograma (${sym} ${montoMaximo.toFixed(2)})`);
+    if (montoMaximo != null && montoMaximo > 0 && roundToTwoDecimals(n) > roundToTwoDecimals(montoMaximo)) {
+      toast.error(`El monto no puede superar el total pendiente del cronograma (${sym} ${roundToTwoDecimals(montoMaximo).toFixed(2)})`);
       return;
     }
-    onValidar(comprobanteId, n, moneda);
+    onValidar(comprobanteId, roundToTwoDecimals(n), moneda);
   };
   const handleRechazar = () => {
     const motivo = window.prompt('Motivo del rechazo (opcional):');
@@ -47,14 +47,16 @@ export function MiautoComprobantePagoActions({
     onRechazar(comprobanteId, motivo.trim());
   };
   const placeholder =
-    montoMaximo != null && montoMaximo > 0 ? `Máx. cronograma ${sym} ${montoMaximo.toFixed(2)}` : 'Monto';
+    montoMaximo != null && montoMaximo > 0
+      ? `Máx. cronograma ${sym} ${roundToTwoDecimals(montoMaximo).toFixed(2)}`
+      : 'Monto';
   return (
     <span className="flex flex-wrap items-center gap-1">
       <input
         type="number"
         step="0.01"
         min="0"
-        max={montoMaximo != null && montoMaximo > 0 ? montoMaximo : undefined}
+        max={montoMaximo != null && montoMaximo > 0 ? roundToTwoDecimals(montoMaximo) : undefined}
         placeholder={placeholder}
         value={monto}
         onChange={(e) => setMonto(e.target.value)}

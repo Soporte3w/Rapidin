@@ -21,7 +21,8 @@
     "miauto:restaurar-pagado-menos-mora": "node scripts/miauto-restaurar-pagado-menos-mora.js",
     "miauto:realign-primera-cuota-deposito": "node scripts/miauto-realign-primera-cuota-deposito.js",
     "miauto:simular-cuotas-vencidas": "node scripts/miauto-simular-n-cuotas-vencidas.js",
-    "miauto:simular-cobro-vence-hoy": "node scripts/miauto-simular-cobro-vence-hoy.js"
+    "miauto:simular-cobro-vence-hoy": "node scripts/miauto-simular-cobro-vence-hoy.js",
+    "miauto:ver-cuotas-api": "node scripts/miauto-ver-cuotas-api-solicitud.js"
   },
   "keywords": [
     "rapidin",

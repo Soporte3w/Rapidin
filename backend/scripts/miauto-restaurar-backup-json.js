@@ -21,22 +21,23 @@ import { updateMoraDiaria, persistPaidAmountCapsForSolicitud } from '../services
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** Mismo orden que el backup; no incluye alquiler_venta_listado_api.json ni manifest. */
+/** Mismo orden que el backup (padres antes que hijos por FKs); no incluye alquiler_venta_listado_api.json ni manifest. */
 const RESTORE_TABLES = [
+  'module_miauto_tipo_cambio',
   'module_miauto_cronograma',
   'module_miauto_cronograma_vehiculo',
+  'module_miauto_cronograma_rule',
   'module_miauto_solicitud',
   'module_miauto_cuota_semanal',
+  'module_miauto_comprobante_cuota_semanal',
   'module_miauto_comprobante_pago',
+  'module_miauto_adjunto',
   'module_miauto_solicitud_cita',
   'module_miauto_otros_gastos',
 ];
 
 /** Borrado completo del backup (hijos primero). */
-const DELETE_ORDER_FULL = [
-  'module_miauto_comprobante_cuota_semanal',
-  ...[...RESTORE_TABLES].reverse(),
-];
+const DELETE_ORDER_FULL = [...RESTORE_TABLES].reverse();
 
 const TABLE_CUOTA = 'module_miauto_cuota_semanal';
 const TABLE_COMP_CUOTA = 'module_miauto_comprobante_cuota_semanal';

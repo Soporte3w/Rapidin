@@ -5,6 +5,8 @@
  *   cd backend && node scripts/miauto-backup-json-solicitudes-alquiler-venta.js
  *
  * Salida: backend/backups/miauto-<timestamp>/
+ *
+ * Tablas: mismas que restaura miauto-restaurar-backup-json.js (orden de inserción / FKs).
  */
 import fs from 'fs';
 import path from 'path';
@@ -19,14 +21,19 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/** Mismo conjunto y orden lógico que RESTORE_TABLES en miauto-restaurar-backup-json.js */
 const TABLES = [
-  'module_miauto_solicitud',
-  'module_miauto_cuota_semanal',
-  'module_miauto_comprobante_pago',
-  'module_miauto_solicitud_cita',
-  'module_miauto_otros_gastos',
+  'module_miauto_tipo_cambio',
   'module_miauto_cronograma',
   'module_miauto_cronograma_vehiculo',
+  'module_miauto_cronograma_rule',
+  'module_miauto_solicitud',
+  'module_miauto_cuota_semanal',
+  'module_miauto_comprobante_cuota_semanal',
+  'module_miauto_comprobante_pago',
+  'module_miauto_adjunto',
+  'module_miauto_solicitud_cita',
+  'module_miauto_otros_gastos',
 ];
 
 function serializeValue(v) {
@@ -179,7 +186,7 @@ async function main() {
   const manifest = {
     created_at: new Date().toISOString(),
     descripcion:
-      'Respaldo tablas Mi Auto (solicitudes, cuotas, comprobantes, citas, otros gastos, cronogramas) + listado Alquiler/Venta (aprobado).',
+      'Respaldo tablas Mi Auto (tipo cambio, cronograma/reglas/vehículo, solicitud, cuotas, comprobantes cuota/pago, adjuntos, citas, otros gastos) + listado Alquiler/Venta (aprobado).',
     directorio: outDir,
     filas_por_tabla: counts,
     alquiler_venta_contratos_total: alquilerVenta.total,

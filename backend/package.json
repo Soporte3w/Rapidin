@@ -8,6 +8,7 @@
     "start": "NODE_ENV=production node index.js",
     "dev": "NODE_ENV=development nodemon index.js",
     "migrate": "node database/migrate.js",
+    "db:backup-full": "node scripts/db-backup-full-pg-dump.js",
     "recalc-miauto-cuotas": "node scripts/recalc-miauto-cuotas-semanales-montos.js",
     "miauto:alinear-rapidin-flota": "node scripts/miauto-alinear-rapidin-driver-mi-auto.js",
     "miauto:regenerar-cuota-semana": "node scripts/miauto-regenerar-cuota-semana-solicitud.js",

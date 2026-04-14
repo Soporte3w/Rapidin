@@ -257,6 +257,8 @@ function App() {
             <Route path="/admin/yego-mi-moto/loan-requests/new" element={<ProtectedRoute><Layout><YegoMiMotoNewRequest /></Layout></ProtectedRoute>} />
         </Routes>
       </BrowserRouter>
+      {/* Modales admin: fuera del Layout para que `fixed inset-0` cubra sidebar y header (z-50 / z-30). */}
+      <div id="admin-modal-root" />
       </div>
     </AuthProvider>
   );

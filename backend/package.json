@@ -23,7 +23,14 @@
     "miauto:realign-primera-cuota-deposito": "node scripts/miauto-realign-primera-cuota-deposito.js",
     "miauto:simular-cuotas-vencidas": "node scripts/miauto-simular-n-cuotas-vencidas.js",
     "miauto:simular-cobro-vence-hoy": "node scripts/miauto-simular-cobro-vence-hoy.js",
-    "miauto:ver-cuotas-api": "node scripts/miauto-ver-cuotas-api-solicitud.js"
+    "miauto:simular-gen-lunes-dry-run": "node scripts/miauto-simular-generacion-lunes-dry-run.js",
+    "miauto:simular-cola-fleet": "node scripts/miauto-simular-cola-cobro-fleet-dry-run.js",
+    "miauto:repair-mora-caps": "node scripts/miauto-repair-mora-caps-solicitud.js",
+    "miauto:preview-pago-neta": "node scripts/miauto-preview-rent-sale-pago-cubre-neta.js",
+    "miauto:apply-pago-neta-global": "node scripts/miauto-apply-pago-neta-todas-solicitudes.js",
+    "miauto:ver-cuotas-api": "node scripts/miauto-ver-cuotas-api-solicitud.js",
+    "miauto:fleet-cobros-audit": "node scripts/miauto-fleet-cobros-audit-listar.js",
+    "rapidin:seed-yango-prueba": "node scripts/rapidin-seed-solicitud-yango-prueba.js"
   },
   "keywords": [
     "rapidin",
@@ -35,21 +42,21 @@
   "license": "ISC",
   "dependencies": {
     "axios": "^1.6.0",
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "pg": "^8.11.3",
-    "jsonwebtoken": "^9.0.2",
     "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
     "express-validator": "^7.0.1",
-    "nodemailer": "^6.9.7",
-    "twilio": "^4.19.0",
-    "ws": "^8.14.2",
-    "node-cron": "^3.0.3",
-    "winston": "^3.11.0",
+    "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
-    "xlsx": "^0.18.5",
-    "express-rate-limit": "^7.1.5"
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.7",
+    "pg": "^8.20.0",
+    "twilio": "^4.19.0",
+    "winston": "^3.11.0",
+    "ws": "^8.14.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

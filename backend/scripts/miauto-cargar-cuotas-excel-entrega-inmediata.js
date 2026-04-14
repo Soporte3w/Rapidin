@@ -7,7 +7,11 @@
  * No depende de cronograma rules; usa el monto del Excel directamente.
  * Moneda se determina por el cronograma vinculado a la solicitud.
  *
- * Corte: solo celdas con due_date calculado desde Excel < --cutoff-date.
+ * Corte: solo celdas con due_date calculado desde Excel < --cutoff-date (ej. 2026-04-13 deja fuera la cuota del 13 abr).
+ *
+ * --reset-solicitud-keep-week <uuid> <YYYY-MM-DD>: antes de importar, borra todas las cuotas de esa solicitud
+ *   excepto la fila cuyo week_start_date (lunes) coincide con esa fecha (p. ej. regenerada en sistema).
+ * --only-solicitud-id <uuid>: solo procesa la fila del Excel que resuelve a esa solicitud (no toca otros conductores).
  */
 import fs from 'fs';
 import path from 'path';
@@ -46,10 +50,26 @@ function parseArgs(argv) {
   const deleteFirst = argv.includes('--delete-first');
   let cutoff = DEFAULT_CUTOFF;
   let xlsxPath = null;
+  let onlySolicitudId = null;
+  /** @type {{ solicitudId: string, weekYmd: string }|null} */
+  let resetSolicitudKeepWeek = null;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--cutoff-date' && argv[i + 1]) {
       cutoff = String(argv[i + 1]).trim().slice(0, 10);
       i++;
+      continue;
+    }
+    if (argv[i] === '--only-solicitud-id' && argv[i + 1]) {
+      onlySolicitudId = String(argv[i + 1]).trim();
+      i++;
+      continue;
+    }
+    if (argv[i] === '--reset-solicitud-keep-week' && argv[i + 1] && argv[i + 2]) {
+      resetSolicitudKeepWeek = {
+        solicitudId: String(argv[i + 1]).trim(),
+        weekYmd: String(argv[i + 2]).trim().slice(0, 10),
+      };
+      i += 2;
       continue;
     }
     if (argv[i].startsWith('--')) continue;
@@ -58,7 +78,10 @@ function parseArgs(argv) {
   }
   if (!xlsxPath) xlsxPath = DEFAULT_XLSX;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoff)) throw new Error('--cutoff-date invalida: ' + cutoff);
-  return { dryRun, deleteFirst, cutoff, xlsxPath };
+  if (resetSolicitudKeepWeek && !/^\d{4}-\d{2}-\d{2}$/.test(resetSolicitudKeepWeek.weekYmd)) {
+    throw new Error('--reset-solicitud-keep-week: fecha lunes invalida');
+  }
+  return { dryRun, deleteFirst, cutoff, xlsxPath, onlySolicitudId, resetSolicitudKeepWeek };
 }
 
 function excelSerialToYmd(n) {
@@ -223,7 +246,9 @@ function ymdFromFi(fi) {
 }
 
 async function main() {
-  const { dryRun, deleteFirst, cutoff, xlsxPath } = parseArgs(process.argv.slice(2));
+  const { dryRun, deleteFirst, cutoff, xlsxPath, onlySolicitudId, resetSolicitudKeepWeek } = parseArgs(
+    process.argv.slice(2)
+  );
   if (!fs.existsSync(xlsxPath)) {
     console.error('No existe el archivo:', xlsxPath);
     process.exit(1);
@@ -232,6 +257,37 @@ async function main() {
   console.log('=== Cargando moneda por cronograma desde cuotas existentes ===');
   const monedaMap = await loadMonedaPerCronograma();
   console.log('Moneda mapping:', Object.fromEntries(monedaMap));
+
+  if (resetSolicitudKeepWeek) {
+    const { solicitudId, weekYmd } = resetSolicitudKeepWeek;
+    if (dryRun) {
+      const c = await query(
+        `SELECT COUNT(*)::int AS n FROM module_miauto_cuota_semanal
+         WHERE solicitud_id = $1::uuid
+           AND (week_start_date IS NULL OR week_start_date::date <> $2::date)`,
+        [solicitudId, weekYmd]
+      );
+      console.log(
+        '[DRY-RUN] --reset-solicitud-keep-week eliminaría',
+        c.rows[0].n,
+        'cuota(s); se mantiene week_start_date::date =',
+        weekYmd
+      );
+    } else {
+      const del = await query(
+        `DELETE FROM module_miauto_cuota_semanal
+         WHERE solicitud_id = $1::uuid
+           AND (week_start_date IS NULL OR week_start_date::date <> $2::date)`,
+        [solicitudId, weekYmd]
+      );
+      console.log(
+        '--reset-solicitud-keep-week: eliminadas',
+        del.rowCount,
+        'cuota(s); conservada la fila del lunes',
+        weekYmd
+      );
+    }
+  }
 
   if (deleteFirst && !dryRun) {
     console.log('=== ELIMINANDO todas las cuotas semanales existentes ===');
@@ -284,6 +340,10 @@ async function main() {
     if (!sol) {
       stats.skipped_no_solicitud++;
       stats.warnings.push({ row, msg: 'sin solicitud', placa: placaRaw, dni: dniRaw, phone: phoneRaw });
+      continue;
+    }
+
+    if (onlySolicitudId && String(sol.id) !== onlySolicitudId) {
       continue;
     }
 
@@ -468,7 +528,14 @@ async function main() {
   }
 
   console.log(JSON.stringify({
-    ok: true, dryRun, deleteFirst, cutoff, xlsxPath, stats,
+    ok: true,
+    dryRun,
+    deleteFirst,
+    cutoff,
+    xlsxPath,
+    onlySolicitudId: onlySolicitudId || null,
+    resetSolicitudKeepWeek: resetSolicitudKeepWeek || null,
+    stats,
     solicitudes_tocadas: touchedSolicitudes.size,
   }, null, 2));
   process.exit(0);

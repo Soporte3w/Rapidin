@@ -50,13 +50,13 @@ function parseArgs(argv) {
 async function reportCola(sid, sinSaldoApi) {
   await updateMoraDiaria(sid, { includePartial: true });
   await persistPaidAmountCapsForSolicitud(sid);
-  const cola = await getCuotasToChargeForSolicitud(sid);
+  const { cuotas: cola, pendingMap: solicitudPendingMap } = await getCuotasToChargeForSolicitud(sid);
   console.log('\n--- Cola cobro Fleet (orden job: due_date ASC) ---');
   console.log(JSON.stringify({ solicitud_id: sid, en_cola: cola.length }, null, 2));
   let i = 0;
   for (const row of cola) {
     i += 1;
-    const opts = { dryRun: true };
+    const opts = { dryRun: true, solicitudPendingMap };
     if (sinSaldoApi) opts.skipBalanceCheck = true;
     const r = await processCobroCuota(row, null, null, opts);
     console.log(`\n#${i} cuota_id=${row.id} due=${ymd(row.due_date)} status=${row.status}`);

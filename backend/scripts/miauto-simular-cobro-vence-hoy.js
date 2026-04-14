@@ -76,7 +76,7 @@ async function main() {
   await updateMoraDiaria(id, { includePartial: true });
   await persistPaidAmountCapsForSolicitud(id);
 
-  const cola = await getCuotasToChargeForSolicitud(id);
+  const { cuotas: cola, pendingMap: solicitudPendingMap } = await getCuotasToChargeForSolicitud(id);
   console.log('\n--- Cola cobro (due_date ASC, misma query que job 7:10) ---');
   console.log(JSON.stringify({ solicitud_id: id, cuotas_en_cola: cola.length }, null, 2));
 
@@ -87,7 +87,7 @@ async function main() {
     process.exit(0);
   }
 
-  const opts = { dryRun: true, skipBalanceCheck: sinSaldoApi };
+  const opts = { dryRun: true, skipBalanceCheck: sinSaldoApi, solicitudPendingMap };
   let i = 0;
   for (const row of cola) {
     i += 1;

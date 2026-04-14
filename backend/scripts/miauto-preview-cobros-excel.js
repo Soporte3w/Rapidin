@@ -67,7 +67,7 @@ function chunkPorConductor(cuotas) {
 
 async function main() {
   console.log('Consultando cola de cobro (misma query que job lunes 7:10)…');
-  const cola = await getCuotasToCharge();
+  const { cuotas: cola } = await getCuotasToCharge();
   console.log(`Cuotas en cola: ${cola.length}`);
 
   if (cola.length === 0) {

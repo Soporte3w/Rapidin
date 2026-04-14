@@ -4,6 +4,7 @@ import { ArrowLeft, User, FileText, Calculator, CheckCircle, AlertCircle, Copy, 
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../contexts/AuthContext';
+import { AdminModalPortal } from '../../components/AdminModalPortal';
 import { formatCurrency, getCurrencyLabel } from '../../utils/currency';
 import { formatDateTimeLocal } from '../../utils/date';
 
@@ -955,7 +956,8 @@ const LoanRequestDetail = () => {
 
       {/* Modal confirmar desembolso a cuenta bancaria (solo confirmación) */}
       {showConfirmDisburseBankModal && request && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setShowConfirmDisburseBankModal(false)}>
+        <AdminModalPortal>
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/50" onClick={() => setShowConfirmDisburseBankModal(false)}>
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 mb-4">
               <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
@@ -993,6 +995,7 @@ const LoanRequestDetail = () => {
             </div>
           </div>
         </div>
+        </AdminModalPortal>
       )}
 
       {/* Modal confirmar desembolso: conductor, comentario, monto y Recargar (solo Yango Pro) */}
@@ -1000,8 +1003,9 @@ const LoanRequestDetail = () => {
         const obs = parseRequestObservations(request);
         const isYangoPro = obs.deposit_type === 'yango';
         return (
+        <AdminModalPortal>
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+          className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/50"
           onClick={() => {
             if (!rechargeSuccess && !loadingDisburse) {
               setShowConfirmDisburseModal(false);
@@ -1067,11 +1071,11 @@ const LoanRequestDetail = () => {
                     </div>
                   ) : (
                     <>
-                      <p className="text-xs text-amber-700 mb-2">
-                        {fleetRechargeUseManual
-                          ? 'Fleet tiene una transacción en curso o similar. Puedes registrar la recarga solo en el sistema con el botón de abajo (no se llama de nuevo a Yango).'
-                          : 'Para desembolsar con Yango Pro primero debe recargar el saldo del conductor.'}
-                      </p>
+                      {fleetRechargeUseManual && (
+                        <p className="text-xs text-amber-700 mb-2">
+                          Fleet tiene una transacción en curso o similar. Puedes registrar la recarga solo en el sistema con el botón de abajo (no se llama de nuevo a Yango).
+                        </p>
+                      )}
                       <button
                         type="button"
                         disabled={loadingRecharge || rechargeSuccess || !disburseAmount || Number(disburseAmount) <= 0}
@@ -1203,12 +1207,14 @@ const LoanRequestDetail = () => {
             </div>
           </div>
         </div>
+        </AdminModalPortal>
         );
       })()}
 
       {/* Modal confirmar aprobación */}
       {showConfirmApproveModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setShowConfirmApproveModal(false)}>
+        <AdminModalPortal>
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/50" onClick={() => setShowConfirmApproveModal(false)}>
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 mb-4">
               <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
@@ -1243,11 +1249,13 @@ const LoanRequestDetail = () => {
             </div>
           </div>
         </div>
+        </AdminModalPortal>
       )}
 
       {/* Modal confirmar rechazo */}
       {showRejectForm && request && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => { setShowRejectForm(false); setRejectReason(''); }}>
+        <AdminModalPortal>
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/50" onClick={() => { setShowRejectForm(false); setRejectReason(''); }}>
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 mb-3">
               <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
@@ -1270,7 +1278,7 @@ const LoanRequestDetail = () => {
 
             <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200">
               <p className="text-sm font-medium text-amber-800">
-                Al confirmar, el conductor recibirá el mensaje por Rapidín; no se abrirá WhatsApp en el navegador.
+                Al confirmar, el conductor recibirá el mensaje por Rapidín.
               </p>
             </div>
 
@@ -1294,6 +1302,7 @@ const LoanRequestDetail = () => {
             </div>
           </div>
         </div>
+        </AdminModalPortal>
       )}
     </div>
   );

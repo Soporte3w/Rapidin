@@ -29,6 +29,7 @@ import {
   limaWeekStartToMiAutoIncomeRange,
   mondayOfWeekContainingYmd,
 } from '../utils/miautoLimaWeekRange.js';
+import { appendMiautoFleetCobroJobAuditEvent } from '../utils/miautoFleetCobroAuditLog.js';
 
 const TIMEZONE = 'America/Lima';
 const FLEET_MS_BETWEEN_COBROS = 1500;
@@ -196,11 +197,16 @@ function chunkCuotasFleetMismaCuenta(cuotas) {
  * Cola Fleet: **un solo** `getContractorBalance` por conductor+parque; el total retirado en la pasada
  * no supera ese snapshot (p. ej. saldo 780 → reparto entre cuotas hasta agotar, sin reconsultar saldo inflado).
  */
-async function processCobroCuotaQueue(cuotas) {
+async function processCobroCuotaQueue(cuotas, options = {}) {
   let success = 0;
   let partial = 0;
   let failed = 0;
   if (!cuotas || cuotas.length === 0) return { success, partial, failed };
+
+  const solicitudPendingMap = options.solicitudPendingMap;
+  if (!(solicitudPendingMap instanceof Map)) {
+    throw new Error('processCobroCuotaQueue: falta solicitudPendingMap (usar retorno de getCuotasToCharge*)');
+  }
 
   const chunks = chunkCuotasFleetMismaCuenta(cuotas);
   let processedGlobal = 0;
@@ -242,7 +248,10 @@ async function processCobroCuotaQueue(cuotas) {
     const sharedFleetBalancePEN = { remaining: snapshot };
 
     for (let j = 0; j < chunk.length; j++) {
-      const result = await processCobroCuota(chunk[j], null, null, { sharedFleetBalancePEN });
+      const result = await processCobroCuota(chunk[j], null, null, {
+        sharedFleetBalancePEN,
+        solicitudPendingMap,
+      });
       if (result.failed) {
         failed += 1;
         const rid = chunk[j]?.id;
@@ -337,12 +346,30 @@ export async function runWeeklyCuotaGenerationMonday(options = {}) {
 
 async function runWeeklyFleetChargeMonday() {
   logger.info('Mi Auto: cobro Fleet (lunes 7:10 Lima)');
+  await appendMiautoFleetCobroJobAuditEvent({
+    tipo: 'cobro_job_inicio',
+    job: 'lunes_7_10_lima',
+    timezone: TIMEZONE,
+  });
   try {
-    await updateMoraDiaria(null, { includePartial: true });
-    const cuotas = await getCuotasToCharge();
-    const { success, partial, failed } = await processCobroCuotaQueue(cuotas);
+    // Mora: ya aplicada por el cron 1:00 (mismo lunes); no duplicar antes del cobro.
+    const { cuotas, solicitudPendingMap } = await getCuotasToCharge();
+    const { success, partial, failed } = await processCobroCuotaQueue(cuotas, { solicitudPendingMap });
+    await appendMiautoFleetCobroJobAuditEvent({
+      tipo: 'cobro_job_fin',
+      job: 'lunes_7_10_lima',
+      cuotas_en_cola: cuotas.length,
+      success,
+      partial,
+      failed,
+    });
     logger.info(`Mi Auto cobro semanal: ${success} ok, ${partial} parcial, ${failed} fallidos`);
   } catch (err) {
+    await appendMiautoFleetCobroJobAuditEvent({
+      tipo: 'cobro_job_error',
+      job: 'lunes_7_10_lima',
+      error: String(err?.message || err),
+    });
     logger.error('Mi Auto job cobro Fleet:', err);
   }
 }
@@ -358,9 +385,24 @@ export async function runFleetCobroSoloSolicitud(solicitudId) {
   }
   logger.info(`Mi Auto: runFleetCobroSoloSolicitud ${sid} (cola como job 7:10)`);
   try {
-    await updateMoraDiaria(sid, { includePartial: true });
-    const cuotas = await getCuotasToChargeForSolicitud(sid);
+    await appendMiautoFleetCobroJobAuditEvent({
+      tipo: 'cobro_job_inicio',
+      job: 'solo_solicitud',
+      solicitud_id: sid,
+    });
+    // Mora: cron 1:00 Lima + la que corre dentro de ensure en 1:10; mismo criterio que runWeeklyFleetChargeMonday (sin update extra).
+    const { cuotas, pendingMap } = await getCuotasToChargeForSolicitud(sid);
     if (cuotas.length === 0) {
+      await appendMiautoFleetCobroJobAuditEvent({
+        tipo: 'cobro_job_fin',
+        job: 'solo_solicitud',
+        solicitud_id: sid,
+        cuotas_en_cola: 0,
+        success: 0,
+        partial: 0,
+        failed: 0,
+        nota: 'sin_cuotas_en_cola',
+      });
       logger.info(`Mi Auto: ${sid} sin cuotas pending/overdue/partial con saldo > 0 en cola Fleet`);
       return {
         ok: true,
@@ -372,7 +414,18 @@ export async function runFleetCobroSoloSolicitud(solicitudId) {
         cola: [],
       };
     }
-    const { success, partial, failed } = await processCobroCuotaQueue(cuotas);
+    const { success, partial, failed } = await processCobroCuotaQueue(cuotas, {
+      solicitudPendingMap: pendingMap,
+    });
+    await appendMiautoFleetCobroJobAuditEvent({
+      tipo: 'cobro_job_fin',
+      job: 'solo_solicitud',
+      solicitud_id: sid,
+      cuotas_en_cola: cuotas.length,
+      success,
+      partial,
+      failed,
+    });
     logger.info(`Mi Auto Fleet ${sid}: ${success} ok, ${partial} parcial, ${failed} fallidos`);
     return {
       ok: failed === 0,
@@ -383,6 +436,12 @@ export async function runFleetCobroSoloSolicitud(solicitudId) {
       failed,
     };
   } catch (err) {
+    await appendMiautoFleetCobroJobAuditEvent({
+      tipo: 'cobro_job_error',
+      job: 'solo_solicitud',
+      solicitud_id: sid,
+      error: String(err?.message || err),
+    });
     logger.error(`Mi Auto runFleetCobroSoloSolicitud ${sid}:`, err);
     return { ok: false, error: String(err?.message || err), solicitud_id: sid };
   }
@@ -404,8 +463,6 @@ export async function runWeeklyChargeForSolicitud(solicitudId, options = {}) {
   if (sol.status !== 'aprobado') {
     logger.warn(`Mi Auto: ${sid} status=${sol.status} (se requiere aprobado para generación/cobro semanal)`);
   }
-
-  await updateMoraDiaria(sid, { includePartial: true });
 
   const { incomeWeekMonday, sundayDate, dateFrom, dateTo, cuotaWeekMonday } = currentMondayCuotaContext();
   logger.info(
@@ -431,9 +488,9 @@ export async function runWeeklyChargeForSolicitud(solicitudId, options = {}) {
   }
 
   await persistPaidAmountCapsForSolicitud(sid);
-  await updateMoraDiaria(sid, { includePartial: true });
+  // Sin updateMoraDiaria aquí: el cron 1:00 y ensureCuotaSemanalForWeek (1:10 / regeneración) ya recalculan mora cuando aplica.
 
-  const cuotas = await getCuotasToChargeForSolicitud(sid);
+  const { cuotas, pendingMap } = await getCuotasToChargeForSolicitud(sid);
 
   if (dryRun) {
     const cola = [];
@@ -442,7 +499,11 @@ export async function runWeeklyChargeForSolicitud(solicitudId, options = {}) {
       const amountDue = await effectiveAmountDueForMiAutoFleetRowAsync(c);
       const paid = round2(parseFloat(c.paid_amount) || 0);
       const lateFee = round2(parseFloat(c.late_fee) || 0);
-      const pendiente = round2(amountDue + lateFee - paid);
+      const fromMap = pendingMap.get(String(c.id));
+      const pendiente =
+        fromMap != null && !Number.isNaN(Number(fromMap))
+          ? round2(Number(fromMap))
+          : round2(amountDue + lateFee - paid);
       logger.info(`Mi Auto [dry-run] #${i + 1} id=${c.id} due=${c.due_date} pendiente=${pendiente}`);
       cola.push({
         orden: i + 1,
@@ -456,18 +517,42 @@ export async function runWeeklyChargeForSolicitud(solicitudId, options = {}) {
     return { ok: true, dryRun: true, solicitud_id: sid, cuotaWeekMonday, incomeWeekMonday, sundayDate, cola_cobro: cola };
   }
 
-  const { success, partial, failed } = await processCobroCuotaQueue(cuotas);
-  logger.info(`Mi Auto cobro ${sid}: ${success} ok, ${partial} parcial, ${failed} fallidos`);
-  return {
-    ok: true,
-    dryRun: false,
+  await appendMiautoFleetCobroJobAuditEvent({
+    tipo: 'cobro_job_inicio',
+    job: 'weekly_charge_solicitud',
     solicitud_id: sid,
-    cuotaWeekMonday,
-    success,
-    partial,
-    failed,
-    cuotasProcesadas: cuotas.length,
-  };
+  });
+  try {
+    const { success, partial, failed } = await processCobroCuotaQueue(cuotas, { solicitudPendingMap: pendingMap });
+    await appendMiautoFleetCobroJobAuditEvent({
+      tipo: 'cobro_job_fin',
+      job: 'weekly_charge_solicitud',
+      solicitud_id: sid,
+      cuotas_en_cola: cuotas.length,
+      success,
+      partial,
+      failed,
+    });
+    logger.info(`Mi Auto cobro ${sid}: ${success} ok, ${partial} parcial, ${failed} fallidos`);
+    return {
+      ok: true,
+      dryRun: false,
+      solicitud_id: sid,
+      cuotaWeekMonday,
+      success,
+      partial,
+      failed,
+      cuotasProcesadas: cuotas.length,
+    };
+  } catch (err) {
+    await appendMiautoFleetCobroJobAuditEvent({
+      tipo: 'cobro_job_error',
+      job: 'weekly_charge_solicitud',
+      solicitud_id: sid,
+      error: String(err?.message || err),
+    });
+    throw err;
+  }
 }
 
 async function runDailyMora() {

@@ -105,15 +105,25 @@ async function postWithProxyRetry(url, body, headers) {
 /**
  * Withdraw (cobro) — body + headers, X-Idempotency-Token. Usa proxy y reintenta con otro si hay rate limit.
  */
-export async function withdrawFromContractor(id, amount, description, cookieOverride, parkIdOverride) {
+/**
+ * @param {string} id - driver_profile_id
+ * @param {string|number} amount
+ * @param {string} description
+ * @param {string|null} cookieOverride
+ * @param {string|null} parkIdOverride
+ * @param {{ balance_min?: string }} [conditionOverride] - sobreescribe la condición de saldo mínimo tras el retiro
+ *   Por defecto `{ balance_min: '2' }`. Pasar `{ balance_min: '0' }` para permitir retiro hasta saldo cero.
+ */
+export async function withdrawFromContractor(id, amount, description, cookieOverride, parkIdOverride, conditionOverride) {
   const xIdempotencyToken = crypto.randomUUID();
+  const condition = conditionOverride ?? { balance_min: '2' };
   const body = {
     driver_profile_id: id,
     category_id: 'partner_service_manual',
     amount: String(amount),
     description: description || '',
     fee: { percent: '1' },
-    condition: { balance_min: '2' }
+    condition,
   };
   const headers = {
     'Accept-Language': 'es-ES,es',

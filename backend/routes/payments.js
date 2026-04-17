@@ -1,5 +1,9 @@
 import express from 'express';
-import { registerPayment, getPayments, getAutoPaymentLog } from '../services/paymentService.js';
+import {
+  registerPayment,
+  getPayments,
+  getAutoPaymentLog,
+} from '../services/paymentService.js';
 import { getPartnerNameById } from '../services/partnersService.js';
 import { verifyToken, verifyRole } from '../middleware/auth.js';
 import { filterByCountry } from '../middleware/permissions.js';
@@ -89,10 +93,6 @@ router.get('/:id', validateUUID, async (req, res) => {
 });
 
 export default router;
-
-
-
-
 
 
 

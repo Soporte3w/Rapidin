@@ -452,6 +452,7 @@ export const getPayments = async (filters = {}) => {
   return result.rows;
 };
 
+
 /** Lista el log de cobros automáticos (tabla module_rapidin_auto_payment_log) con filtros y paginación */
 export const getAutoPaymentLog = async (filters = {}) => {
   const params = [];

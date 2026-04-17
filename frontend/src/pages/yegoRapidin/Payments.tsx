@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useSearchParams, Link } from 'react-router-dom';
 import api from '../../services/api';
 import { Plus, X, FileText, CreditCard, AlertCircle, Eye, CheckCircle, XCircle, Copy, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
@@ -77,7 +78,15 @@ interface ScheduleInstallment {
 
 const Payments = () => {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
   const [tab, setTab] = useState<'pagos' | 'comprobantes' | 'pagos-automaticos'>('pagos');
+
+  useEffect(() => {
+    const t = searchParams.get('tab');
+    if (t === 'pagos' || t === 'comprobantes' || t === 'pagos-automaticos') {
+      setTab(t);
+    }
+  }, [searchParams]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
   const [loading, setLoading] = useState(true);
@@ -469,6 +478,12 @@ const Payments = () => {
               <p className="text-xs lg:text-sm text-white/90 mt-0.5">
                 Registra pagos y valida comprobantes
               </p>
+              <Link
+                to="/admin/payments-masivos"
+                className="inline-block text-xs text-white/85 hover:text-white underline mt-1 font-medium"
+              >
+                Pagos y cobros masivos →
+              </Link>
             </div>
           </div>
           {tab === 'pagos' && (

@@ -12,6 +12,7 @@ import LoanRequestDetail from './pages/yegoRapidin/LoanRequestDetail';
 import Loans from './pages/yegoRapidin/Loans';
 import LoanDetail from './pages/yegoRapidin/LoanDetail';
 import Payments from './pages/yegoRapidin/Payments';
+import PaymentsBulk from './pages/yegoRapidin/PaymentsBulk';
 import Analysis from './pages/yegoRapidin/Analysis';
 import Settings from './pages/yegoRapidin/Settings';
 import Provisions from './pages/yegoRapidin/Provisions';
@@ -197,6 +198,16 @@ function App() {
                 <ProtectedRoute>
                   <Layout>
                     <Payments />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/payments-masivos"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <PaymentsBulk />
                   </Layout>
                 </ProtectedRoute>
               }

@@ -8,6 +8,7 @@ import {
   PlusCircle,
   Banknote,
   CreditCard,
+  Layers,
   BarChart3,
   TrendingUp,
   Settings,
@@ -32,6 +33,7 @@ const ADMIN_MENU: Record<AdminProduct, { newRequest: MenuItem; sections: MenuSec
         { text: 'Solicitudes', icon: FileText, path: '/admin/loan-requests' },
         { text: 'Préstamos', icon: Banknote, path: '/admin/loans' },
         { text: 'Pagos', icon: CreditCard, path: '/admin/payments' },
+        { text: 'Pagos y cobros masivos', icon: Layers, path: '/admin/payments-masivos' },
       ]},
       { title: 'Reportes', items: [
         { text: 'Análisis', icon: BarChart3, path: '/admin/analysis' },

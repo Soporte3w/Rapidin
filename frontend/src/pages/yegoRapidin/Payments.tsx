@@ -1,10 +1,14 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import api from '../../services/api';
+import { rapidinMatchParts } from '../../utils/rapidinListSearch';
+import { isAxiosAbortError } from '../../utils/miautoApiUtils';
 import { Plus, X, FileText, CreditCard, AlertCircle, Eye, CheckCircle, XCircle, Copy, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatDate, formatDateTimeLocal } from '../../utils/date';
 import { DateRangePicker } from '../../components/DateRangePicker';
+import { useDebouncedValue } from '../../hooks/useDebouncedValue';
+import { RapidinSearchField } from '../../components/RapidinSearchField';
 import toast from 'react-hot-toast';
 
 interface Payment {
@@ -76,6 +80,46 @@ interface ScheduleInstallment {
   cumulative_late_fee?: number;
 }
 
+const API_PAGE_CHUNK = 100;
+
+function paymentMatches(p: Payment, q: string): boolean {
+  return rapidinMatchParts(q, [
+    p.loan_id,
+    p.driver_first_name,
+    p.driver_last_name,
+    [p.driver_first_name, p.driver_last_name].filter(Boolean).join(' ').trim(),
+    p.reference,
+    p.id,
+  ]);
+}
+
+function resolveScheduleLoanIdFromSearch(q: string, filtered: Payment[]): string | null {
+  const t = q.trim();
+  if (!t) return null;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t)) return t;
+  const ids = [...new Set(filtered.map((p) => p.loan_id).filter(Boolean))] as string[];
+  if (ids.length === 1) return ids[0]!;
+  const lower = t.toLowerCase();
+  const byPrefix = ids.filter((id) => id.toLowerCase().startsWith(lower));
+  if (byPrefix.length === 1) return byPrefix[0]!;
+  return null;
+}
+
+function autoLogRowMatches(row: AutoPaymentLogEntry, q: string): boolean {
+  return rapidinMatchParts(q, [
+    row.loan_id,
+    row.external_driver_id,
+    row.driver_id,
+    row.driver_first_name,
+    row.driver_last_name,
+    [row.driver_first_name, row.driver_last_name].filter(Boolean).join(' ').trim(),
+    row.flota,
+    row.flota_name,
+    row.reason,
+    row.id,
+  ]);
+}
+
 const Payments = () => {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
@@ -87,7 +131,6 @@ const Payments = () => {
       setTab(t);
     }
   }, [searchParams]);
-  const [payments, setPayments] = useState<Payment[]>([]);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
   const [loading, setLoading] = useState(true);
   const [vouchersLoading, setVouchersLoading] = useState(false);
@@ -97,15 +140,15 @@ const Payments = () => {
   const [rejectModal, setRejectModal] = useState<{ voucherId: string; reason: string } | null>(null);
   const [viewFileModal, setViewFileModal] = useState<{ url: string; type: string } | null>(null);
   const [comprobantesFilter, setComprobantesFilter] = useState<'pending' | 'rejected' | 'approved'>('pending');
+  const [sourcePayments, setSourcePayments] = useState<Payment[]>([]);
   const [paymentFilters, setPaymentFilters] = useState({
-    loan_id: '',
     country: (user?.country as string) || 'PE',
     date_from: '',
     date_to: '',
   });
-  const [loanIdSearchInput, setLoanIdSearchInput] = useState('');
-  const [pagination, setPagination] = useState({ page: 1, limit: 5, total: 0, totalPages: 0 });
-  const [paginationLoading, setPaginationLoading] = useState(false);
+  const [paymentSearchInput, setPaymentSearchInput] = useState('');
+  const debouncedPaymentSearch = useDebouncedValue(paymentSearchInput, 400);
+  const [pagination, setPagination] = useState({ page: 1, limit: 5 });
   const [formData, setFormData] = useState({
     loan_id: '',
     amount: '',
@@ -128,27 +171,90 @@ const Payments = () => {
   const [loanPreviewFetched, setLoanPreviewFetched] = useState(false);
   const [submittingPayment, setSubmittingPayment] = useState(false);
 
-  const [autoLog, setAutoLog] = useState<AutoPaymentLogEntry[]>([]);
+  const [sourceAutoLog, setSourceAutoLog] = useState<AutoPaymentLogEntry[]>([]);
   const [autoLogLoading, setAutoLogLoading] = useState(false);
-  const [autoLogPaginationLoading, setAutoLogPaginationLoading] = useState(false);
-  const [autoLogFilters, setAutoLogFilters] = useState({ date_from: '', date_to: '', driver: '', status: '' });
-  const [autoLogPagination, setAutoLogPagination] = useState({ page: 1, limit: 10, total: 0, totalPages: 0 });
+  const [autoLogFilters, setAutoLogFilters] = useState({ date_from: '', date_to: '', status: '' });
+  const [autoLogSearchInput, setAutoLogSearchInput] = useState('');
+  const debouncedAutoLogSearch = useDebouncedValue(autoLogSearchInput, 400);
+  const [autoLogPagination, setAutoLogPagination] = useState({ page: 1, limit: 10 });
 
   const [loanSchedule, setLoanSchedule] = useState<ScheduleInstallment[]>([]);
   const [loanScheduleLoading, setLoanScheduleLoading] = useState(false);
 
-  const lastPaymentFiltersRef = useRef<string>('');
-  useEffect(() => {
-    const key = JSON.stringify(paymentFilters);
-    if (key === lastPaymentFiltersRef.current) return;
-    lastPaymentFiltersRef.current = key;
-    setPagination((p) => ({ ...p, page: 1 }));
-    fetchPayments(1, pagination.limit, true);
-  }, [paymentFilters]);
+  const filteredPayments = useMemo(() => {
+    const q = debouncedPaymentSearch.trim();
+    if (!q) return sourcePayments;
+    return sourcePayments.filter((p) => paymentMatches(p, q));
+  }, [sourcePayments, debouncedPaymentSearch]);
 
-  const goToPage = (page: number) => {
-    const nextPage = Math.max(1, Math.min(page, pagination.totalPages || 1));
-    fetchPayments(nextPage, pagination.limit, true);
+  const totalPaymentsFiltered = filteredPayments.length;
+  const paymentsTotalPages = Math.max(1, Math.ceil(totalPaymentsFiltered / pagination.limit) || 1);
+  const paymentsPageClamped = Math.min(Math.max(1, pagination.page), paymentsTotalPages);
+
+  useEffect(() => {
+    if (pagination.page !== paymentsPageClamped) {
+      setPagination((p) => ({ ...p, page: paymentsPageClamped }));
+    }
+  }, [pagination.page, paymentsPageClamped]);
+
+  const displayPaymentsList = useMemo(() => {
+    const start = (paymentsPageClamped - 1) * pagination.limit;
+    return filteredPayments.slice(start, start + pagination.limit);
+  }, [filteredPayments, paymentsPageClamped, pagination.limit]);
+
+  const fetchPaymentsAllPages = useCallback(
+    async (signal?: AbortSignal, resetPage = true) => {
+      try {
+        setLoading(true);
+        setError('');
+        const accumulated: Payment[] = [];
+        let serverTotal = 0;
+        let apiPage = 1;
+        while (!signal?.aborted) {
+          const params = new URLSearchParams();
+          params.append('page', String(apiPage));
+          params.append('limit', String(API_PAGE_CHUNK));
+          if (paymentFilters.country) params.append('country', paymentFilters.country);
+          if (paymentFilters.date_from) params.append('date_from', paymentFilters.date_from);
+          if (paymentFilters.date_to) params.append('date_to', paymentFilters.date_to);
+          const response = await api.get(`/payments?${params.toString()}`, { signal });
+          let chunk: Payment[] = [];
+          const pag = response.data?.pagination;
+          serverTotal = typeof pag?.total === 'number' ? pag.total : accumulated.length;
+          const raw = response.data?.data ?? response.data;
+          if (Array.isArray(raw)) chunk = raw;
+          else if (Array.isArray(response.data)) chunk = response.data;
+          if (chunk.length === 0) break;
+          accumulated.push(...chunk);
+          if (accumulated.length >= serverTotal || chunk.length < API_PAGE_CHUNK) break;
+          apiPage += 1;
+        }
+        if (signal?.aborted) return;
+        setSourcePayments(accumulated);
+        if (resetPage) setPagination((p) => ({ ...p, page: 1 }));
+      } catch (err: any) {
+        if (isAxiosAbortError(err)) return;
+        console.error('Error fetching payments:', err);
+        setError(err.response?.data?.message || 'Error al cargar los pagos');
+        setSourcePayments([]);
+      } finally {
+        if (signal?.aborted) return;
+        setLoading(false);
+      }
+    },
+    [paymentFilters.country, paymentFilters.date_from, paymentFilters.date_to]
+  );
+
+  useEffect(() => {
+    if (tab !== 'pagos') return;
+    const ac = new AbortController();
+    fetchPaymentsAllPages(ac.signal, true);
+    return () => ac.abort();
+  }, [tab, fetchPaymentsAllPages]);
+
+  const goToPaymentsPage = (page: number) => {
+    const tp = Math.max(1, Math.ceil(totalPaymentsFiltered / pagination.limit) || 1);
+    setPagination((p) => ({ ...p, page: Math.max(1, Math.min(page, tp)) }));
   };
 
   const fetchLoanPreview = () => {
@@ -206,7 +312,7 @@ const Payments = () => {
       .finally(() => setLoanPreviewLoading(false));
   };
 
-  // Al cambiar el ID del préstamo en el modal, buscar conductor (debounce) o al hacer clic en la lupa
+  // Al cambiar el ID del préstamo en el modal, buscar conductor (debounce)
   useEffect(() => {
     if (!open) return;
     const loanId = formData.loan_id.trim();
@@ -237,63 +343,82 @@ const Payments = () => {
     if (tab === 'comprobantes') fetchVouchers();
   }, [tab, comprobantesFilter]);
 
-  const fetchAutoLog = async (page = 1, isPaginationChange = false) => {
-    if (isPaginationChange) {
-      setAutoLogPaginationLoading(true);
-    } else {
-      setAutoLogLoading(true);
-    }
-    try {
-      const params = new URLSearchParams();
-      params.append('page', String(page));
-      params.append('limit', String(autoLogPagination.limit));
-      if (autoLogFilters.date_from) params.append('date_from', autoLogFilters.date_from);
-      if (autoLogFilters.date_to) params.append('date_to', autoLogFilters.date_to);
-      if (autoLogFilters.driver.trim()) params.append('driver', autoLogFilters.driver.trim());
-      if (autoLogFilters.status) params.append('status', autoLogFilters.status);
-      const res = await api.get(`/payments/automatic-log?${params.toString()}`);
-      const data = res.data?.data ?? [];
-      const total = res.data?.pagination?.total ?? 0;
-      const totalPages = res.data?.pagination?.totalPages ?? 1;
-      setAutoLog(Array.isArray(data) ? data : []);
-      setAutoLogPagination((p) => ({ ...p, page, total, totalPages }));
-    } catch (err) {
-      toast.error('Error al cargar log de pagos automáticos');
-      setAutoLog([]);
-    } finally {
-      if (isPaginationChange) {
-        setAutoLogPaginationLoading(false);
-      } else {
+  const fetchAutoLogAllPages = useCallback(
+    async (signal?: AbortSignal, resetPage = true) => {
+      try {
+        setAutoLogLoading(true);
+        const accumulated: AutoPaymentLogEntry[] = [];
+        let serverTotal = 0;
+        let apiPage = 1;
+        while (!signal?.aborted) {
+          const params = new URLSearchParams();
+          params.append('page', String(apiPage));
+          params.append('limit', String(API_PAGE_CHUNK));
+          if (autoLogFilters.date_from) params.append('date_from', autoLogFilters.date_from);
+          if (autoLogFilters.date_to) params.append('date_to', autoLogFilters.date_to);
+          if (autoLogFilters.status) params.append('status', autoLogFilters.status);
+          const res = await api.get(`/payments/automatic-log?${params.toString()}`, { signal });
+          const data = res.data?.data ?? [];
+          const pag = res.data?.pagination;
+          serverTotal = typeof pag?.total === 'number' ? pag.total : accumulated.length;
+          const chunk = Array.isArray(data) ? data : [];
+          if (chunk.length === 0) break;
+          accumulated.push(...chunk);
+          if (accumulated.length >= serverTotal || chunk.length < API_PAGE_CHUNK) break;
+          apiPage += 1;
+        }
+        if (signal?.aborted) return;
+        setSourceAutoLog(accumulated);
+        if (resetPage) setAutoLogPagination((p) => ({ ...p, page: 1 }));
+      } catch (err) {
+        if (isAxiosAbortError(err)) return;
+        toast.error('Error al cargar log de pagos automáticos');
+        setSourceAutoLog([]);
+      } finally {
+        if (signal?.aborted) return;
         setAutoLogLoading(false);
       }
-    }
-  };
+    },
+    [autoLogFilters.date_from, autoLogFilters.date_to, autoLogFilters.status]
+  );
 
-  useEffect(() => {
-    if (tab === 'pagos-automaticos') fetchAutoLog(1);
-  }, [tab]);
-
-  // Filtros de pagos automáticos: buscar al cambiar (sin esperar al botón), con debounce para no disparar en cada tecla
   useEffect(() => {
     if (tab !== 'pagos-automaticos') return;
-    const t = setTimeout(() => fetchAutoLog(1), 400);
-    return () => clearTimeout(t);
-  }, [autoLogFilters.date_from, autoLogFilters.date_to, autoLogFilters.driver, autoLogFilters.status, tab]);
+    const ac = new AbortController();
+    fetchAutoLogAllPages(ac.signal, true);
+    return () => ac.abort();
+  }, [tab, fetchAutoLogAllPages]);
 
-  const runLoanIdSearch = () => {
-    const value = loanIdSearchInput.trim();
-    setPaymentFilters((prev) => ({ ...prev, loan_id: value }));
-  };
+  const filteredAutoLog = useMemo(() => {
+    const q = debouncedAutoLogSearch.trim();
+    if (!q) return sourceAutoLog;
+    return sourceAutoLog.filter((row) => autoLogRowMatches(row, q));
+  }, [sourceAutoLog, debouncedAutoLogSearch]);
 
-  const clearLoanIdFilter = () => {
-    setLoanIdSearchInput('');
-    setPaymentFilters((prev) => ({ ...prev, loan_id: '' }));
+  const totalAutoFiltered = filteredAutoLog.length;
+  const autoLogTotalPages = Math.max(1, Math.ceil(totalAutoFiltered / autoLogPagination.limit) || 1);
+  const autoLogPageClamped = Math.min(Math.max(1, autoLogPagination.page), autoLogTotalPages);
+
+  useEffect(() => {
+    if (autoLogPagination.page !== autoLogPageClamped) {
+      setAutoLogPagination((p) => ({ ...p, page: autoLogPageClamped }));
+    }
+  }, [autoLogPagination.page, autoLogPageClamped]);
+
+  const displayAutoLog = useMemo(() => {
+    const start = (autoLogPageClamped - 1) * autoLogPagination.limit;
+    return filteredAutoLog.slice(start, start + autoLogPagination.limit);
+  }, [filteredAutoLog, autoLogPageClamped, autoLogPagination.limit]);
+
+  const clearPaymentSearch = () => {
+    setPaymentSearchInput('');
     setLoanSchedule([]);
   };
 
-  const resolvedLoanIdForSchedule = paymentFilters.loan_id.trim()
-    ? (payments[0] as Payment | undefined)?.loan_id || (paymentFilters.loan_id.trim().length >= 36 ? paymentFilters.loan_id.trim() : null)
-    : null;
+  const resolvedLoanIdForSchedule = useMemo(
+    () => resolveScheduleLoanIdFromSearch(debouncedPaymentSearch, filteredPayments),
+    [debouncedPaymentSearch, filteredPayments]
+  );
 
   useEffect(() => {
     if (!resolvedLoanIdForSchedule || tab !== 'pagos') {
@@ -312,48 +437,6 @@ const Payments = () => {
 
   const paymentCountry = paymentFilters.country || 'PE';
   const currencyLabel = paymentCountry === 'PE' ? 'S/.' : paymentCountry === 'CO' ? 'COP' : 'S/.';
-
-  const fetchPayments = async (page = pagination.page, limit = pagination.limit, isPaginationChange = false) => {
-    try {
-      if (isPaginationChange) {
-        setPaginationLoading(true);
-      } else {
-        setLoading(true);
-      }
-      setError('');
-      const params = new URLSearchParams();
-      params.append('page', String(page));
-      params.append('limit', String(limit));
-      if (paymentFilters.country) params.append('country', paymentFilters.country);
-      if (paymentFilters.loan_id.trim()) params.append('loan_id', paymentFilters.loan_id.trim());
-      if (paymentFilters.date_from) params.append('date_from', paymentFilters.date_from);
-      if (paymentFilters.date_to) params.append('date_to', paymentFilters.date_to);
-      const response = await api.get(`/payments?${params.toString()}`);
-      let paymentsData: Payment[] = [];
-      let total = 0;
-      let totalPages = 0;
-      if (response.data) {
-        if (response.data.pagination) {
-          total = response.data.pagination.total ?? 0;
-          totalPages = response.data.pagination.totalPages ?? 0;
-        }
-        if (Array.isArray(response.data.data)) {
-          paymentsData = response.data.data;
-        } else if (Array.isArray(response.data)) {
-          paymentsData = response.data;
-        }
-      }
-      setPayments(paymentsData);
-      setPagination((prev) => ({ ...prev, page, limit, total, totalPages }));
-    } catch (error: any) {
-      console.error('Error fetching payments:', error);
-      setError(error.response?.data?.message || 'Error al cargar los pagos');
-      setPayments([]);
-    } finally {
-      setLoading(false);
-      if (isPaginationChange) setPaginationLoading(false);
-    }
-  };
 
   const [pendingVouchersCount, setPendingVouchersCount] = useState(0);
 
@@ -411,7 +494,7 @@ const Payments = () => {
         reference: '',
       });
       setChargeLateFee(true);
-      fetchPayments(1, pagination.limit);
+      fetchPaymentsAllPages(undefined, true);
     } catch (error: any) {
       console.error('Error registering payment:', error);
       toast.error(error.response?.data?.message || 'Error al registrar el pago');
@@ -429,11 +512,12 @@ const Payments = () => {
     }
   };
 
-  const safePayments = Array.isArray(payments) ? payments : [];
+  const paymentSearchActive = debouncedPaymentSearch.trim().length > 0;
+  const hasPaymentServerFilters = Boolean(paymentFilters.date_from || paymentFilters.date_to);
   const safeVouchers = Array.isArray(vouchers) ? vouchers : [];
   const pendingCount = tab === 'comprobantes' && comprobantesFilter === 'pending' ? safeVouchers.length : pendingVouchersCount;
 
-  if (loading) {
+  if (loading && tab === 'pagos' && sourcePayments.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-center">
@@ -453,7 +537,7 @@ const Payments = () => {
         <h3 className="text-xl font-bold text-gray-900 mb-2">Error al cargar los pagos</h3>
         <p className="text-gray-600 mb-6 text-center max-w-md">{error}</p>
         <button
-          onClick={() => fetchPayments(pagination.page, pagination.limit)}
+          onClick={() => fetchPaymentsAllPages(undefined, true)}
           className="bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-3 rounded-lg font-medium hover:from-red-700 hover:to-red-800 transition-all shadow-md"
         >
           Reintentar
@@ -533,7 +617,6 @@ const Payments = () => {
       {/* Tab: Pagos */}
       {tab === 'pagos' && (
       <>
-      {/* Filtros: Fecha, País, ID préstamo */}
       <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 mb-4">
         <h3 className="text-sm font-semibold text-gray-900 mb-3">Filtros</h3>
         <div className="flex flex-wrap items-end gap-4">
@@ -543,50 +626,31 @@ const Payments = () => {
             onChange={(r) => setPaymentFilters((f) => ({ ...f, date_from: r.date_from, date_to: r.date_to }))}
             placeholder="Filtrar por fecha"
           />
-          <div className="w-full max-w-md">
-            <label htmlFor="loan_id_filter" className="block text-xs font-semibold text-gray-900 mb-1.5">
-              Buscar por ID de préstamo
-            </label>
-            <div className="flex gap-2 flex-wrap">
-              <input
-                id="loan_id_filter"
-                type="text"
-                value={loanIdSearchInput}
-                onChange={(e) => setLoanIdSearchInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && runLoanIdSearch()}
-                placeholder="ID completo o primeros caracteres (ej. abc12345)"
-                className="flex-1 min-w-[200px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm font-mono"
+          <div className="w-full max-w-md flex flex-wrap items-end gap-2">
+            <div className="flex-1 min-w-[200px]">
+              <RapidinSearchField
+                id="payment_search"
+                label="Buscar"
+                value={paymentSearchInput}
+                onChange={setPaymentSearchInput}
+                placeholder="Préstamo, conductor, referencia…"
               />
+            </div>
+            {paymentSearchActive && (
               <button
                 type="button"
-                onClick={runLoanIdSearch}
-                className="flex-shrink-0 px-4 py-2 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] transition-colors flex items-center gap-2"
-                title="Buscar"
+                onClick={clearPaymentSearch}
+                className="shrink-0 px-3 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-xs font-medium self-end"
               >
-                <Search className="w-4 h-4" />
-                Buscar
+                Limpiar
               </button>
-              {paymentFilters.loan_id && (
-                <button
-                  type="button"
-                  onClick={clearLoanIdFilter}
-                  className="flex-shrink-0 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm"
-                >
-                  Limpiar filtro
-                </button>
-              )}
-            </div>
-            {paymentFilters.loan_id && (
-              <p className="mt-1.5 text-xs text-gray-600">
-                Filtro activo: préstamo <span className="font-mono font-medium">{paymentFilters.loan_id}</span>
-              </p>
             )}
           </div>
         </div>
       </div>
 
-      {/* Cuotas del préstamo cuando hay filtro por ID */}
-      {tab === 'pagos' && paymentFilters.loan_id.trim() && (
+      {/* Cronograma: solo si la búsqueda deja un préstamo identificable */}
+      {tab === 'pagos' && debouncedPaymentSearch.trim() && (
         <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 mb-4">
           <h3 className="text-sm font-semibold text-gray-900 mb-3">Cuotas de este préstamo</h3>
           {loanScheduleLoading ? (
@@ -597,8 +661,8 @@ const Payments = () => {
           ) : loanSchedule.length === 0 ? (
             <p className="text-sm text-gray-500 py-2">
               {resolvedLoanIdForSchedule
-                ? 'No se pudo cargar el cronograma. Comprueba el ID o que el préstamo exista.'
-                : 'Escribe el ID completo del préstamo o busca primero para ver las cuotas.'}
+                ? 'No se pudo cargar el cronograma. Revisa el ID del préstamo.'
+                : 'Indica el UUID del préstamo o filtra hasta que quede un solo préstamo en la tabla.'}
             </p>
           ) : (
             <div className="overflow-x-auto">
@@ -646,29 +710,33 @@ const Payments = () => {
       )}
 
       {/* Lista de pagos con paginación */}
-      {safePayments.length === 0 && !loading ? (
+      {sourcePayments.length === 0 && !loading ? (
         <div className="bg-white rounded-xl shadow border border-gray-200 p-8 text-center">
           <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-bold text-gray-900 mb-2">
-            {paymentFilters.loan_id ? 'No hay pagos para este préstamo' : 'No hay pagos disponibles'}
+            {hasPaymentServerFilters ? 'Sin resultados' : 'No hay pagos disponibles'}
           </h3>
           <p className="text-gray-600 text-sm mb-4">
-            {paymentFilters.loan_id
-              ? 'No se encontraron pagos con el ID indicado. Revisa el ID o quita el filtro.'
-              : 'No se encontraron pagos registrados'}
+            {hasPaymentServerFilters
+              ? 'Prueba otro rango de fechas.'
+              : 'No hay pagos en el periodo seleccionado.'}
           </p>
-          {paymentFilters.loan_id && (
-            <button
-              type="button"
-              onClick={clearLoanIdFilter}
-              className="px-4 py-2 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] transition-colors font-medium"
-            >
-              Quitar filtro y ver todos
-            </button>
-          )}
+        </div>
+      ) : totalPaymentsFiltered === 0 ? (
+        <div className="bg-white rounded-xl shadow border border-gray-200 p-8 text-center">
+          <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-bold text-gray-900 mb-2">Sin coincidencias</h3>
+          <p className="text-gray-600 text-sm mb-4">Ningún pago coincide con «{debouncedPaymentSearch.trim()}».</p>
+          <button
+            type="button"
+            onClick={clearPaymentSearch}
+            className="px-4 py-2 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] transition-colors font-medium"
+          >
+            Limpiar búsqueda
+          </button>
         </div>
       ) : (
-        <div className={`bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden transition-opacity ${paginationLoading ? 'opacity-60' : ''}`}>
+        <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[800px]">
               <thead className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
@@ -681,7 +749,7 @@ const Payments = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {safePayments.filter(Boolean).map((payment, idx) => {
+                {displayPaymentsList.map((payment, idx) => {
                   const p = payment as Payment;
                   return (
                     <tr key={p?.id ?? `pay-${idx}`} className="hover:bg-gray-50">
@@ -728,27 +796,28 @@ const Payments = () => {
               </tbody>
             </table>
           </div>
-          {pagination.total > 0 && (
+          {totalPaymentsFiltered > 0 && (
             <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200">
               <span className="text-xs text-gray-500">
-                Total: {pagination.total} registro(s)
-                {paginationLoading && <span className="ml-2 text-red-600">Cargando...</span>}
+                Mostrando {displayPaymentsList.length} de {totalPaymentsFiltered}
               </span>
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => goToPage(pagination.page - 1)}
-                  disabled={pagination.page <= 1 || paginationLoading}
+                  onClick={() => goToPaymentsPage(paymentsPageClamped - 1)}
+                  disabled={paymentsPageClamped <= 1}
                   className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50"
                   aria-label="Página anterior"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
-                <span className="text-sm text-gray-700 px-2">Pág. {pagination.page} de {pagination.totalPages || 1}</span>
+                <span className="text-sm text-gray-700 px-2">
+                  Pág. {paymentsPageClamped} de {paymentsTotalPages}
+                </span>
                 <button
                   type="button"
-                  onClick={() => goToPage(pagination.page + 1)}
-                  disabled={pagination.page >= pagination.totalPages || paginationLoading}
+                  onClick={() => goToPaymentsPage(paymentsPageClamped + 1)}
+                  disabled={paymentsPageClamped >= paymentsTotalPages}
                   className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50"
                   aria-label="Página siguiente"
                 >
@@ -1122,14 +1191,14 @@ const Payments = () => {
               onChange={(r) => setAutoLogFilters((f) => ({ ...f, date_from: r.date_from, date_to: r.date_to }))}
               placeholder="Filtrar por fecha"
             />
-            <div>
-              <label className="block text-xs font-semibold text-gray-700 mb-1">Conductor</label>
-              <input
-                type="text"
-                value={autoLogFilters.driver}
-                onChange={(e) => setAutoLogFilters((f) => ({ ...f, driver: e.target.value }))}
-                placeholder="Nombre"
-                className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-full min-w-[160px]"
+            <div className="w-full max-w-md">
+              <RapidinSearchField
+                id="auto_log_search"
+                label="Buscar"
+                value={autoLogSearchInput}
+                onChange={setAutoLogSearchInput}
+                placeholder="Conductor, préstamo, flota…"
+                className="w-full"
               />
             </div>
             <div>
@@ -1146,11 +1215,11 @@ const Payments = () => {
             </div>
             <button
               type="button"
-              onClick={() => fetchAutoLog(1)}
+              onClick={() => fetchAutoLogAllPages(undefined, true)}
               className="px-4 py-2 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] flex items-center gap-2"
             >
               <Search className="w-4 h-4" />
-              Buscar
+              Recargar
             </button>
           </div>
         </div>
@@ -1158,14 +1227,20 @@ const Payments = () => {
           <div className="flex justify-center py-12">
             <div className="animate-spin rounded-full h-12 w-12 border-2 border-red-600 border-t-transparent" />
           </div>
-        ) : (autoLog || []).length === 0 ? (
+        ) : sourceAutoLog.length === 0 ? (
           <div className="bg-white rounded-xl shadow border border-gray-200 p-8 text-center">
             <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
             <h3 className="text-lg font-bold text-gray-900 mb-2">No hay registros</h3>
-            <p className="text-gray-600 text-sm">El job de cobro automático (15:41) genera el log aquí.</p>
+            <p className="text-gray-600 text-sm">Historial de intentos de cobro automático.</p>
+          </div>
+        ) : totalAutoFiltered === 0 ? (
+          <div className="bg-white rounded-xl shadow border border-gray-200 p-8 text-center">
+            <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Sin coincidencias</h3>
+            <p className="text-gray-600 text-sm">Ningún cobro coincide con «{debouncedAutoLogSearch.trim()}».</p>
           </div>
         ) : (
-          <div className={`bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden transition-opacity ${autoLogPaginationLoading ? 'opacity-60' : ''}`}>
+          <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full min-w-[800px]">
                 <thead className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
@@ -1182,7 +1257,7 @@ const Payments = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {(autoLog || []).filter(Boolean).map((row, idx) => (
+                  {displayAutoLog.map((row, idx) => (
                     <tr key={row?.id ?? `log-${idx}`} className="hover:bg-gray-50">
                       <td className="px-4 py-3 text-sm text-gray-600 font-mono">
                         {row?.loan_id ? (
@@ -1220,26 +1295,27 @@ const Payments = () => {
                 </tbody>
               </table>
             </div>
-            {(autoLogPagination?.totalPages ?? 0) > 1 && (
+            {totalAutoFiltered > 0 && (
               <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200">
-                <span className="text-xs text-gray-500">
-                  Total: {autoLogPagination.total} registro(s)
-                  {autoLogPaginationLoading && <span className="ml-2 text-red-600">Cargando...</span>}
+                               <span className="text-xs text-gray-500">
+                  Mostrando {displayAutoLog.length} de {totalAutoFiltered}
                 </span>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    onClick={() => fetchAutoLog(autoLogPagination.page - 1, true)}
-                    disabled={autoLogPagination.page <= 1 || autoLogPaginationLoading}
+                    onClick={() => setAutoLogPagination((p) => ({ ...p, page: Math.max(1, autoLogPageClamped - 1) }))}
+                    disabled={autoLogPageClamped <= 1}
                     className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50"
                   >
                     <ChevronLeft className="w-4 h-4" />
                   </button>
-                  <span className="text-sm text-gray-700 px-2">Pág. {autoLogPagination.page} de {autoLogPagination.totalPages}</span>
+                  <span className="text-sm text-gray-700 px-2">
+                    Pág. {autoLogPageClamped} de {autoLogTotalPages}
+                  </span>
                   <button
                     type="button"
-                    onClick={() => fetchAutoLog(autoLogPagination.page + 1, true)}
-                    disabled={autoLogPagination.page >= autoLogPagination.totalPages || autoLogPaginationLoading}
+                    onClick={() => setAutoLogPagination((p) => ({ ...p, page: Math.min(autoLogTotalPages, autoLogPageClamped + 1) }))}
+                    disabled={autoLogPageClamped >= autoLogTotalPages}
                     className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50"
                   >
                     <ChevronRight className="w-4 h-4" />

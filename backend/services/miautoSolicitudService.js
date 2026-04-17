@@ -11,6 +11,7 @@ import {
   getDriverInfoByPhones,
   normalizePhoneForDriversMatch,
 } from './miautoDriverLookup.js';
+import { buildDriverNameSearchSql } from '../utils/driverNameSearch.js';
 
 const MINIMO_USD_PARCIAL = 500;
 
@@ -61,7 +62,7 @@ export class ActiveSolicitudError extends Error {
 }
 
 export const listSolicitudes = async (filters = {}) => {
-  const { status, country, date_from, date_to, page = 1, limit = 20, driver_phone, driver_country, park_id, rapidin_driver_id, forDriver } = filters;
+  const { status, country, date_from, date_to, page = 1, limit = 20, driver_phone, driver_country, park_id, rapidin_driver_id, forDriver, driver: driverNameFilter, q: qNameFilter } = filters;
   const params = [];
   let n = 1;
   let fromJoin = ' FROM module_miauto_solicitud s LEFT JOIN module_rapidin_drivers rd ON rd.id = s.rapidin_driver_id ';
@@ -88,6 +89,15 @@ export const listSolicitudes = async (filters = {}) => {
     where += ` AND s.created_at::date <= $${n}`;
     params.push(date_to);
     n += 1;
+  }
+  const adminDriverName = trimOrUndefined(driverNameFilter ?? qNameFilter);
+  if (adminDriverName && !forDriver) {
+    const dSearch = buildDriverNameSearchSql('rd', adminDriverName, n);
+    if (dSearch.sql) {
+      where += dSearch.sql;
+      params.push(...dSearch.params);
+      n = dSearch.nextParam;
+    }
   }
   const rid = trimOrUndefined(rapidin_driver_id);
   const pid = trimOrUndefined(park_id);
@@ -254,8 +264,13 @@ export const listAlquilerVenta = async (filters = {}) => {
   }
   const qRaw = (qFilter != null ? String(qFilter) : '').trim();
   if (qRaw) {
-    const qLower = qRaw.toLowerCase();
-    where += ` AND (
+    const tokens = qRaw
+      .toLowerCase()
+      .split(/\s+/)
+      .map((t) => t.replace(/[%_]/g, ''))
+      .filter(Boolean);
+    for (const tok of tokens) {
+      where += ` AND (
       position($${n}::text in lower(coalesce(s.placa_asignada, ''))) > 0
       OR position($${n}::text in lower(coalesce(s.license_number, ''))) > 0
       OR position($${n}::text in lower(coalesce(s.dni, ''))) > 0
@@ -264,8 +279,9 @@ export const listAlquilerVenta = async (filters = {}) => {
       OR position($${n}::text in lower(coalesce(rd.last_name, ''))) > 0
       OR position($${n}::text in lower(trim(coalesce(rd.first_name, '')) || ' ' || trim(coalesce(rd.last_name, '')))) > 0
     )`;
-    params.push(qLower);
-    n += 1;
+      params.push(tok);
+      n += 1;
+    }
   }
   const cronogramaId = trimOrUndefined(cronogramaIdFilter);
   if (cronogramaId && UUID_RE.test(cronogramaId)) {

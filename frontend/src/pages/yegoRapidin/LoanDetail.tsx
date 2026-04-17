@@ -60,8 +60,6 @@ const LoanDetail = () => {
     return {
       fromLoanDetail: true,
       fromLoansSearch: true,
-      driver: s.driver ?? '',
-      loan_id: s.loan_id ?? '',
       driverSearchInput: s.driverSearchInput ?? s.driver ?? '',
       loanIdSearchInput: s.loanIdSearchInput ?? s.loan_id ?? '',
       status: s.status ?? '',

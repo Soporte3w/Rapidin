@@ -1,4 +1,5 @@
 import { query } from '../config/database.js';
+import { buildDriverNameSearchSql } from '../utils/driverNameSearch.js';
 import { getCreditLine, getInterestRate, simulateLoanOptions, generateInstallmentSchedule } from './calculationsService.js';
 import { getNextMondayFrom, isSunday } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
@@ -142,10 +143,12 @@ export const getLoanRequests = async (filters = {}) => {
   }
 
   if (filters.driver && filters.driver.trim()) {
-    const driverTerm = `%${filters.driver.trim()}%`;
-    sql += ` AND (d.first_name ILIKE $${paramCount} OR d.last_name ILIKE $${paramCount} OR d.dni ILIKE $${paramCount})`;
-    params.push(driverTerm);
-    paramCount += 1;
+    const dSearch = buildDriverNameSearchSql('d', filters.driver, paramCount);
+    if (dSearch.sql) {
+      sql += dSearch.sql;
+      params.push(...dSearch.params);
+      paramCount = dSearch.nextParam;
+    }
   }
 
   if (filters.date_from && filters.date_to) {
@@ -435,10 +438,12 @@ export const getLoans = async (filters = {}) => {
   }
 
   if (filters.driver && filters.driver.trim()) {
-    const driverTerm = `%${filters.driver.trim()}%`;
-    sql += ` AND (d.first_name ILIKE $${paramCount} OR d.last_name ILIKE $${paramCount} OR d.dni ILIKE $${paramCount})`;
-    params.push(driverTerm);
-    paramCount += 1;
+    const dSearch = buildDriverNameSearchSql('d', filters.driver, paramCount);
+    if (dSearch.sql) {
+      sql += dSearch.sql;
+      params.push(...dSearch.params);
+      paramCount = dSearch.nextParam;
+    }
   }
 
   if (filters.loan_id && filters.loan_id.trim()) {
@@ -492,10 +497,12 @@ const buildLoanListFilterSql = (filters) => {
     params.push(filters.country);
   }
   if (filters.driver && filters.driver.trim()) {
-    const driverTerm = `%${filters.driver.trim()}%`;
-    sql += ` AND (d.first_name ILIKE $${p} OR d.last_name ILIKE $${p} OR d.dni ILIKE $${p})`;
-    params.push(driverTerm);
-    p += 1;
+    const dSearch = buildDriverNameSearchSql('d', filters.driver, p);
+    if (dSearch.sql) {
+      sql += dSearch.sql;
+      params.push(...dSearch.params);
+      p = dSearch.nextParam;
+    }
   }
   if (filters.loan_id && filters.loan_id.trim()) {
     const loanIdTerm = `%${filters.loan_id.trim()}%`;

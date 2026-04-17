@@ -201,6 +201,10 @@ export default function YegoMiAutoRentSaleDetail() {
     return cuotas.filter((c) => c.status === 'pending' && c.due_date?.slice(0, 10) === hoy);
   }, [cuotas]);
 
+  /** Misma regla que en la vista conductor: si la fila no trae `moneda`, se usa la del vehículo en cronograma. */
+  const monedaCuotaRow = (c: Pick<CuotaSemanal, 'moneda'>) =>
+    monedaCuotasLabel(c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda);
+
   function getWhatsAppPhone(phone: string | undefined, country: string): string {
     if (!phone) return '';
     const digits = phone.replace(/\D/g, '');
@@ -214,12 +218,11 @@ export default function YegoMiAutoRentSaleDetail() {
 
   const openWhatsAppModal = () => {
     const name = driverNameFromState || 'Conductor';
-    const country = solicitud?.country || 'PE';
-    const pref = country === 'PE' ? 'S/.' : country === 'CO' ? 'COP' : '';
     let defaultText: string;
 
     if (overdueCuotas.length > 0) {
       const lineas = overdueCuotas.slice(0, 10).map((c) => {
+        const sym = symMoneda(monedaCuotaRow(c));
         const cuotaNeta = Number(c.cuota_neta ?? c.amount_due) || 0;
         const pagado = Number(c.paid_amount) || 0;
         const pendiente = Math.max(0, cuotaNeta - pagado);
@@ -228,19 +231,20 @@ export default function YegoMiAutoRentSaleDetail() {
         const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
         const fecha = c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '';
         if (moraPendiente > 0) {
-          return `• Semana ${semana}: ${pref} ${pendiente.toFixed(2)} + ${pref} ${moraPendiente.toFixed(2)} mora = ${pref} ${total.toFixed(2)} total (venció ${fecha})`;
+          return `• Semana ${semana}: ${sym} ${pendiente.toFixed(2)} + ${sym} ${moraPendiente.toFixed(2)} mora = ${sym} ${total.toFixed(2)} total (venció ${fecha})`;
         }
-        return `• Semana ${semana}: ${pref} ${total.toFixed(2)} (venció ${fecha})`;
+        return `• Semana ${semana}: ${sym} ${total.toFixed(2)} (venció ${fecha})`;
       });
       const mas = overdueCuotas.length > 10 ? `\n• Y ${overdueCuotas.length - 10} cuota(s) más.` : '';
       defaultText = `Hola ${name}, tienes ${overdueCuotas.length} cuota(s) vencida(s) en tu contrato Yego Mi Auto:\n\n${lineas.join('\n')}${mas}\n\nPor favor regulariza tu situación lo antes posible. Gracias.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
     } else if (pendingCuotasHoy.length > 0) {
       const lineas = pendingCuotasHoy.map((c) => {
+        const sym = symMoneda(monedaCuotaRow(c));
         const cuotaNeta = Number(c.cuota_neta ?? c.amount_due) || 0;
         const pagado = Number(c.paid_amount) || 0;
         const pendiente = Math.max(0, cuotaNeta - pagado);
         const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
-        return `• Semana ${semana}: ${pref} ${pendiente.toFixed(2)}`;
+        return `• Semana ${semana}: ${sym} ${pendiente.toFixed(2)}`;
       });
       defaultText = `Hola ${name}, recuerda que hoy se vence tu cuota de Yego Mi Auto:\n\n${lineas.join('\n')}\n\nPor favor realiza tu pago a tiempo. Gracias.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
     } else {
@@ -480,7 +484,8 @@ export default function YegoMiAutoRentSaleDetail() {
     for (const c of cuotas) {
       const pagado = miautoMontoPagadoCuotaSemanal(c.paid_amount) + miautoNum(c.abono_comprobante_en_revision);
       const pendienteMostrar = Math.max(0, miautoCuotaFinalCronogramaSemanal(c));
-      if (c.moneda === 'USD') {
+      const m = monedaCuotaRow(c);
+      if (m === 'USD') {
         totalPagadoUSD += pagado;
         if (c.status === 'overdue') totalVencidoUSD += pendienteMostrar;
       } else {
@@ -489,7 +494,7 @@ export default function YegoMiAutoRentSaleDetail() {
       }
     }
     return { totalPagadoPEN, totalPagadoUSD, totalVencidoPEN, totalVencidoUSD };
-  }, [cuotas]);
+  }, [cuotas, solicitud?.cronograma_vehiculo?.inicial_moneda]);
 
   /** Comprobantes de otros gastos agrupados por otros_gastos_id */
   const comprobantesPorOtrosGastos = useMemo(() => {
@@ -837,7 +842,7 @@ export default function YegoMiAutoRentSaleDetail() {
                   const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(c);
                   const montoPagadoDisplay = miautoMontoPagadoColumnaCronograma(c);
                   const abierto = comprobantesSemanaAbierta[c.id] === true;
-                  const symCuota = symMoneda(c.moneda);
+                  const symCuota = symMoneda(monedaCuotaRow(c));
                   const bonoAutoVal = miautoNum(c.bono_auto);
                   const tributoCobroIngresos = miautoCobroPorIngresosTributoDisplay(c);
                   const titleCobroIngresos = miautoTooltipCobroPorIngresos(symCuota, c, cuotas);
@@ -1132,7 +1137,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                           onValidar={handleValidarComprobante}
                                           onRechazar={handleRechazarComprobante}
                                           montoMaximo={pendienteTotalCronogramaValidar}
-                                          defaultMoneda={monedaCuotasLabel(c.moneda)}
+                                          defaultMoneda={monedaCuotaRow(c)}
                                           valorUsdALocal={tipoCambioUsdLocal}
                                         />
                                       </div>
@@ -1176,10 +1181,10 @@ export default function YegoMiAutoRentSaleDetail() {
                                       <div>
                                         <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Moneda</label>
                                         <select
-                                          value={conformidadMonedaInput[c.id] ?? monedaCuotasLabel(c.moneda)}
+                                          value={conformidadMonedaInput[c.id] ?? monedaCuotaRow(c)}
                                           onChange={(e) => {
                                             const newMon = e.target.value as 'PEN' | 'USD';
-                                            const prevMon = conformidadMonedaInput[c.id] ?? monedaCuotasLabel(c.moneda);
+                                            const prevMon = conformidadMonedaInput[c.id] ?? monedaCuotaRow(c);
                                             if (prevMon === newMon) return;
                                             const montoStr = conformidadMontoInput[c.id]?.trim();
                                             const defaultStr = defaultMontoConformidadCuota(c);
@@ -1258,7 +1263,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                             );
                                             return;
                                           }
-                                          const mon = conformidadMonedaInput[c.id] ?? monedaCuotasLabel(c.moneda);
+                                          const mon = conformidadMonedaInput[c.id] ?? monedaCuotaRow(c);
                                           void handleSubirConformidadAdmin(c.id, f, montoNum, mon);
                                         }}
                                         className="inline-flex items-center gap-1.5 rounded-md border border-[#8B1A1A] bg-[#8B1A1A] px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-[#7a1717] disabled:opacity-50 disabled:pointer-events-none transition-colors"
@@ -1833,7 +1838,7 @@ export default function YegoMiAutoRentSaleDetail() {
                 ) : (
                   <ul className="mt-2 space-y-2">
                     {(overdueCuotas.length > 0 ? overdueCuotas : pendingCuotasHoy).slice(0, 10).map((c) => {
-                      const pref = (solicitud?.country || 'PE') === 'PE' ? 'S/.' : 'COP';
+                      const sym = symMoneda(monedaCuotaRow(c));
                       const cuotaNeta = Number(c.cuota_neta ?? c.amount_due) || 0;
                       const pagado = Number(c.paid_amount) || 0;
                       const pendiente = Math.max(0, cuotaNeta - pagado);
@@ -1847,11 +1852,11 @@ export default function YegoMiAutoRentSaleDetail() {
                             <span>{c.status === 'overdue' ? 'Venció' : 'Vence'} {c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '—'}</span>
                           </div>
                           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-sm">
-                            <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{pref} {pendiente.toFixed(2)}</span></span>
+                            <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{sym} {pendiente.toFixed(2)}</span></span>
                             {moraPendiente > 0 && (
-                              <span><span className="text-gray-500">Mora:</span> <span className="font-medium text-red-600">{pref} {moraPendiente.toFixed(2)}</span></span>
+                              <span><span className="text-gray-500">Mora:</span> <span className="font-medium text-red-600">{sym} {moraPendiente.toFixed(2)}</span></span>
                             )}
-                            <span><span className="text-gray-500">Total:</span> <span className="font-semibold text-gray-900">{pref} {total.toFixed(2)}</span></span>
+                            <span><span className="text-gray-500">Total:</span> <span className="font-semibold text-gray-900">{sym} {total.toFixed(2)}</span></span>
                           </div>
                         </li>
                       );

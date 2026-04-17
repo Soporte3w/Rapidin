@@ -39,12 +39,15 @@ export function conductorDisplay(row: AlquilerVentaListItem): string {
 
 /** Normaliza moneda de cuota (BD / API) a PEN o USD. */
 export function monedaCuotasLabel(moneda?: string | null): 'USD' | 'PEN' {
-  return moneda === 'USD' ? 'USD' : 'PEN';
+  const u = String(moneda ?? '')
+    .trim()
+    .toUpperCase();
+  return u === 'USD' ? 'USD' : 'PEN';
 }
 
 /** Símbolo $ o S/. según moneda de la cuota (misma regla que `monedaCuotasLabel`). */
 export function symMoneda(moneda?: string | null): string {
-  return moneda === 'USD' ? '$' : 'S/.';
+  return monedaCuotasLabel(moneda) === 'USD' ? '$' : 'S/.';
 }
 
 /** Total pagado en cuotas semanales con prefijo de moneda. */

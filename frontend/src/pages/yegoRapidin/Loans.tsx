@@ -1,7 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useDebouncedValue } from '../../hooks/useDebouncedValue';
+import { RapidinSearchField } from '../../components/RapidinSearchField';
 import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
+import { rapidinMatchParts } from '../../utils/rapidinListSearch';
+import { isAxiosAbortError } from '../../utils/miautoApiUtils';
 import {
   Eye,
   FileText,
@@ -10,7 +14,6 @@ import {
   CheckCircle,
   XCircle,
   Copy,
-  Search,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -122,35 +125,49 @@ function formatExcelDate(val: unknown): string {
   return String(val);
 }
 
+const PAGE_SIZES = [5, 10, 20, 50];
+const API_PAGE_CHUNK = 100;
+
+function loanRowMatches(loan: Loan, loanIdQ: string, driverQ: string): boolean {
+  if (loanIdQ && !rapidinMatchParts(loanIdQ, [loan.id])) return false;
+  if (
+    driverQ &&
+    !rapidinMatchParts(driverQ, [
+      loan.driver_first_name,
+      loan.driver_last_name,
+      [loan.driver_first_name, loan.driver_last_name].filter(Boolean).join(' ').trim(),
+      loan.id,
+    ])
+  )
+    return false;
+  return true;
+}
+
 const Loans = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
-  const [loans, setLoans] = useState<Loan[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const searchState = location.state as LoansSearchState | null;
   const isReturnFromDetail = Boolean(searchState?.fromLoanDetail);
   const initialDriver = isReturnFromDetail ? (searchState?.driverSearchInput ?? searchState?.driver ?? '') : '';
   const initialLoanId = isReturnFromDetail ? (searchState?.loanIdSearchInput ?? searchState?.loan_id ?? '') : '';
 
+  const [sourceLoans, setSourceLoans] = useState<Loan[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [filters, setFilters] = useState({
     status: isReturnFromDetail ? (searchState?.status ?? '') : '',
     country: isReturnFromDetail ? (searchState?.country ?? '') : '',
-    driver: isReturnFromDetail ? (searchState?.driver ?? '') : '',
-    loan_id: isReturnFromDetail ? (searchState?.loan_id ?? '') : '',
     date_from: isReturnFromDetail ? (searchState?.date_from ?? '') : '',
     date_to: isReturnFromDetail ? (searchState?.date_to ?? '') : '',
   });
   const [driverSearchInput, setDriverSearchInput] = useState(initialDriver);
   const [loanIdSearchInput, setLoanIdSearchInput] = useState(initialLoanId);
-  const [pagination, setPagination] = useState({
-    page: isReturnFromDetail && searchState?.page != null ? searchState.page : 1,
-    limit: isReturnFromDetail && searchState?.limit != null ? searchState.limit : 10,
-    total: 0,
-    totalPages: 0,
-  });
-  const [paginationLoading, setPaginationLoading] = useState(false);
+  const debouncedDriver = useDebouncedValue(driverSearchInput, 400);
+  const debouncedLoanId = useDebouncedValue(loanIdSearchInput, 400);
+  const [page, setPage] = useState(isReturnFromDetail && searchState?.page != null ? searchState.page : 1);
+  const [pageSize, setPageSize] = useState(isReturnFromDetail && searchState?.limit != null ? searchState.limit : 10);
+  const returnConsumedRef = useRef(false);
   const [exportLoading, setExportLoading] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportModalFilters, setExportModalFilters] = useState({
@@ -158,86 +175,94 @@ const Loans = () => {
     date_to: '',
     country: '',
   });
-  const PAGE_SIZES = [5, 10, 20, 50];
 
-  // Al volver del detalle: restaurar página (ej. 2) y limpiar state para que un refresh no restaure
+  const filteredLoans = useMemo(() => {
+    const loanIdQ = debouncedLoanId.trim();
+    const driverQ = debouncedDriver.trim();
+    if (!loanIdQ && !driverQ) return sourceLoans;
+    return sourceLoans.filter((l) => loanRowMatches(l, loanIdQ, driverQ));
+  }, [sourceLoans, debouncedLoanId, debouncedDriver]);
+
+  const totalFiltered = filteredLoans.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize) || 1);
+  const pageClamped = Math.min(Math.max(1, page), totalPages);
+
   useEffect(() => {
-    if (isReturnFromDetail) {
-      const page = searchState?.page ?? 1;
-      const limit = searchState?.limit ?? 10;
-      setPagination((p) => ({ ...p, page, limit }));
-      fetchLoans(page, limit, true);
+    if (page !== pageClamped) setPage(pageClamped);
+  }, [page, pageClamped]);
+
+  const displayLoans = useMemo(() => {
+    const start = (pageClamped - 1) * pageSize;
+    return filteredLoans.slice(start, start + pageSize);
+  }, [filteredLoans, pageClamped, pageSize]);
+
+  const fetchLoansAllPages = useCallback(
+    async (signal?: AbortSignal, resetPage = true) => {
+      try {
+        setLoading(true);
+        setError('');
+        const accumulated: Loan[] = [];
+        let serverTotal = 0;
+        let apiPage = 1;
+        while (!signal?.aborted) {
+          const params = new URLSearchParams();
+          params.append('page', String(apiPage));
+          params.append('limit', String(API_PAGE_CHUNK));
+          if (filters.status) params.append('status', filters.status);
+          if (filters.country) params.append('country', filters.country);
+          if (filters.date_from) params.append('date_from', filters.date_from);
+          if (filters.date_to) params.append('date_to', filters.date_to);
+          const response = await api.get(`/loans?${params.toString()}`, { signal });
+          let chunk: Loan[] = [];
+          const pag = response.data?.pagination;
+          serverTotal = typeof pag?.total === 'number' ? pag.total : accumulated.length;
+          const raw = response.data?.data ?? response.data;
+          if (Array.isArray(raw)) chunk = raw;
+          else if (raw?.data && Array.isArray(raw.data)) chunk = raw.data;
+          else if (response.data?.rows && Array.isArray(response.data.rows)) chunk = response.data.rows;
+          if (chunk.length === 0) break;
+          accumulated.push(...chunk);
+          if (accumulated.length >= serverTotal || chunk.length < API_PAGE_CHUNK) break;
+          apiPage += 1;
+        }
+        if (signal?.aborted) return;
+        setSourceLoans(accumulated);
+        if (resetPage) setPage(1);
+      } catch (err: any) {
+        if (isAxiosAbortError(err)) return;
+        console.error('Error fetching loans:', err);
+        setError(err.response?.data?.message || 'Error al cargar los préstamos');
+        setSourceLoans([]);
+      } finally {
+        if (signal?.aborted) return;
+        setLoading(false);
+      }
+    },
+    [filters.status, filters.country, filters.date_from, filters.date_to]
+  );
+
+  useEffect(() => {
+    const ac = new AbortController();
+    const st = location.state as LoansSearchState | null;
+    const fromDetail = !returnConsumedRef.current && Boolean(st?.fromLoanDetail);
+    if (fromDetail) {
+      returnConsumedRef.current = true;
+      setPage(st?.page ?? 1);
+      setPageSize(st?.limit ?? 10);
       navigate(location.pathname, { replace: true, state: {} });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    fetchLoansAllPages(ac.signal, !fromDetail);
+    return () => ac.abort();
+  }, [fetchLoansAllPages, navigate, location.pathname]);
 
-  useEffect(() => {
-    if (isReturnFromDetail) return;
-    setPagination((p) => ({ ...p, page: 1 }));
-    fetchLoans(1, pagination.limit, true);
-  }, [filters]);
-
-  const goToPage = (page: number) => {
-    const nextPage = Math.max(1, Math.min(page, pagination.totalPages || 1));
-    fetchLoans(nextPage, pagination.limit, true);
+  const goToPage = (p: number) => {
+    const tp = Math.max(1, Math.ceil(totalFiltered / pageSize) || 1);
+    setPage(Math.max(1, Math.min(p, tp)));
   };
 
-  const runDriverSearch = () => {
-    setFilters((prev) => ({ ...prev, driver: driverSearchInput.trim(), loan_id: '' }));
-  };
-
-  const runLoanIdSearch = () => {
-    setFilters((prev) => ({ ...prev, loan_id: loanIdSearchInput.trim(), driver: '' }));
-  };
-
-  const fetchLoans = async (page = pagination.page, limit = pagination.limit, isPaginationChange = false) => {
-    try {
-      if (isPaginationChange) {
-        setPaginationLoading(true);
-      } else {
-        setLoading(true);
-      }
-      setError('');
-      const params = new URLSearchParams();
-      params.append('page', String(page));
-      params.append('limit', String(limit));
-      if (filters.status) params.append('status', filters.status);
-      if (filters.country) params.append('country', filters.country);
-      if (filters.driver?.trim()) params.append('driver', filters.driver.trim());
-      if (filters.loan_id?.trim()) params.append('loan_id', filters.loan_id.trim());
-      if (filters.date_from) params.append('date_from', filters.date_from);
-      if (filters.date_to) params.append('date_to', filters.date_to);
-
-      const response = await api.get(`/loans?${params.toString()}`);
-      let loansData: Loan[] = [];
-      let total = 0;
-      let totalPages = 0;
-      if (response.data) {
-        if (response.data.pagination) {
-          total = response.data.pagination.total ?? 0;
-          totalPages = response.data.pagination.totalPages ?? 0;
-        }
-        if (Array.isArray(response.data.data)) {
-          loansData = response.data.data;
-        } else if (response.data.data && Array.isArray(response.data.data)) {
-          loansData = response.data.data;
-        } else if (Array.isArray(response.data)) {
-          loansData = response.data;
-        } else if (response.data.rows && Array.isArray(response.data.rows)) {
-          loansData = response.data.rows;
-        }
-      }
-      setLoans(loansData);
-      setPagination((prev) => ({ ...prev, page, limit, total, totalPages }));
-    } catch (error: any) {
-      console.error('Error fetching loans:', error);
-      setError(error.response?.data?.message || 'Error al cargar los préstamos');
-      setLoans([]);
-    } finally {
-      setLoading(false);
-      if (isPaginationChange) setPaginationLoading(false);
-    }
+  const handleLimitChange = (newLimit: number) => {
+    setPageSize(newLimit);
+    setPage(1);
   };
 
   const getStatusBadge = (status: string) => {
@@ -274,8 +299,6 @@ const Loans = () => {
     const params = new URLSearchParams();
     if (filters.status) params.append('status', filters.status);
     if (dateCountry.country) params.append('country', dateCountry.country);
-    if (filters.driver?.trim()) params.append('driver', filters.driver.trim());
-    if (filters.loan_id?.trim()) params.append('loan_id', filters.loan_id.trim());
     if (dateCountry.date_from) params.append('date_from', dateCountry.date_from);
     if (dateCountry.date_to) params.append('date_to', dateCountry.date_to);
     return params;
@@ -400,7 +423,9 @@ const Loans = () => {
     }
   };
 
-  if (loading) {
+  const hasServerFilters = Boolean(filters.status || filters.country || filters.date_from || filters.date_to);
+
+  if (loading && sourceLoans.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-center">
@@ -420,7 +445,8 @@ const Loans = () => {
         <h3 className="text-xl font-bold text-gray-900 mb-2">Error al cargar los préstamos</h3>
         <p className="text-gray-600 mb-6 text-center max-w-md">{error}</p>
         <button
-          onClick={() => fetchLoans(pagination.page, pagination.limit, false)}
+          type="button"
+          onClick={() => fetchLoansAllPages(undefined, true)}
           className="bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-3 rounded-lg font-medium hover:from-red-700 hover:to-red-800 transition-all shadow-md"
         >
           Reintentar
@@ -549,54 +575,23 @@ const Loans = () => {
       {/* Filtros */}
       <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
         <div className="flex flex-col sm:flex-row gap-4 flex-wrap">
-          <div className="flex-1 min-w-0 min-w-[200px]">
-            <label htmlFor="loan_id" className="block text-xs font-semibold text-gray-900 mb-1.5">
-              Buscar por ID de préstamo
-            </label>
-            <div className="flex gap-2">
-              <input
-                id="loan_id"
-                type="text"
-                value={loanIdSearchInput}
-                onChange={(e) => setLoanIdSearchInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && runLoanIdSearch()}
-                placeholder="ID del préstamo (parcial o completo)"
-                className="flex-1 min-w-0 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
-              />
-              <button
-                type="button"
-                onClick={runLoanIdSearch}
-                className="flex-shrink-0 px-3 py-2 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] transition-colors"
-                title="Buscar"
-              >
-                <Search className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
-          <div className="flex-1 min-w-0 min-w-[200px]">
-            <label htmlFor="driver" className="block text-xs font-semibold text-gray-900 mb-1.5">
-              Buscar por conductor
-            </label>
-            <div className="flex gap-2">
-              <input
-                id="driver"
-                type="text"
-                value={driverSearchInput}
-                onChange={(e) => setDriverSearchInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && runDriverSearch()}
-                placeholder="Nombre, apellido o DNI"
-                className="flex-1 min-w-0 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
-              />
-              <button
-                type="button"
-                onClick={runDriverSearch}
-                className="flex-shrink-0 px-3 py-2 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] transition-colors"
-                title="Buscar"
-              >
-                <Search className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
+          <RapidinSearchField
+            id="loan_id"
+            label="Buscar por ID de préstamo"
+            value={loanIdSearchInput}
+            onChange={setLoanIdSearchInput}
+            placeholder="ID del préstamo (parcial o completo)"
+            mono
+            className="flex-1 min-w-0 min-w-[200px]"
+          />
+          <RapidinSearchField
+            id="driver"
+            label="Buscar por conductor"
+            value={driverSearchInput}
+            onChange={setDriverSearchInput}
+            placeholder="Nombre, apellido o DNI"
+            className="flex-1 min-w-0 min-w-[200px]"
+          />
           <div className="flex-1 min-w-[150px]">
             <label htmlFor="status" className="block text-xs font-semibold text-gray-900 mb-1.5">
               Estado
@@ -640,33 +635,38 @@ const Loans = () => {
       </div>
 
       {/* Cantidad total */}
-      <div className="bg-white rounded-lg border border-gray-200 px-4 py-3 flex items-center gap-2">
+      <div className="bg-white rounded-lg border border-gray-200 px-4 py-3 flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="text-sm font-semibold text-gray-700">Total:</span>
-        <span className="text-lg font-bold text-[#8B1A1A]">{pagination.total.toLocaleString('es-PE')}</span>
+        <span className="text-lg font-bold text-[#8B1A1A]">{totalFiltered.toLocaleString('es-PE')}</span>
         <span className="text-sm text-gray-600">préstamos</span>
       </div>
 
       {/* Loans table */}
-      {loans.length === 0 ? (
+      {sourceLoans.length === 0 ? (
         <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 lg:p-12 text-center">
           <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-6">
             <FileText className="w-10 h-10 text-gray-400" />
           </div>
           <h3 className="text-xl lg:text-2xl font-bold text-gray-900 mb-2">
-            No hay préstamos disponibles
+            {hasServerFilters ? 'Sin resultados' : 'No hay préstamos disponibles'}
           </h3>
           <p className="text-gray-600 mb-6 text-base">
-            No se encontraron préstamos con los filtros seleccionados
+            {hasServerFilters
+              ? 'Prueba otros filtros de estado, país o fechas.'
+              : 'No hay préstamos en el sistema con los criterios actuales.'}
+          </p>
+        </div>
+      ) : totalFiltered === 0 ? (
+        <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 text-center">
+          <FileText className="w-10 h-10 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-xl font-bold text-gray-900 mb-2">Sin coincidencias</h3>
+          <p className="text-gray-600 text-sm">
+            Ningún préstamo coincide con la búsqueda (ID o conductor).
           </p>
         </div>
       ) : (
         <div className="space-y-4">
           <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden relative">
-            {paginationLoading && (
-              <div className="absolute inset-0 bg-white/60 z-10 flex items-center justify-center rounded-xl">
-                <div className="animate-spin rounded-full h-10 w-10 border-2 border-red-600 border-t-transparent" />
-              </div>
-            )}
             <div className="overflow-x-auto">
               <table className="w-full">
               <thead className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
@@ -701,7 +701,7 @@ const Loans = () => {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {loans.map((loan) => (
+                {displayLoans.map((loan) => (
                   <tr key={loan.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-4 whitespace-nowrap">
                       {loan.id ? (
@@ -755,16 +755,14 @@ const Loans = () => {
                         onClick={() => navigate(`/admin/loans/${loan.id}`, {
                           state: {
                             fromLoansSearch: true,
-                            driver: filters.driver,
-                            loan_id: filters.loan_id,
                             driverSearchInput,
                             loanIdSearchInput,
                             status: filters.status,
                             country: filters.country,
                             date_from: filters.date_from,
                             date_to: filters.date_to,
-                            page: pagination.page,
-                            limit: pagination.limit,
+                            page: pageClamped,
+                            limit: pageSize,
                           },
                         })}
                         className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"
@@ -780,17 +778,13 @@ const Loans = () => {
           </div>
           </div>
 
-          {pagination.total > 0 && (
+          {totalFiltered > 0 && (
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 pb-2">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-500">Por página:</span>
                 <select
-                  value={pagination.limit}
-                  onChange={(e) => {
-                    const newLimit = Number(e.target.value);
-                    setPagination((p) => ({ ...p, limit: newLimit, page: 1 }));
-                    fetchLoans(1, newLimit, true);
-                  }}
+                  value={pageSize}
+                  onChange={(e) => handleLimitChange(Number(e.target.value))}
                   className="text-sm border border-gray-300 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:ring-2 focus:ring-red-500 focus:border-red-600"
                 >
                   {PAGE_SIZES.map((n) => (
@@ -802,7 +796,7 @@ const Loans = () => {
                 <button
                   type="button"
                   onClick={() => goToPage(1)}
-                  disabled={pagination.page <= 1 || loading || paginationLoading}
+                  disabled={pageClamped <= 1}
                   className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   aria-label="Primera página"
                 >
@@ -810,28 +804,27 @@ const Loans = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => goToPage(pagination.page - 1)}
-                  disabled={pagination.page <= 1 || loading || paginationLoading}
+                  onClick={() => goToPage(pageClamped - 1)}
+                  disabled={pageClamped <= 1}
                   className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   aria-label="Página anterior"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
-                {pagination.totalPages > 1 && (
+                {totalPages > 1 && (
                   <div className="flex items-center gap-1">
-                    {Array.from({ length: Math.min(5, pagination.totalPages) }, (_, i) => {
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
                       let pageNum: number;
-                      if (pagination.totalPages <= 5) pageNum = i + 1;
-                      else if (pagination.page <= 3) pageNum = i + 1;
-                      else if (pagination.page >= pagination.totalPages - 2) pageNum = pagination.totalPages - 4 + i;
-                      else pageNum = pagination.page - 2 + i;
-                      const isActive = pagination.page === pageNum;
+                      if (totalPages <= 5) pageNum = i + 1;
+                      else if (pageClamped <= 3) pageNum = i + 1;
+                      else if (pageClamped >= totalPages - 2) pageNum = totalPages - 4 + i;
+                      else pageNum = pageClamped - 2 + i;
+                      const isActive = pageClamped === pageNum;
                       return (
                         <button
                           key={pageNum}
                           type="button"
                           onClick={() => goToPage(pageNum)}
-                          disabled={loading || paginationLoading}
                           className={`min-w-[2.25rem] w-9 h-9 flex items-center justify-center rounded-full text-sm font-semibold transition-colors ${
                             isActive ? 'bg-red-600 text-white border-2 border-red-600' : 'border-2 border-red-600 text-red-600 hover:bg-red-50'
                           }`}
@@ -844,8 +837,8 @@ const Loans = () => {
                 )}
                 <button
                   type="button"
-                  onClick={() => goToPage(pagination.page + 1)}
-                  disabled={pagination.page >= pagination.totalPages || loading || paginationLoading}
+                  onClick={() => goToPage(pageClamped + 1)}
+                  disabled={pageClamped >= totalPages}
                   className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   aria-label="Página siguiente"
                 >
@@ -853,8 +846,8 @@ const Loans = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => goToPage(pagination.totalPages || 1)}
-                  disabled={pagination.page >= pagination.totalPages || loading || paginationLoading}
+                  onClick={() => goToPage(totalPages)}
+                  disabled={pageClamped >= totalPages}
                   className="w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   aria-label="Última página"
                 >

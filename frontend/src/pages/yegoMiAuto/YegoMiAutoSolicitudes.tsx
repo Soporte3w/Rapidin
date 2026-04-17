@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../services/api';
 import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError } from '../../utils/miautoApiUtils';
@@ -6,6 +6,8 @@ import { FileText, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight }
 import { useAuth } from '../../contexts/AuthContext';
 import { formatDate } from '../../utils/date';
 import { DateRangePicker } from '../../components/DateRangePicker';
+import { useDebouncedValue } from '../../hooks/useDebouncedValue';
+import { RapidinSearchField } from '../../components/RapidinSearchField';
 
 interface Solicitud {
   id: string;
@@ -60,6 +62,41 @@ const PAGE_SIZES = [5, 10, 20, 50];
 const INPUT_CLASS = 'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm';
 const PAGINATION_BTN = 'w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors';
 
+/** Texto de la columna Conductor (misma lógica que la tabla). */
+function conductorCellText(s: Solicitud): string {
+  return s.driver_name || (s.phone ? `Tel: ${s.phone}` : s.email) || '';
+}
+
+function foldLower(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase();
+}
+
+/** Filtro solo en front: DNI, nombre, teléfono, email, licencia (sin llamar al backend). */
+function solicitudMatchesQuery(s: Solicitud, rawQuery: string): boolean {
+  const qTrim = rawQuery.trim();
+  if (!qTrim) return true;
+  const qDigits = qTrim.replace(/\D/g, '');
+  const qFold = foldLower(qTrim);
+  const dniNorm = String(s.dni ?? '').toLowerCase();
+  const dniDigits = String(s.dni ?? '').replace(/\D/g, '');
+  if (dniNorm.includes(qTrim.toLowerCase()) || (qDigits.length >= 2 && dniDigits.includes(qDigits))) return true;
+  const name = foldLower(s.driver_name ?? '');
+  if (name && name.includes(qFold)) return true;
+  const phone = (s.phone ?? '').toLowerCase();
+  if (phone && (phone.includes(qTrim.toLowerCase()) || (qDigits.length >= 3 && phone.replace(/\D/g, '').includes(qDigits)))) return true;
+  const email = foldLower(s.email ?? '');
+  if (email && email.includes(qFold)) return true;
+  const lic = foldLower(s.license_number ?? '');
+  if (lic && lic.includes(qFold)) return true;
+  const display = foldLower(conductorCellText(s));
+  return display.includes(qFold);
+}
+
+const API_PAGE_CHUNK = 100;
+
 function getVisiblePageNumbers(pagination: PaginationState): number[] {
   const { page, totalPages } = pagination;
   if (totalPages <= 5) return Array.from({ length: totalPages }, (_, i) => i + 1);
@@ -89,14 +126,26 @@ function EmptyState() {
 function SolicitudesFilters({
   filters,
   onFiltersChange,
+  driverSearch,
+  onDriverSearchChange,
 }: {
   filters: FiltersState;
   onFiltersChange: (f: FiltersState) => void;
+  driverSearch: string;
+  onDriverSearchChange: (v: string) => void;
 }) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
       <p className="text-xs font-semibold text-[#8B1A1A] uppercase tracking-wide mb-3">Filtros</p>
       <div className="flex flex-col sm:flex-row gap-4 flex-wrap">
+        <RapidinSearchField
+          id="miauto-solicitud-driver"
+          label="Buscar por conductor"
+          value={driverSearch}
+          onChange={onDriverSearchChange}
+          placeholder="Nombre, apellido o DNI"
+          className="flex-1 min-w-[200px]"
+        />
         <div className="flex-1 min-w-[150px]">
           <label htmlFor="status" className="block text-xs font-semibold text-gray-900 mb-1.5">
             Estado de la solicitud
@@ -172,7 +221,7 @@ function SolicitudesTable({
             {solicitudes.map((s) => (
               <tr key={s.id} className="hover:bg-gray-50">
                 <td className="px-4 py-3 text-sm font-medium text-gray-900">{s.dni}</td>
-                <td className="px-4 py-3 text-sm text-gray-700">{s.driver_name || (s.phone ? `Tel: ${s.phone}` : s.email) || '—'}</td>
+                <td className="px-4 py-3 text-sm text-gray-700">{conductorCellText(s) || '—'}</td>
                 <td className="px-4 py-3 text-sm text-gray-700">{s.license_number || '—'}</td>
                 <td className="px-4 py-3">
                   <span
@@ -270,7 +319,8 @@ function PaginationBar({
 export default function YegoMiAutoSolicitudes() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [solicitudes, setSolicitudes] = useState<Solicitud[]>([]);
+  /** Lista completa para los filtros actuales (estado, país, fechas); la búsqueda por conductor se aplica aquí en el cliente. */
+  const [sourceSolicitudes, setSourceSolicitudes] = useState<Solicitud[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filters, setFilters] = useState<FiltersState>({
@@ -279,51 +329,73 @@ export default function YegoMiAutoSolicitudes() {
     date_from: '',
     date_to: '',
   });
+  const [driverSearchInput, setDriverSearchInput] = useState('');
+  const debouncedDriverSearch = useDebouncedValue(driverSearchInput, 400);
   const [pagination, setPagination] = useState<PaginationState>({
     page: 1,
     limit: 10,
     total: 0,
     totalPages: 0,
   });
-  const [paginationLoading, setPaginationLoading] = useState(false);
-  const paginationRef = useRef(pagination);
-  paginationRef.current = pagination;
 
-  const fetchSolicitudes = useCallback(
-    async (page: number, limit: number, isPaginationChange: boolean, signal?: AbortSignal) => {
+  const filteredSolicitudes = useMemo(() => {
+    const q = debouncedDriverSearch.trim();
+    if (!q) return sourceSolicitudes;
+    return sourceSolicitudes.filter((s) => solicitudMatchesQuery(s, q));
+  }, [sourceSolicitudes, debouncedDriverSearch]);
+
+  const totalFiltered = filteredSolicitudes.length;
+  const totalPagesClient = Math.max(1, Math.ceil(totalFiltered / pagination.limit) || 1);
+  const pageClamped = Math.min(Math.max(1, pagination.page), totalPagesClient);
+  const displaySolicitudes = useMemo(() => {
+    const start = (pageClamped - 1) * pagination.limit;
+    return filteredSolicitudes.slice(start, start + pagination.limit);
+  }, [filteredSolicitudes, pageClamped, pagination.limit]);
+
+  useEffect(() => {
+    if (pagination.page !== pageClamped) {
+      setPagination((p) => ({ ...p, page: pageClamped }));
+    }
+  }, [pageClamped, pagination.page]);
+
+  const fetchSolicitudesAllPages = useCallback(
+    async (signal?: AbortSignal) => {
       try {
-        if (isPaginationChange) setPaginationLoading(true);
-        else setLoading(true);
+        setLoading(true);
         setError('');
-        const params = new URLSearchParams();
-        params.append('page', String(page));
-        params.append('limit', String(limit));
-        if (filters.status) params.append('status', filters.status);
-        if (filters.country) params.append('country', filters.country);
-        if (filters.date_from) params.append('date_from', filters.date_from);
-        if (filters.date_to) params.append('date_to', filters.date_to);
-        const response = await api.get(`/miauto/solicitudes?${params.toString()}`, {
-          signal,
-          headers: MIAUTO_NO_CACHE_HEADERS,
-        });
-        const data = response.data?.data ?? [];
-        const pag = response.data?.pagination ?? {};
-        setSolicitudes(Array.isArray(data) ? data : []);
-        setPagination((p) => ({
-          ...p,
-          page: pag.page ?? page,
-          limit: pag.limit ?? limit,
-          total: pag.total ?? 0,
-          totalPages: pag.totalPages ?? 1,
-        }));
+        const accumulated: Solicitud[] = [];
+        let serverTotal = 0;
+        let page = 1;
+        while (!signal?.aborted) {
+          const params = new URLSearchParams();
+          params.append('page', String(page));
+          params.append('limit', String(API_PAGE_CHUNK));
+          if (filters.status) params.append('status', filters.status);
+          if (filters.country) params.append('country', filters.country);
+          if (filters.date_from) params.append('date_from', filters.date_from);
+          if (filters.date_to) params.append('date_to', filters.date_to);
+          const response = await api.get(`/miauto/solicitudes?${params.toString()}`, {
+            signal,
+            headers: MIAUTO_NO_CACHE_HEADERS,
+          });
+          const data = response.data?.data ?? [];
+          const pag = response.data?.pagination ?? {};
+          serverTotal = typeof pag.total === 'number' ? pag.total : accumulated.length + (Array.isArray(data) ? data.length : 0);
+          if (!Array.isArray(data) || data.length === 0) break;
+          accumulated.push(...data);
+          if (accumulated.length >= serverTotal || data.length < API_PAGE_CHUNK) break;
+          page += 1;
+        }
+        if (signal?.aborted) return;
+        setSourceSolicitudes(accumulated);
+        setPagination((p) => ({ ...p, page: 1 }));
       } catch (e: any) {
         if (isAxiosAbortError(e)) return;
         setError(e.response?.data?.message || 'Error al cargar solicitudes');
-        setSolicitudes([]);
+        setSourceSolicitudes([]);
       } finally {
         if (signal?.aborted) return;
         setLoading(false);
-        setPaginationLoading(false);
       }
     },
     [filters.status, filters.country, filters.date_from, filters.date_to]
@@ -331,29 +403,23 @@ export default function YegoMiAutoSolicitudes() {
 
   useEffect(() => {
     const ac = new AbortController();
-    const lim = paginationRef.current.limit;
-    setPagination((p) => ({ ...p, page: 1 }));
-    fetchSolicitudes(1, lim, false, ac.signal);
+    fetchSolicitudesAllPages(ac.signal);
     return () => ac.abort();
-  }, [filters.status, filters.country, filters.date_from, filters.date_to, fetchSolicitudes]);
+  }, [fetchSolicitudesAllPages]);
 
-  const goToPage = useCallback(
-    (page: number) => {
-      const p = Math.max(1, Math.min(page, pagination.totalPages || 1));
-      fetchSolicitudes(p, pagination.limit, true);
-    },
-    [pagination.totalPages, pagination.limit, fetchSolicitudes]
-  );
+  const goToPage = useCallback((page: number) => {
+    setPagination((p) => {
+      const tp = Math.max(1, Math.ceil(totalFiltered / p.limit) || 1);
+      return { ...p, page: Math.max(1, Math.min(page, tp)) };
+    });
+  }, [totalFiltered]);
 
-  const handleLimitChange = useCallback(
-    (newLimit: number) => {
-      setPagination((p) => ({ ...p, limit: newLimit, page: 1 }));
-      fetchSolicitudes(1, newLimit, true);
-    },
-    [fetchSolicitudes]
-  );
+  const handleLimitChange = useCallback((newLimit: number) => {
+    setPagination((p) => ({ ...p, limit: newLimit, page: 1 }));
+  }, []);
 
   const countryLabel = COUNTRY_OPTIONS.find((o) => o.value === filters.country)?.label ?? 'Todos';
+  const searchActive = debouncedDriverSearch.trim().length > 0;
 
   return (
     <div className="space-y-4 lg:space-y-6">
@@ -371,35 +437,56 @@ export default function YegoMiAutoSolicitudes() {
         </div>
       </header>
 
-      <SolicitudesFilters filters={filters} onFiltersChange={setFilters} />
+      <SolicitudesFilters
+        filters={filters}
+        onFiltersChange={setFilters}
+        driverSearch={driverSearchInput}
+        onDriverSearchChange={setDriverSearchInput}
+      />
 
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">{error}</div>
       )}
 
-      <div className="bg-white rounded-lg border border-gray-200 px-4 py-3 flex items-center gap-2">
+      <div className="bg-white rounded-lg border border-gray-200 px-4 py-3 flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="text-sm font-semibold text-gray-700">Total:</span>
-        <span className="text-lg font-bold text-[#8B1A1A]">{pagination.total.toLocaleString('es-PE')}</span>
+        <span className="text-lg font-bold text-[#8B1A1A]">{totalFiltered.toLocaleString('es-PE')}</span>
         <span className="text-sm text-gray-600">solicitudes</span>
+        {searchActive && sourceSolicitudes.length !== totalFiltered && (
+          <span className="text-xs text-gray-500 w-full sm:w-auto sm:ml-2">
+            (filtradas desde {sourceSolicitudes.length.toLocaleString('es-PE')} cargadas)
+          </span>
+        )}
       </div>
 
       {loading ? (
         <LoadingSpinner />
-      ) : solicitudes.length === 0 ? (
+      ) : sourceSolicitudes.length === 0 ? (
         <EmptyState />
+      ) : totalFiltered === 0 ? (
+        <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 text-center">
+          <FileText className="w-10 h-10 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-xl font-bold text-gray-900 mb-2">Sin coincidencias</h3>
+          <p className="text-gray-600 text-sm">Ninguna fila coincide con «{debouncedDriverSearch.trim()}». Prueba con otro DNI o nombre.</p>
+        </div>
       ) : (
         <>
           <SolicitudesTable
-            solicitudes={solicitudes}
+            solicitudes={displaySolicitudes}
             onViewDetail={(id) => navigate(`/admin/yego-mi-auto/requests/${id}`)}
-            isLoading={paginationLoading}
+            isLoading={false}
           />
-          {pagination.total > 0 && (
+          {totalFiltered > 0 && (
             <PaginationBar
-              pagination={pagination}
+              pagination={{
+                ...pagination,
+                page: pageClamped,
+                total: totalFiltered,
+                totalPages: totalPagesClient,
+              }}
               onPageChange={goToPage}
               onLimitChange={handleLimitChange}
-              isLoading={loading || paginationLoading}
+              isLoading={loading}
             />
           )}
         </>

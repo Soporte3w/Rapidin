@@ -126,7 +126,7 @@ router.get('/alquiler-venta', authenticate, async (req, res) => {
 // GET /api/miauto/solicitudes
 router.get('/solicitudes', async (req, res) => {
   try {
-    const { status, country, date_from, date_to, page, limit, park_id, rapidin_driver_id } = req.query;
+    const { status, country, date_from, date_to, page, limit, park_id, rapidin_driver_id, driver, q } = req.query;
     const filters = {
       status,
       country,
@@ -136,6 +136,8 @@ router.get('/solicitudes', async (req, res) => {
       limit,
       park_id: trimOrUndefined(park_id),
       rapidin_driver_id: trimOrUndefined(rapidin_driver_id),
+      driver: typeof driver === 'string' ? driver : undefined,
+      q: typeof q === 'string' ? q : undefined,
     };
     if (req.user?.role === 'driver') {
       filters.driver_phone = req.user.phone;

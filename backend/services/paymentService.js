@@ -1,4 +1,5 @@
 import { query } from '../config/database.js';
+import { buildDriverNameSearchSqlFlat } from '../utils/driverNameSearch.js';
 import { logger } from '../utils/logger.js';
 import { getPaymentPunctuality, calculateCycle } from './calculationsService.js';
 
@@ -474,10 +475,12 @@ export const getAutoPaymentLog = async (filters = {}) => {
     n += 1;
   }
   if (filters.driver && String(filters.driver).trim()) {
-    where += ` AND (driver_first_name ILIKE $${n} OR driver_last_name ILIKE $${n + 1})`;
-    const term = `%${String(filters.driver).trim()}%`;
-    params.push(term, term);
-    n += 2;
+    const dSearch = buildDriverNameSearchSqlFlat('driver_first_name', 'driver_last_name', filters.driver, n);
+    if (dSearch.sql) {
+      where += dSearch.sql;
+      params.push(...dSearch.params);
+      n = dSearch.nextParam;
+    }
   }
   const limit = filters.limit != null ? Math.min(100, Math.max(1, parseInt(filters.limit, 10) || 20)) : 20;
   const offset = filters.offset != null ? Math.max(0, parseInt(filters.offset, 10) || 0) : 0;

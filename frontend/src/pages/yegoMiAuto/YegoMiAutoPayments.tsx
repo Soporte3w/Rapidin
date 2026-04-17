@@ -6,7 +6,6 @@ import {
   Eye,
   DollarSign,
   X,
-  Search,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -17,6 +16,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { formatDate } from '../../utils/date';
 import toast from 'react-hot-toast';
 import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError } from '../../utils/miautoApiUtils';
+import { useDebouncedValue } from '../../hooks/useDebouncedValue';
+import { RapidinSearchField } from '../../components/RapidinSearchField';
 import {
   ALQUILER_VENTA_CUOTA_ESTADO_OPTIONS,
   conductorDisplay,
@@ -48,46 +49,59 @@ const COUNTRY_OPTIONS = [
   { value: 'CO', label: 'Colombia' },
 ];
 
-interface CronogramaOption {
-  id: string;
-  name: string;
-}
-
-interface PaginationState {
-  page: number;
-  limit: number;
-  total: number;
-  totalPages: number;
-}
-
 const PAGE_SIZES = [10, 20, 50];
 const PAGINATION_BTN =
   'w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors';
+const API_PAGE_CHUNK = 500;
 
-function getVisiblePageNumbers(pagination: PaginationState): number[] {
-  const { page, totalPages } = pagination;
+function getVisiblePageNumbers(page: number, totalPages: number): number[] {
   if (totalPages <= 5) return Array.from({ length: totalPages }, (_, i) => i + 1);
   if (page <= 3) return [1, 2, 3, 4, 5];
   if (page >= totalPages - 2) return Array.from({ length: 5 }, (_, i) => totalPages - 4 + i);
   return [page - 2, page - 1, page, page + 1, page + 2];
 }
 
+function foldLower(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase();
+}
+
+function alquilerVentaMatchesQuery(row: AlquilerVentaListItem, rawQuery: string): boolean {
+  const qTrim = rawQuery.trim();
+  if (!qTrim) return true;
+  const qFold = foldLower(qTrim);
+  const qDigits = qTrim.replace(/\D/g, '');
+  const parts = [
+    row.dni,
+    row.placa_asignada,
+    row.driver_name,
+    row.phone,
+    row.email,
+    row.license_number,
+    row.cronograma_name,
+    row.vehiculo_name,
+    conductorDisplay(row),
+  ];
+  for (const p of parts) {
+    if (p == null || p === '') continue;
+    const s = String(p);
+    if (foldLower(s).includes(qFold)) return true;
+    if (qDigits.length >= 2 && s.replace(/\D/g, '').includes(qDigits)) return true;
+  }
+  return false;
+}
+
 export default function YegoMiAutoPayments() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [items, setItems] = useState<AlquilerVentaListItem[]>([]);
+  const [sourceItems, setSourceItems] = useState<AlquilerVentaListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [country, setCountry] = useState((user?.country as string) || '');
-  const [pagination, setPagination] = useState<PaginationState>({
-    page: 1,
-    limit: 20,
-    total: 0,
-    totalPages: 0,
-  });
-  const [paginationLoading, setPaginationLoading] = useState(false);
-  const paginationRef = useRef(pagination);
-  paginationRef.current = pagination;
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [modalPagar, setModalPagar] = useState<AlquilerVentaListItem | null>(null);
   const [cuotas, setCuotas] = useState<CuotaSemanal[]>([]);
   const [loadingCuotas, setLoadingCuotas] = useState(false);
@@ -97,16 +111,30 @@ export default function YegoMiAutoPayments() {
   const [enviando, setEnviando] = useState(false);
   const [comprobanteFile, setComprobanteFile] = useState<File | null>(null);
   const comprobanteInputRef = useRef<HTMLInputElement>(null);
-  const [searchInput, setSearchInput] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [driverSearchInput, setDriverSearchInput] = useState('');
+  const debouncedSearch = useDebouncedValue(driverSearchInput, 400);
   const [cronogramaId, setCronogramaId] = useState('');
   const [cuotaEstado, setCuotaEstado] = useState('');
-  const [cronogramas, setCronogramas] = useState<CronogramaOption[]>([]);
+  const [cronogramas, setCronogramas] = useState<{ id: string; name: string }[]>([]);
+
+  const filteredItems = useMemo(() => {
+    const q = debouncedSearch.trim();
+    if (!q) return sourceItems;
+    return sourceItems.filter((row) => alquilerVentaMatchesQuery(row, q));
+  }, [sourceItems, debouncedSearch]);
+
+  const totalFiltered = filteredItems.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize) || 1);
+  const pageClamped = Math.min(Math.max(1, page), totalPages);
 
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(searchInput.trim()), 350);
-    return () => clearTimeout(t);
-  }, [searchInput]);
+    if (page !== pageClamped) setPage(pageClamped);
+  }, [page, pageClamped]);
+
+  const displayItems = useMemo(() => {
+    const start = (pageClamped - 1) * pageSize;
+    return filteredItems.slice(start, start + pageSize);
+  }, [filteredItems, pageClamped, pageSize]);
 
   useEffect(() => {
     setCronogramaId('');
@@ -138,69 +166,67 @@ export default function YegoMiAutoPayments() {
     return () => ac.abort();
   }, [country]);
 
-  const fetchList = useCallback(
-    async (page: number, limit: number, isPaginationChange: boolean, signal?: AbortSignal) => {
+  const fetchAlquilerVentaAllPages = useCallback(
+    async (signal?: AbortSignal, resetPage = true) => {
       try {
-        if (isPaginationChange) setPaginationLoading(true);
-        else setLoading(true);
+        setLoading(true);
         setError('');
-        const params = new URLSearchParams();
-        params.append('page', String(page));
-        params.append('limit', String(limit));
-        if (country) params.append('country', country);
-        if (debouncedSearch) params.append('q', debouncedSearch);
-        if (cronogramaId) params.append('cronograma_id', cronogramaId);
-        if (cuotaEstado) params.append('cuota_estado', cuotaEstado);
-        const response = await api.get(`/miauto/alquiler-venta?${params.toString()}`, {
-          signal,
-          headers: MIAUTO_NO_CACHE_HEADERS,
-        });
-        const data = response.data?.data ?? [];
-        const pag = response.data?.pagination ?? {};
-        setItems(Array.isArray(data) ? data : []);
-        setPagination((p) => ({
-          ...p,
-          page: pag.page ?? page,
-          limit: pag.limit ?? limit,
-          total: pag.total ?? 0,
-          totalPages: pag.totalPages ?? 1,
-        }));
+        const accumulated: AlquilerVentaListItem[] = [];
+        let serverTotal = 0;
+        let apiPage = 1;
+        while (!signal?.aborted) {
+          const params = new URLSearchParams();
+          params.append('page', String(apiPage));
+          params.append('limit', String(API_PAGE_CHUNK));
+          if (country) params.append('country', country);
+          if (cronogramaId) params.append('cronograma_id', cronogramaId);
+          if (cuotaEstado) params.append('cuota_estado', cuotaEstado);
+          const response = await api.get(`/miauto/alquiler-venta?${params.toString()}`, {
+            signal,
+            headers: MIAUTO_NO_CACHE_HEADERS,
+          });
+          const data = response.data?.data ?? [];
+          const pag = response.data?.pagination ?? {};
+          serverTotal =
+            typeof pag.total === 'number' ? pag.total : accumulated.length + (Array.isArray(data) ? data.length : 0);
+          if (!Array.isArray(data) || data.length === 0) break;
+          accumulated.push(...data);
+          if (accumulated.length >= serverTotal || data.length < API_PAGE_CHUNK) break;
+          apiPage += 1;
+        }
+        if (signal?.aborted) return;
+        setSourceItems(accumulated);
+        if (resetPage) setPage(1);
       } catch (e: any) {
         if (isAxiosAbortError(e)) return;
         setError(e.response?.data?.message || 'Error al cargar');
-        setItems([]);
+        setSourceItems([]);
       } finally {
         if (signal?.aborted) return;
         setLoading(false);
-        setPaginationLoading(false);
       }
     },
-    [country, debouncedSearch, cronogramaId, cuotaEstado]
+    [country, cronogramaId, cuotaEstado]
   );
 
   useEffect(() => {
     const ac = new AbortController();
-    const lim = paginationRef.current.limit;
-    setPagination((p) => ({ ...p, page: 1 }));
-    fetchList(1, lim, false, ac.signal);
+    fetchAlquilerVentaAllPages(ac.signal, true);
     return () => ac.abort();
-  }, [country, debouncedSearch, cronogramaId, cuotaEstado, fetchList]);
+  }, [fetchAlquilerVentaAllPages]);
 
   const goToPage = useCallback(
-    (page: number) => {
-      const p = Math.max(1, Math.min(page, pagination.totalPages || 1));
-      fetchList(p, pagination.limit, true);
+    (p: number) => {
+      const tp = Math.max(1, Math.ceil(totalFiltered / pageSize) || 1);
+      setPage(Math.max(1, Math.min(p, tp)));
     },
-    [pagination.totalPages, pagination.limit, fetchList]
+    [totalFiltered, pageSize]
   );
 
-  const handleLimitChange = useCallback(
-    (newLimit: number) => {
-      setPagination((p) => ({ ...p, limit: newLimit, page: 1 }));
-      fetchList(1, newLimit, true);
-    },
-    [fetchList]
-  );
+  const handleLimitChange = useCallback((newLimit: number) => {
+    setPageSize(newLimit);
+    setPage(1);
+  }, []);
 
   const abrirModalPagar = useCallback(async (row: AlquilerVentaListItem) => {
     setModalPagar(row);
@@ -285,8 +311,7 @@ export default function YegoMiAutoPayments() {
       }
       toast.success('Pago manual registrado');
       cerrarModal();
-      const ref = paginationRef.current;
-      fetchList(ref.page, ref.limit, true);
+      await fetchAlquilerVentaAllPages(undefined, false);
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al registrar pago');
     } finally {
@@ -295,7 +320,8 @@ export default function YegoMiAutoPayments() {
   };
 
   const countryLabel = COUNTRY_OPTIONS.find((o) => o.value === country)?.label ?? 'Todos';
-  const hasActiveFilters = Boolean(debouncedSearch || cronogramaId || cuotaEstado);
+  const searchActive = debouncedSearch.trim().length > 0;
+  const hasServerFilters = Boolean(country || cronogramaId || cuotaEstado);
 
   return (
     <div className="space-y-4 lg:space-y-6">
@@ -332,23 +358,14 @@ export default function YegoMiAutoPayments() {
           </select>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          <div>
-            <label htmlFor="search-pagos" className="block text-xs font-semibold text-gray-900 mb-1.5">
-              Buscar conductor, DNI, placa o teléfono
-            </label>
-            <div className="relative max-w-lg">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-              <input
-                id="search-pagos"
-                type="search"
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                placeholder="Ej. nombre, DNI, placa, últimos dígitos del celular…"
-                className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
-                autoComplete="off"
-              />
-            </div>
-          </div>
+          <RapidinSearchField
+            id="miauto-pagos-q"
+            label="Buscar conductor, DNI, placa o teléfono"
+            value={driverSearchInput}
+            onChange={setDriverSearchInput}
+            placeholder="Ej. nombre, DNI, placa, últimos dígitos del celular…"
+            className="max-w-lg"
+          />
           <div>
             <label htmlFor="cronograma-pagos" className="block text-xs font-semibold text-gray-900 mb-1.5">
               Cronograma
@@ -391,26 +408,39 @@ export default function YegoMiAutoPayments() {
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">{error}</div>
       )}
 
-      <div className="bg-white rounded-lg border border-gray-200 px-4 py-3 flex items-center gap-2">
+      <div className="bg-white rounded-lg border border-gray-200 px-4 py-3 flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="text-sm font-semibold text-gray-700">Total:</span>
-        <span className="text-lg font-bold text-[#8B1A1A]">{pagination.total.toLocaleString('es-PE')}</span>
+        <span className="text-lg font-bold text-[#8B1A1A]">{totalFiltered.toLocaleString('es-PE')}</span>
         <span className="text-sm text-gray-600">contratos</span>
+        {searchActive && sourceItems.length !== totalFiltered && (
+          <span className="text-xs text-gray-500 w-full sm:w-auto sm:ml-2">
+            (filtrados desde {sourceItems.length.toLocaleString('es-PE')} cargados)
+          </span>
+        )}
       </div>
 
       {loading ? (
         <div className="flex justify-center py-12">
           <div className="animate-spin rounded-full h-10 w-10 border-2 border-red-600 border-t-transparent" />
         </div>
-      ) : items.length === 0 ? (
+      ) : sourceItems.length === 0 ? (
         <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 text-center">
           <CreditCard className="w-10 h-10 text-gray-400 mx-auto mb-4" />
           <h3 className="text-xl font-bold text-gray-900 mb-2">
-            {hasActiveFilters ? 'Sin resultados' : 'No hay contratos'}
+            {hasServerFilters ? 'Sin resultados' : 'No hay contratos'}
           </h3>
           <p className="text-gray-600 text-sm">
-            {hasActiveFilters
-              ? 'Prueba a cambiar la búsqueda, el cronograma, el estado de cuotas o el país.'
+            {hasServerFilters
+              ? 'Prueba otro país, cronograma o estado de cuotas.'
               : 'No hay contratos de Alquiler / Venta. Para registrar pagos manuales primero deben existir contratos con cobro semanal activo.'}
+          </p>
+        </div>
+      ) : totalFiltered === 0 ? (
+        <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 text-center">
+          <CreditCard className="w-10 h-10 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-xl font-bold text-gray-900 mb-2">Sin coincidencias</h3>
+          <p className="text-gray-600 text-sm">
+            Ningún contrato coincide con «{debouncedSearch.trim()}». Prueba con otra placa, DNI o nombre.
           </p>
         </div>
       ) : (
@@ -429,7 +459,7 @@ export default function YegoMiAutoPayments() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-              {items.map((row) => (
+              {displayItems.map((row) => (
                 <tr key={row.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 text-sm font-medium text-gray-900">{conductorDisplay(row)}</td>
                   <td className="px-4 py-3 text-sm text-gray-700">{row.dni}</td>
@@ -473,12 +503,12 @@ export default function YegoMiAutoPayments() {
             </table>
           </div>
 
-          {pagination.totalPages > 1 && (
+          {totalPages > 1 && (
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 py-4 bg-white rounded-lg border border-gray-200">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-gray-600">Por página:</span>
                 <select
-                  value={pagination.limit}
+                  value={pageSize}
                   onChange={(e) => handleLimitChange(Number(e.target.value))}
                   className="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white text-gray-700 focus:ring-2 focus:ring-red-500"
                 >
@@ -493,7 +523,7 @@ export default function YegoMiAutoPayments() {
                 <button
                   type="button"
                   onClick={() => goToPage(1)}
-                  disabled={pagination.page <= 1 || paginationLoading}
+                  disabled={pageClamped <= 1 || loading}
                   className={PAGINATION_BTN}
                   aria-label="Primera página"
                 >
@@ -501,21 +531,21 @@ export default function YegoMiAutoPayments() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => goToPage(pagination.page - 1)}
-                  disabled={pagination.page <= 1 || paginationLoading}
+                  onClick={() => goToPage(pageClamped - 1)}
+                  disabled={pageClamped <= 1 || loading}
                   className={PAGINATION_BTN}
                   aria-label="Anterior"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
-                {getVisiblePageNumbers(pagination).map((pageNum) => (
+                {getVisiblePageNumbers(pageClamped, totalPages).map((pageNum) => (
                   <button
                     key={pageNum}
                     type="button"
                     onClick={() => goToPage(pageNum)}
-                    disabled={paginationLoading}
+                    disabled={loading}
                     className={`min-w-[2.25rem] w-9 h-9 flex items-center justify-center rounded-full text-sm font-semibold transition-colors ${
-                      pagination.page === pageNum
+                      pageClamped === pageNum
                         ? 'bg-red-600 text-white border-2 border-red-600'
                         : 'border-2 border-red-600 text-red-600 hover:bg-red-50'
                     }`}
@@ -525,8 +555,8 @@ export default function YegoMiAutoPayments() {
                 ))}
                 <button
                   type="button"
-                  onClick={() => goToPage(pagination.page + 1)}
-                  disabled={pagination.page >= pagination.totalPages || paginationLoading}
+                  onClick={() => goToPage(pageClamped + 1)}
+                  disabled={pageClamped >= totalPages || loading}
                   className={PAGINATION_BTN}
                   aria-label="Siguiente"
                 >
@@ -534,8 +564,8 @@ export default function YegoMiAutoPayments() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => goToPage(pagination.totalPages || 1)}
-                  disabled={pagination.page >= pagination.totalPages || paginationLoading}
+                  onClick={() => goToPage(totalPages)}
+                  disabled={pageClamped >= totalPages || loading}
                   className={PAGINATION_BTN}
                   aria-label="Última página"
                 >

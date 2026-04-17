@@ -479,7 +479,7 @@ const Payments = () => {
                 Registra pagos y valida comprobantes
               </p>
               <Link
-                to="/admin/payments-masivos"
+                to="/admin/payments-bulk"
                 className="inline-block text-xs text-white/85 hover:text-white underline mt-1 font-medium"
               >
                 Pagos y cobros masivos →

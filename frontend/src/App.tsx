@@ -203,7 +203,7 @@ function App() {
               }
             />
             <Route
-              path="/admin/payments-masivos"
+              path="/admin/payments-bulk"
               element={
                 <ProtectedRoute>
                   <Layout>

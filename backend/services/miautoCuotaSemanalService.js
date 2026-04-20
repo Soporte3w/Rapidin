@@ -985,12 +985,28 @@ export async function ensureCuotaSemanalForWeek(
   }
 
   const cronograma = await getCronogramaById(cronogramaId);
-  const plan = planFromCronograma(cronograma, cronogramaVehiculoId, numViajes);
+
+  // Si tiene al menos una cuota vencida → tramo mínimo (máximo cuota, bono=0)
+  let viajesParaPlan = numViajes;
+  if (!isFirstCuotaSemanal) {
+    const overdueCheck = await query(
+      `SELECT 1 FROM module_miauto_cuota_semanal
+       WHERE solicitud_id = $1 AND status = 'overdue' AND week_start_date <> $2::date
+       LIMIT 1`,
+      [solicitudId, weekStartDate]
+    );
+    if (overdueCheck.rows.length > 0) {
+      viajesParaPlan = 0;
+      logger.info(`Mi Auto: solicitud ${solicitudId} tiene cuotas vencidas → cuota máxima (sin bono), viajes forzados a 0 para plan`);
+    }
+  }
+
+  const plan = planFromCronograma(cronograma, cronogramaVehiculoId, viajesParaPlan);
   if (!plan) {
     if (!cronograma?.rules?.length) {
       logger.warn(`Cronograma ${cronogramaId} sin rules para solicitud ${solicitudId}`);
     } else {
-      logger.warn(`Sin regla o vehículo para ${numViajes} viajes, cronograma ${cronogramaId}`);
+      logger.warn(`Sin regla o vehículo para ${viajesParaPlan} viajes, cronograma ${cronogramaId}`);
     }
     return null;
   }

@@ -3,9 +3,11 @@ import { query } from '../config/database.js';
 import { uploadFileToMedia } from './voucherService.js';
 import { montoComprobanteCuotaALaMonedaFila, normalizePenUsd, round2 } from './miautoMoneyUtils.js';
 import {
+  isSemanaDepositoMiAuto,
   loadMiautoComprobanteDerivacionContext,
   miautoCuotaFinalDerivada,
   miautoStatusCuotaTrasAbonoDerivado,
+  ordenarCuotasSemanalesCronologico,
   persistPaidAmountCapsForSolicitud,
   touchFechaPrimerComprobanteCuota,
   touchFechaUltimoAbonoCuota,
@@ -491,14 +493,10 @@ export async function rejectComprobanteCuotaSemanal(solicitudId, comprobanteId, 
   return listBySolicitud(solicitudId);
 }
 
-function ordenarCuotasPorDueAsc(rows) {
-  return [...rows].sort((a, b) => new Date(a.due_date) - new Date(b.due_date));
-}
-
 function contarRachaConsecutiva(rows) {
-  const porFechaAsc = ordenarCuotasPorDueAsc(rows);
+  const ordenadas = ordenarCuotasSemanalesCronologico(rows);
   let racha = 0;
-  for (const r of porFechaAsc) {
+  for (const r of ordenadas) {
     const st = (r.status || '').toLowerCase();
     const ok = st === 'paid' || st === 'bonificada';
     if (!ok) break;
@@ -509,18 +507,16 @@ function contarRachaConsecutiva(rows) {
 
 const MIN_VIAJES_BONO_TIEMPO = 120;
 
-/** Bloques de 4 cuotas pagadas seguidas; cada una >= minViajes salvo índice 0 (semana depósito puede ir en 0). */
-function contarBloquesBonificacionTiempoElegibles(rows, racha, minViajes) {
+function contarBloquesBonificacionTiempoElegibles(rows, racha, minViajes, fechaInicioCobro) {
   if (racha < 4) return 0;
-  const porFechaAsc = ordenarCuotasPorDueAsc(rows);
+  const ordenadas = ordenarCuotasSemanalesCronologico(rows);
   let bloques = 0;
   for (let start = 0; start + 4 <= racha; start += 4) {
-    const block = porFechaAsc.slice(start, start + 4);
-    const tripsOk = block.every((r, j) => {
-      const globalIdx = start + j;
+    const block = ordenadas.slice(start, start + 4);
+    const tripsOk = block.every((r) => {
       const trips = Number(r.num_viajes) || 0;
       if (trips >= minViajes) return true;
-      if (globalIdx === 0 && trips === 0) return true;
+      if (isSemanaDepositoMiAuto(r.week_start_date, fechaInicioCobro) && trips === 0) return true;
       return false;
     });
     if (!tripsOk) break;
@@ -531,7 +527,7 @@ function contarBloquesBonificacionTiempoElegibles(rows, racha, minViajes) {
 
 async function clampCuotasBonificadasTrasRevertir(solicitudId) {
   const sol = await query(
-    'SELECT cuotas_semanales_bonificadas, cronograma_id FROM module_miauto_solicitud WHERE id = $1',
+    'SELECT cuotas_semanales_bonificadas, cronograma_id, fecha_inicio_cobro_semanal FROM module_miauto_solicitud WHERE id = $1',
     [solicitudId]
   );
   const cronogramaId = sol.rows[0]?.cronograma_id;
@@ -543,15 +539,16 @@ async function clampCuotasBonificadasTrasRevertir(solicitudId) {
   if (!crono.rows[0]?.bono_tiempo_activo) return;
 
   const cuotas = await query(
-    `SELECT due_date, status, num_viajes
+    `SELECT week_start_date, due_date, status, num_viajes
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1
-     ORDER BY due_date ASC`,
+     ORDER BY week_start_date ASC NULLS LAST, due_date ASC NULLS LAST, id ASC`,
     [solicitudId]
   );
   const rows = cuotas.rows || [];
   const racha = contarRachaConsecutiva(rows);
-  const maxAllowed = contarBloquesBonificacionTiempoElegibles(rows, racha, MIN_VIAJES_BONO_TIEMPO);
+  const fi = sol.rows[0]?.fecha_inicio_cobro_semanal;
+  const maxAllowed = contarBloquesBonificacionTiempoElegibles(rows, racha, MIN_VIAJES_BONO_TIEMPO, fi);
   const current = (sol.rows[0] && parseInt(sol.rows[0].cuotas_semanales_bonificadas, 10)) || 0;
   if (current <= maxAllowed) return;
   await query(
@@ -587,7 +584,7 @@ async function revertirPagoPorChunks(solicitudId, chunks) {
 
 async function tryGrantBenefit4Consecutive(solicitudId) {
   const sol = await query(
-    'SELECT cuotas_semanales_bonificadas, cronograma_id FROM module_miauto_solicitud WHERE id = $1',
+    'SELECT cuotas_semanales_bonificadas, cronograma_id, fecha_inicio_cobro_semanal FROM module_miauto_solicitud WHERE id = $1',
     [solicitudId]
   );
   const cronogramaId = sol.rows[0]?.cronograma_id;
@@ -599,15 +596,16 @@ async function tryGrantBenefit4Consecutive(solicitudId) {
   if (!crono.rows[0] || !crono.rows[0].bono_tiempo_activo) return;
 
   const cuotas = await query(
-    `SELECT due_date, status, num_viajes
+    `SELECT week_start_date, due_date, status, num_viajes
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1
-     ORDER BY due_date ASC`,
+     ORDER BY week_start_date ASC NULLS LAST, due_date ASC NULLS LAST, id ASC`,
     [solicitudId]
   );
   const rows = cuotas.rows || [];
   const racha = contarRachaConsecutiva(rows);
-  const deservedBonuses = contarBloquesBonificacionTiempoElegibles(rows, racha, MIN_VIAJES_BONO_TIEMPO);
+  const fi = sol.rows[0]?.fecha_inicio_cobro_semanal;
+  const deservedBonuses = contarBloquesBonificacionTiempoElegibles(rows, racha, MIN_VIAJES_BONO_TIEMPO, fi);
   if (deservedBonuses === 0) return;
 
   const current = (sol.rows[0] && parseInt(sol.rows[0].cuotas_semanales_bonificadas, 10)) || 0;
@@ -615,7 +613,9 @@ async function tryGrantBenefit4Consecutive(solicitudId) {
   if (toGrant === 0) return;
 
   await query(
-    'UPDATE module_miauto_solicitud SET cuotas_semanales_bonificadas = cuotas_semanales_bonificadas + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+    `UPDATE module_miauto_solicitud
+     SET cuotas_semanales_bonificadas = COALESCE(cuotas_semanales_bonificadas, 0) + $1, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $2`,
     [toGrant, solicitudId]
   );
 }

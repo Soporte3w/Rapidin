@@ -79,13 +79,28 @@ function ymdFromDbDate(v) {
   }
 }
 
+/** Igual que en `fetchCuotasSemanalesPayload` (SQL): week_start → due_date → id. */
+export function ordenarCuotasSemanalesCronologico(rows) {
+  return [...(rows || [])].sort((a, b) => {
+    const wa = ymdFromDbDate(a.week_start_date) || '';
+    const wb = ymdFromDbDate(b.week_start_date) || '';
+    const c0 = wa.localeCompare(wb);
+    if (c0 !== 0) return c0;
+    const da = ymdFromDbDate(a.due_date) || '';
+    const db = ymdFromDbDate(b.due_date) || '';
+    const c1 = da.localeCompare(db);
+    if (c1 !== 0) return c1;
+    return String(a.id ?? '').localeCompare(String(b.id ?? ''));
+  });
+}
+
 /**
  * Semana del depósito (sem. 1 sin viajes Yango / sin bono): `week_start_date` = lunes de la semana civil que contiene `fecha_inicio_cobro_semanal`.
  * No usar MIN(week_start) ni “sin fila anterior”: falla con filas fuera de orden o datos viejos.
  */
 export function isSemanaDepositoMiAuto(weekStartYmd, fechaInicioCobroRaw) {
   const fi = ymdFromDbDate(fechaInicioCobroRaw);
-  const ws = String(weekStartYmd || '').trim().slice(0, 10);
+  const ws = ymdFromDbDate(weekStartYmd) || String(weekStartYmd || '').trim().slice(0, 10);
   if (!fi || !/^\d{4}-\d{2}-\d{2}$/.test(ws)) return false;
   const mondayInicio = mondayOfWeekContainingYmd(fi);
   return ws === mondayInicio;
@@ -1633,7 +1648,7 @@ function calcularRacha(cuotas) {
   if (!Array.isArray(cuotas) || cuotas.length === 0) return 0;
   const tieneVencida = cuotas.some((c) => (c.status || '').toLowerCase() === 'overdue');
   if (tieneVencida) return 0;
-  const porFechaAsc = [...cuotas].sort((a, b) => new Date(a.due_date) - new Date(b.due_date));
+  const porFechaAsc = ordenarCuotasSemanalesCronologico(cuotas);
   let racha = 0;
   for (const c of porFechaAsc) {
     const pend = Number(c.pending_total) || 0;

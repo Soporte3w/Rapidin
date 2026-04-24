@@ -27,6 +27,14 @@ export function formatKpiMixPenUsd(pen: number, usd: number): string {
   return parts.join(' · ');
 }
 
+export function miautoTotalCuotasPlanVehiculo(cuotasSemanalesVehiculo: unknown, filasGeneradas: number): number {
+  const n =
+    cuotasSemanalesVehiculo != null && Number.isFinite(Number(cuotasSemanalesVehiculo))
+      ? Math.max(0, Math.floor(Number(cuotasSemanalesVehiculo)))
+      : 0;
+  return n > 0 ? n : filasGeneradas;
+}
+
 function ymdPrefix(s: unknown): string | null {
   if (s == null) return null;
   const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(s).trim());

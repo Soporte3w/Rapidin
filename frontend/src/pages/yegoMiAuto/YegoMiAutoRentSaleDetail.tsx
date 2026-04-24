@@ -30,6 +30,7 @@ import {
   miautoCobroPorIngresosTributoDisplay,
   miautoCobroSaldoDisplay,
   miautoCascadaCobroIngresosFilasParaUi,
+  miautoTotalCuotasPlanVehiculo,
   MIAUTO_CUOTA_STATUS_LABELS,
   MIAUTO_CUOTA_STATUS_PILL,
   parseCuotasSemanalesPayload,
@@ -454,10 +455,12 @@ export default function YegoMiAutoRentSaleDetail() {
     return () => ac.abort();
   }, [fetchDetail]);
 
-  const totalCuotas = cuotas.length;
+  const planCuotasTotal = miautoTotalCuotasPlanVehiculo(
+    solicitud?.cronograma_vehiculo?.cuotas_semanales,
+    cuotas.length
+  );
   const cuotasPagadas = cuotas.filter((c) => c.status === 'paid' || c.status === 'bonificada').length;
   const cuotasVencidas = cuotas.filter((c) => c.status === 'overdue').length;
-  const planCuotas = solicitud?.cronograma_vehiculo?.cuotas_semanales ?? totalCuotas;
 
   const cronPg = useTablePagination(cuotas);
   const otrosGastosRows = useMemo(
@@ -597,7 +600,7 @@ export default function YegoMiAutoRentSaleDetail() {
               <span>Cuotas</span>
             </div>
             <p className="text-xl font-bold text-gray-900">
-              {cuotasPagadas} / {planCuotas || totalCuotas}
+              {cuotasPagadas} / {planCuotasTotal}
             </p>
             <p className="text-xs text-gray-500">pagadas del plan</p>
           </div>

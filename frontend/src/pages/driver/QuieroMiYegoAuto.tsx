@@ -26,6 +26,7 @@ import {
   miautoCobroPorIngresosTributoDisplay,
   miautoCobroSaldoDisplay,
   miautoCascadaCobroIngresosFilasParaUi,
+  miautoTotalCuotasPlanVehiculo,
 } from '../../utils/miautoRentSaleHelpers';
 
 const APPS_OPTIONS = [
@@ -265,6 +266,10 @@ function AprobadoBlock({
   }, []);
   const cronograma = solicitud.cronograma;
   const vehiculo = solicitud.cronograma_vehiculo;
+  const totalCuotasPlanVehiculoCronograma = useMemo(
+    () => miautoTotalCuotasPlanVehiculo(vehiculo?.cuotas_semanales, cuotasSemanales.length),
+    [vehiculo?.cuotas_semanales, cuotasSemanales.length]
+  );
   const getEstado = (cp: { estado?: string; validado?: boolean; rechazado?: boolean }): 'pendiente' | 'validado' | 'rechazado' => {
     const e = (cp.estado || '').toLowerCase();
     if (e === 'validado' || e === 'rechazado') return e;
@@ -712,10 +717,9 @@ function AprobadoBlock({
                     </div>
                     {solicitud.fecha_inicio_cobro_semanal && cuotasSemanales.length > 0 && subTabCronogramaDriver === 'semanales' && (() => {
                       const vencidas = cuotasSemanales.filter((c) => c.status === 'overdue').length;
-                      const planTotal = Math.max(vehiculo?.cuotas_semanales ?? 0, cuotasSemanales.length) || cuotasSemanales.length;
                       return (
                         <p className="text-xs text-gray-500 tabular-nums whitespace-nowrap shrink-0">
-                          <span className={vencidas > 0 ? 'text-[#8B1A1A] font-bold' : 'font-bold text-gray-700'}>{vencidas}</span> / {planTotal} vencidas
+                          <span className={vencidas > 0 ? 'text-[#8B1A1A] font-bold' : 'font-bold text-gray-700'}>{vencidas}</span> / {totalCuotasPlanVehiculoCronograma} vencidas
                         </p>
                       );
                     })()}
@@ -753,7 +757,6 @@ function AprobadoBlock({
             const totalPagado = round2(
               cuotasSemanales.reduce((s, c) => s + miautoMontoPagadoCuotaSemanal(c.paid_amount), 0),
             );
-            const planTotal = Math.max(vehiculo?.cuotas_semanales ?? 0, cuotasSemanales.length) || cuotasSemanales.length;
             const bonoTiempoActivo = solicitud.cronograma?.bono_tiempo_activo === true;
             const racha = bonoTiempoActivo ? (rachaFromBackend ?? (() => {
               const tieneVencida = cuotasSemanales.some((c) => (c.status || '').toLowerCase() === 'overdue');
@@ -776,7 +779,7 @@ function AprobadoBlock({
                     </p>
                     <p className="text-base font-bold text-gray-900 tabular-nums mt-1">
                       {cuotasPagadas}
-                      <span className="text-gray-400 font-normal"> / {planTotal}</span>
+                      <span className="text-gray-400 font-normal"> / {totalCuotasPlanVehiculoCronograma}</span>
                     </p>
                   </div>
                   <div>

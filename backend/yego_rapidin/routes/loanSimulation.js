@@ -4,8 +4,8 @@ import { simulateLoanOptions } from '../services/calculationsService.js';
 import { applySimulationOption, disburseRequest } from '../services/loanService.js';
 import { verifyToken, verifyRole } from '../../middleware/auth.js';
 import { filterByCountry } from '../../middleware/permissions.js';
-import { validateUUID } from '../../middleware/validations.js';
 import { successResponse, errorResponse } from '../../utils/responses.js';
+import { parseRequestObservations, resolveAdminLoanWeeks } from '../../utils/loanRequestObservations.js';
 import { query } from '../../config/database.js';
 import { logger } from '../../utils/logger.js';
 
@@ -49,11 +49,14 @@ router.post('/simulate', async (req, res) => {
     }
     if (cycle == null) cycle = 1;
     const amount = parseFloat(request.requested_amount) || 0;
+    const optionalWeeks = resolveAdminLoanWeeks(parseRequestObservations(request.observations));
+
     const options = await simulateLoanOptions(
       amount,
       request.country,
       cycle,
-      conditions.rows[0]
+      conditions.rows[0],
+      optionalWeeks
     );
 
     return successResponse(res, options, 'Plan de pago del conductor');
@@ -111,10 +114,4 @@ router.post('/disburse', async (req, res) => {
 });
 
 export default router;
-
-
-
-
-
-
 

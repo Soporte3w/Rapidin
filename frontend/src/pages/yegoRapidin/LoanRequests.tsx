@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
 import { Eye, FileText, Calendar, AlertCircle, CheckCircle, Clock, XCircle, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
@@ -8,7 +8,6 @@ import { useAuth } from '../../contexts/AuthContext';
 import { formatCurrency } from '../../utils/currency';
 import { formatDateLocal } from '../../utils/date';
 import { DateRangePicker } from '../../components/DateRangePicker';
-import { rapidinMatchParts } from '../../utils/rapidinListSearch';
 import { isAxiosAbortError } from '../../utils/miautoApiUtils';
 
 interface LoanRequest {
@@ -41,17 +40,6 @@ export type LoanRequestsSearchState = {
 };
 
 const PAGE_SIZES = [5, 10, 20, 50];
-const API_PAGE_CHUNK = 100;
-
-function loanRequestMatches(r: LoanRequest, q: string): boolean {
-  return rapidinMatchParts(q, [
-    r.dni,
-    r.driver_first_name,
-    r.driver_last_name,
-    [r.driver_first_name, r.driver_last_name].filter(Boolean).join(' ').trim(),
-    r.id,
-  ]);
-}
 
 const LoanRequests = () => {
   const navigate = useNavigate();
@@ -61,7 +49,8 @@ const LoanRequests = () => {
   const isReturnFromDetail = Boolean(searchState?.fromRequestDetail);
   const initialDriverInput = isReturnFromDetail ? (searchState?.driverSearchInput ?? searchState?.driver ?? '') : '';
 
-  const [sourceRequests, setSourceRequests] = useState<LoanRequest[]>([]);
+  const [requests, setRequests] = useState<LoanRequest[]>([]);
+  const [serverTotal, setServerTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filters, setFilters] = useState({
@@ -75,87 +64,83 @@ const LoanRequests = () => {
   const [page, setPage] = useState(isReturnFromDetail && searchState?.page != null ? searchState.page : 1);
   const [pageSize, setPageSize] = useState(isReturnFromDetail && searchState?.limit != null ? searchState.limit : 10);
   const returnConsumedRef = useRef(false);
+  const prevDebouncedDriverRef = useRef(debouncedDriver);
 
-  const filteredRequests = useMemo(() => {
-    const q = debouncedDriver.trim();
-    if (!q) return sourceRequests;
-    return sourceRequests.filter((r) => loanRequestMatches(r, q));
-  }, [sourceRequests, debouncedDriver]);
-
-  const totalFiltered = filteredRequests.length;
-  const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize) || 1);
+  const totalPages = Math.max(1, Math.ceil(serverTotal / pageSize) || 1);
   const pageClamped = Math.min(Math.max(1, page), totalPages);
 
   useEffect(() => {
     if (page !== pageClamped) setPage(pageClamped);
   }, [page, pageClamped]);
 
-  const displayRequests = useMemo(() => {
-    const start = (pageClamped - 1) * pageSize;
-    return filteredRequests.slice(start, start + pageSize);
-  }, [filteredRequests, pageClamped, pageSize]);
+  useEffect(() => {
+    if (prevDebouncedDriverRef.current !== debouncedDriver) {
+      prevDebouncedDriverRef.current = debouncedDriver;
+      setPage(1);
+    }
+  }, [debouncedDriver]);
 
-  const fetchLoanRequestsAllPages = useCallback(
-    async (signal?: AbortSignal, resetPage = true) => {
+  const fetchLoanRequestsPage = useCallback(
+    async (signal?: AbortSignal) => {
       try {
         setLoading(true);
         setError('');
-        const accumulated: LoanRequest[] = [];
-        let serverTotal = 0;
-        let apiPage = 1;
-        while (!signal?.aborted) {
-          const params = new URLSearchParams();
-          params.append('page', String(apiPage));
-          params.append('limit', String(API_PAGE_CHUNK));
-          if (filters.status) params.append('status', filters.status);
-          if (filters.country) params.append('country', filters.country);
-          if (filters.date_from) params.append('date_from', filters.date_from);
-          if (filters.date_to) params.append('date_to', filters.date_to);
-          const response = await api.get(`/loan-requests?${params.toString()}`, { signal });
-          let chunk: LoanRequest[] = [];
-          const pag = response.data?.pagination;
-          serverTotal = typeof pag?.total === 'number' ? pag.total : accumulated.length;
-          const raw = response.data?.data ?? response.data;
-          if (Array.isArray(raw)) chunk = raw;
-          else if (raw?.data && Array.isArray(raw.data)) chunk = raw.data;
-          else if (response.data?.rows && Array.isArray(response.data.rows)) chunk = response.data.rows;
-          if (chunk.length === 0) break;
-          accumulated.push(...chunk);
-          if (accumulated.length >= serverTotal || chunk.length < API_PAGE_CHUNK) break;
-          apiPage += 1;
-        }
+        const params = new URLSearchParams();
+        params.append('page', String(page));
+        params.append('limit', String(pageSize));
+        if (filters.status) params.append('status', filters.status);
+        if (filters.country) params.append('country', filters.country);
+        if (filters.date_from) params.append('date_from', filters.date_from);
+        if (filters.date_to) params.append('date_to', filters.date_to);
+        const q = debouncedDriver.trim();
+        if (q) params.append('driver', q);
+
+        const response = await api.get(`/loan-requests?${params.toString()}`, {
+          signal,
+          headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+        });
         if (signal?.aborted) return;
-        setSourceRequests(accumulated);
-        if (resetPage) setPage(1);
+
+        const pag = response.data?.pagination;
+        const total = typeof pag?.total === 'number' ? pag.total : 0;
+        setServerTotal(total);
+
+        let chunk: LoanRequest[] = [];
+        const raw = response.data?.data ?? response.data;
+        if (Array.isArray(raw)) chunk = raw;
+        else if (raw?.data && Array.isArray(raw.data)) chunk = raw.data;
+        else if (response.data?.rows && Array.isArray(response.data.rows)) chunk = response.data.rows;
+        setRequests(chunk);
       } catch (err: any) {
         if (isAxiosAbortError(err)) return;
         console.error('Error fetching requests:', err);
         setError(err.response?.data?.message || 'Error al cargar las solicitudes');
-        setSourceRequests([]);
+        setRequests([]);
+        setServerTotal(0);
       } finally {
         if (signal?.aborted) return;
         setLoading(false);
       }
     },
-    [filters.status, filters.country, filters.date_from, filters.date_to]
+    [page, pageSize, filters.status, filters.country, filters.date_from, filters.date_to, debouncedDriver]
   );
 
   useEffect(() => {
     const ac = new AbortController();
     const st = location.state as LoanRequestsSearchState | null;
-    const fromDetail = !returnConsumedRef.current && Boolean(st?.fromRequestDetail);
-    if (fromDetail) {
+    if (!returnConsumedRef.current && Boolean(st?.fromRequestDetail)) {
       returnConsumedRef.current = true;
       setPage(st?.page ?? 1);
       setPageSize(st?.limit ?? 10);
       navigate(location.pathname, { replace: true, state: {} });
+      return () => ac.abort();
     }
-    fetchLoanRequestsAllPages(ac.signal, !fromDetail);
+    fetchLoanRequestsPage(ac.signal);
     return () => ac.abort();
-  }, [fetchLoanRequestsAllPages, navigate, location.pathname]);
+  }, [fetchLoanRequestsPage, navigate, location.pathname, page, pageSize]);
 
   const goToPage = (p: number) => {
-    const tp = Math.max(1, Math.ceil(totalFiltered / pageSize) || 1);
+    const tp = Math.max(1, Math.ceil(serverTotal / pageSize) || 1);
     setPage(Math.max(1, Math.min(p, tp)));
   };
 
@@ -184,8 +169,9 @@ const LoanRequests = () => {
 
   const countryName = user?.country === 'PE' ? 'Perú' : user?.country === 'CO' ? 'Colombia' : '';
   const hasServerFilters = Boolean(filters.status || filters.country || filters.date_from || filters.date_to);
+  const driverQueryActive = Boolean(debouncedDriver.trim());
 
-  if (loading && sourceRequests.length === 0) {
+  if (loading && requests.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-center">
@@ -206,7 +192,7 @@ const LoanRequests = () => {
         <p className="text-gray-600 mb-6 text-center max-w-md">{error}</p>
         <button
           type="button"
-          onClick={() => fetchLoanRequestsAllPages(undefined, true)}
+          onClick={() => void fetchLoanRequestsPage()}
           className="bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-3 rounded-lg font-medium hover:from-red-700 hover:to-red-800 transition-all shadow-md"
         >
           Reintentar
@@ -246,7 +232,10 @@ const LoanRequests = () => {
             <select
               id="status"
               value={filters.status}
-              onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+              onChange={(e) => {
+                setFilters({ ...filters, status: e.target.value });
+                setPage(1);
+              }}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
             >
               <option value="">Todos</option>
@@ -262,7 +251,10 @@ const LoanRequests = () => {
             <select
               id="country"
               value={filters.country}
-              onChange={(e) => setFilters({ ...filters, country: e.target.value })}
+              onChange={(e) => {
+                setFilters({ ...filters, country: e.target.value });
+                setPage(1);
+              }}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
             >
               <option value="">Todos</option>
@@ -274,7 +266,10 @@ const LoanRequests = () => {
             <DateRangePicker
               label="Fecha"
               value={{ date_from: filters.date_from, date_to: filters.date_to }}
-              onChange={(r) => setFilters((f) => ({ ...f, date_from: r.date_from, date_to: r.date_to }))}
+              onChange={(r) => {
+                setFilters((f) => ({ ...f, date_from: r.date_from, date_to: r.date_to }));
+                setPage(1);
+              }}
               placeholder="Filtrar por fecha"
             />
           </div>
@@ -283,28 +278,28 @@ const LoanRequests = () => {
 
       <div className="bg-white rounded-lg border border-gray-200 px-4 py-3 flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="text-sm font-semibold text-gray-700">Total:</span>
-        <span className="text-lg font-bold text-[#8B1A1A]">{totalFiltered.toLocaleString('es-PE')}</span>
+        <span className="text-lg font-bold text-[#8B1A1A]">{serverTotal.toLocaleString('es-PE')}</span>
         <span className="text-sm text-gray-600">solicitudes</span>
       </div>
 
-      {sourceRequests.length === 0 ? (
+      {!loading && serverTotal === 0 ? (
         <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 lg:p-12 text-center">
           <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-6">
             <FileText className="w-10 h-10 text-gray-400" />
           </div>
-          <h3 className="text-xl lg:text-2xl font-bold text-gray-900 mb-2">{hasServerFilters ? 'Sin resultados' : 'No hay solicitudes disponibles'}</h3>
+          <h3 className="text-xl lg:text-2xl font-bold text-gray-900 mb-2">
+            {driverQueryActive ? 'Sin coincidencias' : hasServerFilters ? 'Sin resultados' : 'No hay solicitudes disponibles'}
+          </h3>
           <p className="text-gray-600 mb-6 text-base">
-            {hasServerFilters ? 'Prueba otros filtros de estado, país o fechas.' : 'No hay solicitudes en el sistema con los criterios actuales.'}
+            {driverQueryActive
+              ? `Ninguna solicitud coincide con «${debouncedDriver.trim()}».`
+              : hasServerFilters
+                ? 'Prueba otros filtros de estado, país o fechas.'
+                : 'No hay solicitudes en el sistema con los criterios actuales.'}
           </p>
         </div>
-      ) : totalFiltered === 0 ? (
-        <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 text-center">
-          <FileText className="w-10 h-10 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-xl font-bold text-gray-900 mb-2">Sin coincidencias</h3>
-          <p className="text-gray-600 text-sm">Ninguna solicitud coincide con «{debouncedDriver.trim()}».</p>
-        </div>
       ) : (
-        <div className="space-y-4">
+        <div className={`space-y-4 ${loading ? 'opacity-70 pointer-events-none' : ''}`}>
           <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden relative">
             <div className="overflow-x-auto">
               <table className="w-full">
@@ -320,7 +315,7 @@ const LoanRequests = () => {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {displayRequests.map((request) => (
+                  {requests.map((request) => (
                     <tr key={request.id} className="hover:bg-gray-50 transition-colors">
                       <td className="px-4 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-gray-900">
@@ -395,7 +390,7 @@ const LoanRequests = () => {
             </div>
           </div>
 
-          {totalFiltered > 0 && (
+          {serverTotal > 0 && (
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 pb-2">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-500">Por página:</span>

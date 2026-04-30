@@ -1,4 +1,5 @@
 import { query } from '../../config/database.js';
+import { parseRequestObservations, resolveAdminLoanWeeks } from '../../utils/loanRequestObservations.js';
 import { buildDriverNameSearchSql } from '../../utils/driverNameSearch.js';
 import { getCreditLine, getInterestRate, simulateLoanOptions, generateInstallmentSchedule } from './calculationsService.js';
 import { getNextMondayFrom, isSunday } from '../../utils/helpers.js';
@@ -235,7 +236,6 @@ export const applySimulationOption = async (requestId, option, userId) => {
   }
 
   const cycleFromDb = request.cycle ?? request.driver_cycle ?? driver.rows[0]?.cycle ?? 1;
-  const interestRate = option.interestRate != null ? parseFloat(option.interestRate) : await getInterestRate(request.country, cycleFromDb);
 
   const conditions = await query(
     'SELECT * FROM module_rapidin_loan_conditions WHERE country = $1 AND active = true ORDER BY version DESC LIMIT 1',
@@ -248,20 +248,36 @@ export const applySimulationOption = async (requestId, option, userId) => {
 
   const condition = conditions.rows[0];
 
+  const observationsJson = parseRequestObservations(request.observations);
+
+  let optionSource = option;
+  const adminWeeks = resolveAdminLoanWeeks(observationsJson);
+  if (adminWeeks != null) {
+    const sim = await simulateLoanOptions(
+      parseFloat(request.requested_amount) || 0,
+      request.country,
+      cycleFromDb,
+      condition,
+      adminWeeks
+    );
+    if (sim?.option) {
+      optionSource = sim.option;
+    }
+  }
+
+  const interestRate =
+    optionSource.interestRate != null
+      ? parseFloat(optionSource.interestRate)
+      : await getInterestRate(request.country, cycleFromDb);
+
   const approvedOption = {
-    weeks: option.weeks,
-    weeklyInstallment: option.weeklyInstallment,
-    lastInstallment: option.lastInstallment,
-    totalAmount: option.totalAmount,
+    weeks: optionSource.weeks,
+    weeklyInstallment: optionSource.weeklyInstallment,
+    lastInstallment: optionSource.lastInstallment,
+    totalAmount: optionSource.totalAmount,
     interestRate: interestRate,
   };
 
-  let observationsJson = {};
-  try {
-    if (request.observations) {
-      observationsJson = typeof request.observations === 'string' ? JSON.parse(request.observations) : request.observations;
-    }
-  } catch (_) {}
   observationsJson.approvedOption = approvedOption;
   const observationsStr = JSON.stringify(observationsJson);
 
@@ -294,12 +310,7 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
     throw new Error('Solo se puede desembolsar una solicitud en estado Aprobado');
   }
 
-  let observationsJson = {};
-  try {
-    if (request.observations) {
-      observationsJson = typeof request.observations === 'string' ? JSON.parse(request.observations) : request.observations;
-    }
-  } catch (_) {}
+  const observationsJson = parseRequestObservations(request.observations);
 
   const driverResult = await query('SELECT * FROM module_rapidin_drivers WHERE id = $1', [request.driver_id]);
   if (driverResult.rows.length === 0) throw new Error('Conductor no encontrado');

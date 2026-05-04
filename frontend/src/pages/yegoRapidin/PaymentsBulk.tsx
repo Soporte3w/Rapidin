@@ -26,6 +26,7 @@ type ProcessResult = {
   conductor?: string | null;
   balance_fleet?: number | null;
   amount_charged?: number;
+  fleet_park_id?: string;
   error?: string;
   status?: string;
 };

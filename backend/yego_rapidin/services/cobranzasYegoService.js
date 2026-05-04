@@ -4,13 +4,61 @@
  * Flujo:
  *   1. Cliente parsea Excel y envía filas.
  *   2. POST /process → consulta saldo Fleet y retira por driver_id directo. Sin Rapidín.
+ *      Por defecto se prueban varios parques YEGO (ver DEFAULT_COBRANZAS_YEGO_PARK_IDS / env) hasta
+ *      que Fleet reconoce al conductor; el retiro usa ese mismo park_id.
+ *      La descripción del movimiento en Fleet es siempre la constante COBRO_ANTICIPA_FLEET_DESCRIPTION («cobro anticipa», sin sufijos ni alternativas).
  */
 
 import { query } from '../../config/database.js';
 import { withdrawFromContractor, getContractorBalance } from '../../services/yangoService.js';
 import { logger } from '../../utils/logger.js';
 
-const YEGO_LIMA_PARK_ID = '08e20910d81d42658d4334d3f6d10ac0';
+/** Parques YEGO Cobranzas: se prueba en orden hasta que Fleet devuelve saldo para el conductor. */
+const DEFAULT_COBRANZAS_YEGO_PARK_IDS = [
+  '08e20910d81d42658d4334d3f6d10ac0',
+  '6985c587cae0494eaaa15eb27a2265d4',
+  '56e4607dfc354e0a9cde4f0aa7973003',
+];
+
+/** Único texto permitido como `description` del retiro en Fleet para este flujo. */
+const COBRO_ANTICIPA_FLEET_DESCRIPTION = 'cobro anticipa';
+
+function normalizeParkId(raw) {
+  const s = String(raw ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, '');
+  return /^[0-9a-f]{32}$/.test(s) ? s : '';
+}
+
+/**
+ * Lista de park_id para un batch. Si `options.parkId` está definido, solo ese parque.
+ * Si no: `YANGO_COBRANZAS_YEGO_PARK_IDS` (coma/salto) o {@link DEFAULT_COBRANZAS_YEGO_PARK_IDS}.
+ */
+function cobranzasYegoParkIds(options = {}) {
+  const single = normalizeParkId(options.parkId);
+  if (single) return [single];
+  const env = (process.env.YANGO_COBRANZAS_YEGO_PARK_IDS || '')
+    .split(/[\s,;|]+/)
+    .map((x) => normalizeParkId(x))
+    .filter(Boolean);
+  if (env.length) return env;
+  return [...DEFAULT_COBRANZAS_YEGO_PARK_IDS];
+}
+
+/** Prueba cada parque hasta obtener consulta de saldo exitosa (misma cookie Fleet). */
+async function fleetBalanceForDriverInParks(contractorProfileId, parkIds, cookie) {
+  let lastErr = '';
+  for (const pid of parkIds) {
+    const br = await getContractorBalance(contractorProfileId, pid, cookie);
+    if (br.success) return { parkId: pid, balanceResult: br };
+    lastErr = br.error || `Error en parque ${pid}`;
+  }
+  return {
+    parkId: null,
+    balanceResult: { success: false, error: lastErr || 'Ningún parque configurado devolvió saldo' },
+  };
+}
 
 /**
  * Cookie de sesión Fleet para Cobranzas YEGO.
@@ -99,16 +147,16 @@ export const getCobranzasHistory = async ({ limit = 10, offset = 0 } = {}) => {
 /**
  * Cobra masivamente desde Excel Cobranzas YEGO.
  * Por cada fila: consulta saldo Fleet → retira por driver_id → guarda log.
- * Sin ninguna consulta a Rapidín.
+ * Sin ninguna consulta a Rapidín. En Fleet el campo `description` del retiro es solo «cobro anticipa».
  *
  * @param {Array} rows
  * @param {string|null} userId
- * @param {{ maxItems?: number, description?: string, parkId?: string }} [options]
+ * @param {{ maxItems?: number, parkId?: string }} [options]
+ *   `parkId`: un solo parque. Si se omite, se usan varios parques YEGO (env o lista por defecto) y se elige el primero donde Fleet responda al conductor.
  */
 export const processCobranzas = async (rows, userId, options = {}) => {
   const maxItems = Math.min(800, Math.max(1, options.maxItems ?? 500));
-  const description = options.description || 'Cobranza Yego';
-  const parkId = options.parkId || YEGO_LIMA_PARK_ID;
+  const parkIds = cobranzasYegoParkIds(options);
   const cookie = options.cookie || yegoCobroCookie();
   // balance_min: '0' → Fleet descuenta hasta saldo 0, sin retener mínimo
   const WITHDRAW_CONDITION = { balance_min: '0' };
@@ -118,7 +166,7 @@ export const processCobranzas = async (rows, userId, options = {}) => {
   let fail = 0;
 
   const cookieLabel = cookie ? `...${cookie.slice(-20)}` : '(ninguna)';
-  logger.info(`Cobranzas YEGO: iniciando batch — parkId=${parkId} cookie_suffix=${cookieLabel} filas=${data.length}`);
+  logger.info(`Cobranzas YEGO: batch — parks=[${parkIds.join(',')}] (${parkIds.length}) cookie_suffix=${cookieLabel} filas=${data.length}`);
 
   const { rows: [{ id: batchId }] } = await query('SELECT gen_random_uuid() AS id');
 
@@ -154,22 +202,34 @@ export const processCobranzas = async (rows, userId, options = {}) => {
       fail++; continue;
     }
 
-    // ── Saldo Fleet ──────────────────────────────────────────────────────
-    const balanceResult = await getContractorBalance(external_driver_id, parkId, cookie);
-    if (!balanceResult.success) {
+    // ── Saldo Fleet (primer parque de la lista donde el conductor exista para esta sesión) ──
+    const { parkId: resolvedPark, balanceResult } = await fleetBalanceForDriverInParks(
+      external_driver_id,
+      parkIds,
+      cookie
+    );
+    if (!balanceResult.success || !resolvedPark) {
       const error = `Error al consultar saldo Fleet: ${balanceResult.error}`;
       logger.warn(`Cobranzas YEGO: ${error} (${external_driver_id})`);
       results.push({ index: i, ok: false, external_driver_id, conductor, error, status: 'error_fleet' });
       await writeLog(batchId, { ...logBase, status: 'error_fleet', error_detail: error });
       fail++; continue;
     }
-
     const balance = round2(Math.max(0, Number(balanceResult.balance) || 0));
 
     // Si no tiene nada que cobrar, registrar como saldo_insuficiente y seguir
     if (balance <= 0) {
       const error = `Sin saldo disponible (saldo: 0.00, a cobrar: ${amount.toFixed(2)})`;
-      results.push({ index: i, ok: false, external_driver_id, conductor, balance_fleet: 0, error, status: 'saldo_insuficiente' });
+      results.push({
+        index: i,
+        ok: false,
+        external_driver_id,
+        conductor,
+        balance_fleet: 0,
+        fleet_park_id: resolvedPark,
+        error,
+        status: 'saldo_insuficiente',
+      });
       await writeLog(batchId, { ...logBase, balance_fleet: 0, status: 'saldo_insuficiente', error_detail: error });
       fail++; continue;
     }
@@ -179,11 +239,27 @@ export const processCobranzas = async (rows, userId, options = {}) => {
     const isParcial = amountToCharge < amount;
 
     // ── Retiro Fleet ─────────────────────────────────────────────────────
-    const withdraw = await withdrawFromContractor(external_driver_id, amountToCharge.toFixed(2), description, cookie, parkId, WITHDRAW_CONDITION);
+    const withdraw = await withdrawFromContractor(
+      external_driver_id,
+      amountToCharge.toFixed(2),
+      COBRO_ANTICIPA_FLEET_DESCRIPTION,
+      cookie,
+      resolvedPark,
+      WITHDRAW_CONDITION
+    );
     if (!withdraw.success) {
       const error = `Error Fleet: ${withdraw.message || 'sin detalle'}`;
       logger.error(`Cobranzas YEGO: ${error} (${external_driver_id})`);
-      results.push({ index: i, ok: false, external_driver_id, conductor, balance_fleet: balance, error, status: 'error_fleet' });
+      results.push({
+        index: i,
+        ok: false,
+        external_driver_id,
+        conductor,
+        balance_fleet: balance,
+        fleet_park_id: resolvedPark,
+        error,
+        status: 'error_fleet',
+      });
       await writeLog(batchId, { ...logBase, balance_fleet: balance, status: 'error_fleet', error_detail: error });
       fail++; continue;
     }
@@ -191,10 +267,21 @@ export const processCobranzas = async (rows, userId, options = {}) => {
     // ── Éxito (total o parcial) ───────────────────────────────────────────
     const status = isParcial ? 'cobrado_parcial' : 'cobrado';
     const errorDetail = isParcial ? `Cobro parcial: solicitado ${amount.toFixed(2)}, cobrado ${amountToCharge.toFixed(2)}` : null;
-    results.push({ index: i, ok: true, external_driver_id, conductor, balance_fleet: balance, amount_charged: amountToCharge, status });
+    results.push({
+      index: i,
+      ok: true,
+      external_driver_id,
+      conductor,
+      balance_fleet: balance,
+      amount_charged: amountToCharge,
+      fleet_park_id: resolvedPark,
+      status,
+    });
     await writeLog(batchId, { ...logBase, amount_charged: amountToCharge, balance_fleet: balance, status, error_detail: errorDetail });
     ok++;
-    logger.info(`Cobranzas YEGO: ${status} ${external_driver_id} S/ ${amountToCharge.toFixed(2)}${isParcial ? ` (parcial de ${amount.toFixed(2)})` : ''}`);
+    logger.info(
+      `Cobranzas YEGO: ${status} ${external_driver_id} park=${resolvedPark} S/ ${amountToCharge.toFixed(2)}${isParcial ? ` (parcial de ${amount.toFixed(2)})` : ''}`
+    );
   }
 
   return { batch_id: batchId, results, summary: { total: data.length, ok, fail } };

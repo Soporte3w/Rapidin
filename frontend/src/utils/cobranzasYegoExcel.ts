@@ -24,17 +24,54 @@ export function parseCobranzasAmount(val: unknown): number {
 }
 
 const MESES: Record<string, string> = {
-  enero: '01', febrero: '02', marzo: '03', abril: '04',
-  mayo: '05', junio: '06', julio: '07', agosto: '08',
-  septiembre: '09', octubre: '10', noviembre: '11', diciembre: '12',
+  ene: '01', enero: '01',
+  feb: '02', febrero: '02',
+  mar: '03', marzo: '03',
+  abr: '04', abril: '04',
+  may: '05', mayo: '05',
+  jun: '06', junio: '06',
+  jul: '07', julio: '07',
+  ago: '08', agosto: '08',
+  sep: '09', sept: '09', septiembre: '09', set: '09', setiembre: '09',
+  oct: '10', octubre: '10',
+  nov: '11', noviembre: '11',
+  dic: '12', diciembre: '12',
 };
 
+function mesTokenToNum(token: string): string | null {
+  const key = token.toLowerCase().replace(/\.$/, '');
+  return MESES[key] ?? null;
+}
+
+/**
+ * Fecha de pago derivada del nombre de la hoja: **siempre el primer día del rango**
+ * que escribe YEGO/cobranzas (inicio del periodo de esa hoja), no el último día.
+ *
+ * Ejemplos:
+ * - "Sem del 13 al 19 abril" → 13 de abril
+ * - "Sem 27 abr al 3 mayo" → 27 de abril
+ *
+ * No se recalcula “semana ISO” (lunes–domingo); lo que cuenta es el texto del rango en el Excel.
+ */
 function parseDateFromSheetName(sheetName: string): string | null {
+  const año = () => String(new Date().getFullYear());
+
+  // "Sem 27 abr al 3 mayo", "Sem del 27 abr al 3 mayo", "del 27 abril al 3 mayo" → primer día + primer mes
+  const mRangoDosMeses =
+    /(?:sem(?:ana)?(?:\s+del)?\s+|del\s+)?(\d{1,2})\s+([a-záéíóú]+)\s+al\s+\d{1,2}\s+([a-záéíóú]+)(?:\s+(\d{4}))?/i.exec(
+      sheetName
+    );
+  if (mRangoDosMeses) {
+    const mesIni = mesTokenToNum(mRangoDosMeses[2]);
+    if (mesIni) return `${mRangoDosMeses[4] || año()}-${mesIni}-${mRangoDosMeses[1].padStart(2, '0')}`;
+  }
+
+  // "13 al 19 abril", "del 13 al 19 abril" → primer día del rango + mes indicado al final
   const m = /(\d{1,2})\s+al\s+\d{1,2}\s+(?:de\s+)?([a-záéíóú]+)(?:\s+(\d{4}))?/i.exec(sheetName);
   if (!m) return null;
-  const mes = MESES[m[2].toLowerCase()];
+  const mes = mesTokenToNum(m[2]);
   if (!mes) return null;
-  return `${m[3] || new Date().getFullYear()}-${mes}-${m[1].padStart(2, '0')}`;
+  return `${m[3] || año()}-${mes}-${m[1].padStart(2, '0')}`;
 }
 
 /**
@@ -43,7 +80,7 @@ function parseDateFromSheetName(sheetName: string): string | null {
  *   Col 4: Celular  |  Col 5: Scoring  |  Col 6: Cobro (monto)
  *   Col 7: Cobro YEGO  |  Col 8: Abono YEGO a ANTICIPA  |  Col 9: Notas
  *
- * La fecha de pago se extrae del nombre de la hoja (ej. "Sem del 13 al 19 abril" → 2026-04-13).
+ * La fecha de pago es **el primer día del rango** en el nombre de la hoja (ver `parseDateFromSheetName`).
  */
 export function parseCobranzasYegoWorkbook(
   wb: { SheetNames: string[]; Sheets: Record<string, unknown> },

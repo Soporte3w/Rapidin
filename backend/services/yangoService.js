@@ -66,6 +66,17 @@ function normalizeApiMessage(data) {
   return String(data);
 }
 
+/** Cookie de Fleet caducada, revocada o de otro contexto → Yango suele responder 401/403. */
+function fleetSessionRejectedMessage(status, rawSnippet) {
+  const base =
+    status === 401 || status === 403
+      ? `Sesión Yango Fleet no válida (${status}). Renueva en el servidor la cookie (p. ej. YANGO_FLEET_COOKIE_COBRO_YEGO o YANGO_FLEET_COOKIE_COBRO) copiándola desde el navegador con sesión abierta en Fleet y el parque correcto (X-Park-Id).`
+      : null;
+  if (!base) return null;
+  const extra = rawSnippet ? ` Detalle API: ${String(rawSnippet).slice(0, 280)}` : '';
+  return base + extra;
+}
+
 function isRateLimitError(error) {
   if (error.response && error.response.status === 429) return true;
   const msg = normalizeApiMessage(error.response?.data) + ' ' + (error.message || '');
@@ -104,8 +115,6 @@ async function postWithProxyRetry(url, body, headers) {
 
 /**
  * Withdraw (cobro) — body + headers, X-Idempotency-Token. Usa proxy y reintenta con otro si hay rate limit.
- */
-/**
  * @param {string} id - driver_profile_id
  * @param {string|number} amount
  * @param {string} description
@@ -137,8 +146,10 @@ export async function withdrawFromContractor(id, amount, description, cookieOver
     return { success: true, data: response.data };
   } catch (error) {
     if (error.response) {
-      const msg = normalizeApiMessage(error.response.data) || error.message;
-      return { success: false, status: error.response.status, message: msg };
+      const st = error.response.status;
+      const raw = normalizeApiMessage(error.response.data) || error.message;
+      const hint = fleetSessionRejectedMessage(st, raw);
+      return { success: false, status: st, message: hint || raw };
     }
     return { success: false, message: error.message };
   }
@@ -170,8 +181,10 @@ export async function addToContractor(id, amount, description, cookieOverride, p
     return { success: true, data: response.data };
   } catch (error) {
     if (error.response) {
-      const msg = normalizeApiMessage(error.response.data) || error.message;
-      return { success: false, status: error.response.status, message: msg };
+      const st = error.response.status;
+      const raw = normalizeApiMessage(error.response.data) || error.message;
+      const hint = fleetSessionRejectedMessage(st, raw);
+      return { success: false, status: st, message: hint || raw };
     }
     return { success: false, message: error.message };
   }
@@ -196,7 +209,13 @@ export async function getContractorBalance(contractorProfileId, parkId = null, c
     const balance = parseFloat(c.balance);
     return { success: true, balance: Number.isFinite(balance) ? balance : 0, full_name: c.full_name };
   } catch (error) {
-    if (error.response) return { success: false, error: error.response.status === 403 ? '403 cookie expirada' : `Error ${error.response.status}` };
+    if (error.response) {
+      const st = error.response.status;
+      const raw = normalizeApiMessage(error.response.data);
+      const hint = fleetSessionRejectedMessage(st, raw);
+      if (hint) return { success: false, error: hint };
+      return { success: false, error: `Error ${st}` };
+    }
     return { success: false, error: error.message };
   }
 }

@@ -20,7 +20,11 @@ router.post('/process', async (req, res) => {
     if (items.length > 800) {
       return errorResponse(res, 'Máximo 800 filas por lote', 400);
     }
-    const out = await processCobranzas(items, req.user.id, { maxItems: 800 });
+    const parkIdRaw = req.body?.park_id ?? req.body?.parkId;
+    const out = await processCobranzas(items, req.user.id, {
+      maxItems: 800,
+      ...(parkIdRaw != null && String(parkIdRaw).trim() ? { parkId: String(parkIdRaw).trim() } : {}),
+    });
     const msg = out.summary.fail === 0
       ? `Todos los cobros realizados (${out.summary.ok})`
       : `Proceso finalizado: ${out.summary.ok} ok, ${out.summary.fail} con error`;

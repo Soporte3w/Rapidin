@@ -8,11 +8,11 @@
  *   node scripts/miauto-import-solicitudes-entrega-excel.js
  *   node scripts/miauto-import-solicitudes-entrega-excel.js /ruta/al.xlsx --dry-run
  *
- * Después: node scripts/miauto-cargar-cuotas-excel-entrega-inmediata.js --cutoff-date 2100-01-01
+ * Después (cuotas): npm run miauto:cargar-cuotas-excel-entrega -- --cutoff-date 2100-01-01
+ *
+ * Columna TIPO (ej. COMPLETA / parcial) → pago_tipo. Montos S/. y $ en celdas MONTO: script de cuotas.
  */
 import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import XLSX from 'xlsx';
 import { query } from '../config/database.js';
 import { normalizePhoneForDb } from '../utils/helpers.js';
@@ -21,13 +21,10 @@ import {
   createSolicitud,
   updateSolicitud,
 } from '../yego_miauto/services/miautoSolicitudService.js';
+import { defaultEntregaInmediataXlsxPath, SHEET_CUOTAS_SEMANALES } from './miauto-entrega-inmediata-default-xlsx.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_XLSX = path.join(
-  __dirname,
-  '../../ENTREGA INMEDIATA 🚗🔥  - 27-04-26 giomar.xlsx'
-);
-const SHEET_NAME = 'Cuotas Semanales';
+const DEFAULT_XLSX = defaultEntregaInmediataXlsxPath();
+const SHEET_NAME = SHEET_CUOTAS_SEMANALES;
 const FIRST_DATA_ROW = 3;
 const COL_STATUS = 1;
 const COL_AUTO = 2;
@@ -36,7 +33,20 @@ const COL_PLACA = 4;
 const COL_DNI = 6;
 const COL_PHONE = 7;
 const COL_NOMBRE = 8;
+const COL_TIPO_PAGO = 10;
 const CUOTA_BASE_COL = 15;
+
+function mapPagoTipoFromExcelTipo(raw) {
+  const s = String(raw ?? '')
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+  if (!s) return undefined;
+  if (s.includes('PARCIAL')) return 'parcial';
+  if (s.includes('COMPLET')) return 'completo';
+  return undefined;
+}
 
 function parseArgs(argv) {
   const dryRun = argv.includes('--dry-run');
@@ -265,6 +275,7 @@ async function main() {
     const dniRaw = cellToString(getCell(ws, row, COL_DNI));
     const phoneRaw = cellToString(getCell(ws, row, COL_PHONE));
     const nombre = cellToString(getCell(ws, row, COL_NOMBRE));
+    const tipoPagoExcel = cellToString(getCell(ws, row, COL_TIPO_PAGO));
     const excelCron = cellToString(getCell(ws, row, COL_CRONO));
     const excelAuto = cellToString(getCell(ws, row, COL_AUTO));
     const statusExcel = cellToString(getCell(ws, row, COL_STATUS));
@@ -312,6 +323,7 @@ async function main() {
     }
 
     stats.rows++;
+    const pagoTipo = mapPagoTipoFromExcelTipo(tipoPagoExcel);
     const desc = `Import ENTREGA INMEDIATA (${statusExcel || '—'}) — ${nombre || 'sin nombre'}`.slice(0, 2000);
 
     const existing = await findSolicitud(placaNorm, dniDigits, phoneDigits);
@@ -327,18 +339,16 @@ async function main() {
     }
 
     const applyUpdate = async (sid) => {
-      await updateSolicitud(
-        sid,
-        {
-          status: 'aprobado',
-          cronograma_id: match.cronograma_id,
-          cronograma_vehiculo_id: match.vehiculo_id,
-          fecha_inicio_cobro_semanal: fechaInicio,
-          placa_asignada: placaNorm || null,
-          observations: desc,
-        },
-        null
-      );
+      const patch = {
+        status: 'aprobado',
+        cronograma_id: match.cronograma_id,
+        cronograma_vehiculo_id: match.vehiculo_id,
+        fecha_inicio_cobro_semanal: fechaInicio,
+        placa_asignada: placaNorm || null,
+        observations: desc,
+      };
+      if (pagoTipo) patch.pago_tipo = pagoTipo;
+      await updateSolicitud(sid, patch, null);
     };
 
     try {

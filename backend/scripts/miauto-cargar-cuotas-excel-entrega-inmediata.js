@@ -14,29 +14,28 @@
  * --only-solicitud-id <uuid>: solo procesa la fila del Excel que resuelve a esa solicitud (no toca otros conductores).
  */
 import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import XLSX from 'xlsx';
 import { query } from '../config/database.js';
 import { round2 } from '../yego_miauto/services/miautoMoneyUtils.js';
+import {
+  getCronogramasByIds,
+  getMonedaCuotaSemanalPorVehiculo,
+} from '../yego_miauto/services/miautoCronogramaService.js';
 import { mondayOfWeekContainingYmd, computeDueDateForMiAutoCuota } from '../utils/miautoLimaWeekRange.js';
 import {
   isSemanaDepositoMiAuto,
   persistPaidAmountCapsForSolicitud,
 } from '../yego_miauto/services/miautoCuotaSemanalService.js';
+import { defaultEntregaInmediataXlsxPath, SHEET_CUOTAS_SEMANALES } from './miauto-entrega-inmediata-default-xlsx.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SHEET_NAME = 'Cuotas Semanales';
+const SHEET_NAME = SHEET_CUOTAS_SEMANALES;
 const CUOTA_BASE_COL = 15;
 const COL_PLACA = 4;
 const COL_DNI = 6;
 const COL_PHONE = 7;
 const FIRST_DATA_ROW = 3;
 const DEFAULT_CUTOFF = '2026-04-13';
-const DEFAULT_XLSX = path.join(
-  __dirname,
-  '../../ENTREGA INMEDIATA 🚗🔥  - 27-04-26 giomar.xlsx'
-);
+const DEFAULT_XLSX = defaultEntregaInmediataXlsxPath();
 
 function normalizePlacaAsignada(value) {
   if (value == null) return '';
@@ -158,16 +157,22 @@ function parseMontoYMoneda(montoStr, defaultMoneda) {
   if (s === '') throw new Error('Monto vacio');
   let moneda = defaultMoneda || 'PEN';
   let numPart = s;
-  if (/^S\//i.test(s)) {
+  const upper = s.toUpperCase();
+  if (/^S\/?\.?\s*/i.test(s) || /^SOLES?\b/i.test(upper)) {
     moneda = 'PEN';
-    numPart = s.replace(/^S\//i, '').trim();
-  } else if (/^\$/i.test(s)) {
+    numPart = s.replace(/^S\/?\.?\s*/i, '').replace(/^SOLES?\s*/i, '').trim();
+  } else if (
+    /^\$/i.test(s) ||
+    /^USD\b/i.test(upper) ||
+    /^US\$/.test(upper) ||
+    /^D[oó]L/i.test(s)
+  ) {
     moneda = 'USD';
-    numPart = s.replace(/^\$/i, '').trim();
+    numPart = s.replace(/^\$/i, '').replace(/^USD\s*/i, '').replace(/^US\$\s*/i, '').replace(/^D[oó]L(?:ARES?)?\.?\s*/i, '').trim();
   } else {
     numPart = s;
   }
-  const n = parseFloat(numPart.replace(/,/g, ''));
+  const n = parseFloat(String(numPart).replace(/,/g, ''));
   if (Number.isNaN(n)) throw new Error('Monto no numerico: ' + montoStr);
   return { monto: round2(n), moneda };
 }
@@ -193,18 +198,12 @@ function statusForUnpaid(dueYmd, limaToday) {
   return { status: 'pending', paid_amount: round2(0) };
 }
 
-async function loadMonedaPerCronograma() {
-  const monedaMap = new Map();
-  const res = await query(`
-    SELECT DISTINCT s.cronograma_id, cs.moneda
-    FROM module_miauto_cuota_semanal cs
-    JOIN module_miauto_solicitud s ON s.id = cs.solicitud_id
-    WHERE cs.moneda IS NOT NULL AND s.cronograma_id IS NOT NULL
-  `);
-  for (const r of res.rows) {
-    monedaMap.set(String(r.cronograma_id), r.moneda);
-  }
-  return monedaMap;
+async function loadCronogramasForMoneda() {
+  const res = await query(
+    `SELECT DISTINCT cronograma_id FROM module_miauto_solicitud WHERE cronograma_id IS NOT NULL`
+  );
+  const ids = (res.rows || []).map((r) => r.cronograma_id).filter(Boolean);
+  return getCronogramasByIds(ids);
 }
 
 async function findSolicitud(placaNorm, dniDigits, phoneDigits) {
@@ -257,9 +256,9 @@ async function main() {
     process.exit(1);
   }
 
-  console.log('=== Cargando moneda por cronograma desde cuotas existentes ===');
-  const monedaMap = await loadMonedaPerCronograma();
-  console.log('Moneda mapping:', Object.fromEntries(monedaMap));
+  console.log('=== Moneda por vehículo/reglas del cronograma (no por cuotas previas) ===');
+  const cronogramaById = await loadCronogramasForMoneda();
+  console.log('Cronogramas cargados:', cronogramaById.size);
 
   if (resetSolicitudKeepWeek) {
     const { solicitudId, weekYmd } = resetSolicitudKeepWeek;
@@ -350,7 +349,11 @@ async function main() {
       continue;
     }
 
-    const defaultMoneda = monedaMap.get(String(sol.cronograma_id)) || 'PEN';
+    const cr = cronogramaById.get(String(sol.cronograma_id));
+    const defaultMoneda =
+      cr && sol.cronograma_vehiculo_id
+        ? getMonedaCuotaSemanalPorVehiculo(cr, sol.cronograma_vehiculo_id)
+        : 'PEN';
     const fiYmd = ymdFromFi(sol.fecha_inicio_cobro_semanal);
 
     for (let k = 0; k < 46; k++) {

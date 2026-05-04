@@ -118,7 +118,8 @@ export const getLoanRequests = async (filters = {}) => {
                  WHEN l.disbursed_at IS NOT NULL THEN (l.disbursed_at AT TIME ZONE 'UTC')::date::text END) AS disbursed_at_display,
            d.dni, d.first_name as driver_first_name, d.last_name as driver_last_name,
            d.cycle AS driver_cycle,
-           u.first_name as created_by_first_name
+           u.first_name as created_by_first_name,
+           COUNT(*) OVER()::int AS _match_total
     FROM module_rapidin_loan_requests r
     LEFT JOIN module_rapidin_loans l ON l.request_id = r.id
     LEFT JOIN module_rapidin_drivers d ON d.id = r.driver_id
@@ -163,12 +164,9 @@ export const getLoanRequests = async (filters = {}) => {
     paramCount += 3;
   }
 
-  sql += ` ORDER BY r.created_at DESC`;
-
   if (filters.limit != null) {
-    const fromWhere = sql.substring(sql.indexOf('FROM'), sql.indexOf('ORDER BY'));
-    const countResult = await query('SELECT COUNT(*)::int AS total ' + fromWhere, params);
-    const total = countResult.rows[0]?.total ?? 0;
+    const innerSql = sql.trim();
+    sql = `SELECT * FROM (${innerSql}) AS _loan_req_win ORDER BY created_at DESC`;
     sql += ` LIMIT $${paramCount++}`;
     params.push(filters.limit);
     if (filters.offset != null) {
@@ -176,8 +174,12 @@ export const getLoanRequests = async (filters = {}) => {
       params.push(filters.offset);
     }
     const result = await query(sql, params);
-    return { data: result.rows, total };
+    const total = result.rows.length > 0 ? Number(result.rows[0]._match_total) : 0;
+    const data = result.rows.map(({ _match_total: _t, ...row }) => row);
+    return { data, total };
   }
+
+  sql += ` ORDER BY r.created_at DESC`;
 
   if (filters.offset != null) {
     sql += ` OFFSET $${paramCount++}`;
@@ -429,10 +431,16 @@ export const getLoans = async (filters = {}) => {
            d.dni, d.first_name as driver_first_name, d.last_name as driver_last_name,
            d.external_driver_id,
            r.observations AS request_observations,
-           COALESCE((SELECT SUM(COALESCE(i.late_fee, 0)) FROM module_rapidin_installments i WHERE i.loan_id = l.id), 0)::numeric AS total_late_fee
+           COALESCE(inst_lf.late_fee_sum, 0)::numeric AS total_late_fee,
+           COUNT(*) OVER()::int AS _match_total
     FROM module_rapidin_loans l
     LEFT JOIN module_rapidin_drivers d ON d.id = l.driver_id
     LEFT JOIN module_rapidin_loan_requests r ON r.id = l.request_id
+    LEFT JOIN (
+      SELECT loan_id, SUM(COALESCE(late_fee, 0))::numeric AS late_fee_sum
+      FROM module_rapidin_installments
+      GROUP BY loan_id
+    ) inst_lf ON inst_lf.loan_id = l.id
     WHERE 1=1
   `;
   const params = [];
@@ -473,24 +481,24 @@ export const getLoans = async (filters = {}) => {
     params.push(filters.date_to);
   }
 
-  sql += ` ORDER BY l.created_at DESC`;
-
   const limit = filters.limit != null ? Math.min(Math.max(1, parseInt(filters.limit, 10) || 10), 100) : null;
   const offset = filters.offset != null ? Math.max(0, parseInt(filters.offset, 10) || 0) : null;
 
   if (limit != null) {
-    // Usar lastIndexOf('FROM') para el FROM principal (el SELECT tiene un subquery con FROM)
-    const fromWhere = sql.substring(sql.lastIndexOf('FROM'), sql.indexOf('ORDER BY'));
-    const countResult = await query('SELECT COUNT(*)::int AS total ' + fromWhere, params);
-    const total = countResult.rows[0]?.total ?? 0;
+    const innerSql = sql.trim();
+    sql = `SELECT * FROM (${innerSql}) AS _loans_win ORDER BY created_at DESC`;
     sql += ` LIMIT $${paramCount++} OFFSET $${paramCount++}`;
     params.push(limit, offset ?? 0);
     const result = await query(sql, params);
-    return { data: result.rows, total };
+    const total = result.rows.length > 0 ? Number(result.rows[0]._match_total) : 0;
+    const data = result.rows.map(({ _match_total: _t, ...row }) => row);
+    return { data, total };
   }
 
+  sql += ` ORDER BY l.created_at DESC`;
+
   const result = await query(sql, params);
-  return result.rows;
+  return result.rows.map(({ _match_total: _t, ...row }) => row);
 };
 
 const LOANS_EXPORT_MAX = 50000;

@@ -27,6 +27,20 @@ export function buildDriverNameSearchSql(tableAlias, rawQuery, startParam) {
     const safe = String(token).replace(/[%_]/g, '').trim();
     if (!safe) continue;
     const pattern = `%${safe}%`;
+    const digitsOnly = /^\d+$/.test(safe);
+    if (digitsOnly) {
+      // Igualdad y prefijo usan mejor idx_drivers_dni_country que ILIKE '%…%'
+      sql += ` AND (
+      ${d}.dni = $${p}
+      OR ${d}.dni LIKE $${p + 1}
+      OR ${fullName} ILIKE $${p + 2}
+      OR ${d}.first_name ILIKE $${p + 2}
+      OR ${d}.last_name ILIKE $${p + 2}
+    )`;
+      params.push(safe, `${safe}%`, pattern);
+      p += 3;
+      continue;
+    }
     sql += ` AND (
       ${fullName} ILIKE $${p}
       OR ${d}.first_name ILIKE $${p}

@@ -9,6 +9,12 @@ import { isFleetPendingOrIncomingTransactionError } from '../utils/yangoFleetTra
 
 const router = express.Router();
 
+/** Yango/Fleet a veces responde 401 por cookie de flota; no reenviar 401 al cliente (Axios admin asumiría JWT inválido y cierra sesión). */
+function httpStatusForFleetClient(upstreamStatus) {
+  const s = Number(upstreamStatus) || 502;
+  return s === 401 ? 403 : s;
+}
+
 async function withdrawRoute(req, res) {
   try {
     const id = req.body?.driver_profile_id;
@@ -23,7 +29,10 @@ async function withdrawRoute(req, res) {
 
     const result = await withdrawFromContractor(id, String(amount), description, cookie, parkId);
     if (!result.success) {
-      return res.status(result.status || 502).json({ success: false, message: result.message || 'Error en withdraw Yango' });
+      return res.status(httpStatusForFleetClient(result.status)).json({
+        success: false,
+        message: result.message || 'Error en withdraw Yango',
+      });
     }
     return res.json({ message: 'Cobro realizado exitosamente', data: result.data, status: 200 });
   } catch (err) {
@@ -67,7 +76,8 @@ async function rechargeRoute(req, res) {
     if (!result.success) {
       const msg = result.message || 'Error al recargar en Yango Pro';
       const pendingTx = isFleetPendingOrIncomingTransactionError(msg);
-      return res.status(pendingTx ? 409 : result.status || 502).json({
+      const st = pendingTx ? 409 : httpStatusForFleetClient(result.status);
+      return res.status(st).json({
         success: false,
         message: msg,
         ...(pendingTx && { code: 'FLEET_PENDING_TRANSACTION' }),

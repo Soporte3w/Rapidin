@@ -333,7 +333,6 @@ const LoanRequestDetail = () => {
   const [showConfirmApproveModal, setShowConfirmApproveModal] = useState(false);
   const [showConfirmDisburseModal, setShowConfirmDisburseModal] = useState(false);
   const [showConfirmDisburseBankModal, setShowConfirmDisburseBankModal] = useState(false);
-  const [firstPaymentToday, setFirstPaymentToday] = useState(false);
   const [disburseComment, setDisburseComment] = useState('');
   const [disburseAmount, setDisburseAmount] = useState<string>('');
   const [rechargeSuccess, setRechargeSuccess] = useState(false);
@@ -470,7 +469,6 @@ const LoanRequestDetail = () => {
     try {
       await api.post('/loan-simulation/disburse', {
         request_id: id,
-        ...(firstPaymentToday && { first_payment_today: true }),
       });
       toast.success('Desembolso realizado. Cronograma generado.');
       const res = await api.get(`/loan-requests/${id}`);
@@ -983,7 +981,6 @@ const LoanRequestDetail = () => {
                 type="button"
                 onClick={async () => {
                   setShowConfirmDisburseBankModal(false);
-                  setFirstPaymentToday(false);
                   await handleDisburse();
                 }}
                 disabled={loadingDisburse || isSunday}
@@ -1009,7 +1006,6 @@ const LoanRequestDetail = () => {
           onClick={() => {
             if (!rechargeSuccess && !loadingDisburse) {
               setShowConfirmDisburseModal(false);
-              setFirstPaymentToday(false);
               setDisburseComment('');
               setDisburseAmount('');
               setRechargeSuccess(false);
@@ -1109,7 +1105,6 @@ const LoanRequestDetail = () => {
                             setLoadingRecharge(false);
                             await handleDisburse();
                             setShowConfirmDisburseModal(false);
-                            setFirstPaymentToday(false);
                             setDisburseComment('');
                             setDisburseAmount('');
                             setRechargeSuccess(false);
@@ -1157,24 +1152,12 @@ const LoanRequestDetail = () => {
               Vas a realizar el desembolso como <span className="font-semibold text-gray-900">{currentUserName}</span>.
               Se generará el préstamo y el cronograma de cuotas. Los domingos no se puede desembolsar. ¿Continuar?
             </p>
-            {request?.country === 'PE' && new Date().getDay() === 1 && (
-              <label className="flex items-center gap-2 mb-4 p-3 bg-amber-50 rounded-lg border border-amber-200">
-                <input
-                  type="checkbox"
-                  checked={firstPaymentToday}
-                  onChange={(e) => setFirstPaymentToday(e.target.checked)}
-                  className="rounded border-gray-300 text-red-600 focus:ring-red-500"
-                />
-                <span className="text-sm text-gray-700">Primer pago hoy (cuota 1 vence hoy; cobro automático a las 15:31)</span>
-              </label>
-            )}
             <div className="flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => {
                   if (isYangoPro && rechargeSuccess) return;
                   setShowConfirmDisburseModal(false);
-                  setFirstPaymentToday(false);
                   setDisburseComment('');
                   setDisburseAmount('');
                   setRechargeSuccess(false);
@@ -1196,7 +1179,6 @@ const LoanRequestDetail = () => {
                   setFleetRechargeUseManual(false);
                   setFleetRechargeErrorMessage('');
                   await handleDisburse();
-                  setFirstPaymentToday(false);
                 }}
                 disabled={loadingDisburse || (isYangoPro && !rechargeSuccess) || isSunday}
                 className="px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"

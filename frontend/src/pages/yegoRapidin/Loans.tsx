@@ -1,10 +1,9 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { RapidinSearchField } from '../../components/RapidinSearchField';
 import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { rapidinMatchParts } from '../../utils/rapidinListSearch';
 import { isAxiosAbortError } from '../../utils/miautoApiUtils';
 import {
   Eye,
@@ -126,22 +125,6 @@ function formatExcelDate(val: unknown): string {
 }
 
 const PAGE_SIZES = [5, 10, 20, 50];
-const API_PAGE_CHUNK = 100;
-
-function loanRowMatches(loan: Loan, loanIdQ: string, driverQ: string): boolean {
-  if (loanIdQ && !rapidinMatchParts(loanIdQ, [loan.id])) return false;
-  if (
-    driverQ &&
-    !rapidinMatchParts(driverQ, [
-      loan.driver_first_name,
-      loan.driver_last_name,
-      [loan.driver_first_name, loan.driver_last_name].filter(Boolean).join(' ').trim(),
-      loan.id,
-    ])
-  )
-    return false;
-  return true;
-}
 
 const Loans = () => {
   const navigate = useNavigate();
@@ -152,7 +135,8 @@ const Loans = () => {
   const initialDriver = isReturnFromDetail ? (searchState?.driverSearchInput ?? searchState?.driver ?? '') : '';
   const initialLoanId = isReturnFromDetail ? (searchState?.loanIdSearchInput ?? searchState?.loan_id ?? '') : '';
 
-  const [sourceLoans, setSourceLoans] = useState<Loan[]>([]);
+  const [loans, setLoans] = useState<Loan[]>([]);
+  const [serverTotal, setServerTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filters, setFilters] = useState({
@@ -176,87 +160,88 @@ const Loans = () => {
     country: '',
   });
 
-  const filteredLoans = useMemo(() => {
-    const loanIdQ = debouncedLoanId.trim();
-    const driverQ = debouncedDriver.trim();
-    if (!loanIdQ && !driverQ) return sourceLoans;
-    return sourceLoans.filter((l) => loanRowMatches(l, loanIdQ, driverQ));
-  }, [sourceLoans, debouncedLoanId, debouncedDriver]);
+  const searchKey = `${debouncedDriver}\0${debouncedLoanId}`;
+  const prevSearchKeyRef = useRef(searchKey);
+  useEffect(() => {
+    if (prevSearchKeyRef.current !== searchKey) {
+      prevSearchKeyRef.current = searchKey;
+      setPage(1);
+    }
+  }, [searchKey]);
 
-  const totalFiltered = filteredLoans.length;
-  const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize) || 1);
+  const totalPages = Math.max(1, Math.ceil(serverTotal / pageSize) || 1);
   const pageClamped = Math.min(Math.max(1, page), totalPages);
 
   useEffect(() => {
     if (page !== pageClamped) setPage(pageClamped);
   }, [page, pageClamped]);
 
-  const displayLoans = useMemo(() => {
-    const start = (pageClamped - 1) * pageSize;
-    return filteredLoans.slice(start, start + pageSize);
-  }, [filteredLoans, pageClamped, pageSize]);
-
-  const fetchLoansAllPages = useCallback(
-    async (signal?: AbortSignal, resetPage = true) => {
+  const fetchLoansPage = useCallback(
+    async (signal?: AbortSignal) => {
       try {
         setLoading(true);
         setError('');
-        const accumulated: Loan[] = [];
-        let serverTotal = 0;
-        let apiPage = 1;
-        while (!signal?.aborted) {
-          const params = new URLSearchParams();
-          params.append('page', String(apiPage));
-          params.append('limit', String(API_PAGE_CHUNK));
-          if (filters.status) params.append('status', filters.status);
-          if (filters.country) params.append('country', filters.country);
-          if (filters.date_from) params.append('date_from', filters.date_from);
-          if (filters.date_to) params.append('date_to', filters.date_to);
-          const response = await api.get(`/loans?${params.toString()}`, { signal });
-          let chunk: Loan[] = [];
-          const pag = response.data?.pagination;
-          serverTotal = typeof pag?.total === 'number' ? pag.total : accumulated.length;
-          const raw = response.data?.data ?? response.data;
-          if (Array.isArray(raw)) chunk = raw;
-          else if (raw?.data && Array.isArray(raw.data)) chunk = raw.data;
-          else if (response.data?.rows && Array.isArray(response.data.rows)) chunk = response.data.rows;
-          if (chunk.length === 0) break;
-          accumulated.push(...chunk);
-          if (accumulated.length >= serverTotal || chunk.length < API_PAGE_CHUNK) break;
-          apiPage += 1;
-        }
+        const params = new URLSearchParams();
+        params.append('page', String(page));
+        params.append('limit', String(pageSize));
+        if (filters.status) params.append('status', filters.status);
+        if (filters.country) params.append('country', filters.country);
+        if (filters.date_from) params.append('date_from', filters.date_from);
+        if (filters.date_to) params.append('date_to', filters.date_to);
+        const dq = debouncedDriver.trim();
+        if (dq) params.append('driver', dq);
+        const lq = debouncedLoanId.trim();
+        if (lq) params.append('loan_id', lq);
+
+        const response = await api.get(`/loans?${params.toString()}`, {
+          signal,
+          headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+        });
         if (signal?.aborted) return;
-        setSourceLoans(accumulated);
-        if (resetPage) setPage(1);
-      } catch (err: any) {
+
+        const pag = response.data?.pagination;
+        const total = typeof pag?.total === 'number' ? pag.total : 0;
+        setServerTotal(total);
+
+        let chunk: Loan[] = [];
+        const raw = response.data?.data ?? response.data;
+        if (Array.isArray(raw)) chunk = raw;
+        else if (raw?.data && Array.isArray(raw.data)) chunk = raw.data;
+        else if (response.data?.rows && Array.isArray(response.data.rows)) chunk = response.data.rows;
+        setLoans(chunk);
+      } catch (err: unknown) {
         if (isAxiosAbortError(err)) return;
         console.error('Error fetching loans:', err);
-        setError(err.response?.data?.message || 'Error al cargar los préstamos');
-        setSourceLoans([]);
+        const msg =
+          (err as { response?: { data?: { message?: string } } })?.response?.data?.message ||
+          'Error al cargar los préstamos';
+        setError(msg);
+        setLoans([]);
+        setServerTotal(0);
       } finally {
         if (signal?.aborted) return;
         setLoading(false);
       }
     },
-    [filters.status, filters.country, filters.date_from, filters.date_to]
+    [page, pageSize, filters.status, filters.country, filters.date_from, filters.date_to, debouncedDriver, debouncedLoanId]
   );
 
   useEffect(() => {
     const ac = new AbortController();
     const st = location.state as LoansSearchState | null;
-    const fromDetail = !returnConsumedRef.current && Boolean(st?.fromLoanDetail);
-    if (fromDetail) {
+    if (!returnConsumedRef.current && Boolean(st?.fromLoanDetail)) {
       returnConsumedRef.current = true;
       setPage(st?.page ?? 1);
       setPageSize(st?.limit ?? 10);
       navigate(location.pathname, { replace: true, state: {} });
+      return () => ac.abort();
     }
-    fetchLoansAllPages(ac.signal, !fromDetail);
+    void fetchLoansPage(ac.signal);
     return () => ac.abort();
-  }, [fetchLoansAllPages, navigate, location.pathname]);
+  }, [fetchLoansPage, navigate, location.pathname]);
 
   const goToPage = (p: number) => {
-    const tp = Math.max(1, Math.ceil(totalFiltered / pageSize) || 1);
+    const tp = Math.max(1, Math.ceil(serverTotal / pageSize) || 1);
     setPage(Math.max(1, Math.min(p, tp)));
   };
 
@@ -423,9 +408,16 @@ const Loans = () => {
     }
   };
 
-  const hasServerFilters = Boolean(filters.status || filters.country || filters.date_from || filters.date_to);
+  const hasServerFilters = Boolean(
+    filters.status ||
+      filters.country ||
+      filters.date_from ||
+      filters.date_to ||
+      debouncedDriver.trim() ||
+      debouncedLoanId.trim()
+  );
 
-  if (loading && sourceLoans.length === 0) {
+  if (loading && loans.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-center">
@@ -446,7 +438,7 @@ const Loans = () => {
         <p className="text-gray-600 mb-6 text-center max-w-md">{error}</p>
         <button
           type="button"
-          onClick={() => fetchLoansAllPages(undefined, true)}
+          onClick={() => void fetchLoansPage()}
           className="bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-3 rounded-lg font-medium hover:from-red-700 hover:to-red-800 transition-all shadow-md"
         >
           Reintentar
@@ -637,12 +629,12 @@ const Loans = () => {
       {/* Cantidad total */}
       <div className="bg-white rounded-lg border border-gray-200 px-4 py-3 flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="text-sm font-semibold text-gray-700">Total:</span>
-        <span className="text-lg font-bold text-[#8B1A1A]">{totalFiltered.toLocaleString('es-PE')}</span>
+        <span className="text-lg font-bold text-[#8B1A1A]">{serverTotal.toLocaleString('es-PE')}</span>
         <span className="text-sm text-gray-600">préstamos</span>
       </div>
 
       {/* Loans table */}
-      {sourceLoans.length === 0 ? (
+      {serverTotal === 0 && !loading ? (
         <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 lg:p-12 text-center">
           <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-6">
             <FileText className="w-10 h-10 text-gray-400" />
@@ -652,16 +644,8 @@ const Loans = () => {
           </h3>
           <p className="text-gray-600 mb-6 text-base">
             {hasServerFilters
-              ? 'Prueba otros filtros de estado, país o fechas.'
+              ? 'Prueba otros filtros de estado, país, fechas o búsqueda por conductor o ID.'
               : 'No hay préstamos en el sistema con los criterios actuales.'}
-          </p>
-        </div>
-      ) : totalFiltered === 0 ? (
-        <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-8 text-center">
-          <FileText className="w-10 h-10 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-xl font-bold text-gray-900 mb-2">Sin coincidencias</h3>
-          <p className="text-gray-600 text-sm">
-            Ningún préstamo coincide con la búsqueda (ID o conductor).
           </p>
         </div>
       ) : (
@@ -701,7 +685,7 @@ const Loans = () => {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {displayLoans.map((loan) => (
+                {loans.map((loan) => (
                   <tr key={loan.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-4 whitespace-nowrap">
                       {loan.id ? (
@@ -778,7 +762,7 @@ const Loans = () => {
           </div>
           </div>
 
-          {totalFiltered > 0 && (
+          {serverTotal > 0 && (
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 pb-2">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-500">Por página:</span>

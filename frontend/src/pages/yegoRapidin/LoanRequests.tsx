@@ -137,7 +137,7 @@ const LoanRequests = () => {
     }
     fetchLoanRequestsPage(ac.signal);
     return () => ac.abort();
-  }, [fetchLoanRequestsPage, navigate, location.pathname, page, pageSize]);
+  }, [fetchLoanRequestsPage, navigate, location.pathname]);
 
   const goToPage = (p: number) => {
     const tp = Math.max(1, Math.ceil(serverTotal / pageSize) || 1);

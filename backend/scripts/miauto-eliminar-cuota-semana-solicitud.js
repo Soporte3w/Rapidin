@@ -1,11 +1,13 @@
 /**
  * Elimina la fila module_miauto_cuota_semanal de un lunes de cuota para una solicitud Mi Auto,
  * o para **todas** las solicitudes que tengan cuota ese lunes (`--all`).
+ * Opcional `--bydue`: filtrar por **fecha de vencimiento** (`due_date`), no por `week_start_date`
+ * (útil si hubo depósito u inconsistencias; lo normal es que vencimiento = lunes de cuota).
  * No usa backend/backups/.
  *
  * Uso:
  *   node scripts/miauto-eliminar-cuota-semana-solicitud.js <solicitud_uuid> <YYYY-MM-DD> [--apply] [--force-deposito]
- *   node scripts/miauto-eliminar-cuota-semana-solicitud.js --all <YYYY-MM-DD> [--apply] [--force-deposito]
+ *   node scripts/miauto-eliminar-cuota-semana-solicitud.js --all <YYYY-MM-DD> [--apply] [--force-deposito] [--bydue]
  */
 import { query } from '../config/database.js';
 import { mondayOfWeekContainingYmd } from '../utils/miautoLimaWeekRange.js';
@@ -20,13 +22,15 @@ const argv = process.argv.slice(2);
 const apply = argv.includes('--apply');
 const forceDeposito = argv.includes('--force-deposito');
 const allMode = argv.includes('--all');
+/** Filtro por `due_date::date` en modo --all (fecha de vencimiento exacta). */
+const byDueDate = argv.includes('--bydue');
 const positional = argv.filter((a) => !a.startsWith('--'));
 
 function usage() {
   console.error(
     'Uso:\n' +
       '  node scripts/miauto-eliminar-cuota-semana-solicitud.js <solicitud_uuid> <YYYY-MM-DD> [--apply] [--force-deposito]\n' +
-      '  node scripts/miauto-eliminar-cuota-semana-solicitud.js --all <YYYY-MM-DD> [--apply] [--force-deposito]'
+      '  node scripts/miauto-eliminar-cuota-semana-solicitud.js --all <YYYY-MM-DD> [--apply] [--force-deposito] [--bydue]'
   );
   process.exit(1);
 }
@@ -72,20 +76,28 @@ async function deleteCuotaForSolicitud(solicitudId, cuotaId) {
   return { comprobantes_borrados: compIds.length };
 }
 
-async function runAll(monday) {
+async function runAll(rawWeekYmd, allByDueDate) {
+  const raw = String(rawWeekYmd || '').trim().slice(0, 10);
+  const fechaFiltro = allByDueDate ? raw : mondayOfWeekContainingYmd(raw);
+  const whereSql = allByDueDate
+    ? 'c.due_date::date = $1::date'
+    : 'c.week_start_date::date = $1::date';
+
   const listRes = await query(
-    `SELECT c.id::text AS cuota_id, c.solicitud_id::text AS solicitud_id, c.status, c.paid_amount::numeric, c.late_fee::numeric,
+    `SELECT c.id::text AS cuota_id, c.solicitud_id::text AS solicitud_id, c.week_start_date, c.due_date,
+            c.status, c.paid_amount::numeric, c.late_fee::numeric,
             s.fecha_inicio_cobro_semanal
      FROM module_miauto_cuota_semanal c
      INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
-     WHERE c.week_start_date::date = $1::date
+     WHERE ${whereSql}
      ORDER BY c.solicitud_id`,
-    [monday]
+    [fechaFiltro]
   );
   const rows = listRes.rows || [];
   const summary = {
     mode: apply ? 'apply' : 'dry-run',
-    monday,
+    filtro: allByDueDate ? 'due_date' : 'week_start_date',
+    fecha_filtro: fechaFiltro,
     total_encontradas: rows.length,
     omitidas_semana_deposito: [],
     eliminadas: [],
@@ -97,7 +109,7 @@ async function runAll(monday) {
   for (const row of rows) {
     const sid = row.solicitud_id;
     const cuotaId = row.cuota_id;
-    if (!forceDeposito && isSemanaDepositoMiAuto(monday, row.fecha_inicio_cobro_semanal)) {
+    if (!forceDeposito && isSemanaDepositoMiAuto(row.week_start_date, row.fecha_inicio_cobro_semanal)) {
       summary.omitidas_semana_deposito.push({ solicitud_id: sid, cuota_id: cuotaId });
       continue;
     }
@@ -225,8 +237,7 @@ async function main() {
     if (positional.length < 1) usage();
     const rawWeek = String(positional[0]).trim().slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(rawWeek)) usage();
-    const monday = mondayOfWeekContainingYmd(rawWeek);
-    await runAll(monday);
+    await runAll(rawWeek, byDueDate);
     return;
   }
 

@@ -2,12 +2,14 @@
  * Simulación completa del ciclo del lunes para la PRÓXIMA semana de cuota (aún no generada en BD).
  *
  *  1. Consulta ingresos Yango (Lun–Dom) de cada conductor activo (solo lectura).
- *  2. Calcula la cuota según cronograma + viajes.
+ *  2. Calcula la cuota según cronograma + viajes (plan: cuota, %, cobro saldo, **bono auto**, etc.).
  *  3. Simula la cascada de cobro de ingresos (PF pool) a cuotas vencidas más antiguas (EN MEMORIA, no toca BD).
  *  4. Consulta saldo Fleet real (solo lectura).
  *  5. Simula el cobro Fleet cuota por cuota (más antigua primero) incluyendo la cuota nueva simulada.
  *
  * NO modifica la BD. NO retira saldo. NO cobra. NO genera cuotas en BD.
+ *
+ * Hoja «Cuota Generada»: viajes (= count_completed API), tributo PF Yango, tramos plan, pool cascada, **bono**, nota de primera semana.
  *
  * Uso:
  *   node scripts/miauto-preview-semana-excel.js [YYYY-MM-DD]
@@ -256,10 +258,12 @@ async function main() {
       'Semana cuota': cuotaWeekMonday,
       Vencimiento: ymd(dueDateForRow),
       'Tiene plan cronograma': plan ? 'Sí' : 'No',
+      'Primera semana depósito': esPrimera ? 'Sí' : 'No',
       Viajes: numViajes,
       'PF Yango (raw)': partnerFeesRaw,
       'PF 83%': partnerFees83,
       'Cuota plan': cuotaSemanal,
+      'Bono auto (plan)': bonoAuto,
       'Cobro saldo': cobroSaldo,
       '% Comisión': pctComision,
       'Pool cascada total': poolCascada,
@@ -269,6 +273,9 @@ async function main() {
       'PF 83% (en fila)': pf83Final,
       'Amount Due (neto)': amountDueFinal,
       Moneda: moneda,
+      Consideraciones: esPrimera
+        ? 'Semana 1 (depósito): viajes/PF desde API no aplican a la cuota de esta semana.'
+        : 'Viajes=Yango count_completed; PF=juego Mi Auto+tributo; bono/%/cobro saldo=vigencia cronograma.',
     });
 
     // --- PASO 4: Consultar saldo Fleet ---
@@ -419,9 +426,9 @@ async function main() {
   const ws1 = XLSX.utils.json_to_sheet(cuotaGenRows.length > 0 ? cuotaGenRows : [{ Info: 'Sin datos' }]);
   ws1['!cols'] = [
     { wch: 28 }, { wch: 12 }, { wch: 10 }, { wch: 38 }, { wch: 12 }, { wch: 12 },
-    { wch: 18 }, { wch: 8 }, { wch: 14 }, { wch: 10 }, { wch: 12 }, { wch: 12 },
-    { wch: 10 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 14 },
-    { wch: 16 }, { wch: 8 },
+    { wch: 18 }, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
+    { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 14 },
+    { wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 8 }, { wch: 52 },
   ];
   XLSX.utils.book_append_sheet(wb, ws1, 'Cuota Generada');
 

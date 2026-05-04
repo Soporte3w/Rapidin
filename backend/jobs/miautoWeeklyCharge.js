@@ -344,11 +344,19 @@ export async function runWeeklyCuotaGenerationMonday(options = {}) {
   }
 }
 
-async function runWeeklyFleetChargeMonday() {
+/**
+ * Cobro Fleet todas las solicitudes en cola (mismo proceso que cron lunes 7:10 Lima).
+ * Opcional `{ auditJob: 'manual_script' }` para el log de auditoría.
+ *
+ * @param {{ auditJob?: string }} [options]
+ * @returns {Promise<{ ok: boolean; success?: number; partial?: number; failed?: number; cuotas_en_cola?: number; error?: string }>}
+ */
+export async function runWeeklyFleetChargeMonday(options = {}) {
+  const auditJob = String(options.auditJob || 'lunes_7_10_lima');
   logger.info('Mi Auto: cobro Fleet (lunes 7:10 Lima)');
   await appendMiautoFleetCobroJobAuditEvent({
     tipo: 'cobro_job_inicio',
-    job: 'lunes_7_10_lima',
+    job: auditJob,
     timezone: TIMEZONE,
   });
   try {
@@ -357,20 +365,29 @@ async function runWeeklyFleetChargeMonday() {
     const { success, partial, failed } = await processCobroCuotaQueue(cuotas, { solicitudPendingMap });
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_fin',
-      job: 'lunes_7_10_lima',
+      job: auditJob,
       cuotas_en_cola: cuotas.length,
       success,
       partial,
       failed,
     });
     logger.info(`Mi Auto cobro semanal: ${success} ok, ${partial} parcial, ${failed} fallidos`);
+    return { ok: true, success, partial, failed, cuotas_en_cola: cuotas.length };
   } catch (err) {
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_error',
-      job: 'lunes_7_10_lima',
+      job: auditJob,
       error: String(err?.message || err),
     });
     logger.error('Mi Auto job cobro Fleet:', err);
+    return {
+      ok: false,
+      error: String(err?.message || err),
+      success: 0,
+      partial: 0,
+      failed: 0,
+      cuotas_en_cola: 0,
+    };
   }
 }
 

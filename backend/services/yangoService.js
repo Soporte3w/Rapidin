@@ -221,11 +221,68 @@ export async function getContractorBalance(contractorProfileId, parkId = null, c
 }
 
 /**
+ * Cuerpo útil del JSON de `driver/income` (a veces envuelto en `payload` / `data` / `result`).
+ */
+function incomeApiBody(payload) {
+  if (!payload || typeof payload !== 'object') return payload || {};
+  for (const k of ['payload', 'data', 'result']) {
+    const inner = payload[k];
+    if (inner && typeof inner === 'object' && (inner.orders !== undefined || inner.balances !== undefined))
+      return inner;
+  }
+  return payload;
+}
+
+function parseIncomeTripNumber(v) {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'string' ? parseFloat(String(v).replace(',', '.')) : Number(v);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n);
+}
+
+/**
+ * Viajes completados en el rango. Por defecto `orders.count_completed`; alternativas camelCase / raíz / env.
+ * Opcional `YANGO_DRIVER_INCOME_TRIPS_JSON_PATH=dotted.path.to.field` si el Fleet devuelve otra forma.
+ */
+function extractTripCountFromIncomeRoot(root) {
+  const data = root && typeof root === 'object' ? root : {};
+  const customPath = String(process.env.YANGO_DRIVER_INCOME_TRIPS_JSON_PATH || '').trim();
+  if (customPath) {
+    const parts = customPath.split('.').filter(Boolean);
+    let cur = data;
+    for (const p of parts) {
+      cur = cur?.[p];
+      if (cur === undefined) break;
+    }
+    const n = parseIncomeTripNumber(cur);
+    if (n != null) return n;
+  }
+  const orders = data.orders || {};
+  const seq = [
+    orders.count_completed,
+    orders.countCompleted,
+    orders.completed_count,
+    orders.completedCount,
+    orders.total_completed,
+    orders.totalCompleted,
+    data.count_completed,
+    data.countCompleted,
+    data.orders_count,
+    data.ordersCount,
+  ];
+  for (const v of seq) {
+    const n = parseIncomeTripNumber(v);
+    if (n != null) return n;
+  }
+  return 0;
+}
+
+/**
  * Tributo Yango usado en Mi Auto para el 83,33% sobre `partner_fees_raw`.
  * En PE/CO el importe de `balances.partner_fees` viene en **moneda local** (PEN/COP); si la cuota del cronograma
  * está en USD, `ensureCuotaSemanalForWeek` lo pasa a USD con el tipo de cambio de la solicitud antes de restarlo.
  * Por defecto: solo **`balances.partner_fees`** en magnitud positiva (`|…|`). Los viajes vienen de
- * **`orders.count_completed`** (aparte). `balances.platform_fees` es otra línea; opcionalmente se puede
+ * **`orders.count_completed`** (u homólogos; ver `extractTripCountFromIncomeRoot`). `balances.platform_fees` es otra línea; opcionalmente se puede
  * sumar con modo `platform_plus_partner`.
  *
  * Modo env `YANGO_DRIVER_INCOME_PARTNER_FEES_MODE`:
@@ -234,7 +291,8 @@ export async function getContractorBalance(contractorProfileId, parkId = null, c
  * - `price_minus_total`: `max(0, orders.price - balances.total)` si ambos existen
  * - `price_ratio`: `orders.price * YANGO_DRIVER_INCOME_PARTNER_FEES_PRICE_RATIO`
  */
-function extractPartnerFeesTributoFromIncomeData(data) {
+function extractPartnerFeesTributoFromIncomeData(payload) {
+  const data = incomeApiBody(payload);
   const mode = String(process.env.YANGO_DRIVER_INCOME_PARTNER_FEES_MODE || 'partner_line').trim();
   const b = data?.balances || {};
   const o = data?.orders || {};
@@ -265,6 +323,7 @@ function extractPartnerFeesTributoFromIncomeData(data) {
  * POST driver/income; base URL desde env `YANGO_FLEET_BASE_URL`.
  * `X-Park-Id` y cookie salen de {@link fleetParkIdForMiAuto} / {@link fleetCookieCobroForMiAuto} — deben ser la flota **Yego Mi Auto**.
  * dateFrom/dateTo: ISO -05:00. Mi Auto: `limaWeekStartToMiAutoIncomeRange(week_start cuota)` en utils/miautoLimaWeekRange.js.
+ * Opcional env `YANGO_DRIVER_INCOME_TRIPS_JSON_PATH`: ruta punteada al campo numérico de viajes si la API cambia la forma del JSON.
  */
 export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null, cookieOverride = null) {
   const id = String(driverId || '').trim();
@@ -291,9 +350,12 @@ export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null,
   }
   try {
     const res = await postWithProxyRetry(url, body, headers);
-    const countCompleted = res.data?.orders?.count_completed != null ? Number(res.data.orders.count_completed) : 0;
-    const partnerFeesLine = res.data?.balances?.partner_fees != null ? parseFloat(res.data.balances.partner_fees) : 0;
-    const platformFeesLine = res.data?.balances?.platform_fees != null ? parseFloat(res.data.balances.platform_fees) : 0;
+    const root = incomeApiBody(res.data);
+    const countCompleted = extractTripCountFromIncomeRoot(root);
+    const partnerFeesLine =
+      root?.balances?.partner_fees != null ? parseFloat(root.balances.partner_fees) : 0;
+    const platformFeesLine =
+      root?.balances?.platform_fees != null ? parseFloat(root.balances.platform_fees) : 0;
     const partnerFeesTributo = extractPartnerFeesTributoFromIncomeData(res.data);
     if (logIncome) {
       logger.info(

@@ -24,6 +24,7 @@ import { appendMiautoFleetCobroAuditLog } from '../../utils/miautoFleetCobroAudi
 import {
   convertirMontoEntreMonedas,
   montoComprobanteCuotaALaMonedaFila,
+  normalizePenUsd,
   partnerFeesRawDbNormalizeUsdFromYangoLocal,
   partnerFeesYangoAMonedaCuota,
   round2,
@@ -2846,8 +2847,8 @@ export async function processCobroCuota(
     }
   }
 
-  /** Saldo Fleet Yango (PE/CO) está en moneda local; cuota puede ser USD → convertir antes de min() y retiro. */
-  const monedaCuota = cuotaRow.moneda === 'USD' ? 'USD' : 'PEN';
+  /** Saldo Fleet Yango (PE/CO) está en moneda local; cuota USD (cualquier variante PEN/USD explícita) → convertir antes de min() y retiro. */
+  const monedaCuota = normalizePenUsd(cuotaRow.moneda);
   const country = String(cuotaRow.country || 'PE').toUpperCase() === 'CO' ? 'CO' : 'PE';
   const tcEff = await tipoCambioUsdALocalEfectivo(country);
   const valorTc = tcEff.valorUsdALocal;

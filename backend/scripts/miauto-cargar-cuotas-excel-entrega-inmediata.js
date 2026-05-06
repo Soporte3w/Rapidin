@@ -5,6 +5,7 @@
  *
  * --delete-first: borra TODAS las cuotas existentes antes de importar.
  * No depende de cronograma rules; usa el monto del Excel directamente.
+ * Marca `montos_fuente = 'excel'` en BD para que la API no recalcule cuota con mora/máximo del cronograma.
  * Moneda se determina por el cronograma vinculado a la solicitud.
  *
  * Corte: solo celdas con due_date calculado desde Excel < --cutoff-date (ej. 2026-04-13 deja fuera la cuota del 13 abr).
@@ -472,6 +473,7 @@ async function main() {
             pct_comision = $11,
             cobro_saldo = $12,
             late_fee = $13,
+            montos_fuente = 'excel',
             updated_at = CURRENT_TIMESTAMP
           WHERE id = $14::uuid`,
           [
@@ -497,8 +499,8 @@ async function main() {
         await query(
           `INSERT INTO module_miauto_cuota_semanal
             (solicitud_id, week_start_date, due_date, num_viajes, partner_fees_raw, partner_fees_83, bono_auto,
-             cuota_semanal, amount_due, paid_amount, status, moneda, pct_comision, cobro_saldo, late_fee)
-           VALUES ($1::uuid, $2::date, $3::date, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+             cuota_semanal, amount_due, paid_amount, status, moneda, pct_comision, cobro_saldo, late_fee, montos_fuente)
+           VALUES ($1::uuid, $2::date, $3::date, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'excel')`,
           [
             sol.id,
             payload.week_start_date,

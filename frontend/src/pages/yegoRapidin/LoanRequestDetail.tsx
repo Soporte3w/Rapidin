@@ -276,13 +276,65 @@ function DocumentThumb({ requestId, doc }: { requestId: string; doc: { id: strin
 
 const requestDetailCache = new Map<string, { request: any; simulationOptions: any }>();
 
+const FLEET_RECHARGE_MANUAL_KEY = 'rapidin:fleet-recharge-manual:';
+
 function parseRequestObservations(request: any): Record<string, any> {
-  if (!request?.observations) return {};
+  if (request?.observations == null || request?.observations === '') return {};
   try {
-    return typeof request.observations === 'string' ? JSON.parse(request.observations) : { ...request.observations };
+    let raw: unknown = request.observations;
+    if (typeof raw === 'string') raw = JSON.parse(raw);
+    // Algunas filas históricas pueden venir doble-serializadas
+    if (typeof raw === 'string') raw = JSON.parse(raw);
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return { ...(raw as Record<string, unknown>) };
+    return {};
   } catch {
     return {};
   }
+}
+
+/** Cómo recibe el dinero el conductor: yango (Yango Pro) vs banco — insensible a mayúsculas. */
+function normalizeDepositType(request: any): 'yango' | 'bank' | '' {
+  const obs = parseRequestObservations(request);
+  const s = String(obs.deposit_type ?? '').trim().toLowerCase();
+  if (s === 'yango') return 'yango';
+  if (s === 'bank' || s === 'banco') return 'bank';
+  if ((obs.bank && String(obs.bank).trim()) || (obs.account_number && String(obs.account_number).trim()) || (obs.savings_account_cci && String(obs.savings_account_cci).trim())) {
+    return 'bank';
+  }
+  return '';
+}
+
+function readFleetManualRechargePersist(requestId: string): { message: string } | null {
+  try {
+    const raw = sessionStorage.getItem(`${FLEET_RECHARGE_MANUAL_KEY}${requestId}`);
+    if (!raw) return null;
+    const o = JSON.parse(raw) as { message?: string };
+    return typeof o?.message === 'string' ? { message: o.message } : { message: '' };
+  } catch {
+    return null;
+  }
+}
+
+function writeFleetManualRechargePersist(requestId: string, message: string) {
+  try {
+    sessionStorage.setItem(`${FLEET_RECHARGE_MANUAL_KEY}${requestId}`, JSON.stringify({ message: message || '' }));
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearFleetManualRechargePersist(requestId: string) {
+  try {
+    sessionStorage.removeItem(`${FLEET_RECHARGE_MANUAL_KEY}${requestId}`);
+  } catch {
+    /* ignore */
+  }
+}
+
+function disburseAmountFromRequest(r: any): string {
+  if (!r) return '';
+  const n = parseFloat(r.requested_amount != null && r.requested_amount !== '' ? String(r.requested_amount) : '0');
+  return Number.isFinite(n) && n > 0 ? String(n) : '';
 }
 
 function getSimulationOption(simulationOptions: any): any {
@@ -429,6 +481,19 @@ const LoanRequestDetail = () => {
     };
   }, [id]);
 
+  /** Tras F5 o nueva sesión: recuperar modo «recarga manual» si Fleet devolvió transacción pendiente. */
+  useEffect(() => {
+    if (!id) return;
+    const persisted = readFleetManualRechargePersist(id);
+    if (persisted) {
+      setFleetRechargeUseManual(true);
+      setFleetRechargeErrorMessage(persisted.message);
+    } else {
+      setFleetRechargeUseManual(false);
+      setFleetRechargeErrorMessage('');
+    }
+  }, [id]);
+
   const handleConfirmApply = async () => {
     if (isApprovingRef.current) return;
     const rawOption = getSimulationOption(simulationOptions);
@@ -451,7 +516,9 @@ const LoanRequestDetail = () => {
       });
       toast.success('Solicitud aprobada. Realice el desembolso cuando corresponda.');
       const res = await api.get(`/loan-requests/${id}`);
-      setRequest(res.data.data || res.data);
+      const updated = res.data.data || res.data;
+      setRequest(updated);
+      if (id) requestDetailCache.set(id, { request: updated, simulationOptions });
       setShowConfirmApproveModal(false);
     } catch (error: any) {
       console.error('Error applying option:', error);
@@ -471,8 +538,11 @@ const LoanRequestDetail = () => {
         request_id: id,
       });
       toast.success('Desembolso realizado. Cronograma generado.');
+      if (id) clearFleetManualRechargePersist(id);
       const res = await api.get(`/loan-requests/${id}`);
-      setRequest(res.data.data || res.data);
+      const updated = res.data.data || res.data;
+      setRequest(updated);
+      if (id) requestDetailCache.set(id, { request: updated, simulationOptions });
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Error al desembolsar');
     } finally {
@@ -704,19 +774,20 @@ const LoanRequestDetail = () => {
         {/* Cuenta para desembolso */}
         {(() => {
           const obs = parseRequestObservations(request);
-          const depositType = obs.deposit_type || '';
+          const depositKind = normalizeDepositType(request);
           const bank = obs.bank || '';
           const accountNumber = obs.account_number || '';
           const bankAccountInputType = obs.bank_account_input_type || '';
           const accountType = (obs.account_type || '').toLowerCase();
           const savingsAccountCci = obs.savings_account_cci || '';
-          if (!depositType && !bank && !accountNumber && !savingsAccountCci) return null;
+          if (!depositKind && !bank && !accountNumber && !savingsAccountCci) return null;
           // Tipo de dato: prioridad bank_account_input_type (formulario) o account_type (import: savings/checking)
           const isCci = bankAccountInputType === 'cci' || !!savingsAccountCci;
           const isAhorros = bankAccountInputType === 'ahorros' || accountType === 'savings' || accountType === 'ahorros';
           const isCorriente = accountType === 'checking' || accountType === 'corriente';
           const tipoDatoLabel = isCci ? 'CCI' : isAhorros ? 'Cuenta de ahorro' : isCorriente ? 'Cuenta corriente' : accountType || '—';
           const showAccountNumber = accountNumber && (bankAccountInputType === 'ahorros' || isAhorros || isCorriente || !isCci);
+          const rawDepositLabel = String(obs.deposit_type || '').trim();
           return (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
               <div className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b border-gray-100">
@@ -726,8 +797,13 @@ const LoanRequestDetail = () => {
                 <h2 className="text-sm font-semibold text-gray-900">Cuenta para desembolso</h2>
               </div>
               <dl className="p-4 space-y-3">
-                <DataRow label="Tipo de recepción" value={depositType === 'yango' ? 'Yango' : depositType === 'bank' ? 'Banco' : depositType || '—'} />
-                {depositType === 'bank' && (
+                <DataRow
+                  label="Tipo de recepción"
+                  value={
+                    depositKind === 'yango' ? 'Yango Pro' : depositKind === 'bank' ? 'Banco' : rawDepositLabel || '—'
+                  }
+                />
+                {depositKind === 'bank' && (
                   <>
                     <DataRow label="Banco" value={bank || '—'} />
                     <DataRow label="Tipo de cuenta" value={tipoDatoLabel === '—' ? '—' : tipoDatoLabel} />
@@ -928,17 +1004,17 @@ const LoanRequestDetail = () => {
               <button
                 type="button"
                 onClick={() => {
-                  const obs = parseRequestObservations(request);
-                  const isBank = obs.deposit_type === 'bank';
+                  const isBank = normalizeDepositType(request) === 'bank';
                   if (isBank) {
                     setShowConfirmDisburseBankModal(true);
                     return;
                   }
-                  setDisburseAmount(String(parseFloat(request?.requested_amount || '0') || ''));
+                  setDisburseAmount(disburseAmountFromRequest(request));
                   setDisburseComment('');
                   setRechargeSuccess(false);
-                  setFleetRechargeUseManual(false);
-                  setFleetRechargeErrorMessage('');
+                  const fleetPersist = id ? readFleetManualRechargePersist(id) : null;
+                  setFleetRechargeUseManual(!!fleetPersist);
+                  setFleetRechargeErrorMessage(fleetPersist?.message || '');
                   setShowConfirmDisburseModal(true);
                 }}
                 disabled={loadingDisburse || isSunday}
@@ -997,8 +1073,7 @@ const LoanRequestDetail = () => {
 
       {/* Modal confirmar desembolso: conductor, comentario, monto y Recargar (solo Yango Pro) */}
       {showConfirmDisburseModal && request && (() => {
-        const obs = parseRequestObservations(request);
-        const isYangoPro = obs.deposit_type === 'yango';
+        const isYangoPro = normalizeDepositType(request) === 'yango';
         return (
         <AdminModalPortal>
         <div
@@ -1103,6 +1178,7 @@ const LoanRequestDetail = () => {
                             }
                             setRechargeSuccess(true);
                             setLoadingRecharge(false);
+                            if (id) clearFleetManualRechargePersist(id);
                             await handleDisburse();
                             setShowConfirmDisburseModal(false);
                             setDisburseComment('');
@@ -1121,7 +1197,9 @@ const LoanRequestDetail = () => {
                               isYangoPro
                             ) {
                               setFleetRechargeUseManual(true);
-                              setFleetRechargeErrorMessage(String(err.response?.data?.message || ''));
+                              const fleetMsg = String(err.response?.data?.message || '');
+                              setFleetRechargeErrorMessage(fleetMsg);
+                              if (id) writeFleetManualRechargePersist(id, fleetMsg);
                             }
                             toast.error(msg);
                           } finally {

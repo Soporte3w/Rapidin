@@ -9,20 +9,42 @@
  *   node scripts/miauto-cargar-cuotas-excel-sin-mora.js --dry-run    # solo muestra SQL lógico
  *   node scripts/miauto-cargar-cuotas-excel-sin-mora.js --skip-dni-check
  *
- * Para otro conductor: edita SOLICITUD_UUID, DNI_ESPERADO y el array RAW_ROWS.
+ * Otra solicitud (sin editar el archivo):
+ *   MIAUTO_EXCEL_SOLICITUD=<uuid> node scripts/miauto-cargar-cuotas-excel-sin-mora.js --skip-dni-check
+ *   node scripts/miauto-cargar-cuotas-excel-sin-mora.js --solicitud=<uuid> --from-db-excel --skip-dni-check
+ *
+ * `--from-db-excel`: reaplica todas las filas con `montos_fuente=excel` en BD (recarga “desde la hoja” persistida;
+ * conserva `paid_amount` y `status` de cada fila para no pisar cascadas / pagos raros).
+ *
+ * Para el conductor de ejemplo en código: edita SOLICITUD_UUID, DNI_ESPERADO y el array RAW_ROWS.
  */
 import { query } from '../config/database.js';
 import { round2 } from '../yego_miauto/services/miautoMoneyUtils.js';
 import { mondayOfWeekContainingYmd, computeDueDateForMiAutoCuota } from '../utils/miautoLimaWeekRange.js';
 import { isSemanaDepositoMiAuto } from '../yego_miauto/services/miautoCuotaSemanalService.js';
 
-const SOLICITUD_UUID = '25722f84-4f4e-40f7-9b0c-1f1ce88a2a9a';
+const SOLICITUD_UUID =
+  (process.argv.find((a) => a.startsWith('--solicitud=')) || '').split('=')[1]?.trim() ||
+  process.env.MIAUTO_EXCEL_SOLICITUD?.trim() ||
+  '25722f84-4f4e-40f7-9b0c-1f1ce88a2a9a';
 /** DNI solo dígitos (como en el Excel de flota), no confundir con `module_rapidin_drivers.id` (UUID). */
-const DNI_ESPERADO = '45447986';
+const DNI_ARG = (process.argv.find((a) => a.startsWith('--dni=')) || '').split('=')[1]?.trim();
+const DNI_ESPERADO = DNI_ARG || process.env.MIAUTO_EXCEL_DNI?.trim() || '45447986';
 
 const SKIP_DNI = process.argv.includes('--skip-dni-check');
 
 const DRY = process.argv.includes('--dry-run');
+
+const FROM_DB_EXCEL = process.argv.includes('--from-db-excel');
+
+/** YYYY-MM-DD desde Date o ISO. */
+function ymdFromDb(d) {
+  if (d == null) return '';
+  if (d instanceof Date && !Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  const s = String(d).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  return s.slice(0, 10);
+}
 
 /**
  * Filas tal cual la hoja (fecha DD/MM/AA o "Promedio", viajes o "-", monto con $ o S/, validación).
@@ -127,6 +149,38 @@ function buildRowsFromRaw() {
   return [...byWeek.values()].sort((a, b) => a.week_start_date.localeCompare(b.week_start_date));
 }
 
+/**
+ * Filas ya guardadas como Excel en BD: misma forma que `buildRowsFromRaw`, más bandera para no recalcular pagos.
+ */
+async function buildRowsFromDbExcel(solicitudId) {
+  const res = await query(
+    `SELECT week_start_date, num_viajes, cuota_semanal, amount_due, paid_amount, status, moneda
+     FROM module_miauto_cuota_semanal
+     WHERE solicitud_id = $1::uuid AND LOWER(TRIM(COALESCE(montos_fuente, ''))) = 'excel'
+     ORDER BY week_start_date ASC`,
+    [solicitudId]
+  );
+  const rows = [];
+  for (const x of res.rows || []) {
+    const ws = ymdFromDb(x.week_start_date);
+    if (!ws || !/^\d{4}-\d{2}-\d{2}$/.test(ws)) continue;
+    const cs = round2(parseFloat(x.cuota_semanal) || 0);
+    const ad = round2(parseFloat(x.amount_due) || 0);
+    const monto = ad > 0.005 ? ad : cs;
+    rows.push({
+      week_start_date: ws,
+      num_viajes: Number(x.num_viajes) || 0,
+      monto,
+      moneda: String(x.moneda || 'USD').toUpperCase() === 'PEN' ? 'PEN' : 'USD',
+      paid: String(x.status || '').toLowerCase() === 'paid',
+      preservePayment: true,
+      paidAmountDb: round2(parseFloat(x.paid_amount) || 0),
+      statusDb: String(x.status || 'pending'),
+    });
+  }
+  return rows;
+}
+
 function statusForRow(paid, amountDue, dueYmd, limaTodayYmd) {
   if (paid) return { status: 'paid', paid_amount: amountDue };
   if (dueYmd < limaTodayYmd) return { status: 'overdue', paid_amount: round2(0) };
@@ -134,7 +188,11 @@ function statusForRow(paid, amountDue, dueYmd, limaTodayYmd) {
 }
 
 async function main() {
-  const rows = buildRowsFromRaw();
+  const rows = FROM_DB_EXCEL ? await buildRowsFromDbExcel(SOLICITUD_UUID) : buildRowsFromRaw();
+  if (FROM_DB_EXCEL && rows.length === 0) {
+    console.error('No hay filas con montos_fuente=excel para esta solicitud.');
+    process.exit(1);
+  }
   const solRes = await query(
     `SELECT s.id,
             s.rapidin_driver_id::text AS rapidin_driver_id,
@@ -174,7 +232,9 @@ async function main() {
     day: '2-digit',
   }).format(new Date());
 
-  console.log(`Solicitud ${SOLICITUD_UUID}, fecha_inicio_cobro_semanal=${fiYmd}, filas=${rows.length}, dry-run=${DRY}`);
+  console.log(
+    `Solicitud ${SOLICITUD_UUID}, fecha_inicio_cobro_semanal=${fiYmd}, filas=${rows.length}, dry-run=${DRY}, from-db-excel=${FROM_DB_EXCEL}`
+  );
 
   let n = 0;
   for (const r of rows) {
@@ -182,7 +242,16 @@ async function main() {
     const dueDate = computeDueDateForMiAutoCuota(r.week_start_date, fiYmd, isPrimera);
     const amountDue = r.monto;
     const cuotaSemanal = r.monto;
-    const { status, paid_amount } = statusForRow(r.paid, amountDue, String(dueDate).slice(0, 10), limaToday);
+    let status;
+    let paid_amount;
+    if (r.preservePayment) {
+      status = r.statusDb;
+      paid_amount = r.paidAmountDb;
+    } else {
+      const o = statusForRow(r.paid, amountDue, String(dueDate).slice(0, 10), limaToday);
+      status = o.status;
+      paid_amount = o.paid_amount;
+    }
     const numViajes = isPrimera ? 0 : r.num_viajes;
 
     const payload = {
@@ -232,6 +301,7 @@ async function main() {
           pct_comision = $11,
           cobro_saldo = $12,
           late_fee = $13,
+          montos_fuente = 'excel',
           updated_at = CURRENT_TIMESTAMP
         WHERE id = $14::uuid`,
         [
@@ -255,8 +325,8 @@ async function main() {
       await query(
         `INSERT INTO module_miauto_cuota_semanal
           (solicitud_id, week_start_date, due_date, num_viajes, partner_fees_raw, partner_fees_83, bono_auto,
-           cuota_semanal, amount_due, paid_amount, status, moneda, pct_comision, cobro_saldo, late_fee)
-         VALUES ($1::uuid, $2::date, $3::date, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+           cuota_semanal, amount_due, paid_amount, status, moneda, pct_comision, cobro_saldo, late_fee, montos_fuente)
+         VALUES ($1::uuid, $2::date, $3::date, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'excel')`,
         [
           SOLICITUD_UUID,
           payload.week_start_date,

@@ -66,6 +66,8 @@ interface CuotaSemanal {
   pending_total?: number;
   moneda?: string;
   cobro_saldo?: number;
+  /** Alícuota regla cronograma (si la API la envía). */
+  cobro_saldo_regla?: number;
   cuota_neta?: number;
   /** Saldo pendiente solo de la cuota del plan (sin mora), tras imputar abonos mora → cuota. */
   cuota_pendiente?: number;
@@ -793,7 +795,7 @@ export default function YegoMiAutoRentSaleDetail() {
                   </th>
                   <th
                     className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
-                    title="Cargo fijo de la regla del cronograma (cobro saldo), aparte del cobro por ingresos Yango."
+                    title="Monto retirado del saldo del conductor en Yango Fleet acreditado a esta cuota (job cobro). Si aún no hubo retiro, se muestra la alícuota de regla del cronograma. Detalle regla: cobro_saldo_regla en API."
                   >
                     Cobro saldo
                   </th>
@@ -939,7 +941,23 @@ export default function YegoMiAutoRentSaleDetail() {
                         ) : null}
                       </div>
                     </td>
-                    <td className="py-2.5 px-1 align-middle text-[11px] tabular-nums text-right text-green-700">
+                    <td
+                      className="py-2.5 px-1 align-middle text-[11px] tabular-nums text-right text-green-700"
+                      title={(() => {
+                        const mostrado = miautoNum(c.cobro_saldo);
+                        const reglaNum =
+                          c.cobro_saldo_regla != null && !Number.isNaN(Number(c.cobro_saldo_regla))
+                            ? miautoNum(c.cobro_saldo_regla)
+                            : mostrado;
+                        if (Math.abs(mostrado - reglaNum) > 0.005) {
+                          return `Retirado acumulado del saldo del conductor (Yango Fleet), acreditado a esta cuota. Regla cronograma (referencia): ${reglaNum.toFixed(2)} ${symCuota}.`;
+                        }
+                        if (c.cobro_saldo_regla != null && !Number.isNaN(Number(c.cobro_saldo_regla))) {
+                          return `Alícuota «cobro saldo» de la regla del cronograma: ${miautoNum(c.cobro_saldo_regla).toFixed(2)} ${symCuota} (aún sin retiro Fleet hacia esta fila o monto 0).`;
+                        }
+                        return undefined;
+                      })()}
+                    >
                       {miautoFmtMonto(symCuota, miautoCobroSaldoDisplay(c))}
                     </td>
                     <td

@@ -133,9 +133,8 @@ const LoanRequests = () => {
       setPage(st?.page ?? 1);
       setPageSize(st?.limit ?? 10);
       navigate(location.pathname, { replace: true, state: {} });
-      return () => ac.abort();
     }
-    fetchLoanRequestsPage(ac.signal);
+    void fetchLoanRequestsPage(ac.signal);
     return () => ac.abort();
   }, [fetchLoanRequestsPage, navigate, location.pathname]);
 

@@ -234,8 +234,9 @@ const Loans = () => {
       setPage(st?.page ?? 1);
       setPageSize(st?.limit ?? 10);
       navigate(location.pathname, { replace: true, state: {} });
-      return () => ac.abort();
     }
+    // Siempre cargar: antes se hacía return temprano y, si page/pathname no cambiaban,
+    // el efecto no se re-ejecutaba y la lista quedaba vacía al volver del detalle.
     void fetchLoansPage(ac.signal);
     return () => ac.abort();
   }, [fetchLoansPage, navigate, location.pathname]);

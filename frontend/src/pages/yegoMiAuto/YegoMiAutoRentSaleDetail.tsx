@@ -263,12 +263,12 @@ export default function YegoMiAutoRentSaleDetail() {
         const viajes = cuotaReciente.num_viajes ?? 0;
         const cuotaSemanal = Number(cuotaReciente.cuota_semanal || cuotaReciente.amount_due || 0);
         const pf83 = Number(cuotaReciente.partner_fees_83 || 0);
-        const bono = Number(cuotaReciente.bono_auto || 0);
+        const cobroSaldo = Number(cuotaReciente.cobro_saldo || 0);
         const cuotaNeta = Number(cuotaReciente.cuota_neta || 0);
         const pagado = Number(cuotaReciente.paid_amount || 0);
         const pendiente = Math.max(0, cuotaNeta - pagado);
         const semana = miautoSemanaOrdinalPorVencimiento(cuotas, cuotaReciente.due_date, cuotaReciente.week_start_date);
-        defaultText = `Hola estimado 😊\n\nLe compartimos el detalle de su pago:\n- Semana ${semana}: ${viajes} viajes - ${sym} ${cuotaSemanal.toFixed(2)}\n\nDESCUENTOS:\n🔹 Descuento por % acumulado: ${sym} ${pf83.toFixed(2)}\n🔹 Descuento por BONO: ${sym} ${bono.toFixed(2)}\n\n------------------------------------------------------------------------\nPENDIENTE:\n🔹 Cuota : ${sym} ${pendiente.toFixed(2)} 🚨\n\nCualquier consulta quedamos atentos 👍`;
+        defaultText = `Hola estimado 😊\n\nLe compartimos el detalle de su pago:\n- Semana ${semana}: ${viajes} viajes - ${sym} ${cuotaSemanal.toFixed(2)}\n\nDESCUENTOS:\n🔹 Descuento del app: ${sym} ${pf83.toFixed(2)}\n🔹 Cobro de saldo: ${sym} ${cobroSaldo.toFixed(2)}\n\n------------------------------------------------------------------------\nPENDIENTE:\n🔹 Cuota : ${sym} ${pendiente.toFixed(2)} 🚨\n\nCualquier consulta quedamos atentos 👍`;
       } else {
         defaultText = `Hola ${name}, te contactamos respecto a tu contrato Yego Mi Auto. Cualquier duda estamos a tu disposición.`;
       }

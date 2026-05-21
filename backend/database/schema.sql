@@ -351,8 +351,77 @@ CREATE TRIGGER update_cycle_config_updated_at BEFORE UPDATE ON module_rapidin_cy
 CREATE TRIGGER update_interest_rates_updated_at BEFORE UPDATE ON module_rapidin_interest_rates
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- =============================================
+-- Creditos Personal Yego
+-- =============================================
+CREATE TABLE IF NOT EXISTS module_rapidin_creditos_personal (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_gestion_id VARCHAR(100),
+    first_name VARCHAR(255) NOT NULL,
+    last_name VARCHAR(255) NOT NULL,
+    dni VARCHAR(20) NOT NULL,
+    document_type VARCHAR(20),
+    email VARCHAR(255),
+    phone VARCHAR(50),
+    role VARCHAR(100),
+    amount DECIMAL(12,2) NOT NULL,
+    total_amount DECIMAL(12,2) NOT NULL,
+    interest_rate DECIMAL(5,2) NOT NULL DEFAULT 7.00,
+    number_of_installments INTEGER NOT NULL DEFAULT 12,
+    payment_frequency VARCHAR(20) DEFAULT 'monthly',
+    pending_balance DECIMAL(12,2) NOT NULL,
+    bank_name VARCHAR(100),
+    bank_account VARCHAR(50),
+    bank_account_type VARCHAR(20),
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('active', 'cancelled', 'paid', 'pending')),
+    created_by UUID REFERENCES module_rapidin_users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TRIGGER update_creditos_personal_updated_at BEFORE UPDATE ON module_rapidin_creditos_personal
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TABLE IF NOT EXISTS module_rapidin_creditos_personal_cuotas (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    credito_id UUID REFERENCES module_rapidin_creditos_personal(id) ON DELETE CASCADE NOT NULL,
+    installment_number INTEGER NOT NULL,
+    installment_amount DECIMAL(12,2) NOT NULL,
+    due_date DATE NOT NULL,
+    paid_date DATE,
+    paid_amount DECIMAL(12,2) DEFAULT 0,
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'paid', 'overdue')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(credito_id, installment_number)
+);
 
+-- Documentos de crédito personal (compromiso de pago, etc.)
+CREATE TABLE IF NOT EXISTS module_rapidin_creditos_personal_docs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    credito_id UUID REFERENCES module_rapidin_creditos_personal(id) ON DELETE CASCADE NOT NULL,
+    type VARCHAR(50) NOT NULL DEFAULT 'compromiso_pago' CHECK (type IN ('compromiso_pago', 'otro')),
+    file_name VARCHAR(255) NOT NULL,
+    file_path VARCHAR(500) NOT NULL,
+    uploaded_by UUID REFERENCES module_rapidin_users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
+-- =============================================
+-- Configuración de Créditos Personal Yego
+-- =============================================
+CREATE TABLE IF NOT EXISTS module_rapidin_creditos_personal_config (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    interest_rate DECIMAL(5,2) NOT NULL DEFAULT 7.00,
+    max_installments INTEGER NOT NULL DEFAULT 10,
+    active BOOLEAN DEFAULT true,
+    updated_by UUID REFERENCES module_rapidin_users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TRIGGER update_creditos_personal_config_updated_at BEFORE UPDATE ON module_rapidin_creditos_personal_config
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Insertar config por defecto si no existe
+INSERT INTO module_rapidin_creditos_personal_config (interest_rate, max_installments)
+SELECT 7.00, 10
+WHERE NOT EXISTS (SELECT 1 FROM module_rapidin_creditos_personal_config WHERE active = true);
 

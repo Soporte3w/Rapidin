@@ -20,6 +20,9 @@ import {
   Download,
   Loader2,
   X,
+  Users,
+  Building2,
+  Upload,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
@@ -130,6 +133,7 @@ const Loans = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
+  const [tab, setTab] = useState<'conductores' | 'personal'>('conductores');
   const searchState = location.state as LoansSearchState | null;
   const isReturnFromDetail = Boolean(searchState?.fromLoanDetail);
   const initialDriver = isReturnFromDetail ? (searchState?.driverSearchInput ?? searchState?.driver ?? '') : '';
@@ -159,6 +163,15 @@ const Loans = () => {
     date_to: '',
     country: '',
   });
+
+  const [personalCredits, setPersonalCredits] = useState<any[]>([]);
+  const [personalLoading, setPersonalLoading] = useState(false);
+  const [personalPage, setPersonalPage] = useState(1);
+  const [personalTotal, setPersonalTotal] = useState(0);
+  const [personalSearch, setPersonalSearch] = useState('');
+  const [personalStatus, setPersonalStatus] = useState('active');
+  const debouncedPersonalSearch = useDebouncedValue(personalSearch, 400);
+  const personalPageSize = 10;
 
   const searchKey = `${debouncedDriver}\0${debouncedLoanId}`;
   const prevSearchKeyRef = useRef(searchKey);
@@ -265,6 +278,65 @@ const Loans = () => {
     return () => ac.abort();
   }, [fetchLoansPage, navigate, location.pathname]);
 
+  const fetchPersonalCredits = useCallback(async () => {
+    setPersonalLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.append('page', String(personalPage));
+      params.append('limit', String(personalPageSize));
+      if (debouncedPersonalSearch.trim()) params.append('q', debouncedPersonalSearch.trim());
+      if (personalStatus) params.append('status', personalStatus);
+      const res = await api.get(`/creditos-personal-yego?${params.toString()}`);
+      const data = res.data?.data || [];
+      setPersonalCredits(Array.isArray(data) ? data : []);
+      setPersonalTotal(res.data?.pagination?.total || 0);
+    } catch {
+      setPersonalCredits([]);
+      setPersonalTotal(0);
+    } finally {
+      setPersonalLoading(false);
+    }
+  }, [personalPage, debouncedPersonalSearch, personalStatus]);
+
+  useEffect(() => {
+    if (tab === 'personal') fetchPersonalCredits();
+  }, [tab, fetchPersonalCredits]);
+
+  useEffect(() => {
+    if (tab === 'personal') setPersonalPage(1);
+  }, [debouncedPersonalSearch, personalStatus, tab]);
+
+  const personalTotalPages = Math.max(1, Math.ceil(personalTotal / personalPageSize));
+
+  const [detailModal, setDetailModal] = useState<{ open: boolean; credito: any }>({ open: false, credito: null });
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const openDetail = async (id: string) => {
+    setDetailLoading(true);
+    try {
+      const res = await api.get(`/creditos-personal-yego/${id}`);
+      setDetailModal({ open: true, credito: res.data?.data || null });
+    } catch {
+      toast.error('Error al cargar detalles');
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const handleUploadDoc = async (creditoId: string, file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      await api.post(`/creditos-personal-yego/${creditoId}/documentos`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      toast.success('Documento subido. Crédito activado.');
+      fetchPersonalCredits();
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Error al subir documento');
+    }
+  };
+
   const goToPage = (p: number) => {
     const tp = Math.max(1, Math.ceil(serverTotal / pageSize) || 1);
     setPage(Math.max(1, Math.min(p, tp)));
@@ -315,12 +387,52 @@ const Loans = () => {
   };
 
   const openExportModal = () => {
+    if (tab === 'personal') {
+      exportPersonalExcel();
+      return;
+    }
     setExportModalFilters({
       date_from: filters.date_from,
       date_to: filters.date_to,
       country: filters.country,
     });
     setExportModalOpen(true);
+  };
+
+  const exportPersonalExcel = async () => {
+    if (exportLoading) return;
+    const toastId = toast.loading('Generando Excel...');
+    setExportLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.append('limit', '1000');
+      if (debouncedPersonalSearch.trim()) params.append('q', debouncedPersonalSearch.trim());
+      if (personalStatus) params.append('status', personalStatus);
+      const res = await api.get(`/creditos-personal-yego?${params.toString()}`);
+      const rows = res.data?.data || [];
+
+      const header = ['Trabajador', 'DNI', 'Rol', 'Monto', 'Interes', 'Total', 'Cuotas', 'Banco', 'Cuenta', 'Estado', 'Creado'];
+      const data = rows.map((r: any) => [
+        `${r.first_name} ${r.last_name}`,
+        r.dni,
+        r.role || '',
+        parseFloat(r.amount).toFixed(2),
+        `${r.interest_rate}%`,
+        parseFloat(r.total_amount).toFixed(2),
+        r.number_of_installments,
+        r.bank_name || '',
+        r.bank_account || '',
+        r.status === 'active' ? 'Activo' : r.status === 'cancelled' ? 'Cancelado' : r.status,
+        r.created_at ? r.created_at.slice(0, 10) : '',
+      ]);
+
+      writeRapidinLoansStyledExcel(header, data, [], [], `creditos-personal-yego-${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
+      toast.success('Excel descargado', { id: toastId });
+    } catch {
+      toast.error('Error al generar Excel', { id: toastId });
+    } finally {
+      setExportLoading(false);
+    }
   };
 
   const runExportExcel = async (params: URLSearchParams) => {
@@ -495,7 +607,7 @@ const Loans = () => {
             onClick={openExportModal}
             disabled={exportLoading}
             className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white text-[#8B1A1A] font-semibold text-sm hover:bg-white/95 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
-            title="Descargar Excel (elegir fecha y país)"
+            title={tab === 'personal' ? 'Descargar Excel de Créditos Yego' : 'Descargar Excel (elegir fecha y país)'}
           >
             {exportLoading ? (
               <Loader2 className="w-5 h-5 animate-spin shrink-0" aria-hidden />
@@ -507,7 +619,215 @@ const Loans = () => {
         </div>
       </div>
 
-      {exportModalOpen &&
+      <div className="flex rounded-lg bg-gray-100 p-1 w-fit">
+        <button
+          type="button"
+          onClick={() => setTab('conductores')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${tab === 'conductores' ? 'bg-white text-gray-900 shadow' : 'text-gray-600 hover:text-gray-900'}`}
+        >
+          <Users className="w-4 h-4" />
+          Conductores
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('personal')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${tab === 'personal' ? 'bg-white text-gray-900 shadow' : 'text-gray-600 hover:text-gray-900'}`}
+        >
+          <Building2 className="w-4 h-4" />
+          Crédito Yego
+        </button>
+      </div>
+
+      {tab === 'personal' ? (
+        <>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <input
+            type="text"
+            value={personalSearch}
+            onChange={(e) => setPersonalSearch(e.target.value)}
+            placeholder="Buscar por nombre o DNI..."
+            className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500 w-full sm:w-72"
+          />
+          <select
+            value={personalStatus}
+            onChange={(e) => setPersonalStatus(e.target.value)}
+            className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500"
+          >
+            <option value="">Todos los estados</option>
+            <option value="pending">Pendiente</option>
+            <option value="active">Activo</option>
+            <option value="cancelled">Cancelado</option>
+            <option value="paid">Pagado</option>
+          </select>
+        </div>
+        <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b">
+                <tr>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-600">Trabajador</th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-600">DNI</th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-600">Monto</th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-600">Interés</th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-600">Total</th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-600">Cuotas</th>
+                  <th className="text-center px-4 py-3 font-semibold text-gray-600">Doc</th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-600">Estado</th>
+                  <th className="text-center px-4 py-3 font-semibold text-gray-600"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {personalLoading ? (
+                  <tr><td colSpan={9} className="text-center py-12 text-gray-400"><Loader2 className="w-6 h-6 animate-spin mx-auto" /></td></tr>
+                ) : personalCredits.length === 0 ? (
+                  <tr><td colSpan={9} className="text-center py-12 text-gray-400">Sin créditos registrados</td></tr>
+                ) : (
+                  personalCredits.map((c: any) => (
+                    <tr key={c.id} className="border-b hover:bg-gray-50">
+                      <td className="px-4 py-3 font-medium">{c.first_name} {c.last_name}</td>
+                      <td className="px-4 py-3 text-gray-500">{c.dni}</td>
+                      <td className="px-4 py-3">S/ {parseFloat(c.amount).toFixed(2)}</td>
+                      <td className="px-4 py-3">{c.interest_rate}%</td>
+                      <td className="px-4 py-3 font-semibold">S/ {parseFloat(c.total_amount).toFixed(2)}</td>
+                      <td className="px-4 py-3">{c.number_of_installments} meses</td>
+                      <td className="px-4 py-3 text-center">
+                        {(c.doc_count > 0 && c.doc_file_path) ? (
+                          <button onClick={() => window.open(c.doc_file_path, '_blank')} className="text-blue-600 hover:text-blue-800" title="Ver documento">
+                            <FileText className="w-5 h-5" />
+                          </button>
+                        ) : c.doc_count > 0 ? (
+                          <FileText className="w-5 h-5 text-green-600" />
+                        ) : (
+                          <label className="cursor-pointer text-gray-400 hover:text-blue-600" title="Subir compromiso">
+                            <Upload className="w-4 h-4" />
+                            <input type="file" accept=".pdf,.png,.jpg,.jpeg" className="hidden" onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) handleUploadDoc(c.id, f);
+                            }} />
+                          </label>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${c.status === 'active' ? 'bg-green-100 text-green-700' : c.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : c.status === 'cancelled' ? 'bg-gray-100 text-gray-600' : 'bg-red-50 text-red-600'}`}>
+                          {c.status === 'active' ? 'Activo' : c.status === 'pending' ? 'Pendiente' : c.status === 'cancelled' ? 'Cancelado' : c.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={async () => {
+                              try {
+                                const res = await api.get(`/creditos-personal-yego/${c.id}/compromiso-word`, { responseType: 'blob' });
+                                const url = window.URL.createObjectURL(new Blob([res.data]));
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = `Compromiso_Pago_${c.first_name}_${c.last_name}_${c.dni}.docx`;
+                                a.click();
+                                window.URL.revokeObjectURL(url);
+                              } catch { toast.error('Error al descargar'); }
+                            }}
+                            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg"
+                            title="Descargar Word"
+                          >
+                            <Download className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => openDetail(c.id)} className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Ver detalles">
+                            <Eye className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          {personalTotal > personalPageSize && (
+            <div className="flex items-center justify-between px-4 py-3 border-t bg-gray-50">
+              <span className="text-sm text-gray-500">{personalTotal} resultados</span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPersonalPage(1)} disabled={personalPage === 1} className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-30"><ChevronsLeft className="w-4 h-4" /></button>
+                <button onClick={() => setPersonalPage(p => Math.max(1, p - 1))} disabled={personalPage === 1} className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-30"><ChevronLeft className="w-4 h-4" /></button>
+                <span className="text-sm px-2">{personalPage} / {personalTotalPages}</span>
+                <button onClick={() => setPersonalPage(p => Math.min(personalTotalPages, p + 1))} disabled={personalPage === personalTotalPages} className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-30"><ChevronRight className="w-4 h-4" /></button>
+                <button onClick={() => setPersonalPage(personalTotalPages)} disabled={personalPage === personalTotalPages} className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-30"><ChevronsRight className="w-4 h-4" /></button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {detailModal.open && detailModal.credito && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" onClick={() => setDetailModal({ open: false, credito: null })}>
+            <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-5 py-4 border-b">
+                <h3 className="font-bold text-gray-900">Detalle del Crédito</h3>
+                <button onClick={() => setDetailModal({ open: false, credito: null })} className="p-1 hover:bg-gray-100 rounded"><X className="w-5 h-5" /></button>
+              </div>
+              <div className="p-5 space-y-5 overflow-y-auto">
+                {detailLoading ? (
+                  <div className="flex justify-center py-8"><Loader2 className="w-6 h-6 animate-spin" /></div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                      <div><span className="text-gray-500">Trabajador:</span><p className="font-semibold">{detailModal.credito.first_name} {detailModal.credito.last_name}</p></div>
+                      <div><span className="text-gray-500">DNI:</span><p className="font-semibold">{detailModal.credito.dni}</p></div>
+                      <div><span className="text-gray-500">Rol:</span><p className="font-semibold">{detailModal.credito.role || '-'}</p></div>
+                      <div><span className="text-gray-500">Monto:</span><p className="font-semibold">S/ {parseFloat(detailModal.credito.amount).toFixed(2)}</p></div>
+                      <div><span className="text-gray-500">Interés:</span><p className="font-semibold">{detailModal.credito.interest_rate}%</p></div>
+                      <div><span className="text-gray-500">Total:</span><p className="font-semibold text-red-600">S/ {parseFloat(detailModal.credito.total_amount).toFixed(2)}</p></div>
+                      <div><span className="text-gray-500">Estado:</span><p className="font-semibold">{detailModal.credito.status === 'active' ? 'Activo' : detailModal.credito.status === 'pending' ? 'Pendiente' : detailModal.credito.status}</p></div>
+                      <div><span className="text-gray-500">Cuotas:</span><p className="font-semibold">{detailModal.credito.number_of_installments} meses</p></div>
+                      <div><span className="text-gray-500">Creado:</span><p className="font-semibold">{detailModal.credito.created_at?.slice(0, 10)}</p></div>
+                    </div>
+                    {detailModal.credito.cuotas && detailModal.credito.cuotas.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-bold text-gray-700 mb-2">Cuotas</h4>
+                        <div className="border rounded-lg overflow-hidden">
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50 border-b">
+                              <tr><th className="text-left px-3 py-2 text-xs font-semibold text-gray-500">#</th><th className="text-left px-3 py-2 text-xs font-semibold text-gray-500">Vencimiento</th><th className="text-right px-3 py-2 text-xs font-semibold text-gray-500">Monto</th><th className="text-left px-3 py-2 text-xs font-semibold text-gray-500">Estado</th></tr>
+                            </thead>
+                            <tbody>
+                              {detailModal.credito.cuotas.map((cuota: any) => (
+                                <tr key={cuota.id} className="border-b last:border-0">
+                                  <td className="px-3 py-2 font-medium">{cuota.installment_number}</td>
+                                  <td className="px-3 py-2 text-gray-500">{cuota.due_date?.slice(0, 10)}</td>
+                                  <td className="px-3 py-2 text-right font-semibold">S/ {parseFloat(cuota.installment_amount).toFixed(2)}</td>
+                                  <td className="px-3 py-2"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${cuota.status === 'paid' ? 'bg-green-100 text-green-700' : cuota.status === 'overdue' ? 'bg-red-50 text-red-600' : 'bg-gray-100 text-gray-600'}`}>{cuota.status === 'paid' ? 'Pagada' : cuota.status === 'overdue' ? 'Vencida' : 'Pendiente'}</span></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                    {detailModal.credito.documentos && detailModal.credito.documentos.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-bold text-gray-700 mb-2">Documento</h4>
+                        {(() => {
+                          const url = detailModal.credito.documentos[0].file_path || '';
+                          const isImage = /\.(jpg|jpeg|png|webp)$/i.test(url);
+                          if (isImage) {
+                            return <img src={url} alt="Documento" className="max-w-full max-h-72 object-contain rounded border" />;
+                          }
+                          return <embed src={url} type="application/pdf" className="w-full h-80 border rounded" />;
+                        })()}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="px-5 py-4 border-t bg-gray-50 rounded-b-xl">
+                <button onClick={() => setDetailModal({ open: false, credito: null })} className="px-4 py-2.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm">Cerrar</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        </>
+      ) : (
+        <>
+        {exportModalOpen &&
         createPortal(
           <div
             className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/50 p-4"
@@ -591,7 +911,7 @@ const Loans = () => {
 
       {/* Filtros */}
       <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
-        <div className="flex flex-col sm:flex-row gap-4 flex-wrap">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <RapidinSearchField
             id="loan_id"
             label="Buscar por ID de préstamo"
@@ -673,6 +993,7 @@ const Loans = () => {
               : 'No hay préstamos en el sistema con los criterios actuales.'}
           </p>
         </div>
+
       ) : (
         <div className="space-y-4">
           <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden relative">
@@ -876,6 +1197,7 @@ const Loans = () => {
           )}
         </div>
       )}
+      </>)}
     </div>
   );
 };

@@ -24,7 +24,7 @@ type MenuSection = { title: string; items: MenuItem[] };
 
 const ADMIN_MENU: Record<AdminProduct, { newRequest?: MenuItem; sections: MenuSection[]; subtitle: string; dashboardPath: string }> = {
   rapidin: {
-    newRequest: { text: 'Nueva solicitud', icon: PlusCircle, path: '/admin/loan-requests/new' },
+    newRequest: { text: 'Nueva solicitud', icon: PlusCircle, path: '/admin/loan-requests/credit-type' },
     subtitle: 'Yego Rapidín',
     dashboardPath: '/admin/dashboard',
     sections: [
@@ -56,7 +56,7 @@ const ADMIN_MENU: Record<AdminProduct, { newRequest?: MenuItem; sections: MenuSe
     ],
   },
   'yego-mi-moto': {
-    newRequest: { text: 'Nueva solicitud Mi Moto', icon: PlusCircle, path: '/admin/yego-mi-moto/loan-requests/new' },
+    newRequest: { text: 'Nueva solicitud Mi Moto', icon: PlusCircle, path: '/admin/yego-mi-moto/loan-requests/credit-type' },
     subtitle: 'Yego mi moto',
     dashboardPath: '/admin/yego-mi-moto/dashboard',
     sections: [
@@ -136,7 +136,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
             <div className="space-y-0.5">
               {section.items.map((item) => {
                 const Icon = item.icon;
-                const isNewRequest = location.pathname.includes('/loan-requests/new');
+                const isNewRequest = location.pathname.includes('/loan-requests/new') || location.pathname.includes('/loan-requests/credit-type');
                 const isDashboard = item.path.endsWith('/dashboard');
                 const isActive = !isNewRequest && (location.pathname === item.path || (!isDashboard && location.pathname.startsWith(item.path + '/')));
                 return (

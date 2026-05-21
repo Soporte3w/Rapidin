@@ -4,6 +4,7 @@ import LoanConditionsSettings from './settings/LoanConditionsSettings';
 import CycleConfigSettings from './settings/CycleConfigSettings';
 import UsersManagement from './settings/UsersManagement';
 import InterestRatesSettings from './settings/InterestRatesSettings';
+import CreditosPersonalSettings from './settings/CreditosPersonalSettings';
 
 const Settings = () => {
   const [tab, setTab] = useState(0);
@@ -12,6 +13,7 @@ const Settings = () => {
     { label: 'Condiciones de Préstamo', component: LoanConditionsSettings },
     { label: 'Configuración de Ciclos', component: CycleConfigSettings },
     { label: 'Tasas de Interés', component: InterestRatesSettings },
+    { label: 'Créditos Personal', component: CreditosPersonalSettings },
     { label: 'Gestión de Usuarios', component: UsersManagement },
   ];
 
@@ -58,7 +60,8 @@ const Settings = () => {
           {tab === 0 && <LoanConditionsSettings />}
           {tab === 1 && <CycleConfigSettings />}
           {tab === 2 && <InterestRatesSettings />}
-          {tab === 3 && <UsersManagement />}
+          {tab === 3 && <CreditosPersonalSettings />}
+          {tab === 4 && <UsersManagement />}
         </div>
       </div>
     </div>

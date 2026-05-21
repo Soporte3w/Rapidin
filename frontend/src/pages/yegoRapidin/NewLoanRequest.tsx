@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 import {
   CheckCircle, ArrowLeft, ArrowRight, User, CreditCard, FileText, Users,
-  Calendar, FileCheck, Camera, Loader2, DollarSign, ChevronDown, Trash2,
-  Building2, Search, Upload, X
+  Calendar, FileCheck, Camera, Loader2, DollarSign, ChevronDown, Trash2
 } from 'lucide-react';
 import { formatCurrency, getCurrencyLabel } from '../../utils/currency';
+import PersonalYegoCreditForm from './PersonalYegoCreditForm';
 
 const STEPS = [
   { number: 1, name: 'Solicitante', icon: User },
@@ -21,19 +21,6 @@ const STEPS = [
 
 type CreditType = 'conductor' | 'personal_yego' | null;
 
-interface YegoUser {
-  id: string;
-  username: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  dni: string;
-  documentType: string;
-  phone: string;
-  role: string;
-  areaName: string | null;
-}
-
 function validateBankAccount(bank: string, accountNumber: string): { valid: boolean; message?: string } {
   const digits = accountNumber.replace(/\D/g, '');
   if (!digits.length) return { valid: false, message: 'Ingresa el número de cuenta' };
@@ -45,7 +32,14 @@ function validateBankAccount(bank: string, accountNumber: string): { valid: bool
 
 export default function AdminNewLoanRequest() {
   const navigate = useNavigate();
-  const [creditType, setCreditType] = useState<CreditType>(null);
+  const [searchParams] = useSearchParams();
+  const creditType = (searchParams.get('type') as CreditType) || null;
+
+  useEffect(() => {
+    if (creditType === null) {
+      navigate('/admin/loan-requests/credit-type', { replace: true });
+    }
+  }, [creditType, navigate]);
   const [currentStep, setCurrentStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [offer, setOffer] = useState<{ cycle: number; maxAmount: number; requiresGuarantor: boolean } | null>(null);
@@ -76,17 +70,6 @@ export default function AdminNewLoanRequest() {
   const nameSearchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nameSearchContainerRef = useRef<HTMLDivElement>(null);
   const contactDniDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const [yegoUsers, setYegoUsers] = useState<YegoUser[]>([]);
-  const [yegoUsersLoading, setYegoUsersLoading] = useState(false);
-  const [yegoUserSearch, setYegoUserSearch] = useState('');
-  const [selectedYegoUser, setSelectedYegoUser] = useState<YegoUser | null>(null);
-  const [yegoForm, setYegoForm] = useState({
-    amount: '',
-    installments: '12',
-  });
-  const [yegoDocFile, setYegoDocFile] = useState<File | null>(null);
-  const [yegoSubmitting, setYegoSubmitting] = useState(false);
 
   const [formData, setFormData] = useState({
     depositType: 'yango' as 'yango' | 'bank',
@@ -140,6 +123,7 @@ export default function AdminNewLoanRequest() {
   }, [beneficiary.country, currentStep]);
 
   useEffect(() => {
+    if (creditType !== 'conductor') return;
     if (nameSearchQuery.trim().length < 2) {
       setNameSearchResults([]);
       setShowNameDropdown(false);
@@ -548,225 +532,9 @@ export default function AdminNewLoanRequest() {
                 <ul className="py-1">
                   {nameSearchResults.map((d) => {
                     const isThisSelected = hasSelectedConductor && selectedDriverId === (d.conductor_id ?? d.id) && (selectedParkIdForLoan || null) === (d.flota.park_id ?? null);
-  const fetchYegoUsers = async () => {
-    setYegoUsersLoading(true);
-    try {
-      const res = await api.get('/creditos-personal-yego/usuarios');
-      setYegoUsers(res.data?.data || res.data || []);
-    } catch {
-      toast.error('Error al cargar usuarios de Yego');
-    } finally {
-      setYegoUsersLoading(false);
-    }
-  };
 
-  const handleYegoSubmit = async () => {
-    if (!selectedYegoUser || !yegoForm.amount) return;
-    setYegoSubmitting(true);
-    try {
-      const payload = {
-        user_gestion_id: selectedYegoUser.id,
-        first_name: selectedYegoUser.firstName,
-        last_name: selectedYegoUser.lastName,
-        dni: selectedYegoUser.dni,
-        document_type: selectedYegoUser.documentType,
-        email: selectedYegoUser.email,
-        phone: selectedYegoUser.phone,
-        role: selectedYegoUser.role,
-        amount: parseFloat(yegoForm.amount),
-        number_of_installments: parseInt(yegoForm.installments),
-        interest_rate: 7,
-        payment_frequency: 'monthly',
-      };
-      const res = await api.post('/creditos-personal-yego', payload);
-      if (yegoDocFile && res.data?.data?.id) {
-        const fd = new FormData();
-        fd.append('file', yegoDocFile);
-        await api.post(`/creditos-personal-yego/${res.data.data.id}/documentos`, fd);
-      }
-      toast.success('Crédito personal creado');
-      navigate('/admin/loan-requests');
-    } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Error al crear crédito');
-    } finally {
-      setYegoSubmitting(false);
-    }
-  };
 
-  if (creditType === null) {
-    return (
-      <div className="max-w-2xl mx-auto space-y-6">
-        <div className="bg-red-800 text-white rounded-lg p-4 flex items-center gap-3">
-          <DollarSign className="w-10 h-10 flex-shrink-0" />
-          <div>
-            <h1 className="text-xl font-bold">Nuevo Crédito</h1>
-            <p className="text-sm text-red-100">Selecciona el tipo de crédito</p>
-          </div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <button
-            onClick={() => { setCreditType('conductor'); fetchYegoUsers(); }}
-            className="bg-white rounded-xl shadow border-2 border-gray-200 hover:border-red-400 p-6 text-left transition-all"
-          >
-            <div className="w-12 h-12 bg-red-100 rounded-xl flex items-center justify-center mb-4">
-              <User className="w-6 h-6 text-red-600" />
-            </div>
-            <h3 className="text-lg font-bold text-gray-900 mb-1">Socio Conductor</h3>
-            <p className="text-sm text-gray-500">Crédito semanal para conductores de flota</p>
-          </button>
-          <button
-            onClick={() => { setCreditType('personal_yego'); fetchYegoUsers(); }}
-            className="bg-white rounded-xl shadow border-2 border-gray-200 hover:border-red-400 p-6 text-left transition-all"
-          >
-            <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center mb-4">
-              <Building2 className="w-6 h-6 text-blue-600" />
-            </div>
-            <h3 className="text-lg font-bold text-gray-900 mb-1">Personal de Yego</h3>
-            <p className="text-sm text-gray-500">Crédito mensual para colaboradores Yego</p>
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (creditType === 'personal_yego') {
-    const filteredUsers = yegoUsers.filter((u) => {
-      if (!yegoUserSearch) return true;
-      const q = yegoUserSearch.toLowerCase();
-      return `${u.firstName} ${u.lastName}`.toLowerCase().includes(q) ||
-        u.dni?.includes(q) ||
-        u.email?.toLowerCase().includes(q);
-    });
-
-    return (
-      <div className="max-w-2xl mx-auto space-y-6">
-        <div className="bg-blue-800 text-white rounded-lg p-4 flex items-center gap-3">
-          <Building2 className="w-10 h-10 flex-shrink-0" />
-          <div>
-            <h1 className="text-xl font-bold">Crédito Personal de Yego</h1>
-            <p className="text-sm text-blue-100">Mensual · Interés 7%</p>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl shadow border border-gray-100 p-6 space-y-5">
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">Buscar colaborador</label>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input
-                type="text"
-                value={yegoUserSearch}
-                onChange={(e) => setYegoUserSearch(e.target.value)}
-                placeholder="Nombre, DNI o email..."
-                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                onFocus={() => { if (yegoUsers.length === 0) fetchYegoUsers(); }}
-              />
-            </div>
-            {yegoUsersLoading && <Loader2 className="w-5 h-5 animate-spin text-gray-400 mt-2" />}
-            {!yegoUsersLoading && filteredUsers.length > 0 && yegoUserSearch && (
-              <div className="mt-2 border border-gray-200 rounded-lg max-h-60 overflow-y-auto">
-                {filteredUsers.slice(0, 20).map((u) => (
-                  <button
-                    key={u.id}
-                    type="button"
-                    onClick={() => { setSelectedYegoUser(u); setYegoUserSearch(''); }}
-                    className={`w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-0 ${selectedYegoUser?.id === u.id ? 'bg-blue-50' : ''}`}
-                  >
-                    <p className="font-medium text-gray-900">{u.firstName} {u.lastName}</p>
-                    <p className="text-xs text-gray-500">{u.role} · {u.areaName || 'Sin área'} · DNI {u.dni}</p>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {selectedYegoUser && (
-            <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-bold text-gray-900">{selectedYegoUser.firstName} {selectedYegoUser.lastName}</p>
-                  <p className="text-sm text-gray-600">DNI {selectedYegoUser.dni} · {selectedYegoUser.role}</p>
-                  <p className="text-sm text-gray-600">{selectedYegoUser.email} {selectedYegoUser.phone && `· ${selectedYegoUser.phone}`}</p>
-                </div>
-                <button onClick={() => setSelectedYegoUser(null)} className="text-gray-400 hover:text-red-500"><X className="w-5 h-5" /></button>
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-1">Monto (PEN)</label>
-              <input
-                type="number"
-                value={yegoForm.amount}
-                onChange={(e) => setYegoForm({ ...yegoForm, amount: e.target.value })}
-                placeholder="0.00"
-                min="0"
-                step="0.01"
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-1">N° de cuotas (meses)</label>
-              <select
-                value={yegoForm.installments}
-                onChange={(e) => setYegoForm({ ...yegoForm, installments: e.target.value })}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
-              >
-                {[1,2,3,4,5,6,7,8,9,10,11,12,18,24].map((n) => (
-                  <option key={n} value={n}>{n} {n === 1 ? 'mes' : 'meses'}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {yegoForm.amount && (
-            <div className="bg-gray-50 rounded-lg p-4 space-y-1 text-sm">
-              <p className="text-gray-600">Monto: <span className="font-semibold">S/ {parseFloat(yegoForm.amount).toFixed(2)}</span></p>
-              <p className="text-gray-600">Interés (7%): <span className="font-semibold">S/ {(parseFloat(yegoForm.amount) * 0.07).toFixed(2)}</span></p>
-              <p className="text-gray-600">Total a pagar: <span className="font-semibold">S/ {(parseFloat(yegoForm.amount) * 1.07).toFixed(2)}</span></p>
-              <p className="text-gray-600">Cuota mensual: <span className="font-semibold text-red-600">S/ {((parseFloat(yegoForm.amount) * 1.07) / parseInt(yegoForm.installments || '1')).toFixed(2)}</span></p>
-            </div>
-          )}
-
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-1">Compromiso de pago (PDF/Imagen)</label>
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 px-4 py-3 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 text-sm text-gray-600">
-                <Upload className="w-4 h-4" />
-                {yegoDocFile ? yegoDocFile.name : 'Seleccionar archivo'}
-                <input type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => setYegoDocFile(e.target.files?.[0] || null)} className="hidden" />
-              </label>
-              {yegoDocFile && (
-                <button onClick={() => setYegoDocFile(null)} className="text-red-500 text-sm">Quitar</button>
-              )}
-            </div>
-          </div>
-
-          <div className="flex gap-3 pt-4">
-            <button
-              type="button"
-              onClick={() => setCreditType(null)}
-              className="flex items-center gap-2 px-4 py-3 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-            >
-              <ArrowLeft className="w-4 h-4" /> Volver
-            </button>
-            <button
-              type="button"
-              onClick={handleYegoSubmit}
-              disabled={!selectedYegoUser || !yegoForm.amount || yegoSubmitting}
-              className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
-            >
-              {yegoSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
-              {yegoSubmitting ? 'Creando...' : 'Crear Crédito Personal'}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
+                      return (
                       <li key={d.id} className="border-b border-gray-100 last:border-0">
                         <button
                           type="button"
@@ -1537,6 +1305,10 @@ export default function AdminNewLoanRequest() {
 
     return null;
   };
+
+  if (creditType === 'personal_yego') {
+    return <PersonalYegoCreditForm />;
+  }
 
   return (
     <div className="space-y-6">

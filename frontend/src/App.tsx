@@ -31,6 +31,7 @@ import QuieroMiYegoAuto from './pages/driver/QuieroMiYegoAuto';
 import { DRIVER_MI_AUTO_ENABLED } from './components/DriverSidebar';
 import SelectFlota from './pages/driver/SelectFlota';
 import NewLoanRequest from './pages/yegoRapidin/NewLoanRequest';
+import CreditTypeSelection from './pages/yegoRapidin/CreditTypeSelection';
 import YegoMiAutoFlotas from './pages/yegoMiAuto/YegoMiAutoFlotas';
 import YegoMiAutoConfig from './pages/yegoMiAuto/YegoMiAutoConfig';
 import YegoMiAutoAnalysis from './pages/yegoMiAuto/YegoMiAutoAnalysis';
@@ -46,6 +47,7 @@ import YegoMiMotoAnalysis from './pages/yegoMiMoto/YegoMiMotoAnalysis';
 import YegoMiMotoPayments from './pages/yegoMiMoto/YegoMiMotoPayments';
 import YegoMiMotoLoans from './pages/yegoMiMoto/YegoMiMotoLoans';
 import YegoMiMotoNewRequest from './pages/yegoMiMoto/YegoMiMotoNewRequest';
+import YegoMiMotoCreditTypeSelection from './pages/yegoMiMoto/CreditTypeSelection';
 import { AuthProvider } from './contexts/AuthContext';
 
 function RedirectSolicitudToRequest() {
@@ -146,6 +148,16 @@ function App() {
                 <ProtectedRoute>
                   <Layout>
                     <LoanRequests />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/loan-requests/credit-type"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <CreditTypeSelection />
                   </Layout>
                 </ProtectedRoute>
               }
@@ -261,6 +273,7 @@ function App() {
             <Route path="/admin/yego-mi-moto/analysis" element={<ProtectedRoute><Layout><YegoMiMotoAnalysis /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-moto/payments" element={<ProtectedRoute><Layout><YegoMiMotoPayments /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-moto/loans" element={<ProtectedRoute><Layout><YegoMiMotoLoans /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/loan-requests/credit-type" element={<ProtectedRoute><Layout><YegoMiMotoCreditTypeSelection /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-moto/loan-requests/new" element={<ProtectedRoute><Layout><YegoMiMotoNewRequest /></Layout></ProtectedRoute>} />
         </Routes>
       </BrowserRouter>

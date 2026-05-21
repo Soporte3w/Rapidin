@@ -87,6 +87,8 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Yego Rapidín API funcionando' });
 });
 
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 import authRoutes from './routes/auth.js';
 import yangoRoutes from './routes/yango.js';
 import notificationRoutes from './routes/notifications.js';

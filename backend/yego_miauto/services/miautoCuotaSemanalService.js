@@ -91,6 +91,7 @@ function sqlYangoDriverLateralJoin(parkParamNumber) {
                WHEN REGEXP_REPLACE(COALESCE(TRIM(d.phone), ''), '[^0-9]', '', 'g') = REGEXP_REPLACE(COALESCE(TRIM(s.phone), ''), '[^0-9]', '', 'g') THEN 3
                ELSE 2 END,
           CASE WHEN d.work_status = 'working' THEN 0 ELSE 1 END,
+          CASE WHEN LOWER(REGEXP_REPLACE(TRIM(COALESCE(d.driver_id::text, '')), '-', '', 'g')) = LOWER(REGEXP_REPLACE(TRIM(COALESCE(s.rapidin_driver_id::text, '')), '-', '', 'g')) THEN 0 ELSE 1 END,
           d.driver_id::text
         LIMIT 1
       ) fl ON true`;

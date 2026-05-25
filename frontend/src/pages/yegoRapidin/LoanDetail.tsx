@@ -7,17 +7,28 @@ import { formatDateUTC } from '../../utils/date';
 import toast from 'react-hot-toast';
 
 /** Cuentas bancarias autorizadas para envío por WhatsApp (cobros / instrucciones de pago). */
-export const CUENTAS_BANCARIAS_WHATSAPP = `✅ Cuentas bancarias autorizadas – a nombre AJHLA SAC
-
-💚 INTERBANK
+export const CUENTAS_BANCARIAS_WHATSAPP = `✅ *INTERBANK*
 🔹 Cuenta Corriente - Soles:
 Número de cuenta: 200-3007251767
 CCI: 003-200-003007251767-32
 
-🧡 BCP
+🔹 Cuenta Corriente - Dólares:
+Número de cuenta: 200-3007251774
+CCI: 003-200-003007251774-38
+
+
+✅ *BCP*
 🔹 Cuenta Corriente - Soles:
 Número de cuenta: 193-7121711-0-73
-CCI: 002-19300712171107314`;
+CCI: 002-19300712171107314
+
+🔹 Cuenta Corriente - Dólares:
+Número de cuenta: 191-7313084-1-44
+CCI: 002-19100731308414455
+
+
+📌 *Importante:*
+_Verifica bien el número de cuenta y nombre (AJHLA) antes de hacer tu depósito_`;
 
 /** Número para enlace wa.me: solo dígitos; si falta código de país se agrega (PE 51, CO 57). */
 function getWhatsAppPhone(phone: string | undefined, country: string): string {
@@ -166,7 +177,7 @@ const LoanDetail = () => {
       const mas = count > 10 ? `\n• Y ${count - 10} cuota(s) más.` : '';
       defaultText = `Hola ${name}, tienes ${count} cuota(s) vencida(s) en tu préstamo:\n\n${lineas.join('\n')}${mas}\n\nPor favor regulariza tu situación lo antes posible. Gracias.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
     } else {
-      defaultText = `Hola ${name}, te contactamos respecto a tu préstamo. Cualquier duda estamos a tu disposición.`;
+      defaultText = `Hola ${name}, te contactamos respecto a tu préstamo. Cualquier duda estamos a tu disposición.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
     }
     setWhatsAppMessage(defaultText);
     setShowWhatsAppModal(true);

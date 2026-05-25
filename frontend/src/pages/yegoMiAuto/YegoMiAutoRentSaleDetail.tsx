@@ -277,9 +277,9 @@ export default function YegoMiAutoRentSaleDetail() {
       defaultText = `Hola ${name}, recuerda que hoy se vence tu cuota de Yego Mi Auto:\n\n${lineas.join('\n')}${detallePago}\nPor favor realiza tu pago a tiempo. Gracias.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
     } else {
       if (cuotaReciente) {
-        defaultText = `Hola estimado 😊${detallePago}\nCualquier consulta quedamos atentos 👍`;
+        defaultText = `Hola estimado 😊${detallePago}\nCualquier consulta quedamos atentos 👍\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
       } else {
-        defaultText = `Hola ${name}, te contactamos respecto a tu contrato Yego Mi Auto. Cualquier duda estamos a tu disposición.`;
+        defaultText = `Hola ${name}, te contactamos respecto a tu contrato Yego Mi Auto. Cualquier duda estamos a tu disposición.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
       }
     }
     setWhatsAppMessage(defaultText);

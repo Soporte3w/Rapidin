@@ -14,7 +14,6 @@ import { monedaCuotasLabel, symMoneda } from '../../utils/miautoAlquilerVentaLis
 import { MIAUTO_NO_CACHE_HEADERS, emptyListIfNotAbort, isAxiosAbortError } from '../../utils/miautoApiUtils';
 import {
   driverDisplayRentSale,
-  formatKpiMixPenUsd,
   getMiautoAdjuntoUrl,
   miautoFmtMonto,
   miautoMontoPagadoCuotaSemanal,

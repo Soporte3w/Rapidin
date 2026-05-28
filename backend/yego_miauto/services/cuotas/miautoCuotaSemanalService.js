@@ -1330,7 +1330,8 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     const rowForDerived = patchDue ? { ...row, due_date: canonicalDueYmd } : row;
     const fiRow = row.fecha_inicio_cobro_semanal;
     const yangoSemanaCerrada = wsYmd ? isWeekYangoClosedForMiAutoCuotaMetrics(wsYmd, fiRow) : false;
-    const sinViajesYangoRow = isPrimera || !yangoSemanaCerrada;
+    const tieneDatosMora = (row.num_viajes != null && Number(row.num_viajes) > 0) || (row.partner_fees_raw != null && round2(parseFloat(row.partner_fees_raw) || 0) > 0.005);
+    const sinViajesYangoRow = isPrimera || (!yangoSemanaCerrada && !tieneDatosMora);
     const hermanasMis = hermanasPorSolicitud.get(String(row.solicitud_id)) || [];
     const solTieneCuotaOverdue = hermanasMis.some((x) => String(x.status || '').toLowerCase() === 'overdue');
     const forzarCuotaMaxSinBono = debeAplicarCuotaMaximaSinBonoPorMora(solTieneCuotaOverdue, isPrimera, row.status);
@@ -1565,7 +1566,8 @@ function computeCuotaDerivedForRow(r, cronograma, vehId, options = {}) {
   const fi = options.fechaInicioCobroSemanal ?? r.fecha_inicio_cobro_semanal;
   const wsRow = ymdFromDbDate(r.week_start_date);
   const yangoSemanaCerrada = wsRow ? isWeekYangoClosedForMiAutoCuotaMetrics(wsRow, fi) : false;
-  const sinViajesYango = isPrimera || !yangoSemanaCerrada;
+  const tieneDatosDerived = (r.num_viajes != null && Number(r.num_viajes) > 0) || (r.partner_fees_raw != null && round2(parseFloat(r.partner_fees_raw) || 0) > 0.005);
+  const sinViajesYango = isPrimera || (!yangoSemanaCerrada && !tieneDatosDerived);
   const rForFees = sinViajesYango && (r.partner_fees_raw == null || round2(parseFloat(r.partner_fees_raw) || 0) <= 0) ? { ...r, partner_fees_raw: 0, partner_fees_83: 0 } : r;
 
   let amount_due_remaining = round2(parseFloat(r.amount_due) || 0);
@@ -1906,7 +1908,9 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   const fi = options.fechaInicioCobroSemanal ?? r.fecha_inicio_cobro_semanal;
   const wsR = ymdFromDbDate(r.week_start_date);
   const yangoCerrada = wsR ? isWeekYangoClosedForMiAutoCuotaMetrics(wsR, fi) : false;
-  const sinViajesYango = isPrimera || !yangoCerrada;
+  // Si la BD ya tiene datos reales (viajes o PF), usarlos aunque la semana no haya cerrado
+  const tieneDatosReales = (r.num_viajes != null && Number(r.num_viajes) > 0) || (r.partner_fees_raw != null && round2(parseFloat(r.partner_fees_raw) || 0) > 0.005);
+  const sinViajesYango = isPrimera || (!yangoCerrada && !tieneDatosReales);
   const st = (r.status || '').toLowerCase();
   const ignoreClosedForDerived = st === 'paid' && esOrigenCascadaCobroIngresosSinPfEnFila(r);
   const derivedOpts = {
@@ -2051,8 +2055,8 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     yangoRawCol != null && yangoRawCol > 0.005
       ? yangoRawCol
       : round2(parseFloat(r.partner_fees_raw) || 0);
-  const partnerFeesYango83Api = sinViajesYango ? 0 : round2(yangoRawPara83 * PARTNER_FEES_PCT);
-  const partnerFeesCascadaApi = sinViajesYango
+  const partnerFeesYango83Api = sinViajesYango && (yangoRawPara83 == null || yangoRawPara83 <= 0.005) ? 0 : round2(yangoRawPara83 * PARTNER_FEES_PCT);
+  const partnerFeesCascadaApi = sinViajesYango && (!r.partner_fees_cascada_destino || parsePartnerFeesCascadaDestinoDb(r.partner_fees_cascada_destino).length === 0)
     ? []
     : cascadaDestinoExcluirCuotaOrigen(
         parsePartnerFeesCascadaDestinoDb(r.partner_fees_cascada_destino),

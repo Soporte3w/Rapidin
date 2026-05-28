@@ -14,7 +14,7 @@
  * Match: primero teléfono (mismo criterio que antes); si no hay match, DNI vs drivers.document_number.
  */
 import { query } from '../config/database.js';
-import { MIAUTO_PARK_ID, normalizePhoneForDriversMatch } from '../yego_miauto/services/miautoDriverLookup.js';
+import { MIAUTO_PARK_ID, normalizePhoneForDriversMatch } from '../yego_miauto/services/utils/miautoDriverLookup.js';
 
 function digitsOnly(s) {
   return String(s || '').replace(/\D/g, '');

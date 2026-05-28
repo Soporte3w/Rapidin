@@ -530,6 +530,8 @@ export default function YegoMiAutoRentSaleDetail() {
     return { totalPagadoPEN, totalPagadoUSD, totalVencidoPEN, totalVencidoUSD };
   }, [cuotas, solicitud?.cronograma_vehiculo?.inicial_moneda]);
 
+  const monedaSolicitud = solicitud?.cronograma_vehiculo?.inicial_moneda === 'USD' ? 'USD' : 'PEN';
+
   /** Comprobantes de otros gastos agrupados por otros_gastos_id */
   const comprobantesPorOtrosGastos = useMemo(() => {
     const byOg: Record<string, ComprobanteOtrosGastos[]> = {};
@@ -652,7 +654,9 @@ export default function YegoMiAutoRentSaleDetail() {
               <span>Total pagado</span>
             </div>
             <p className="text-xl font-bold text-green-800">
-              {formatKpiMixPenUsd(kpiTotalesPorMoneda.totalPagadoPEN, kpiTotalesPorMoneda.totalPagadoUSD)}
+              {monedaSolicitud === 'USD'
+                ? `$ ${kpiTotalesPorMoneda.totalPagadoUSD.toFixed(2)}`
+                : `S/. ${kpiTotalesPorMoneda.totalPagadoPEN.toFixed(2)}`}
             </p>
           </div>
           <div className="bg-white rounded-lg border border-red-100 p-4 shadow-sm">
@@ -662,10 +666,12 @@ export default function YegoMiAutoRentSaleDetail() {
             </div>
             <p
               className={`text-xl font-bold ${
-                kpiTotalesPorMoneda.totalVencidoPEN + kpiTotalesPorMoneda.totalVencidoUSD > 0 ? 'text-red-600' : 'text-gray-900'
+                (monedaSolicitud === 'USD' ? kpiTotalesPorMoneda.totalVencidoUSD : kpiTotalesPorMoneda.totalVencidoPEN) > 0 ? 'text-red-600' : 'text-gray-900'
               }`}
             >
-              {formatKpiMixPenUsd(kpiTotalesPorMoneda.totalVencidoPEN, kpiTotalesPorMoneda.totalVencidoUSD)}
+              {monedaSolicitud === 'USD'
+                ? `$ ${kpiTotalesPorMoneda.totalVencidoUSD.toFixed(2)}`
+                : `S/. ${kpiTotalesPorMoneda.totalVencidoPEN.toFixed(2)}`}
             </p>
             <p className="text-xs text-gray-500">saldo en cuotas vencidas</p>
           </div>

@@ -3,8 +3,8 @@
  * @see initializeJobs → startMiautoWeeklyChargeJob
  */
 import cron from 'node-cron';
-import { logger } from '../utils/logger.js';
-import { round2 } from '../yego_miauto/services/miautoMoneyUtils.js';
+import { logger, businessLog, technicalLog } from '../utils/logger.js';
+import { round2 } from '../yego_miauto/services/utils/miautoMoneyUtils.js';
 import {
   getContractorBalance,
   fleetCookieCobroForMiAuto,
@@ -13,16 +13,18 @@ import {
 } from '../services/yangoService.js';
 import {
   getSolicitudesParaCobroSemanal,
-  ensureCuotaSemanalForWeek,
   isSemanaDepositoMiAuto,
   persistPaidAmountCapsForSolicitud,
+  loadMiAutoSolicitudConFlotaDrivers,
+  updateMoraDiaria,
+} from '../yego_miauto/services/cuotas/miautoCuotaSemanalService.js';
+import {
   getCuotasToCharge,
   getCuotasToChargeForSolicitud,
-  loadMiAutoSolicitudConFlotaDrivers,
   processCobroCuota,
-  updateMoraDiaria,
   effectiveAmountDueForMiAutoFleetRowAsync,
-} from '../yego_miauto/services/miautoCuotaSemanalService.js';
+} from '../yego_miauto/services/cuotas/miautoFleetChargeService.js';
+import { generateWeeklyCharge } from '../yego_miauto/services/cobros/CobroEngine.js';
 import {
   addDaysYmd,
   getPreviousWeekIncomeRangeLima,
@@ -30,6 +32,7 @@ import {
   mondayOfWeekContainingYmd,
 } from '../utils/miautoLimaWeekRange.js';
 import { appendMiautoFleetCobroJobAuditEvent } from '../utils/miautoFleetCobroAuditLog.js';
+import { acquireCronLock, releaseCronLock } from '../utils/cronLock.js';
 
 const TIMEZONE = 'America/Lima';
 const FLEET_MS_BETWEEN_COBROS = 1500;
@@ -135,19 +138,32 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
     }
   }
 
-  const ensuredId = await ensureCuotaSemanalForWeek(
-    sol.solicitud_id,
-    sol.cronograma_id,
-    sol.cronograma_vehiculo_id,
-    cuotaWeekMonday,
-    { count_completed: incomeResult.count_completed, partner_fees: incomeResult.partner_fees }
-  );
-  if (ensuredId == null) {
+  const ensuredId = await generateWeeklyCharge({
+    solicitudId: sol.solicitud_id,
+    weekStartDate: cuotaWeekMonday,
+    incomeResult: { count_completed: incomeResult.count_completed, partner_fees: incomeResult.partner_fees },
+    options: {
+      generatedBy: 'cron_lunes',
+    },
+  });
+  if (ensuredId?.error) {
     logger.warn(
-      `Mi Auto: sin fila cuota (ensure null) solicitud ${sol.solicitud_id} — revisar cronograma/vehículo/reglas viajes`
+      `Mi Auto: sin fila cuota (${ensuredId.error}) solicitud ${sol.solicitud_id} — revisar cronograma/vehículo/reglas viajes`
     );
     return { outcome: 'ensure_failed' };
   }
+  // Registrar evento de negocio
+  businessLog('charge.generated', {
+    solicitudId: sol.solicitud_id,
+    weekStartDate: cuotaWeekMonday,
+    cuotaId: ensuredId.cuotaId,
+    amountDue: ensuredId.amountDue,
+    pendingTotal: ensuredId.pendingTotal,
+    source: 'cron_lunes',
+  }, {
+    entityType: 'cuota_semanal',
+    entityId: ensuredId.cuotaId,
+  });
   return { outcome: 'ok' };
 }
 
@@ -301,7 +317,15 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
 export async function runWeeklyCuotaGenerationMonday(options = {}) {
   const incomeMaxAttempts = Math.max(1, Math.min(12, Number(options.incomeMaxAttempts) || 1));
   const reportDetails = !!options.reportDetails;
-  logger.info(`Mi Auto: generación semanal (lunes 1:10 Lima) incomeMaxAttempts=${incomeMaxAttempts}`);
+
+  // CronLock: evitar doble ejecución
+  const lock = await acquireCronLock('miauto_generacion_cuotas', 600);
+  if (!lock.acquired) {
+    logger.warn(`Mi Auto: ${lock.reason}`);
+    return { skipped: true, reason: lock.reason };
+  }
+
+  logger.info(`Mi Auto: generación semanal (lunes 1:10 Lima) incomeMaxAttempts=${incomeMaxAttempts} execution=${lock.executionId}`);
   try {
     const { incomeWeekMonday, sundayDate, dateFrom, dateTo, cuotaWeekMonday } = currentMondayCuotaContext();
     logger.info(
@@ -352,6 +376,7 @@ export async function runWeeklyCuotaGenerationMonday(options = {}) {
     logger.info(
       `Mi Auto: generación lista; cobro Fleet lunes 7:10 | solicitudes=${solicitudes.length} ok=${ok} antes_inicio=${skipped} income_fallido=${income_failed} ensure_null=${ensure_failed}`
     );
+    await releaseCronLock('miauto_generacion_cuotas', lock.executionId);
     return {
       solicitudes: solicitudes.length,
       ok,
@@ -365,6 +390,7 @@ export async function runWeeklyCuotaGenerationMonday(options = {}) {
       ...(reportDetails ? { details } : {}),
     };
   } catch (err) {
+    await releaseCronLock('miauto_generacion_cuotas', lock.executionId);
     logger.error('Mi Auto job generación semanal:', err);
     return null;
   }
@@ -379,7 +405,14 @@ export async function runWeeklyCuotaGenerationMonday(options = {}) {
  */
 export async function runWeeklyFleetChargeMonday(options = {}) {
   const auditJob = String(options.auditJob || 'lunes_7_10_lima');
-  logger.info('Mi Auto: cobro Fleet (lunes 7:10 Lima)');
+
+  const lock = await acquireCronLock('miauto_cobro_fleet', 600);
+  if (!lock.acquired) {
+    logger.warn(`Mi Auto Fleet: ${lock.reason}`);
+    return { ok: false, error: lock.reason, skipped: true };
+  }
+
+  logger.info(`Mi Auto: cobro Fleet (lunes 7:10 Lima) execution=${lock.executionId}`);
   await appendMiautoFleetCobroJobAuditEvent({
     tipo: 'cobro_job_inicio',
     job: auditJob,
@@ -398,8 +431,10 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       failed,
     });
     logger.info(`Mi Auto cobro semanal: ${success} ok, ${partial} parcial, ${failed} fallidos`);
+    await releaseCronLock('miauto_cobro_fleet', lock.executionId);
     return { ok: true, success, partial, failed, cuotas_en_cola: cuotas.length };
   } catch (err) {
+    await releaseCronLock('miauto_cobro_fleet', lock.executionId);
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_error',
       job: auditJob,

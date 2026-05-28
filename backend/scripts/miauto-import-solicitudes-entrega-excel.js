@@ -20,7 +20,7 @@ import {
   ActiveSolicitudError,
   createSolicitud,
   updateSolicitud,
-} from '../yego_miauto/services/miautoSolicitudService.js';
+} from '../yego_miauto/services/solicitud/miautoSolicitudService.js';
 import { defaultEntregaInmediataXlsxPath, SHEET_CUOTAS_SEMANALES } from './miauto-entrega-inmediata-default-xlsx.js';
 
 const DEFAULT_XLSX = defaultEntregaInmediataXlsxPath();
@@ -79,10 +79,15 @@ function normalizeKey(s) {
     .normalize('NFD')
     .replace(/\p{M}/gu, '')
     .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\b(0km|km|nuevo|seminuevo|semiusado)\b/g, ' ')
-    .replace(/\b(20\d{2})\b/g, ' ')
+    .replace(/\b(0km|km)\b/g, ' ')   // quitar "0km"/"km" (redundante)
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** Extrae el año (20XX) de un texto, o null si no tiene */
+function extractYear(s) {
+  const m = String(s || '').match(/\b(20\d{2})\b/);
+  return m ? parseInt(m[1], 10) : null;
 }
 
 function getCell(ws, row1, col0) {
@@ -208,8 +213,23 @@ function scoreCronograma(excelCron, dbName) {
   if (!a || !b) return 0;
   if (a === b) return 100;
   if (a.includes(b) || b.includes(a)) return 80;
-  const ta = new Set(a.split(' ').filter((t) => t.length > 2));
-  const tb = new Set(b.split(' ').filter((t) => t.length > 2));
+  // Bonus por año coincidente (diferencia entre 2025 y 2026)
+  const ya = extractYear(excelCron);
+  const yb = extractYear(dbName);
+  if (ya && yb && ya === yb) {
+    // Mismo año = bonus, luego comparar resto del texto
+    const ta = new Set(a.split(' ').filter(t => t.length > 2));
+    const tb = new Set(b.split(' ').filter(t => t.length > 2));
+    let hit = 0;
+    for (const x of ta) if (tb.has(x)) hit++;
+    if (hit >= 2) return 70 + hit;
+    if (hit === 1) return 60;
+    return 55; // al menos mismo año
+  }
+  // Años distintos = castigo fuerte
+  if (ya && yb && ya !== yb) return 10;
+  const ta = new Set(a.split(' ').filter(t => t.length > 2));
+  const tb = new Set(b.split(' ').filter(t => t.length > 2));
   let hit = 0;
   for (const x of ta) if (tb.has(x)) hit++;
   if (hit >= 2) return 50 + hit;
@@ -222,13 +242,25 @@ function scoreVehiculo(excelAuto, dbName) {
   if (!a || !b) return 0;
   if (a === b) return 100;
   if (a.includes(b) || b.includes(a)) return 85;
-  const ta = a.split(' ').filter((t) => t.length > 2);
-  const tb = b.split(' ').filter((t) => t.length > 2);
+  // Bonus por año
+  const ya = extractYear(excelAuto);
+  const yb = extractYear(dbName);
+  if (ya && yb && ya === yb) {
+    const ta = a.split(' ').filter(t => t.length > 2);
+    const tb = b.split(' ').filter(t => t.length > 2);
+    if (ta.length === 0 || tb.length === 0) return 55;
+    let hit = 0;
+    for (const x of ta) if (tb.some(y => x.includes(y) || y.includes(x))) hit++;
+    if (hit >= 2) return 70 + hit;
+    if (hit === 1 && ta.length <= 3) return 60;
+    return 55;
+  }
+  if (ya && yb && ya !== yb) return 10;
+  const ta = a.split(' ').filter(t => t.length > 2);
+  const tb = b.split(' ').filter(t => t.length > 2);
   if (ta.length === 0 || tb.length === 0) return 0;
   let hit = 0;
-  for (const x of ta) {
-    if (tb.some((y) => x.includes(y) || y.includes(x))) hit++;
-  }
+  for (const x of ta) if (tb.some(y => x.includes(y) || y.includes(x))) hit++;
   if (hit >= 2) return 70 + hit;
   if (hit === 1 && ta.length <= 3) return 55;
   return 0;
@@ -239,14 +271,18 @@ function pickCronogramaVehiculo(excelCron, excelAuto, pairs) {
   let bestScore = -1;
   for (const p of pairs) {
     const sc = scoreCronograma(excelCron, p.cronograma_name);
-    if (sc < 40) continue;
+    if (sc < 60) continue;   // mínimo 60 (antes 40) — más estricto
     const sv = scoreVehiculo(excelAuto, p.vehiculo_name);
-    if (sv < 40) continue;
+    if (sv < 60) continue;   // mínimo 60 (antes 40)
     const total = sc * 10 + sv;
     if (total > bestScore) {
       bestScore = total;
       best = p;
     }
+  }
+  // Si no hay match fuerte, advertir
+  if (!best || bestScore < 700) {
+    return null; // rechazar match débil
   }
   return best;
 }
@@ -327,13 +363,21 @@ async function main() {
       stats.skipped_no_cronoveh++;
       stats.warnings.push({
         row,
-        msg: 'sin match cronograma/vehículo',
+        msg: 'sin match cronograma/vehículo (score bajo o nombres no coinciden)',
         excelCron,
         excelAuto,
         placa: placaRaw,
       });
       continue;
     }
+
+    // Validar moneda: leer primera celda de monto para detectar S/. vs $
+    const primeraMonto = getCell(ws, row, CUOTA_BASE_COL + 2);
+    const montoStr = cellToString(primeraMonto).toUpperCase();
+    const monedaExcel = (montoStr.includes('S/') || montoStr.includes('SOL') || montoStr.includes('PEN')) ? 'PEN'
+                       : (montoStr.includes('$') || montoStr.includes('USD') || montoStr.includes('DÓL') || montoStr.includes('DOL')) ? 'USD'
+                       : null;
+    console.log(`[${row}] Moneda detectada en Excel: ${monedaExcel || 'no detectada'} (celda: "${montoStr.slice(0,30)}")`);
 
     const cFecha = getCell(ws, row, CUOTA_BASE_COL);
     const fechaInicio = fechaCellToYmd(cFecha);

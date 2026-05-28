@@ -8,6 +8,7 @@ import { validateEnv } from './config/env.js';
 import { errorHandler, notFound } from './middleware/errors.js';
 // import { apiLimiter, authLimiter, publicLimiter } from './middleware/security.js';
 import { sanitizeBody, sanitizeQuery } from './middleware/sanitize.js';
+import { correlationIdMiddleware, requestLogMiddleware } from './middleware/correlationId.js';
 import { initializeJobs } from './jobs/index.js';
 import { initializeWebSocket } from './realtime/subscriber.js';
 import { initializeDatabaseListener } from './realtime/listener.js';
@@ -79,6 +80,8 @@ app.use(cors({
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(correlationIdMiddleware);
+app.use(requestLogMiddleware);
 app.use(sanitizeBody);
 app.use(sanitizeQuery);
 // app.use('/api/', apiLimiter); // Rate limiting deshabilitado temporalmente
@@ -116,6 +119,7 @@ import cobranzasYegoRoutes from './yego_rapidin/routes/cobranzasYego.js';
 import constanciasRoutes from './routes/constancias.js';
 import creditosPersonalRoutes from './routes/creditosPersonal.js';
 import miautoRoutes from './yego_miauto/routes/miauto.js';
+import auditRoutes from './routes/audit.js';
 
 app.use('/api/auth', authRoutes); // authLimiter deshabilitado temporalmente
 app.use('/api/rapidin', rapidinRoutes); // publicLimiter deshabilitado temporalmente
@@ -144,6 +148,7 @@ app.use('/api/miauto', miautoRoutes);
 app.use('/api/constancias', constanciasRoutes);
 app.use('/api/creditos-personal-yego', creditosPersonalRoutes);
 app.use('/api/cobranzas-yego', cobranzasYegoRoutes);
+app.use('/api/audit', auditRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

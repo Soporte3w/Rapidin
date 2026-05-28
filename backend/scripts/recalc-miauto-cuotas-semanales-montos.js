@@ -4,7 +4,7 @@
  * Uso: node scripts/recalc-miauto-cuotas-semanales-montos.js [solicitud_uuid]
  * Sin argumento: todas las solicitudes con cuotas.
  */
-import { recalcMontosCuotasSemanalesDesdeCronograma } from '../yego_miauto/services/miautoCuotaSemanalService.js';
+import { recalcMontosCuotasSemanalesDesdeCronograma } from '../yego_miauto/services/cuotas/miautoCuotaSemanalService.js';
 
 const sid = process.argv[2]?.trim() || null;
 

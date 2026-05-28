@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import axios from 'axios';
 import { getNextProxyConfig, hasProxies, loadProxiesFromUrlIfConfigured } from './proxyLoader.js';
 import { logger } from '../utils/logger.js';
-import { round2 } from '../yego_miauto/services/miautoMoneyUtils.js';
+import { round2 } from '../yego_miauto/services/utils/miautoMoneyUtils.js';
 
 // Lectura en cada request: los scripts pueden cargar .env después del import sin quedar valores vacíos.
 const trimCookie = (v) => (v || '').replace(/^["']|["']$/g, '').trim();

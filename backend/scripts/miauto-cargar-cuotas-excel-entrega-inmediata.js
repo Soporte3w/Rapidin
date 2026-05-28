@@ -1,9 +1,12 @@
 /**
  * Carga cuotas Mi Auto desde hoja Cuotas Semanales (Excel ENTREGA INMEDIATA).
  * Uso: npm run miauto:cargar-cuotas-excel-entrega -- --dry-run
- *      npm run miauto:cargar-cuotas-excel-entrega -- --delete-first
+ *      npm run miauto:cargar-cuotas-excel-entrega -- --validate-only
+ *      npm run miauto:cargar-cuotas-excel-entrega -- --delete-first (PELIGROSO: ver advertencia)
  *
- * --delete-first: borra TODAS las cuotas existentes antes de importar.
+ * --validate-only: solo valida estructura y datos, no importa.
+ * --delete-first: ⚠️ borra TODAS las cuotas existentes antes de importar.
+ *    Se recomienda usar --reset-solicitud-keep-week o --only-solicitud-id como alternativa.
  * No depende de cronograma rules; usa el monto del Excel directamente.
  * Marca `montos_fuente = 'excel'` en BD para que la API no recalcule cuota con mora/máximo del cronograma.
  * Moneda se determina por el cronograma vinculado a la solicitud.
@@ -17,16 +20,16 @@
 import fs from 'fs';
 import XLSX from 'xlsx';
 import { query } from '../config/database.js';
-import { round2 } from '../yego_miauto/services/miautoMoneyUtils.js';
+import { round2 } from '../yego_miauto/services/utils/miautoMoneyUtils.js';
 import {
   getCronogramasByIds,
   getMonedaCuotaSemanalPorVehiculo,
-} from '../yego_miauto/services/miautoCronogramaService.js';
+} from '../yego_miauto/services/cronograma/miautoCronogramaService.js';
 import { mondayOfWeekContainingYmd, computeDueDateForMiAutoCuota } from '../utils/miautoLimaWeekRange.js';
 import {
   isSemanaDepositoMiAuto,
   persistPaidAmountCapsForSolicitud,
-} from '../yego_miauto/services/miautoCuotaSemanalService.js';
+} from '../yego_miauto/services/cuotas/miautoCuotaSemanalService.js';
 import { defaultEntregaInmediataXlsxPath, SHEET_CUOTAS_SEMANALES } from './miauto-entrega-inmediata-default-xlsx.js';
 
 const SHEET_NAME = SHEET_CUOTAS_SEMANALES;
@@ -291,6 +294,31 @@ async function main() {
   if (!fs.existsSync(xlsxPath)) {
     console.error('No existe el archivo:', xlsxPath);
     process.exit(1);
+  }
+
+  // Validación previa de estructura Excel
+  console.log('=== Validando estructura del Excel ===');
+  const validator = await import('../services/ExcelValidator.js');
+  const validation = await validator.validateExcelStructure(xlsxPath, validator.CUOTAS_SEMANALES_STRUCTURE);
+  if (!validation.valid) {
+    console.error('ERRORES DE ESTRUCTURA:');
+    for (const e of validation.errors) {
+      console.error(`  Fila ${e.row}, Columna ${e.column}: ${e.reason}`);
+    }
+    if (validation.warnings.length > 0) {
+      console.warn('ADVERTENCIAS:');
+      for (const w of validation.warnings) {
+        console.warn(`  Fila ${w.row}, Columna ${w.column}: ${w.reason}`);
+      }
+    }
+    console.error('Corrija los errores antes de importar.');
+    process.exit(1);
+  }
+  console.log(`Estructura OK: ${validation.stats.totalRows} filas de datos detectadas`);
+
+  if (process.argv.includes('--validate-only')) {
+    console.log('--validate-only activado. No se importarán datos.');
+    process.exit(0);
   }
 
   console.log('=== Moneda por vehículo/reglas del cronograma (no por cuotas previas) ===');
@@ -572,6 +600,25 @@ async function main() {
         console.warn(`[CUOTAS-COUNT] Solicitud ${sid}: esperadas ${expected} cuotas (plan vehículo), cargadas ${actual}. Diferencia: ${expected - actual}.`);
       }
       console.log(`[CUOTAS-COUNT] Solicitud ${sid}: ${actual} cuotas cargadas (plan: ${expected || 'desconocido'}).`);
+    }
+  }
+
+  // Registrar en import_log para auditoría
+  if (!dryRun) {
+    try {
+      const crypto = await import('crypto');
+      const fsPromises = await import('fs/promises');
+      const fileBuffer = await fsPromises.readFile(xlsxPath);
+      const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+      const fileSize = fileBuffer.length;
+      const status = stats.errors.length === 0 ? 'completed' : 'partial';
+      await query(
+        `INSERT INTO module_miauto_import_log (file_name, file_hash, file_size_bytes, import_type, status, total_rows, success_rows, error_rows, errors, dry_run, started_at, completed_at)
+         VALUES ($1, $2, $3, 'cuotas_semanales', $4, $5, $6, $7, $8::jsonb, false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        [xlsxPath, fileHash, fileSize, status, stats.aplicables + stats.skipped_cutoff + stats.skipped_promedio + stats.skipped_empty_validation + stats.skipped_no_solicitud + stats.skipped_bad_fecha + stats.skipped_bad_monto, stats.db_inserts, stats.errors.length, JSON.stringify(stats.errors)]
+      );
+    } catch (auditErr) {
+      console.warn('No se pudo registrar en import_log (no afecta la importación):', auditErr.message);
     }
   }
 

@@ -6,11 +6,17 @@ import { round2, normalizePenUsd, convertirMontoEntreMonedas } from '../utils/mi
 /** Si la suma de comprobantes validados (cuota inicial + otros gastos) >= cuota inicial, marca pago_estado = completo. */
 export async function marcarPagoCompletoSiAplica(solicitudId) {
   const sol = await query(
-    'SELECT cronograma_vehiculo_id FROM module_miauto_solicitud WHERE id = $1',
+    'SELECT cronograma_vehiculo_id, status FROM module_miauto_solicitud WHERE id = $1',
     [solicitudId]
   );
   const cvId = sol.rows[0]?.cronograma_vehiculo_id;
-  if (!cvId) return;
+  if (!cvId) {
+    // Si la solicitud está aprobada pero no tiene vehículo asignado, es un problema de integridad
+    if (sol.rows[0]?.status === 'aprobado') {
+      console.warn(`[marcarPagoCompleto] Solicitud ${solicitudId} aprobada pero sin cronograma_vehiculo_id — no se puede verificar cuota inicial`);
+    }
+    return;
+  }
   const inicial = await query('SELECT inicial FROM module_miauto_cronograma_vehiculo WHERE id = $1', [cvId]);
   const cuotaInicial = round2(inicial.rows[0] ? parseFloat(inicial.rows[0].inicial) || 0 : 0);
   if (cuotaInicial <= 0) return;

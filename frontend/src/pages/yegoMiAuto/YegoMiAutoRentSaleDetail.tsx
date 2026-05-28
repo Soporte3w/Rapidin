@@ -21,8 +21,6 @@ import {
   miautoNum,
   miautoSemanaLista,
   miautoSemanaOrdinalPorVencimiento,
-  miautoCuotaAPagarCronogramaSemanal,
-  miautoCuotaCapitalPendienteColumna,
   miautoCuotaFinalCronogramaSemanal,
   miautoCuotaSemanalOAbonoDisplay,
   miautoTooltipCobroPorIngresos,
@@ -793,82 +791,73 @@ export default function YegoMiAutoRentSaleDetail() {
             <div className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0 rounded-lg border border-gray-100 bg-white">
             <table className="w-full min-w-[1180px] table-fixed border-collapse text-sm">
               <colgroup>
-                {/* Suma exacta 100%: más ancho a Viajes / Cobro ingresos (texto largo + imputación cascada); Vence compacto */}
-                <col style={{ width: '9.5%' }} />
+                <col style={{ width: '8%' }} />
+                <col style={{ width: '7%' }} />
+                <col style={{ width: '9%' }} />
                 <col style={{ width: '7.5%' }} />
-                <col style={{ width: '8%' }} />
-                <col style={{ width: '10.5%' }} />
-                <col style={{ width: '14%' }} />
-                <col style={{ width: '7%' }} />
-                <col style={{ width: '9%' }} />
-                <col style={{ width: '7%' }} />
-                <col style={{ width: '8%' }} />
-                <col style={{ width: '9%' }} />
-                <col style={{ width: '10.5%' }} />
+                <col style={{ width: '13%' }} />
+                <col style={{ width: '6.5%' }} />
+                <col style={{ width: '7.5%' }} />
+                <col style={{ width: '6.5%' }} />
+                <col style={{ width: '7.5%' }} />
+                <col style={{ width: '7.5%' }} />
+                <col style={{ width: '7.5%' }} />
+                <col style={{ width: '6.5%' }} />
               </colgroup>
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50/80">
                   <th className="sticky left-0 z-[1] bg-gray-50/95 py-2.5 pl-3 pr-1.5 align-middle text-left text-[11px] font-semibold uppercase tracking-wide text-gray-700 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)] leading-tight">
-                    Semana
+                    <span className="block">Semana</span>
                   </th>
-                  <th className="py-2.5 pr-1.5 align-middle text-left text-[11px] font-semibold uppercase tracking-wide text-gray-600 whitespace-nowrap leading-tight">
-                    Vence
-                  </th>
-                  <th
-                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-gray-900 leading-tight"
-                    title="Cuota del cronograma en la fila (cuota_semanal). El abono registrado está en la columna Pagado."
-                  >
-                    <span className="inline-block text-right">Cuota sem. (plan)</span>
-                  </th>
-                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight">
-                    <span className="inline-block text-right">Viajes — B.A</span>
-                  </th>
-                  <th
-                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
-                    title="Lo que se retiene al conductor sobre los ingresos de la semana (83% del fee de socio Yango por viajes)."
-                  >
-                    <span className="inline-block text-right">Cobro por ingresos</span>
-                  </th>
-                  <th
-                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
-                    title="Monto retirado del saldo del conductor en Yango Fleet acreditado a esta cuota (job cobro). Si aún no hubo retiro, se muestra la alícuota de regla del cronograma. Detalle regla: cobro_saldo_regla en API."
-                  >
-                    Cobro saldo
+                  <th className="py-2.5 pr-1.5 align-middle text-left text-[11px] font-semibold uppercase tracking-wide text-gray-600 leading-tight">
+                    <span className="block">Fecha</span>
                   </th>
                   <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-gray-900 leading-tight">
-                    <span
-                      className="inline-block text-right"
-                      title="Saldo pendiente del capital cuota (sin mora). Los pagos cubren primero toda la mora posible; el resto reduce este saldo. Si hay «Plan» debajo, es la cuota neta original del periodo."
-                    >
-                      Cuota a pagar
-                    </span>
+                    <span className="inline-block text-right">Viajes<br/>Bono</span>
+                  </th>
+                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-gray-900 leading-tight">
+                    <span className="inline-block text-right">Cuota<br/>Semanal</span>
                   </th>
                   <th
-                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-red-600 leading-tight"
-                    title="Saldo mora pendiente. Si hay días de retraso respecto al vencimiento, el interés se calcula sobre el capital cuota según el cronograma."
+                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
+                    title="83% del fee de socio Yango retenido sobre ingresos de la semana."
                   >
-                    Mora
+                    <span className="inline-block text-right">Recaudo<br/>por semana</span>
+                  </th>
+                  <th
+                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
+                    title="Monto retirado del saldo del conductor en Yango Fleet acreditado a esta cuota."
+                  >
+                    <span className="block text-right">Cobro<br/>saldo</span>
+                  </th>
+                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-gray-900 leading-tight"
+                    title="Saldo pendiente del capital cuota (sin mora).">
+                    <span className="inline-block text-right">Cuota a<br/>pagar</span>
+                  </th>
+                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-red-600 leading-tight"
+                    title="Saldo mora pendiente.">
+                    <span className="block text-right">Mora</span>
                     {solicitud?.cronograma?.tasa_interes_mora != null && Number(solicitud.cronograma.tasa_interes_mora) > 0
                       ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}%)`
                       : ''}
                   </th>
-                  <th
-                    className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
-                    title="Total a pagar aún: mora pendiente + cuota pendiente (pago parcial: se descuenta primero de mora, luego de la cuota)."
-                  >
-                    Cuota final
+                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
+                    title="Total a pagar aún: mora pendiente + cuota pendiente.">
+                    <span className="block text-right">Cuota<br/>final</span>
                   </th>
                   <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight">
-                    Pagado
+                    <span className="block text-right">Pagado</span>
+                  </th>
+                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-orange-600 leading-tight">
+                    <span className="block text-right">Pendiente<br/>de pago</span>
                   </th>
                   <th className="py-2.5 pl-1 pr-3 align-middle text-center text-[11px] font-semibold uppercase tracking-wide text-gray-700 leading-tight">
-                    Estado
+                    <span className="block">Estado</span>
                   </th>
                 </tr>
               </thead>
               <tbody>
                 {cronPg.paginatedItems.map((c, index) => {
-                  /** Número por lunes de cuota (orden cronológico del plan); evita invertir 4/5 si varias filas comparten el mismo vencimiento. */
                   const numeroSemana =
                     miautoSemanaLista(cuotas, c.week_start_date) ??
                     miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date) ??
@@ -888,183 +877,101 @@ export default function YegoMiAutoRentSaleDetail() {
                   const tributoCobroIngresos = miautoCobroPorIngresosTributoDisplay(c);
                   const titleCobroIngresos = miautoTooltipCobroPorIngresos(symCuota, c, cuotas);
                   const filasCascadaCobro = miautoCascadaCobroIngresosFilasParaUi(cuotas, c);
-                  const totalPendienteFila = Math.max(
-                    0,
-                    Number(c.pending_total ?? c.cuota_final ?? cuotaFinalSemana) || 0
-                  );
-                  /** Saldo mora pendiente (API); debe ser 0 si el pago ya absorbió la mora. */
-                  const moraPendienteColumna = Number(c.mora_pendiente ?? c.late_fee) || 0;
-                  /** Cuota neta del plan (referencia); la columna muestra el remanente tras imputar mora → cuota. */
-                  const cuotaNetaPlan = miautoCuotaAPagarCronogramaSemanal(c);
-                  const cuotaAPagarDisplay = miautoCuotaCapitalPendienteColumna(c);
-                  /** Solo mostrar desglose si mora + cuota cuadran con el total (evita «Mora 33 + Cuota 137» cuando el total es 20). */
-                  const desgloseSumaOk =
-                    totalPendienteFila <= 0.005 ||
-                    Math.abs(moraPendienteColumna + cuotaAPagarDisplay - totalPendienteFila) <= 0.12;
-                  const mostrarSublinePlanCuota =
-                    totalPendienteFila > 0.005 && cuotaNetaPlan - cuotaAPagarDisplay > 0.005;
-                  const mostrarDesgloseParcial =
-                    desgloseSumaOk &&
-                    totalPendienteFila > 0.005 &&
-                    (moraPendienteColumna > 0.005 || cuotaAPagarDisplay > 0.005);
+                  // Cuota a pagar = cuota bruta - PF83 - cobro saldo (lo neto después de descuentos)
+                  const cuotaBrutaVal = miautoNum(c.cuota_semanal);
+                  const pf83Val = miautoNum(c.partner_fees_83 ?? c.partner_fees_yango_83);
+                  const cobroSaldoVal = miautoNum(c.cobro_saldo);
+                  const cuotaAPagarNeta = Math.max(0, cuotaBrutaVal - pf83Val - cobroSaldoVal);
+                  // Mora estática (acumulada en BD)
+                  const moraEstatica = miautoNum(c.mora_acumulada ?? c.late_fee);
+                  // Mora que se está generando (interés del periodo si está vencida)
+                  const moraGenerandose = c.status === 'overdue' ? miautoNum(c.mora_interes_periodo ?? c.late_fee) : 0;
+                  // Cuota final = cuota neta a pagar + mora (la que se está generando si está vencida, sino la estática)
+                  const cuotaFinalCalc = cuotaAPagarNeta + (moraGenerandose > 0.005 ? moraGenerandose : moraEstatica);
+                  const pagoHecho = montoPagadoDisplay;
+                  const pendientePago = Math.max(0, cuotaFinalCalc - pagoHecho);
                   return (
                   <Fragment key={c.id}>
                   <tr className="group border-b border-gray-100 hover:bg-gray-50/60">
+                    {/* Semana */}
                     <td className="sticky left-0 z-[1] bg-white py-2.5 pl-3 pr-2 align-middle shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)] group-hover:bg-gray-50/80">
-                      <button
-                          type="button"
-                          onClick={() => toggleComprobantesSemana(c.id)}
-                          className="flex w-full min-w-0 items-center gap-1.5 rounded-md py-0 text-left text-[13px] leading-snug text-gray-700 transition-colors hover:bg-gray-100/90"
-                        >
-                          {abierto ? (
-                            <ChevronDown className="h-4 w-4 flex-shrink-0 self-center text-gray-500" aria-hidden />
-                          ) : (
-                            <ChevronRight className="h-4 w-4 flex-shrink-0 self-center text-gray-500" aria-hidden />
-                          )}
-                          <span className="min-w-0 truncate font-semibold text-[#8B1A1A]">Semana {numeroSemana}</span>
-                        </button>
+                      <button type="button" onClick={() => toggleComprobantesSemana(c.id)} className="flex w-full min-w-0 items-center gap-1.5 rounded-md py-0 text-left text-[13px] leading-snug text-gray-700 transition-colors hover:bg-gray-100/90">
+                        {abierto ? <ChevronDown className="h-4 w-4 flex-shrink-0 self-center text-gray-500" aria-hidden /> : <ChevronRight className="h-4 w-4 flex-shrink-0 self-center text-gray-500" aria-hidden />}
+                        <span className="min-w-0 truncate font-semibold text-[#8B1A1A]">Semana {numeroSemana}</span>
+                      </button>
                     </td>
+                    {/* Fecha */}
                     <td className="py-2.5 pr-1.5 align-middle text-[12px] leading-snug text-gray-700 whitespace-nowrap">
                       {c.due_date ? formatDate(c.due_date, 'es-ES') : c.week_start_date ? formatDate(c.week_start_date, 'es-ES') : '—'}
                     </td>
+                    {/* Viajes - Bono Auto */}
+                    <td className="py-2.5 px-1 align-middle text-[11px] tabular-nums text-right leading-snug">
+                      {c.num_viajes != null ? (
+                        <><span className="text-gray-700">{c.num_viajes} — </span><span className="text-green-700">Bono {miautoFmtMonto(symCuota, bonoAutoVal)}</span></>
+                      ) : c.bono_auto != null ? (
+                        <span className="text-green-700">Bono {miautoFmtMonto(symCuota, bonoAutoVal)}</span>
+                      ) : (<span className="text-gray-500">—</span>)}
+                    </td>
+                    {/* Cuota Semanal */}
                     <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-gray-900 text-right text-[12px]">
                       {miautoFmtMonto(symCuota, miautoCuotaSemanalOAbonoDisplay(c))}
                     </td>
-                    <td className="py-2.5 px-1 align-middle text-[11px] tabular-nums text-right leading-snug">
-                      {c.num_viajes != null ? (
-                        <>
-                          <span className="text-gray-700">{c.num_viajes} — </span>
-                          <span className="text-green-700">Bono {miautoFmtMonto(symCuota, bonoAutoVal)}</span>
-                        </>
-                      ) : c.bono_auto != null ? (
-                        <span className="text-green-700">Bono {miautoFmtMonto(symCuota, bonoAutoVal)}</span>
-                      ) : (
-                        <span className="text-gray-500">—</span>
-                      )}
-                    </td>
-                    <td
-                      className="py-2.5 px-1 align-top text-[11px] tabular-nums text-right text-green-700"
-                      title={titleCobroIngresos}
-                    >
+                    {/* Cobro por ingresos */}
+                    <td className="py-2.5 px-1 align-top text-[11px] tabular-nums text-right text-green-700" title={titleCobroIngresos}>
                       <div className="flex min-w-0 flex-col items-end gap-1">
                         <span className="shrink-0">{miautoFmtMonto(symCuota, tributoCobroIngresos)}</span>
                         {filasCascadaCobro.length > 0 ? (
                           <div className="w-full min-w-0 text-[10px] font-normal leading-snug text-gray-600">
-                            <span className="block text-gray-500">Imputación del cobro</span>
                             {filasCascadaCobro.map((it, idx) => (
                               <span key={idx} className="block tabular-nums">
                                 →{' '}
                                 {it.semana != null ? (
-                                  <>
-                                    Semana {it.semana}
-                                    {it.week_start_ymd ? (
-                                      <span className="text-gray-500">
-                                        {' '}
-                                        (lunes{' '}
-                                        {formatDate(`${it.week_start_ymd}T12:00:00`, 'es-ES')})
-                                      </span>
-                                    ) : null}
-                                  </>
+                                  <>Semana {it.semana}: {miautoFmtMonto(symCuota, it.monto)}</>
                                 ) : it.week_start_ymd ? (
-                                  <>Lunes {formatDate(`${it.week_start_ymd}T12:00:00`, 'es-ES')}</>
+                                  <>Lunes {formatDate(`${it.week_start_ymd}T12:00:00`, 'es-ES')}: {miautoFmtMonto(symCuota, it.monto)}</>
                                 ) : (
-                                  '—'
+                                  <>{miautoFmtMonto(symCuota, it.monto)}</>
                                 )}
-                                : {miautoFmtMonto(symCuota, it.monto)}
                               </span>
                             ))}
                           </div>
                         ) : null}
                       </div>
                     </td>
-                    <td
-                      className="py-2.5 px-1 align-middle text-[11px] tabular-nums text-right text-green-700"
-                      title={(() => {
-                        const mostrado = miautoNum(c.cobro_saldo);
-                        const reglaNum =
-                          c.cobro_saldo_regla != null && !Number.isNaN(Number(c.cobro_saldo_regla))
-                            ? miautoNum(c.cobro_saldo_regla)
-                            : mostrado;
-                        if (Math.abs(mostrado - reglaNum) > 0.005) {
-                          return `Retirado acumulado del saldo del conductor (Yango Fleet), acreditado a esta cuota. Regla cronograma (referencia): ${reglaNum.toFixed(2)} ${symCuota}.`;
-                        }
-                        if (c.cobro_saldo_regla != null && !Number.isNaN(Number(c.cobro_saldo_regla))) {
-                          return `Alícuota «cobro saldo» de la regla del cronograma: ${miautoNum(c.cobro_saldo_regla).toFixed(2)} ${symCuota} (aún sin retiro Fleet hacia esta fila o monto 0).`;
-                        }
-                        return undefined;
-                      })()}
-                    >
+                    {/* Cobro saldo */}
+                    <td className="py-2.5 px-1 align-middle text-[11px] tabular-nums text-right text-green-700">
                       {miautoFmtMonto(symCuota, miautoCobroSaldoDisplay(c))}
                     </td>
-                    <td
-                      className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-gray-900 text-[12px]"
-                      title="Saldo que falta de la cuota del plan (sin mora), tras imputar abonos: mora primero, luego capital cuota. «Plan» = cuota neta del cronograma si hubo abonos."
-                    >
-                      <span className="block">{miautoFmtMonto(symCuota, cuotaAPagarDisplay)}</span>
-                      {mostrarSublinePlanCuota ? (
-                        <span className="mt-0.5 block text-[10px] font-normal leading-snug text-gray-600 tabular-nums">
-                          Plan {miautoFmtMonto(symCuota, cuotaNetaPlan)}
-                        </span>
-                      ) : null}
+                    {/* Cuota a pagar */}
+                    <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-gray-900 text-[12px]" title="Cuota neta después de descuentos (Recaudo + Cobro saldo)">
+                      <span className="block">{miautoFmtMonto(symCuota, cuotaAPagarNeta)}</span>
                     </td>
-                    <td
-                      className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-[12px] text-red-600"
-                      title={
-                        c.due_date
-                          ? `Vence ${formatDate(c.due_date, 'es-ES')}. Mora: saldo pendiente tras abonos (interés del periodo en mora_interes_periodo si aplica).`
-                          : undefined
-                      }
-                    >
-                      <span className="block">{miautoFmtMonto(symCuota, moraPendienteColumna)}</span>
+                    {/* Mora */}
+                    <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-[12px] text-red-600">
+                      <span className="block">{miautoFmtMonto(symCuota, moraGenerandose > 0.005 ? moraGenerandose : moraEstatica)}</span>
                     </td>
+                    {/* Cuota final */}
                     <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-700">
-                      <span className="font-medium tabular-nums block">{miautoFmtMonto(symCuota, cuotaFinalSemana)}</span>
-                      {mostrarDesgloseParcial ? (
-                        <span className="mt-0.5 block text-[10px] font-normal leading-snug text-gray-600 tabular-nums">
-                          {moraPendienteColumna > 0.005 ? (
-                            <>
-                              Mora {miautoFmtMonto(symCuota, moraPendienteColumna)}
-                            </>
-                          ) : null}
-                          {moraPendienteColumna > 0.005 && cuotaAPagarDisplay > 0.005 ? ' + ' : null}
-                          {cuotaAPagarDisplay > 0.005 ? (
-                            <>Cuota {miautoFmtMonto(symCuota, cuotaAPagarDisplay)}</>
-                          ) : null}
-                        </span>
-                      ) : null}
+                      <span className="font-medium tabular-nums block">{miautoFmtMonto(symCuota, cuotaFinalCalc)}</span>
                     </td>
+                    {/* Pagado */}
                     <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-800">
                       <div className="flex flex-col items-end gap-0.5 tabular-nums">
-                        <span
-                          className="font-medium"
-                          title={
-                            miautoNum(c.abono_comprobante_en_revision) > 0.005
-                              ? `Incluye ${symCuota}\u00A0${miautoNum(c.abono_comprobante_en_revision).toFixed(2)} declarado en comprobante pendiente de validar`
-                              : undefined
-                          }
-                        >
-                          {miautoFmtMonto(symCuota, montoPagadoDisplay)}
-                        </span>
-                        {miautoNum(c.mora_acumulada) > 0.005 ? (
-                          <span className="text-[10px] font-normal leading-snug text-amber-700">
-                            Mora: {miautoFmtMonto(symCuota, miautoNum(c.mora_acumulada))}
-                          </span>
-                        ) : null}
+                        <span className="font-medium">{miautoFmtMonto(symCuota, pagoHecho)}</span>
                       </div>
                     </td>
+                    {/* Pendiente de pago */}
+                    <td className="py-2.5 px-1 align-middle text-right text-[13px] text-orange-600">
+                      <span className="font-medium tabular-nums">{miautoFmtMonto(symCuota, pendientePago)}</span>
+                    </td>
+                    {/* Estado */}
                     <td className="py-2.5 pl-1 pr-2 align-middle whitespace-nowrap">
                       <div className="flex flex-col items-center gap-0.5">
-                        <span
-                          className={`inline-flex w-fit whitespace-nowrap px-1.5 py-0.5 rounded text-xs font-medium ${
-                            MIAUTO_CUOTA_STATUS_PILL[c.status] ?? 'bg-gray-100 text-gray-700'
-                          }`}
-                          title={c.status === 'bonificada' ? 'Bonificación por 4 cuotas seguidas al día' : undefined}
-                        >
+                        <span className={`inline-flex w-fit whitespace-nowrap px-1.5 py-0.5 rounded text-xs font-medium ${MIAUTO_CUOTA_STATUS_PILL[c.status] ?? 'bg-gray-100 text-gray-700'}`}
+                          title={c.status === 'bonificada' ? 'Bonificación por 4 cuotas seguidas al día' : undefined}>
                           {MIAUTO_CUOTA_STATUS_LABELS[c.status] ?? c.status}
                         </span>
-                        {c.status === 'bonificada' && (
-                          <span className="text-center text-[10px] text-gray-500">Por 4 cuotas al día</span>
-                        )}
+                        {c.status === 'bonificada' && (<span className="text-center text-[10px] text-gray-500">Por 4 cuotas al día</span>)}
                       </div>
                     </td>
                   </tr>

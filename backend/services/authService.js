@@ -187,9 +187,9 @@ console.log('code', code);
         logger.info(`Código OTP enviado por WhatsApp a ${phoneWithPlus}`);
     } catch (error) {
         logger.error('Error enviando código OTP por WhatsApp:', error);
-        // En desarrollo, loguear el código para facilitar pruebas
         if (process.env.NODE_ENV === 'development') {
             logger.info(`[DESARROLLO] Código OTP para ${normalizedPhone}: ${code}`);
+            return { success: true, message: `[DEV] Código: ${code}` };
         }
         throw new Error('Error al enviar el código. Intenta nuevamente.');
     }

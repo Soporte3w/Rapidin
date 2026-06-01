@@ -271,20 +271,35 @@ export function getRuleForTripCount(rules, numViajes) {
   const n = Number(numViajes);
   if (Number.isNaN(n)) return null;
   let floorRule = null;
-  let floorMinStart = Infinity;
+  let floorMinStart = -1;  // el mayor min que es <= n
   for (let i = 0; i < rules.length; i++) {
     const rule = rules[i];
     const interval = expandIntervalForRule(rule, rules, i);
     if (!interval) continue;
-    if (interval.min < floorMinStart) {
+    // Regla exacta: n dentro del rango
+    if (n >= interval.min && n <= interval.max) return rule;
+    // Guardar la regla con mayor min que esté por debajo de n (para arriba del rango)
+    if (interval.min <= n && interval.min > floorMinStart) {
       floorMinStart = interval.min;
       floorRule = rule;
     }
-    if (n >= interval.min && n <= interval.max) return rule;
   }
-  // Debajo del tramo mínimo del cronograma (ej. menos de 89 viajes): misma cuota que el tramo con menor umbral.
-  if (floorRule != null && n < floorMinStart) return floorRule;
-  return null;
+  // n está por encima del rango máximo: devolver la regla de mayor umbral
+  if (floorRule != null && floorMinStart <= n && floorMinStart > 0) return floorRule;
+  // Debajo del tramo mínimo del cronograma: misma cuota que el tramo con menor umbral
+  if (floorRule != null && n < floorMinStart) {
+    // buscar el verdadero mínimo
+    let minRule = null;
+    let minStart = Infinity;
+    for (let i = 0; i < rules.length; i++) {
+      const rule = rules[i];
+      const interval = expandIntervalForRule(rule, rules, i);
+      if (!interval) continue;
+      if (interval.min < minStart) { minStart = interval.min; minRule = rule; }
+    }
+    if (minRule) return minRule;
+  }
+  return floorRule;
 }
 
 /**

@@ -67,6 +67,7 @@ interface CuotaSemanal {
   pending_total?: number;
   moneda?: string;
   cobro_saldo?: number;
+  saldo_favor_conductor?: number;
   /** Alícuota regla cronograma (si la API la envía). */
   cobro_saldo_regla?: number;
   cuota_neta?: number;

@@ -59,6 +59,8 @@ interface CuotaSemanal {
   mora_interes_periodo?: number;
   /** Mora total acumulada en este periodo (valor BD). Aunque ya pagada, muestra cuánto se acumuló. */
   mora_acumulada?: number;
+  /** Mora extra: generada sobre el pendiente cuando hay pagos parciales en cuotas vencidas. Empieza en 0. */
+  mora_extra?: number;
   /** Saldo mora pendiente tras pagos (API); para neto Excel. */
   mora_pendiente?: number;
   status: string;
@@ -877,19 +879,30 @@ export default function YegoMiAutoRentSaleDetail() {
                   const tributoCobroIngresos = miautoCobroPorIngresosTributoDisplay(c);
                   const titleCobroIngresos = miautoTooltipCobroPorIngresos(symCuota, c, cuotas);
                   const filasCascadaCobro = miautoCascadaCobroIngresosFilasParaUi(cuotas, c);
-                  // Cuota a pagar = cuota bruta - PF83 - cobro saldo (lo neto después de descuentos)
+                  // Cuota a pagar = cuota bruta - PF83 - cobro saldo (neta después de descuentos)
                   const cuotaBrutaVal = miautoNum(c.cuota_semanal);
-                  const pf83Val = miautoNum(c.partner_fees_83 ?? c.partner_fees_yango_83);
+                  const pf83Val = miautoNum(c.partner_fees_yango_83 ?? c.partner_fees_83);
                   const cobroSaldoVal = miautoNum(c.cobro_saldo);
                   const cuotaAPagarNeta = Math.max(0, cuotaBrutaVal - pf83Val - cobroSaldoVal);
-                  // Mora estática (acumulada en BD)
-                  const moraEstatica = miautoNum(c.mora_acumulada ?? c.late_fee);
-                  // Mora que se está generando (interés del periodo si está vencida)
-                  const moraGenerandose = c.status === 'overdue' ? miautoNum(c.mora_interes_periodo ?? c.late_fee) : 0;
-                  // Cuota final = cuota neta a pagar + mora (la que se está generando si está vencida, sino la estática)
-                  const cuotaFinalCalc = cuotaAPagarNeta + (moraGenerandose > 0.005 ? moraGenerandose : moraEstatica);
+                  // Mora base acumulada (estática de BD)
+                  const moraBase = miautoNum(c.mora_acumulada ?? c.late_fee);
+                  // Saldo a favor del conductor: excedente PF83 que cubre la cuota y sobra
+                  const saldoFavor = miautoNum(c.saldo_favor_conductor);
+                  // ¿Hay cuotas vencidas en esta solicitud? Si hay, el saldo a favor va a cubrirlas primero
+                  const hayCuotaVencida = cuotas.some(x => x.status === 'overdue');
+                  // Solo aplicar saldo a favor si NO hay cuotas vencidas (el excedente es para el conductor)
+                  const aplicarSaldoFavor = saldoFavor > 0.005 && !hayCuotaVencida;
+                  // Cuota final = cuota neta + mora - saldo a favor (negativo = crédito para el conductor)
+                  const cuotaFinalCalc = aplicarSaldoFavor ? roundToTwoDecimals(-saldoFavor + moraBase) : cuotaAPagarNeta + moraBase;
+                  // Pagado
                   const pagoHecho = montoPagadoDisplay;
-                  const pendientePago = Math.max(0, cuotaFinalCalc - pagoHecho);
+                  // Pendiente = cuota final - pagado
+                  const pendientePago = aplicarSaldoFavor ? roundToTwoDecimals(-saldoFavor + moraBase - pagoHecho) : Math.max(0, cuotaFinalCalc - pagoHecho);
+                  // Mostrar valor absoluto (sin signo negativo) cuando hay saldo a favor
+                  const cuotaFinalDisplay = Math.abs(cuotaFinalCalc);
+                  const pendienteDisplay = Math.abs(pendientePago);
+                  // Si pagado > 0, la mora extra se calcula sobre el pendiente (viene de BD)
+                  const moraExtra = miautoNum(c.mora_extra);
                   return (
                   <Fragment key={c.id}>
                   <tr className="group border-b border-gray-100 hover:bg-gray-50/60">
@@ -920,20 +933,20 @@ export default function YegoMiAutoRentSaleDetail() {
                     <td className="py-2.5 px-1 align-top text-[11px] tabular-nums text-right text-green-700" title={titleCobroIngresos}>
                       <div className="flex min-w-0 flex-col items-end gap-1">
                         <span className="shrink-0">{miautoFmtMonto(symCuota, tributoCobroIngresos)}</span>
+                        {saldoFavor > 0.005 && (
+                          <span className="text-[10px] font-medium text-blue-600">Saldo a favor: {miautoFmtMonto(symCuota, saldoFavor)}</span>
+                        )}
                         {filasCascadaCobro.length > 0 ? (
                           <div className="w-full min-w-0 text-[10px] font-normal leading-snug text-gray-600">
                             {filasCascadaCobro.map((it, idx) => (
                               <span key={idx} className="block tabular-nums">
                                 →{' '}
-                                {it.semana != null ? (
-                                  <>Semana {it.semana}: {miautoFmtMonto(symCuota, it.monto)}</>
-                                ) : it.week_start_ymd ? (
-                                  <>Lunes {formatDate(`${it.week_start_ymd}T12:00:00`, 'es-ES')}: {miautoFmtMonto(symCuota, it.monto)}</>
-                                ) : (
-                                  <>{miautoFmtMonto(symCuota, it.monto)}</>
-                                )}
+                                {it.semana != null ? (<>Semana {it.semana}: {miautoFmtMonto(symCuota, it.monto)}</>
+                                ) : it.week_start_ymd ? (<>Lunes {formatDate(it.week_start_ymd + 'T12:00:00', 'es-ES')}: {miautoFmtMonto(symCuota, it.monto)}</>
+                                ) : (<>{miautoFmtMonto(symCuota, it.monto)}</>)}
                               </span>
                             ))}
+                            <span className="block text-gray-500">Neto: {miautoFmtMonto(symCuota, miautoNum(tributoCobroIngresos) - filasCascadaCobro.reduce((s, it) => s + miautoNum(it.monto), 0))}</span>
                           </div>
                         ) : null}
                       </div>
@@ -948,21 +961,35 @@ export default function YegoMiAutoRentSaleDetail() {
                     </td>
                     {/* Mora */}
                     <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-[12px] text-red-600">
-                      <span className="block">{miautoFmtMonto(symCuota, moraGenerandose > 0.005 ? moraGenerandose : moraEstatica)}</span>
+                      <span className="block">{miautoFmtMonto(symCuota, moraBase)}</span>
                     </td>
                     {/* Cuota final */}
-                    <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-700">
-                      <span className="font-medium tabular-nums block">{miautoFmtMonto(symCuota, cuotaFinalCalc)}</span>
+                    <td className="py-2.5 pr-2 align-middle text-right text-[13px]">
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className={`font-medium tabular-nums block ${aplicarSaldoFavor ? 'text-blue-700' : 'text-green-700'}`}>
+                          {miautoFmtMonto(symCuota, cuotaFinalDisplay)}
+                        </span>
+                        {aplicarSaldoFavor && (
+                          <span className="text-[10px] font-normal leading-snug text-blue-600">Saldo a favor del conductor</span>
+                        )}
+                      </div>
                     </td>
                     {/* Pagado */}
                     <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-800">
-                      <div className="flex flex-col items-end gap-0.5 tabular-nums">
-                        <span className="font-medium">{miautoFmtMonto(symCuota, pagoHecho)}</span>
-                      </div>
+                      <span className="font-medium">{miautoFmtMonto(symCuota, pagoHecho)}</span>
                     </td>
                     {/* Pendiente de pago */}
-                    <td className="py-2.5 px-1 align-middle text-right text-[13px] text-orange-600">
-                      <span className="font-medium tabular-nums">{miautoFmtMonto(symCuota, pendientePago)}</span>
+                    <td className="py-2.5 px-1 align-middle text-right text-[13px]">
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className={`font-medium tabular-nums ${aplicarSaldoFavor ? 'text-blue-700' : 'text-orange-600'}`}>
+                          {miautoFmtMonto(symCuota, pendienteDisplay)}
+                        </span>
+                        {moraExtra > 0.005 && (
+                          <span className="text-[10px] font-normal leading-snug text-red-500 tabular-nums">
+                            Mora extra: {miautoFmtMonto(symCuota, moraExtra)}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     {/* Estado */}
                     <td className="py-2.5 pl-1 pr-2 align-middle whitespace-nowrap">

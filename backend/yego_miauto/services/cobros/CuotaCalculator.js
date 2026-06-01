@@ -205,7 +205,7 @@ function getRuleForTripCount(rules, numViajes) {
         bestMin = interval.min;
       }
     }
-    if (interval.min <= n && interval.min < thresholdMin) {
+    if (interval.min <= n && interval.min > thresholdMin) {
       thresholdRule = rule;
       thresholdMin = interval.min;
     }

@@ -649,67 +649,73 @@ export async function updateCronograma(id, data) {
   }
   await query(`UPDATE module_miauto_cronograma SET ${updates.join(', ')} WHERE id = $1`, params);
 
-  await Promise.all([
-    query('DELETE FROM module_miauto_cronograma_vehiculo WHERE cronograma_id = $1', [id]),
-    query('DELETE FROM module_miauto_cronograma_rule WHERE cronograma_id = $1', [id]),
-  ]);
+  // ACTUALIZAR vehículos existentes en vez de borrar y recrear
+  // (borrar+recrear cambia los IDs y deja huérfanas las solicitudes)
+  const existingVehicles = await query('SELECT id FROM module_miauto_cronograma_vehiculo WHERE cronograma_id = $1 ORDER BY orden', [id]);
+  const existingIds = new Set(existingVehicles.rows.map(r => r.id));
 
-  const insertVehicles =
-    vehicles.length > 0
-      ? (() => {
-          const vParams = [];
-          const vPlaceholders = [];
-          vehicles.forEach((v, i) => {
-            const base = vParams.length + 1;
-            vPlaceholders.push(`($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}::jsonb)`);
-            const reqG = mergeRequisitosGastosVehiculo(v.requisitos_gastos && typeof v.requisitos_gastos === 'object' ? v.requisitos_gastos : {});
-            vParams.push(
-              id,
-              (v.name && String(v.name).trim()) || '',
-              parseFloat(v.inicial) || 0,
-              v.inicial_moneda === 'PEN' ? 'PEN' : 'USD',
-              parseInt(v.cuotas_semanales, 10) || 0,
-              v.image || null,
-              i,
-              JSON.stringify(reqG)
-            );
-          });
-          return query(
-            `INSERT INTO module_miauto_cronograma_vehiculo (cronograma_id, name, inicial, inicial_moneda, cuotas_semanales, image, orden, requisitos_gastos) VALUES ${vPlaceholders.join(', ')}`,
-            vParams
-          );
-        })()
-      : Promise.resolve();
-  const insertRules =
-    rules.length > 0
-      ? (() => {
-          const rParams = [];
-          const rPlaceholders = [];
-          rules.forEach((r, i) => {
-            const cuotas = Array.isArray(r.cuotas_por_vehiculo) ? r.cuotas_por_vehiculo : [];
-            const monedas = Array.isArray(r.cuota_moneda_por_vehiculo) ? r.cuota_moneda_por_vehiculo : [];
-            const base = rParams.length + 1;
-            rPlaceholders.push(
-              `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::jsonb, $${base + 5}::jsonb, $${base + 6}, $${base + 7})`
-            );
-            rParams.push(
-              id,
-              (r.viajes && String(r.viajes).trim()) || '',
-              parseFloat(r.bono_auto) || 0,
-              r.bono_auto_moneda === 'USD' ? 'USD' : 'PEN',
-              JSON.stringify(cuotas),
-              JSON.stringify(monedas),
-              i,
-              parseFloat(r.pct_comision) || 0
-            );
-          });
-          return query(
-            `INSERT INTO module_miauto_cronograma_rule (cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision) VALUES ${rPlaceholders.join(', ')}`,
-            rParams
-          );
-        })()
-      : Promise.resolve();
-  await Promise.all([insertVehicles, insertRules]);
+  const keptIds = new Set();
+  for (let i = 0; i < vehicles.length; i++) {
+    const v = vehicles[i];
+    const reqG = mergeRequisitosGastosVehiculo(v.requisitos_gastos && typeof v.requisitos_gastos === 'object' ? v.requisitos_gastos : {});
+    if (v.id && existingIds.has(v.id)) {
+      // UPDATE vehículo existente (conserva ID)
+      keptIds.add(v.id);
+      await query(
+        `UPDATE module_miauto_cronograma_vehiculo SET name=$1, inicial=$2, inicial_moneda=$3, cuotas_semanales=$4, image=$5, orden=$6, requisitos_gastos=$7::jsonb, updated_at=CURRENT_TIMESTAMP WHERE id=$8`,
+        [(v.name && String(v.name).trim()) || '', parseFloat(v.inicial) || 0, v.inicial_moneda === 'PEN' ? 'PEN' : 'USD', parseInt(v.cuotas_semanales, 10) || 0, v.image || null, i, JSON.stringify(reqG), v.id]
+      );
+    } else {
+      // INSERT nuevo vehículo
+      const ins = await query(
+        `INSERT INTO module_miauto_cronograma_vehiculo (cronograma_id, name, inicial, inicial_moneda, cuotas_semanales, image, orden, requisitos_gastos) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) RETURNING id`,
+        [id, (v.name && String(v.name).trim()) || '', parseFloat(v.inicial) || 0, v.inicial_moneda === 'PEN' ? 'PEN' : 'USD', parseInt(v.cuotas_semanales, 10) || 0, v.image || null, i, JSON.stringify(reqG)]
+      );
+      keptIds.add(ins.rows[0].id);
+    }
+  }
+  // Eliminar vehículos que ya no están en la lista y que NO tienen solicitudes activas
+  for (const oldId of existingIds) {
+    if (!keptIds.has(oldId)) {
+      const solCount = await query('SELECT COUNT(*)::int AS n FROM module_miauto_solicitud WHERE cronograma_vehiculo_id = $1 AND deleted_at IS NULL', [oldId]);
+      if (parseInt(solCount.rows[0]?.n) > 0) {
+        // No eliminar: hay solicitudes activas que dependen de este vehículo
+        continue;
+      }
+      await query('DELETE FROM module_miauto_cronograma_vehiculo WHERE id = $1', [oldId]);
+    }
+  }
+
+  // ACTUALIZAR rules igual: update existentes, insert nuevos
+  const existingRules = await query('SELECT id FROM module_miauto_cronograma_rule WHERE cronograma_id = $1 ORDER BY orden', [id]);
+  const existingRuleIds = new Set(existingRules.rows.map(r => r.id));
+  const keptRuleIds = new Set();
+
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i];
+    const cuotas = Array.isArray(r.cuotas_por_vehiculo) ? r.cuotas_por_vehiculo : [];
+    const monedas = Array.isArray(r.cuota_moneda_por_vehiculo) ? r.cuota_moneda_por_vehiculo : [];
+    if (r.id && existingRuleIds.has(r.id)) {
+      keptRuleIds.add(r.id);
+      await query(
+        `UPDATE module_miauto_cronograma_rule SET viajes=$1, bono_auto=$2, bono_auto_moneda=$3, cuotas_por_vehiculo=$4::jsonb, cuota_moneda_por_vehiculo=$5::jsonb, orden=$6, pct_comision=$7, cobro_saldo=$8, updated_at=CURRENT_TIMESTAMP WHERE id=$9`,
+        [(r.viajes && String(r.viajes).trim()) || '', parseFloat(r.bono_auto) || 0, r.bono_auto_moneda === 'USD' ? 'USD' : 'PEN', JSON.stringify(cuotas), JSON.stringify(monedas), i, parseFloat(r.pct_comision) || 0, parseFloat(r.cobro_saldo) || 0, r.id]
+      );
+    } else {
+      // INSERT nueva rule
+      const ins = await query(
+        `INSERT INTO module_miauto_cronograma_rule (cronograma_id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo) VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9) RETURNING id`,
+        [id, (r.viajes && String(r.viajes).trim()) || '', parseFloat(r.bono_auto) || 0, r.bono_auto_moneda === 'USD' ? 'USD' : 'PEN', JSON.stringify(cuotas), JSON.stringify(monedas), i, parseFloat(r.pct_comision) || 0, parseFloat(r.cobro_saldo) || 0]
+      );
+      keptRuleIds.add(ins.rows[0].id);
+    }
+  }
+  // Eliminar rules que ya no están en la lista
+  for (const oldId of existingRuleIds) {
+    if (!keptRuleIds.has(oldId)) {
+      await query('DELETE FROM module_miauto_cronograma_rule WHERE id = $1', [oldId]);
+    }
+  }
 
   return getCronogramaById(id);
 }

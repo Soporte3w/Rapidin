@@ -57,9 +57,6 @@ function sqlYangoDriverLateralJoin(parkParamNumber) {
                   REGEXP_REPLACE(COALESCE(TRIM(COALESCE(rd.dni, s.dni)), ''), '[^0-9]', '', 'g')
               AND REGEXP_REPLACE(COALESCE(TRIM(COALESCE(rd.dni, s.dni)), ''), '[^0-9]', '', 'g') <> ''
             )
-            OR COALESCE(REGEXP_REPLACE(TRIM(d.login), '[^0-9]', '', 'g'), '') <> ''
-               AND COALESCE(REGEXP_REPLACE(TRIM(d.login), '[^0-9]', '', 'g'), '') =
-                   COALESCE(REGEXP_REPLACE(TRIM(COALESCE(rd.phone, s.phone)), '[^0-9]', '', 'g'), '')
           )
         ORDER BY
           CASE WHEN d.work_status = 'working' THEN 0

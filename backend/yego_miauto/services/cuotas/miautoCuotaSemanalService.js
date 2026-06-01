@@ -1239,7 +1239,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
             c.paid_amount, c.late_fee, c.status, c.moneda, c.pct_comision, c.cobro_saldo,
             c.partner_fees_raw, c.partner_fees_83,
             c.fecha_ultimo_abono, c.fecha_primer_comprobante, c.montos_fuente, c.cobro_desde_saldo_conductor,
-            c.mora_desde,
+            c.mora_desde, c.mora_extra, c.mora_extra_desde,
             s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal
      FROM module_miauto_cuota_semanal c
      INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
@@ -1276,11 +1276,11 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
   const hermanasPorSolicitud = new Map();
   if (solIds.length > 0) {
     const herRes = await query(
-      `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.status, c.amount_due, c.late_fee, c.paid_amount,
-              c.num_viajes, c.bono_auto, c.cuota_semanal, c.partner_fees_raw, c.partner_fees_83,
-              c.cobro_saldo, c.pct_comision, c.moneda, c.partner_fees_cascada_destino,
-              c.fecha_ultimo_abono, c.fecha_primer_comprobante, c.montos_fuente, c.cobro_desde_saldo_conductor,
-              c.mora_desde,
+       `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.status, c.amount_due, c.late_fee, c.paid_amount,
+               c.num_viajes, c.bono_auto, c.cuota_semanal, c.partner_fees_raw, c.partner_fees_83,
+               c.cobro_saldo, c.pct_comision, c.moneda, c.partner_fees_cascada_destino,
+               c.fecha_ultimo_abono, c.fecha_primer_comprobante, c.montos_fuente, c.cobro_desde_saldo_conductor,
+               c.mora_desde, c.mora_extra, c.mora_extra_desde,
               s.fecha_inicio_cobro_semanal
        FROM module_miauto_cuota_semanal c
        INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
@@ -1355,7 +1355,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       )
     ) {
       await query(
-        `UPDATE module_miauto_cuota_semanal SET late_fee = 0, status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`,
+        `UPDATE module_miauto_cuota_semanal SET late_fee = COALESCE(late_fee,0) + COALESCE(mora_extra,0), mora_extra = 0, mora_extra_desde = NULL, status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`,
         [row.id]
       );
       updated++;
@@ -1423,11 +1423,48 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       lateFeePersist = lateFeeDb;
     }
 
+    // Calcular mora_extra: mora sobre el pendiente TOTAL cuando hay pago parcial y está vencida
+    // Cada pago parcial cristaliza la mora_extra acumulada → se suma a late_fee y reinicia desde la fecha del pago
+    let moraExtraPersist = round2(parseFloat(row.mora_extra) || 0);
+    let moraExtraDesde = ymdFromDbDate(row.mora_extra_desde);
+    const pagoHecho = round2(paidDb);
+    const pagoAnterior = round2(parseFloat(row.paid_amount) || 0) - (paidDb - pagoHecho); // aprox del pago anterior
+    const pendienteTotal = round2(round2(parseFloat(row.amount_due) || 0) + round2(parseFloat(row.late_fee) || 0) - pagoHecho);
+    
+    if (statusOut === 'overdue' && pendienteTotal > 0.005) {
+      // Detectar si hubo un NUEVO pago desde la última vez que se fijó mora_extra_desde
+      const fechaUltimoAbono = ymdFromDbDate(row.fecha_ultimo_abono);
+      const huboNuevoPago = pagoHecho > 0.005 && fechaUltimoAbono && (!moraExtraDesde || fechaUltimoAbono > moraExtraDesde);
+      
+      if (huboNuevoPago) {
+        // Cristalizar mora_extra acumulada en late_fee y reiniciar desde la fecha del pago
+        const moraExtraAntes = round2(parseFloat(row.mora_extra) || 0);
+        if (moraExtraAntes > 0.005) {
+          lateFeePersist = round2(lateFeePersist + moraExtraAntes);
+        }
+        moraExtraPersist = 0;
+        moraExtraDesde = fechaUltimoAbono || limaTodayYmdSync();
+      } else if (!moraExtraDesde) {
+        moraExtraDesde = limaTodayYmdSync();
+      }
+      const dias = Math.max(0, calendarDaysLateLima(moraExtraDesde));
+      if (dias > 0) {
+        const tasa = round2(parseFloat(cronograma?.tasa_interes_mora) || 0);
+        moraExtraPersist = round2(pendienteTotal * (tasa / 7) * dias);
+      }
+    } else if (statusOut === 'paid' || pagoHecho <= 0.005) {
+      if (statusOut === 'paid' && moraExtraPersist > 0.005) {
+        lateFeePersist = round2(lateFeePersist + moraExtraPersist);
+      }
+      moraExtraPersist = 0;
+      moraExtraDesde = null;
+    }
+
     await query(
       patchDue
-        ? `UPDATE module_miauto_cuota_semanal SET late_fee = $1, status = $4, due_date = $3::date, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
-        : `UPDATE module_miauto_cuota_semanal SET late_fee = $1, status = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-      patchDue ? [lateFeePersist, row.id, canonicalDueYmd, statusOut] : [lateFeePersist, row.id, statusOut]
+        ? `UPDATE module_miauto_cuota_semanal SET late_fee = $1, mora_extra = $5, mora_extra_desde = $6::date, status = $4, due_date = $3::date, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
+        : `UPDATE module_miauto_cuota_semanal SET late_fee = $1, mora_extra = $4, mora_extra_desde = $5::date, status = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+      patchDue ? [lateFeePersist, row.id, canonicalDueYmd, statusOut, moraExtraPersist, moraExtraDesde] : [lateFeePersist, row.id, statusOut, moraExtraPersist, moraExtraDesde]
     );
     updated++;
   }
@@ -2093,6 +2130,9 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     mora_interes_periodo: moraInteresPeriodoApi,
     /** Mora total devengada en este periodo (valor BD). Aunque ya esté pagada, muestra cuánto se acumuló. */
     mora_acumulada: round2(parseFloat(r.late_fee) || 0),
+    /** Mora extra: acumulada sobre el pendiente cuando hay pagos parciales. Empieza en 0. */
+    mora_extra: round2(parseFloat(r.mora_extra) || 0),
+    mora_extra_desde: ymdFromDbDate(r.mora_extra_desde),
     status: statusApi,
     moneda: d.moneda,
     pct_comision: d.pct_comision,
@@ -2150,7 +2190,7 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
     `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, moneda, pct_comision, cobro_saldo,
             partner_fees_raw, partner_fees_83, partner_fees_cascada_destino,
             fecha_ultimo_abono, fecha_primer_comprobante, montos_fuente, cobro_desde_saldo_conductor,
-            created_at, updated_at
+            mora_extra, mora_extra_desde, created_at, updated_at
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1 ORDER BY due_date ASC`,
     [solicitudId]
@@ -2301,7 +2341,7 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
     `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, moneda, pct_comision, cobro_saldo,
             partner_fees_raw, partner_fees_83, partner_fees_yango_raw, partner_fees_cascada_destino,
             fecha_ultimo_abono, fecha_primer_comprobante, montos_fuente, cobro_desde_saldo_conductor,
-            saldo_favor_conductor, mora_desde, created_at, updated_at
+            saldo_favor_conductor, mora_desde, mora_extra, mora_extra_desde, created_at, updated_at
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1
      ORDER BY week_start_date ASC NULLS LAST, due_date ASC NULLS LAST, id ASC`,

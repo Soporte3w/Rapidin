@@ -884,7 +884,7 @@ export default function YegoMiAutoRentSaleDetail() {
                   // Cuota a pagar = cuota bruta - PF83 - cobro saldo (neta después de descuentos)
                   const cuotaBrutaVal = miautoNum(c.cuota_semanal);
                   const pf83Val = miautoNum(c.partner_fees_83);
-                  const cobroSaldoVal = miautoNum(c.cobro_saldo);
+                  const cobroSaldoVal = miautoNum(c.cobro_saldo_regla ?? c.cobro_saldo);
                   const cuotaAPagarNeta = Math.max(0, cuotaBrutaVal - pf83Val - cobroSaldoVal);
                   // Mora base acumulada (estática de BD)
                   const moraBase = miautoNum(c.mora_acumulada ?? c.late_fee);

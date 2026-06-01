@@ -2009,7 +2009,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
    * `mora_pendiente` / `late_fee`: saldo mora pendiente; si hay atraso, el interés corre sobre capital cuota según cronograma.
    * `cuota_final` / `pending_total`: mora pendiente + cuota pendiente (≈ obligación − pagado); comprobante en revisión puede congelar mora mostrada.
    */
-  const amountDueApi = rowMontosFuenteExcel(r) 
+  let amountDueApi = rowMontosFuenteExcel(r) 
     ? round2(parseFloat(r.amount_due) || 0)
     : round2(d.amount_due_sched);
   const lateFeeColDb = round2(parseFloat(r.late_fee) || 0);
@@ -2085,6 +2085,13 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     const dueYStat = ymdFromDbDate(r.due_date);
     const paidEfectivoApi = round2(paid_amount + extraAbonoRevision);
     statusApi = miAutoOpenStatusSaldoVencimiento(dueYStat, pendStat, paidEfectivoApi);
+  }
+  // Si el paid_amount cubre el amount_due almacenado, forzar status = 'paid' y usar valores almacenados
+  if (round2(paid_amount) >= round2(parseFloat(r.amount_due) || 0) + round2(parseFloat(r.late_fee) || 0) - 0.005 && round2(paid_amount) > 0.005) {
+    statusApi = 'paid';
+    // También usar amount_due almacenado para que WhatsApp no muestre falso pendiente
+    amountDueApi = round2(parseFloat(r.amount_due) || 0);
+    lateFeeApi = 0;
   }
   const yangoRawCol =
     r.partner_fees_yango_raw != null && String(r.partner_fees_yango_raw).trim() !== ''

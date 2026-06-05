@@ -42,11 +42,12 @@ export function applyWaterfallPool({ poolAmount, cuotas, excludeCuotaId = null }
       return pending > 0.005;
     })
     .sort((a, b) => {
-      const da = String(a.due_date || '');
-      const db = String(b.due_date || '');
-      if (da && db) return da.localeCompare(db);
-      if (da) return -1;
-      if (db) return 1;
+      // Normalizar due_date a YYYY-MM-DD (viene como objeto Date de pg)
+      const na = a.due_date ? new Date(a.due_date).toISOString().slice(0, 10) : '';
+      const nb = b.due_date ? new Date(b.due_date).toISOString().slice(0, 10) : '';
+      if (na && nb) return na.localeCompare(nb);
+      if (na) return -1;
+      if (nb) return 1;
       return String(a.id || '').localeCompare(String(b.id || ''));
     });
 

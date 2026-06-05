@@ -1180,6 +1180,9 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
   }
   const scopeSql = scopeConds.length ? ` AND ${scopeConds.join(' AND ')}` : '';
 
+  /** Excluir solicitudes desactivadas de cualquier recálculo de mora. */
+  const skipDesactivadasSql = ` AND EXISTS (SELECT 1 FROM module_miauto_solicitud s WHERE s.id = c.solicitud_id AND s.status = 'aprobado')`;
+
   /** Semana de cuota aún no empezó (lunes ≥ hoy) o sin lunes: se usa `due_date` ≥ hoy para revertir mora. */
   const vencimientoHoyOFuturoSql = `(
       (c.week_start_date IS NOT NULL AND c.week_start_date::date >= ${SQL_LIMA_TODAY})
@@ -1207,7 +1210,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
         updated_at = CURRENT_TIMESTAMP
     WHERE c.status = 'overdue'
       AND ${vencimientoHoyOFuturoSql}
-      AND (c.due_date IS NULL OR c.due_date::date >= ${SQL_LIMA_TODAY})${scopeSql}`;
+      AND (c.due_date IS NULL OR c.due_date::date >= ${SQL_LIMA_TODAY})${scopeSql}${skipDesactivadasSql}`;
   await query(revertOverdueSql, scopeParams);
 
   /** Bonificada: anular mora en columna; en `paid` se conserva devengo/histórico. */
@@ -1215,7 +1218,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     UPDATE module_miauto_cuota_semanal c
     SET late_fee = 0, updated_at = CURRENT_TIMESTAMP
     WHERE c.status = 'bonificada'
-      AND COALESCE(c.late_fee, 0)::numeric > 0.005${scopeSql}`;
+      AND COALESCE(c.late_fee, 0)::numeric > 0.005${scopeSql}${skipDesactivadasSql}`;
   await query(clearBonificadaLateFeeSql, scopeParams);
 
   const clearPartialSql = `
@@ -1224,7 +1227,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     WHERE c.status = 'partial'
       AND ${vencimientoHoyOFuturoSql}
       AND (c.due_date IS NULL OR c.due_date::date >= ${SQL_LIMA_TODAY})
-      AND COALESCE(c.late_fee, 0)::numeric > 0.005${scopeSql}`;
+      AND COALESCE(c.late_fee, 0)::numeric > 0.005${scopeSql}${skipDesactivadasSql}`;
   await query(clearPartialSql, scopeParams);
 
   /** Incluir `paid` mal etiquetada: aún hay saldo en columnas cuota+mora respecto al abono (p. ej. cascada vs Excel). */
@@ -2000,7 +2003,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   const filaCerradaEfectiva = filaCerrada && pendienteEcon <= 0.005;
   const cobroSaldoRegla = round2(parseFloat(r.cobro_saldo) || 0);
   const cobroDesdeFleet = round2(parseFloat(r.cobro_desde_saldo_conductor) || 0);
-  const cobroSaldoApi = cobroDesdeFleet > 0.005 ? cobroDesdeFleet : cobroSaldoRegla;
+   const cobroSaldoApi = cobroSaldoRegla;
   /**
    * `amount_due` API: cuota del plan del periodo (programada), no el remanente.
    * `cuota_pendiente`: lo que falta de esa cuota tras abonos (mora se descuenta primero del pago).
@@ -2144,7 +2147,8 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     moneda: d.moneda,
     pct_comision: d.pct_comision,
     cobro_saldo: cobroSaldoApi,
-    cobro_saldo_regla: cobroSaldoRegla,
+     cobro_saldo_regla: cobroSaldoRegla,
+     cobro_desde_saldo_conductor: round2(parseFloat(r.cobro_desde_saldo_conductor) || 0),
     /** Lima YYYY-MM-DD: último abono registrado en cuota (Fleet, validación, admin, cascada). Mora sobre saldo desde el día siguiente. */
     fecha_ultimo_abono: ymdFromDbDate(r.fecha_ultimo_abono),
     /** Primera subida de comprobante por el conductor (ancla si aún no hay `fecha_ultimo_abono`). */

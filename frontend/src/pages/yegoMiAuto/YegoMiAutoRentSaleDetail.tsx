@@ -67,6 +67,7 @@ interface CuotaSemanal {
   pending_total?: number;
   moneda?: string;
   cobro_saldo?: number;
+  cobro_desde_saldo_conductor?: number;
   saldo_favor_conductor?: number;
   cobro_saldo_referencia?: { semana?: number; week_start_date?: string; monto: number }[];
   /** Alícuota regla cronograma (si la API la envía). */
@@ -590,7 +591,9 @@ export default function YegoMiAutoRentSaleDetail() {
     return { totalPagadoPEN, totalPagadoUSD, totalVencidoPEN, totalVencidoUSD };
   }, [cuotas, solicitud?.cronograma_vehiculo?.inicial_moneda]);
 
-  const monedaSolicitud = solicitud?.cronograma_vehiculo?.inicial_moneda === 'USD' ? 'USD' : 'PEN';
+  const monedaSolicitud = cuotas.length > 0
+    ? monedaCuotaRow(cuotas[0])
+    : (solicitud?.cronograma_vehiculo?.inicial_moneda === 'USD' ? 'USD' : 'PEN');
 
   /** Comprobantes de otros gastos agrupados por otros_gastos_id */
   const comprobantesPorOtrosGastos = useMemo(() => {
@@ -854,18 +857,17 @@ export default function YegoMiAutoRentSaleDetail() {
             <div className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0 rounded-lg border border-gray-100 bg-white">
             <table className="w-full min-w-[1180px] table-fixed border-collapse text-sm">
               <colgroup>
-                <col style={{ width: '8%' }} />
-                <col style={{ width: '7%' }} />
                 <col style={{ width: '9%' }} />
-                <col style={{ width: '7.5%' }} />
+                <col style={{ width: '8%' }} />
+                <col style={{ width: '10%' }} />
+                <col style={{ width: '8.5%' }} />
                 <col style={{ width: '13%' }} />
-                <col style={{ width: '6.5%' }} />
-                <col style={{ width: '7.5%' }} />
-                <col style={{ width: '6.5%' }} />
-                <col style={{ width: '7.5%' }} />
-                <col style={{ width: '7.5%' }} />
-                <col style={{ width: '7.5%' }} />
-                <col style={{ width: '6.5%' }} />
+                <col style={{ width: '7%' }} />
+                <col style={{ width: '8.5%' }} />
+                <col style={{ width: '7%' }} />
+                <col style={{ width: '11%' }} />
+                <col style={{ width: '11%' }} />
+                <col style={{ width: '7%' }} />
               </colgroup>
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50/80">
@@ -904,15 +906,11 @@ export default function YegoMiAutoRentSaleDetail() {
                       ? ` (${(Number(solicitud.cronograma.tasa_interes_mora) * 100).toFixed(2)}%)`
                       : ''}
                   </th>
-                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight"
-                    title="Total a pagar aún: mora pendiente + cuota pendiente.">
-                    <span className="block text-right">Cuota<br/>final</span>
+                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-orange-600 leading-tight">
+                    <span className="block text-right">Pendiente<br/>de pago</span>
                   </th>
                   <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-green-700 leading-tight">
                     <span className="block text-right">Pagado</span>
-                  </th>
-                  <th className="py-2.5 px-1 align-middle text-right text-[11px] font-semibold uppercase tracking-wide tabular-nums text-orange-600 leading-tight">
-                    <span className="block text-right">Pendiente<br/>de pago</span>
                   </th>
                   <th className="py-2.5 pl-1 pr-3 align-middle text-center text-[11px] font-semibold uppercase tracking-wide text-gray-700 leading-tight">
                     <span className="block">Estado</span>
@@ -940,29 +938,22 @@ export default function YegoMiAutoRentSaleDetail() {
                   const tributoCobroIngresos = miautoCobroPorIngresosTributoDisplay(c);
                   const titleCobroIngresos = miautoTooltipCobroPorIngresos(symCuota, c, cuotas);
                   const filasCascadaCobro = miautoCascadaCobroIngresosFilasParaUi(cuotas, c);
-                  // Cuota a pagar = cuota bruta - PF83 - cobro saldo (neta después de descuentos)
-                  const cuotaBrutaVal = miautoNum(c.cuota_semanal);
-                  const pf83Val = miautoNum(c.partner_fees_83);
-                  const cobroSaldoVal = miautoNum(c.cobro_saldo_regla ?? c.cobro_saldo);
-                  const cuotaAPagarNeta = Math.max(0, cuotaBrutaVal - pf83Val - cobroSaldoVal);
-                  // Mora base acumulada (estática de BD)
-                  const moraBase = miautoNum(c.mora_acumulada ?? c.late_fee);
-                  // Saldo a favor del conductor: excedente PF83 que cubre la cuota y sobra
+                  // Cuota a pagar = amount_due (DB)
+                  const cuotaOriginal = miautoNum(c.amount_due);
+                  // Mora = mora_acumulada (DB, total histórico)
+                  const moraOriginal = miautoNum(c.mora_acumulada ?? c.late_fee);
+                  // Desglose del pago: mora primero, luego cuota
+                  const pagadoVal = miautoNum(c.paid_amount);
+                  const moraPagada = Math.min(pagadoVal, moraOriginal);
+                  const cuotaPagada = Math.max(0, pagadoVal - moraPagada);
+                  // Lo que queda por pagar
+                  const cuotaAPagarNeta = cuotaOriginal - cuotaPagada;
+                  const moraPendiente = moraOriginal - moraPagada;
+                  // Saldo a favor
                   const saldoFavor = miautoNum(c.saldo_favor_conductor);
-                  // ¿Hay cuotas vencidas en esta solicitud? Si hay, el saldo a favor va a cubrirlas primero
-                  const hayCuotaVencida = cuotas.some(x => x.status === 'overdue');
-                  // Solo aplicar saldo a favor si NO hay cuotas vencidas (el excedente es para el conductor)
-                  const aplicarSaldoFavor = saldoFavor > 0.005 && !hayCuotaVencida;
-                  // Cuota final = cuota neta + mora - saldo a favor (negativo = crédito para el conductor)
-                  const cuotaFinalCalc = aplicarSaldoFavor ? roundToTwoDecimals(-saldoFavor + moraBase) : cuotaAPagarNeta + moraBase;
-                  // Pagado
-                  const pagoHecho = montoPagadoDisplay;
-                  // Pendiente = cuota final - pagado
-                  const pendientePago = aplicarSaldoFavor ? roundToTwoDecimals(-saldoFavor + moraBase - pagoHecho) : Math.max(0, cuotaFinalCalc - pagoHecho);
-                  // Mostrar valor absoluto (sin signo negativo) cuando hay saldo a favor
-                  const cuotaFinalDisplay = Math.abs(cuotaFinalCalc);
-                  const pendienteDisplay = Math.abs(pendientePago);
-                  // Si pagado > 0, la mora extra se calcula sobre el pendiente (viene de BD)
+                  // Pendiente total
+                  const pendienteDisplay = cuotaAPagarNeta + moraPendiente;
+                  // Mora extra
                   const moraExtra = miautoNum(c.mora_extra);
                   return (
                   <Fragment key={c.id}>
@@ -1025,35 +1016,65 @@ export default function YegoMiAutoRentSaleDetail() {
                             ))}
                           </div>
                         )}
+                        {/* Mostrar distribución del cobro fleet */}
+                        {(() => {
+                          const cobroFleetVal = miautoNum(c.cobro_desde_saldo_conductor);
+                          const pagadoVal = miautoNum(c.paid_amount);
+                          if (cobroFleetVal <= 0.005) return null;
+                          if (pagadoVal > 0.005) return null;
+                          // El cobro se distribuyó → buscar semanas que recibieron el pago
+                          const destinos: { semana: number; monto: number }[] = [];
+                          for (const cc of cuotas) {
+                            if (cc.id === c.id) continue;
+                            if (cc.status === 'paid' || cc.status === 'bonificada') continue;
+                            const ccPaid = miautoNum(cc.paid_amount);
+                            if (ccPaid <= 0.005) continue;
+                            const semana = miautoSemanaOrdinalPorVencimiento(cuotas, cc.due_date, cc.week_start_date);
+                            if (semana) destinos.push({ semana, monto: cobroFleetVal });
+                          }
+                          if (destinos.length === 0) return (
+                            <span className="text-[10px] font-normal leading-snug text-gray-500">→ distribuido a semanas anteriores</span>
+                          );
+                          return (
+                            <div className="text-[10px] font-normal leading-snug text-gray-600">
+                              {destinos.map((d, idx) => (
+                                <span key={idx} className="block tabular-nums">
+                                  → Semana {d.semana}: {miautoFmtMonto(symCuota, d.monto)}
+                                </span>
+                              ))}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </td>
                     {/* Cuota a pagar */}
                     <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-gray-900 text-[12px]" title="Cuota neta después de descuentos (Recaudo + Cobro saldo)">
-                      <span className="block">{miautoFmtMonto(symCuota, cuotaAPagarNeta)}</span>
-                    </td>
-                    {/* Mora */}
-                    <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-[12px] text-red-600">
-                      <span className="block">{miautoFmtMonto(symCuota, moraBase)}</span>
-                    </td>
-                    {/* Cuota final */}
-                    <td className="py-2.5 pr-2 align-middle text-right text-[13px]">
                       <div className="flex flex-col items-end gap-0.5">
-                        <span className={`font-medium tabular-nums block ${aplicarSaldoFavor ? 'text-blue-700' : 'text-green-700'}`}>
-                          {miautoFmtMonto(symCuota, cuotaFinalDisplay)}
-                        </span>
-                        {aplicarSaldoFavor && (
-                          <span className="text-[10px] font-normal leading-snug text-blue-600">Saldo a favor del conductor</span>
+                        <span className="text-[10px] text-gray-400">Total: {miautoFmtMonto(symCuota, cuotaOriginal)}</span>
+                        <span className="block font-semibold">{miautoFmtMonto(symCuota, cuotaAPagarNeta)}</span>
+                        {cuotaPagada > 0.005 && (
+                          <span className="text-[10px] font-normal leading-snug text-green-700">
+                            Cobrado: {miautoFmtMonto(symCuota, cuotaPagada)}
+                          </span>
                         )}
                       </div>
                     </td>
-                    {/* Pagado */}
-                    <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-800">
-                      <span className="font-medium">{miautoFmtMonto(symCuota, pagoHecho)}</span>
+                    {/* Mora */}
+                    <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-[12px] text-red-600">
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className="text-[10px] text-gray-400">Total: {miautoFmtMonto(symCuota, moraOriginal)}</span>
+                        <span className="block font-semibold">{miautoFmtMonto(symCuota, moraPendiente)}</span>
+                        {moraPagada > 0.005 && (
+                          <span className="text-[10px] font-normal leading-snug text-green-700">
+                            Cobrado: {miautoFmtMonto(symCuota, moraPagada)}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     {/* Pendiente de pago */}
                     <td className="py-2.5 px-1 align-middle text-right text-[13px]">
                       <div className="flex flex-col items-end gap-0.5">
-                        <span className={`font-medium tabular-nums ${aplicarSaldoFavor ? 'text-blue-700' : 'text-orange-600'}`}>
+                        <span className="font-medium tabular-nums text-orange-600">
                           {miautoFmtMonto(symCuota, pendienteDisplay)}
                         </span>
                         {moraExtra > 0.005 && (
@@ -1062,6 +1083,10 @@ export default function YegoMiAutoRentSaleDetail() {
                           </span>
                         )}
                       </div>
+                    </td>
+                    {/* Pagado */}
+                    <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-800">
+                      <span className="font-medium">{miautoFmtMonto(symCuota, montoPagadoDisplay)}</span>
                     </td>
                     {/* Estado */}
                     <td className="py-2.5 pl-1 pr-2 align-middle whitespace-nowrap">
@@ -1075,7 +1100,7 @@ export default function YegoMiAutoRentSaleDetail() {
                     </td>
                   </tr>
                   <tr className="border-b border-gray-100">
-                       <td colSpan={12} className="p-0 align-top">
+                       <td colSpan={11} className="p-0 align-top">
                         <div
                           className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
                           style={{ maxHeight: abierto ? 1800 : 0, opacity: abierto ? 1 : 0 }}

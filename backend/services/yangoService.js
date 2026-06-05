@@ -195,10 +195,12 @@ export async function getContractorBalance(contractorProfileId, parkId = null, c
   const id = String(contractorProfileId || '').trim();
   if (!id) return { success: false, error: 'external_driver_id vacío' };
   const url = `${fleetBaseUrl()}/api/fleet/contractor-profiles-manager/v1/contractor-balances/by-pro-id?contractor_profile_id=${encodeURIComponent(id)}`;
+  const resolvedPark = fleetParkIdForMiAuto(parkId);
+  const resolvedCookie = fleetCookieCobroForMiAuto(cookieOverride);
   const headers = {
     'Accept-Language': 'es-ES,es',
-    'Cookie': (cookieOverride && String(cookieOverride).trim()) ? String(cookieOverride).trim() : fleetCookieCobro(),
-    'X-Park-Id': (parkId && String(parkId).trim()) ? String(parkId).trim() : fleetParkId(),
+    'Cookie': resolvedCookie,
+    'X-Park-Id': resolvedPark,
     'Content-Type': 'application/json'
   };
   try {

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import api from '../../services/api';
 import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError } from '../../utils/miautoApiUtils';
@@ -196,11 +197,13 @@ function SolicitudesTable({
   solicitudes,
   onViewDetail,
   onDesactivar,
+  onReactivar,
   isLoading,
 }: {
   solicitudes: Solicitud[];
   onViewDetail: (id: string) => void;
   onDesactivar: (id: string) => void;
+  onReactivar: (id: string) => void;
   isLoading: boolean;
 }) {
   return (
@@ -248,7 +251,17 @@ function SolicitudesTable({
                       <Eye className="w-4 h-4" />
                       Ver más detalle
                     </button>
-                    {s.status !== 'desactivado' && (
+                    {s.status === 'desactivado' ? (
+                      <button
+                        type="button"
+                        onClick={() => onReactivar(s.id)}
+                        className="inline-flex items-center gap-1 px-2 py-1.5 text-sm font-medium text-green-600 hover:bg-green-50 rounded-lg"
+                        title="Reactivar solicitud"
+                      >
+                        <Ban className="w-4 h-4" />
+                        Reactivar
+                      </button>
+                    ) : (
                       <button
                         type="button"
                         onClick={() => onDesactivar(s.id)}
@@ -260,7 +273,7 @@ function SolicitudesTable({
                       </button>
                     )}
                   </div>
-                </td>
+                  </td>
               </tr>
             ))}
           </tbody>
@@ -432,17 +445,52 @@ export default function YegoMiAutoSolicitudes() {
     });
   }, [totalFiltered]);
 
-  const handleDesactivar = useCallback(async (solId: string) => {
+  const [desactivarId, setDesactivarId] = useState<string | null>(null);
+  const [desactivando, setDesactivando] = useState(false);
+  const [motivoDesactivar, setMotivoDesactivar] = useState('');
+  const [reactivarId, setReactivarId] = useState<string | null>(null);
+  const [reactivando, setReactivando] = useState(false);
+
+  const handleDesactivar = useCallback((solId: string) => {
+    setDesactivarId(solId);
+    setMotivoDesactivar('');
+  }, []);
+
+  const confirmarDesactivar = async () => {
+    if (!desactivarId) return;
+    setDesactivando(true);
     try {
-      await api.post(`/miauto/solicitudes/${solId}/desactivar`, { motivo: '' });
+      await api.post(`/miauto/solicitudes/${desactivarId}/desactivar`, { motivo: motivoDesactivar.trim() });
       toast.success('Solicitud desactivada');
       const ac = new AbortController();
       fetchSolicitudesAllPages(ac.signal);
-      return () => ac.abort();
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al desactivar');
+    } finally {
+      setDesactivando(false);
+      setDesactivarId(null);
     }
-  }, [fetchSolicitudesAllPages]);
+  };
+
+  const handleReactivar = useCallback((solId: string) => {
+    setReactivarId(solId);
+  }, []);
+
+  const confirmarReactivar = async () => {
+    if (!reactivarId) return;
+    setReactivando(true);
+    try {
+      await api.post(`/miauto/solicitudes/${reactivarId}/activar`);
+      toast.success('Solicitud reactivada');
+      const ac = new AbortController();
+      fetchSolicitudesAllPages(ac.signal);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error al reactivar');
+    } finally {
+      setReactivando(false);
+      setReactivarId(null);
+    }
+  };
 
   const handleLimitChange = useCallback((newLimit: number) => {
     setPagination((p) => ({ ...p, limit: newLimit, page: 1 }));
@@ -505,6 +553,7 @@ export default function YegoMiAutoSolicitudes() {
             solicitudes={displaySolicitudes}
             onViewDetail={(id) => navigate(`/admin/yego-mi-auto/requests/${id}`)}
             onDesactivar={handleDesactivar}
+            onReactivar={handleReactivar}
             isLoading={false}
           />
           {totalFiltered > 0 && (
@@ -521,6 +570,43 @@ export default function YegoMiAutoSolicitudes() {
             />
           )}
         </>
+      )}
+      {desactivarId && createPortal(
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style={{ zIndex: 9999 }} role="dialog" aria-modal="true">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Desactivar solicitud</h3>
+            <p className="text-sm text-gray-600 mb-3">¿Desactivar esta solicitud? <strong>No se generarán más cuotas ni cobros</strong> para este conductor.</p>
+            <textarea
+              value={motivoDesactivar}
+              onChange={(e) => setMotivoDesactivar(e.target.value)}
+              placeholder="Motivo de la desactivación (opcional)"
+              rows={2}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-4 resize-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+            />
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setDesactivarId(null)} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancelar</button>
+              <button type="button" onClick={confirmarDesactivar} disabled={desactivando} className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50">
+                {desactivando ? 'Desactivando…' : 'Sí, desactivar'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+      {reactivarId && createPortal(
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style={{ zIndex: 9999 }} role="dialog" aria-modal="true">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Reactivar solicitud</h3>
+            <p className="text-sm text-gray-600 mb-4">¿Reactivar esta solicitud? Se volverán a generar cuotas y cobros para este conductor.</p>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setReactivarId(null)} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancelar</button>
+              <button type="button" onClick={confirmarReactivar} disabled={reactivando} className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50">
+                {reactivando ? 'Reactivando…' : 'Sí, reactivar'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );

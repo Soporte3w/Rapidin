@@ -117,15 +117,27 @@ export function miautoFmtMonto(sym: string, monto: unknown): string {
 export function miautoCobroPorIngresosTributoDisplay(c: {
   partner_fees_83?: unknown;
   partner_fees_yango_83?: unknown;
+  partner_fees_cascada_aplicado_a?: unknown;
 }): number {
   const y83 = miautoNum(c.partner_fees_yango_83);
   if (y83 > 0.005) return y83;
-  return miautoNum(c.partner_fees_83);
+  const pf83 = miautoNum(c.partner_fees_83);
+  if (pf83 > 0.005) return pf83;
+  // Si cascada distribuyó todo, sumar lo que fue a otras cuotas
+  const cascada = c.partner_fees_cascada_aplicado_a;
+  if (Array.isArray(cascada) && cascada.length > 0) {
+    return cascada.reduce((sum: number, x: any) => sum + miautoNum(x?.monto), 0);
+  }
+  return 0;
 }
 
 /** Columna «Cobro saldo»: siempre magnitud positiva en UI (en BD puede guardarse negativo por la cascada). */
-export function miautoCobroSaldoDisplay(c: { cobro_saldo?: unknown }): number {
-  return Math.abs(miautoNum(c.cobro_saldo));
+export function miautoCobroSaldoDisplay(c: { cobro_saldo?: unknown; cobro_desde_saldo_conductor?: unknown; paid_amount?: unknown }): number {
+  const cobroDesde = miautoNum(c.cobro_desde_saldo_conductor);
+  const pagado = miautoNum(c.paid_amount);
+  // Si el cobro fue a otra cuota, mostrar 0; si se aplicó aquí, mostrar el valor
+  if (cobroDesde > 0.005 && pagado <= 0.005) return 0;
+  return Math.abs(cobroDesde || miautoNum(c.cobro_saldo));
 }
 
 /**

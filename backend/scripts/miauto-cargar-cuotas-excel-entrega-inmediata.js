@@ -161,11 +161,9 @@ function parseMontoYMoneda(montoStr, defaultMoneda) {
     return { monto: round2(Number(montoStr)), moneda: defaultMoneda || 'PEN' };
   }
   if (s === '') throw new Error('Monto vacio');
-  let moneda = defaultMoneda || 'PEN';
   let numPart = s;
   const upper = s.toUpperCase();
   if (/^S\/?\.?\s*/i.test(s) || /^SOLES?\b/i.test(upper)) {
-    moneda = 'PEN';
     numPart = s.replace(/^S\/?\.?\s*/i, '').replace(/^SOLES?\s*/i, '').trim();
   } else if (
     /^\$/i.test(s) ||
@@ -173,29 +171,19 @@ function parseMontoYMoneda(montoStr, defaultMoneda) {
     /^US\$/.test(upper) ||
     /^D[oó]L/i.test(s)
   ) {
-    moneda = 'USD';
     numPart = s.replace(/^\$/i, '').replace(/^USD\s*/i, '').replace(/^US\$\s*/i, '').replace(/^D[oó]L(?:ARES?)?\.?\s*/i, '').trim();
   } else {
     numPart = s;
   }
   const n = parseFloat(String(numPart).replace(/,/g, ''));
   if (Number.isNaN(n)) throw new Error('Monto no numerico: ' + montoStr);
-  return { monto: round2(n), moneda };
+  return { monto: round2(n), moneda: defaultMoneda || 'PEN' };
 }
 
 function parseMontoCell(cell, defaultMoneda) {
   if (!cell) throw new Error('Sin celda monto');
   const v = cell.v;
   if (typeof v === 'number') {
-    if (cell.w != null && String(cell.w).trim() !== '') {
-      const w = String(cell.w).trim().toUpperCase();
-      if (/^S\/?\.?\s*\d/i.test(w) || /^SOLES?\b/i.test(w)) {
-        return { monto: round2(v), moneda: 'PEN' };
-      }
-      if (/^\$/.test(w) || /^USD\b/i.test(w) || /^US\$/.test(w) || /^D[OÓ]L/i.test(w)) {
-        return { monto: round2(v), moneda: 'USD' };
-      }
-    }
     return { monto: round2(v), moneda: defaultMoneda || 'PEN' };
   }
   return parseMontoYMoneda(cellToString(cell), defaultMoneda);

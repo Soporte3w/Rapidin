@@ -261,6 +261,7 @@ export async function getCuotasToCharge() {
      INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
      ${sqlYangoDriverLateralJoin(1)}
      WHERE c.status IN ('pending', 'overdue', 'partial')
+       AND s.status = 'aprobado'
      ORDER BY c.solicitud_id, c.week_start_date ASC NULLS LAST, c.due_date ASC NULLS LAST, c.id ASC`,
     [MIAUTO_PARK_ID]
   );
@@ -293,6 +294,7 @@ export async function getCuotasToChargeForSolicitud(solicitudId) {
      ${sqlYangoDriverLateralJoin(2)}
      WHERE c.solicitud_id = $1::uuid
        AND c.status IN ('pending', 'overdue', 'partial')
+       AND s.status = 'aprobado'
      ORDER BY c.week_start_date ASC NULLS LAST, c.due_date ASC NULLS LAST, c.id ASC`,
     [solicitudId, MIAUTO_PARK_ID]
   );
@@ -583,12 +585,27 @@ export async function processCobroCuota(
     `UPDATE module_miauto_cuota_semanal SET
        paid_amount = $1,
        status = $2,
-       cobro_desde_saldo_conductor = ROUND((COALESCE(cobro_desde_saldo_conductor, 0) + $3::numeric)::numeric, 2),
        updated_at = CURRENT_TIMESTAMP
-     WHERE id = $4::uuid`,
-    [newPaid, newStatus, creditCuotaMoneda, cuotaRow.id]
+     WHERE id = $3::uuid`,
+    [newPaid, newStatus, cuotaRow.id]
   );
   await touchFechaUltimoAbonoCuota(cuotaRow.id, paid, newPaid);
+
+  // Acumular cobro_desde_saldo_conductor en la cuota más reciente (origen visual)
+  if (!dryRun && creditCuotaMoneda > 0.005) {
+    await query(
+      `UPDATE module_miauto_cuota_semanal SET
+         cobro_desde_saldo_conductor = ROUND((COALESCE(cobro_desde_saldo_conductor, 0) + $1::numeric)::numeric, 2),
+         updated_at = CURRENT_TIMESTAMP
+       WHERE solicitud_id = $2::uuid
+         AND id = (
+           SELECT id FROM module_miauto_cuota_semanal
+           WHERE solicitud_id = $2::uuid AND deleted_at IS NULL
+           ORDER BY week_start_date DESC LIMIT 1
+         )`,
+      [creditCuotaMoneda, cuotaRow.solicitud_id]
+    );
+  }
 
   await appendMiautoFleetCobroAuditLog({
     cuotaRow,

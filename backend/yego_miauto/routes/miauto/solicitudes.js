@@ -296,4 +296,19 @@ router.post('/solicitudes/:id/desactivar', validateUUID, async (req, res) => {
   }
 });
 
+// POST /api/miauto/solicitudes/:id/activar
+router.post('/solicitudes/:id/activar', validateUUID, async (req, res) => {
+  try {
+    const solicitud = await updateSolicitud(req.params.id, {
+      status: 'aprobado',
+      observations: 'Solicitud reactivada por administración.',
+    }, req.user?.id);
+    if (!solicitud) return errorResponse(res, 'Solicitud no encontrada', 404);
+    return successResponse(res, solicitud, 'Solicitud reactivada');
+  } catch (error) {
+    logger.error('Error reactivando solicitud Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al reactivar solicitud', 400);
+  }
+});
+
 export default router;

@@ -686,7 +686,12 @@ export const updateSolicitud = async (id, data, userId = null) => {
     params.push(data.appointment_date);
     n += 1;
   }
-  if (data.observations !== undefined) {
+  if (data.status === 'desactivado') {
+    const motivo = data.observations && String(data.observations).trim() ? ' Motivo: ' + String(data.observations).trim() : '';
+    updates.push(`observations = $${n}`);
+    params.push('Solicitud desactivada por administración.' + motivo);
+    n += 1;
+  } else if (data.status !== 'desistido' && data.observations !== undefined) {
     updates.push(`observations = $${n}`);
     params.push(data.observations);
     n += 1;
@@ -717,12 +722,6 @@ export const updateSolicitud = async (id, data, userId = null) => {
     const obsDesistido = 'El conductor desistió.' + (data.withdrawal_reason && String(data.withdrawal_reason).trim() ? ' Motivo: ' + String(data.withdrawal_reason).trim() : '');
     updates.push(`observations = $${n}`);
     params.push(obsDesistido);
-    n += 1;
-  }
-  if (data.status === 'desactivado') {
-    const obsDesactivado = 'Solicitud desactivada por administración.' + (data.observations ? ' ' + String(data.observations).trim() : '');
-    updates.push(`observations = $${n}`);
-    params.push(obsDesactivado);
     n += 1;
   }
   if (data.apps !== undefined) {
@@ -774,6 +773,11 @@ export const updateSolicitud = async (id, data, userId = null) => {
     n += 1;
   }
   if (updates.length === 0) return getSolicitudById(id);
+  if (userId) {
+    updates.push(`updated_by = $${n}`);
+    params.push(userId);
+    n += 1;
+  }
   params.push(id);
   await query(
     `UPDATE module_miauto_solicitud SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${n}`,

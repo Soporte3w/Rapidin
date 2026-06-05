@@ -147,6 +147,7 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
     incomeResult: { count_completed: incomeResult.count_completed, partner_fees: incomeResult.partner_fees },
     options: {
       generatedBy: 'cron_lunes',
+      forceUseYangoData: !!options.forceUseYangoData,
     },
   });
   if (ensuredId?.error) {

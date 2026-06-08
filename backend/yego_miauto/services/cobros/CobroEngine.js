@@ -368,7 +368,7 @@ export async function generateWeeklyCharge({
     });
     partnerFeesRawStored = snap.partnerFeesRaw;
     partnerFees83Stored = snap.partnerFees83;
-    partnerFeesYangoStored = snap.partnerFeesYangoRaw;
+    partnerFeesYangoStored = partnerFeesRaw > 0.005 ? partnerFeesRaw : null;
     amountDueInsert = snap.amountDue;
     saldoFavorInsert = snap.saldoFavorConductor;
   } else {

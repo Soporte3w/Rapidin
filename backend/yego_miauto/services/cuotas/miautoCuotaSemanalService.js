@@ -766,7 +766,15 @@ export function resolvedAmountDueSchedForOpenRow(
   const pfRaw = round2(parseFloat(r.partner_fees_raw) || 0);
   const useWaterfallGross = !isPrimeraCuotaSemanal && pfRaw > 0.005;
   if (useWaterfallGross) {
+    const pfYangoRaw = round2(parseFloat(r.partner_fees_yango_raw) || 0);
     const baseCuota = round2(cuotaSemanal);
+    const obligacion = round2(baseCuota + round2(cobroSaldo));
+    if (pfYangoRaw > 0.005) {
+      const poolTotal = round2(pfYangoRaw * PARTNER_FEES_PCT);
+      if (poolTotal >= obligacion) {
+        return 0;
+      }
+    }
     const pf83 = partnerFees83FromRow(r);
     return round2(Math.max(0, baseCuota - pf83 + cobroSaldo));
   }

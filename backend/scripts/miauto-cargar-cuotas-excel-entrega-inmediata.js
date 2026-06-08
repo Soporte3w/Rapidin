@@ -37,6 +37,7 @@ const CUOTA_BASE_COL = 15;
 const COL_PLACA = 4;
 const COL_DNI = 6;
 const COL_PHONE = 7;
+const COL_STATUS = 1;
 const FIRST_DATA_ROW = 3;
 const DEFAULT_CUTOFF = '2026-04-13';
 const DEFAULT_XLSX = defaultEntregaInmediataXlsxPath();
@@ -226,19 +227,20 @@ async function findSolicitud(placaNorm, dniDigits, phoneDigits) {
       const solDni = r.rows[0].sol_dni || '';
       const solPhone = r.rows[0].sol_phone || '';
       if (dniDigits && dniDigits.length >= 4 && solDni && solDni !== dniDigits) {
-        console.warn(`[MATCH-WARN] Placa ${placaNorm} coincide con solicitud ${r.rows[0].id} pero DNI difiere (Excel: ${dniDigits}, BD: ${solDni}).`);
+        console.warn(`[PLACA-COMPARTIDA] Placa ${placaNorm} coincide con solicitud ${r.rows[0].id} pero DNI difiere (Excel: ${dniDigits}, BD: ${solDni}). Se busca solicitud separada para no asociar cuotas a otra persona.`);
+      } else {
+        if (phoneDigits && phoneDigits.length >= 7 && solPhone && !solPhone.includes(phoneDigits.slice(-9))) {
+          console.warn(`[MATCH-WARN] Placa ${placaNorm} coincide con solicitud ${r.rows[0].id} pero teléfono difiere (Excel: ${phoneDigits}, BD: ${solPhone}).`);
+        }
+        return r.rows[0];
       }
-      if (phoneDigits && phoneDigits.length >= 7 && solPhone && !solPhone.includes(phoneDigits.slice(-9))) {
-        console.warn(`[MATCH-WARN] Placa ${placaNorm} coincide con solicitud ${r.rows[0].id} pero teléfono difiere (Excel: ${phoneDigits}, BD: ${solPhone}).`);
-      }
-      return r.rows[0];
     }
   }
   if (dniDigits && dniDigits.length >= 4) {
     const r2 = await query(
       `SELECT s.id, s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal, s.placa_asignada
        FROM module_miauto_solicitud s
-       LEFT JOIN module_rapidin_drivers rd ON rd.id = s.driver_id_fleet
+       LEFT JOIN module_rapidin_drivers rd ON rd.id::text = s.driver_id_fleet
        WHERE REGEXP_REPLACE(COALESCE(TRIM(s.dni),''), '[^0-9]', '', 'g') = $1
           OR REGEXP_REPLACE(COALESCE(TRIM(rd.dni),''), '[^0-9]', '', 'g') = $1
        ORDER BY s.created_at DESC NULLS LAST LIMIT 1`,
@@ -268,6 +270,19 @@ async function findSolicitud(placaNorm, dniDigits, phoneDigits) {
     return null;
   }
   return null;
+}
+
+async function findSolicitudByPlacaOnly(placaNorm) {
+  if (!placaNorm) return null;
+  const r = await query(
+    `SELECT s.id, s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal, s.placa_asignada
+     FROM module_miauto_solicitud s
+     WHERE REGEXP_REPLACE(UPPER(TRIM(COALESCE(s.placa_asignada,''))), '\\s', '', 'g') = $1
+       AND s.status = 'aprobado'
+     ORDER BY s.created_at DESC NULLS LAST LIMIT 1`,
+    [placaNorm]
+  );
+  return r.rows[0] || null;
 }
 
 function ymdFromFi(fi) {
@@ -414,11 +429,25 @@ async function main() {
 
     if (!placaNorm && dniDigits.length < 4 && phoneDigits.length < 7) continue;
 
-    const sol = await findSolicitud(placaNorm, dniDigits, phoneDigits);
-    if (!sol) {
-      stats.skipped_no_solicitud++;
-      stats.warnings.push({ row, msg: 'sin solicitud', placa: placaRaw, dni: dniRaw, phone: phoneRaw });
-      continue;
+    const statusExcel = cellToString(getCell(ws, row, COL_STATUS));
+    const isInactivo = String(statusExcel).trim().toUpperCase() === 'INACTIVO';
+
+    let sol;
+    if (isInactivo) {
+      sol = await findSolicitudByPlacaOnly(placaNorm);
+      if (!sol) {
+        stats.skipped_no_solicitud++;
+        stats.warnings.push({ row, msg: 'INACTIVO sin solicitud activa (placa)', placa: placaRaw });
+        continue;
+      }
+      console.log(`[INACTIVO→ACTIVO] ${placaNorm}: cuotas del dueño transferidas al conductor activo (solicitud ${sol.id})`);
+    } else {
+      sol = await findSolicitud(placaNorm, dniDigits, phoneDigits);
+      if (!sol) {
+        stats.skipped_no_solicitud++;
+        stats.warnings.push({ row, msg: 'sin solicitud', placa: placaRaw, dni: dniRaw, phone: phoneRaw });
+        continue;
+      }
     }
 
     if (onlySolicitudId && String(sol.id) !== onlySolicitudId) {

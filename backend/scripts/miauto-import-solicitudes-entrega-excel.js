@@ -160,12 +160,13 @@ async function findSolicitud(placaNorm, dniDigits, phoneDigits) {
       const solDni = r.rows[0].sol_dni || '';
       const solPhone = r.rows[0].sol_phone || '';
       if (dniDigits && dniDigits.length >= 4 && solDni && solDni !== dniDigits) {
-        console.warn(`[MATCH-WARN] Placa ${placaNorm} coincide con solicitud ${r.rows[0].id} pero DNI difiere (Excel: ${dniDigits}, BD: ${solDni}). Verificar manualmente.`);
+        console.warn(`[PLACA-COMPARTIDA] Placa ${placaNorm} coincide con solicitud ${r.rows[0].id} pero DNI difiere (Excel: ${dniDigits}, BD: ${solDni}). Se crea solicitud separada para no pisar la existente.`);
+      } else {
+        if (phoneDigits && phoneDigits.length >= 7 && solPhone && !solPhone.includes(phoneDigits.slice(-9))) {
+          console.warn(`[MATCH-WARN] Placa ${placaNorm} coincide con solicitud ${r.rows[0].id} pero teléfono difiere (Excel: ${phoneDigits}, BD: ${solPhone}). Verificar manualmente.`);
+        }
+        return { ...r.rows[0], matchBy: 'placa' };
       }
-      if (phoneDigits && phoneDigits.length >= 7 && solPhone && !solPhone.includes(phoneDigits.slice(-9))) {
-        console.warn(`[MATCH-WARN] Placa ${placaNorm} coincide con solicitud ${r.rows[0].id} pero teléfono difiere (Excel: ${phoneDigits}, BD: ${solPhone}). Verificar manualmente.`);
-      }
-      return { ...r.rows[0], matchBy: 'placa' };
     }
   }
   if (dniDigits && dniDigits.length >= 4) {
@@ -349,6 +350,11 @@ async function main() {
     const placaNorm = normalizePlacaAsignada(placaRaw);
     const dniDigits = normalizePhoneDigits(dniRaw);
     const phoneDigits = normalizePhoneDigits(phoneRaw);
+
+    if (String(statusExcel).trim().toUpperCase() === 'INACTIVO') {
+      console.log(`[${row}] SKIP INACTIVO — ${placaRaw || 'sin placa'} ${nombre || 'sin nombre'} (dueño inactivo, no se crea solicitud)`);
+      continue;
+    }
 
     if (!placaNorm && dniDigits.length < 4 && phoneDigits.length < 7) continue;
 

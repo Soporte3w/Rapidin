@@ -20,6 +20,7 @@ export default function PersonalYegoCreditForm() {
   const [search, setSearch] = useState('');
   const [selectedUser, setSelectedUser] = useState<RRHHUser | null>(null);
   const [form, setForm] = useState({ amount: '', installments: '12' });
+  const [paymentFrequency, setPaymentFrequency] = useState<'semanal' | 'mensual'>('mensual');
   const [bank, setBank] = useState({ bank: '', accountType: 'ahorros' as 'ahorros' | 'corriente', accountNumber: '' });
   const [bankOther, setBankOther] = useState('');
   const [bankError, setBankError] = useState('');
@@ -97,7 +98,7 @@ export default function PersonalYegoCreditForm() {
         role: selectedUser.role,
         amount: parseFloat(form.amount),
         number_of_installments: parseInt(form.installments),
-        payment_frequency: 'monthly',
+        payment_frequency: paymentFrequency,
         bank_name: bank.bank === 'OTRO' ? bankOther : bank.bank || undefined,
         bank_account: bank.bank !== 'OTRO' ? bank.accountNumber || undefined : undefined,
         bank_account_type: bank.bank !== 'OTRO' ? (bank.accountType === 'ahorros' ? 'Ahorros' : 'Corriente') : undefined,
@@ -122,11 +123,14 @@ export default function PersonalYegoCreditForm() {
 
   const filteredUsers = search.trim().length >= 2 ? users : [];
   const amount = parseFloat(form.amount) || 0;
-  const rate = config.interest_rate;
+  const rateMensual = config.interest_rate;
+  const rateEfectiva = paymentFrequency === 'semanal' ? rateMensual / 4 : rateMensual;
   const installments = parseInt(form.installments || '1');
-  const totalInterest = amount * rate / 100 * installments;
+  const totalInterest = amount * rateEfectiva / 100 * installments;
   const totalAmount = amount + totalInterest;
-  const monthlyAmount = totalAmount / installments;
+  const cuotaAmount = totalAmount / installments;
+  const freqLabel = paymentFrequency === 'semanal' ? 'semana' : 'mes';
+  const freqLabelCap = paymentFrequency === 'semanal' ? 'Semanal' : 'Mensual';
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
@@ -134,7 +138,7 @@ export default function PersonalYegoCreditForm() {
         <Building2 className="w-10 h-10 flex-shrink-0" />
         <div>
           <h1 className="text-xl font-bold">Crédito Personal de Yego</h1>
-          <p className="text-sm text-red-200">Mensual · Interés {rate}%</p>
+          <p className="text-sm text-red-200">{freqLabelCap} · Interés {rateEfectiva.toFixed(2)}% {freqLabel}</p>
         </div>
       </div>
 
@@ -186,7 +190,7 @@ export default function PersonalYegoCreditForm() {
 
           <div className="bg-white rounded-xl shadow border border-gray-200 p-5">
             <h3 className="text-sm font-bold text-gray-800 mb-3">Condiciones del crédito</h3>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1">Monto (PEN)</label>
                 <input type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" min="0" step="0.01" className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500" />
@@ -195,8 +199,15 @@ export default function PersonalYegoCreditForm() {
                 <label className="block text-xs font-semibold text-gray-500 mb-1">N° de cuotas</label>
                 <select value={form.installments} onChange={(e) => setForm({ ...form, installments: e.target.value })} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500">
                   {Array.from({ length: config.max_installments }, (_, i) => i + 1).map((n) => (
-                    <option key={n} value={n}>{n} {n === 1 ? 'mes' : 'meses'}</option>
+                    <option key={n} value={n}>{n} {paymentFrequency === 'semanal' ? (n === 1 ? 'semana' : 'semanas') : (n === 1 ? 'mes' : 'meses')}</option>
                   ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1">Frecuencia</label>
+                <select value={paymentFrequency} onChange={(e) => setPaymentFrequency(e.target.value as 'semanal' | 'mensual')} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500">
+                  <option value="semanal">Semanal ({rateMensual / 4}%)</option>
+                  <option value="mensual">Mensual ({rateMensual}%)</option>
                 </select>
               </div>
             </div>
@@ -292,17 +303,17 @@ export default function PersonalYegoCreditForm() {
                   <div className="flex justify-between py-2.5 border-b border-gray-100">
                     <div>
                       <span className="text-sm text-gray-500">Tasa de interés</span>
-                      <span className="block text-xs text-gray-400">TNA fija</span>
+                      <span className="block text-xs text-gray-400">{freqLabelCap} · TNA fija</span>
                     </div>
-                    <span className="text-sm text-gray-700">{rate}%</span>
+                    <span className="text-sm text-gray-700">{rateEfectiva.toFixed(2)}% {freqLabel}</span>
                   </div>
                   <div className="flex justify-between py-2.5 border-b border-gray-100">
                     <span className="text-sm text-gray-500">Plazo</span>
-                    <span className="text-sm text-gray-700">{installments} {installments === 1 ? 'mes' : 'meses'}</span>
+                    <span className="text-sm text-gray-700">{installments} {paymentFrequency === 'semanal' ? (installments === 1 ? 'semana' : 'semanas') : (installments === 1 ? 'mes' : 'meses')}</span>
                   </div>
                   <div className="flex justify-between py-2.5 border-b border-gray-100">
-                    <span className="text-sm text-gray-500">Interés mensual</span>
-                    <span className="text-sm text-gray-700">S/ {(amount * rate / 100).toFixed(2)}</span>
+                    <span className="text-sm text-gray-500">Interés por {freqLabel}</span>
+                    <span className="text-sm text-gray-700">S/ {(amount * rateEfectiva / 100).toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between py-2.5 border-b border-gray-100">
                     <span className="text-sm text-gray-500">Intereses</span>
@@ -317,8 +328,8 @@ export default function PersonalYegoCreditForm() {
                     <span className="text-base font-bold text-gray-900">S/ {totalAmount.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between items-center mt-3 pt-3 border-t-2 border-red-600">
-                    <span className="text-sm font-bold text-red-700">Cuota mensual</span>
-                    <span className="text-xl font-bold text-red-700">S/ {monthlyAmount.toFixed(2)}</span>
+                    <span className="text-sm font-bold text-red-700">Cuota {freqLabel}</span>
+                    <span className="text-xl font-bold text-red-700">S/ {cuotaAmount.toFixed(2)}</span>
                   </div>
                 </div>
               ) : (

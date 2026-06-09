@@ -294,9 +294,9 @@ const LoanRequests = () => {
                       <td className="px-4 py-3 font-medium">{c.first_name} {c.last_name}</td>
                       <td className="px-4 py-3 text-gray-500">{c.dni}</td>
                       <td className="px-4 py-3">S/ {parseFloat(c.amount).toFixed(2)}</td>
-                      <td className="px-4 py-3">{c.interest_rate}%</td>
+                      <td className="px-4 py-3">{c.interest_rate}%{c.frecuencia_pago === 'semanal' ? ' sem' : ''}</td>
                       <td className="px-4 py-3 font-semibold">S/ {parseFloat(c.total_amount).toFixed(2)}</td>
-                      <td className="px-4 py-3">{c.number_of_installments} meses</td>
+                      <td className="px-4 py-3">{c.number_of_installments} {c.frecuencia_pago === 'semanal' ? (c.number_of_installments === 1 ? 'semana' : 'semanas') : (c.number_of_installments === 1 ? 'mes' : 'meses')}</td>
                       <td className="px-4 py-3 text-center">
                         <div className="flex items-center gap-2 justify-center">
                           {c.doc_count > 0 ? (<>
@@ -360,9 +360,9 @@ const LoanRequests = () => {
                 <div className="flex justify-between"><span className="text-gray-500">Trabajador:</span><span className="font-semibold">{validateModal.credito.first_name} {validateModal.credito.last_name}</span></div>
                 <div className="flex justify-between"><span className="text-gray-500">DNI:</span><span className="font-semibold">{validateModal.credito.dni}</span></div>
                 <div className="flex justify-between"><span className="text-gray-500">Monto:</span><span className="font-semibold">S/ {parseFloat(validateModal.credito.amount).toFixed(2)}</span></div>
-                <div className="flex justify-between"><span className="text-gray-500">Interés:</span><span className="font-semibold">{validateModal.credito.interest_rate}%</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">Interés:</span><span className="font-semibold">{validateModal.credito.tasa_interes != null ? validateModal.credito.tasa_interes : validateModal.credito.interest_rate}%{validateModal.credito.frecuencia_pago === 'semanal' ? ' semanal' : ''}</span></div>
                 <div className="flex justify-between"><span className="text-gray-500">Total:</span><span className="font-semibold">S/ {parseFloat(validateModal.credito.total_amount).toFixed(2)}</span></div>
-                <div className="flex justify-between"><span className="text-gray-500">Cuotas:</span><span className="font-semibold">{validateModal.credito.number_of_installments} meses</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">Cuotas:</span><span className="font-semibold">{validateModal.credito.number_of_installments} {validateModal.credito.frecuencia_pago === 'semanal' ? (validateModal.credito.number_of_installments === 1 ? 'semana' : 'semanas') : (validateModal.credito.number_of_installments === 1 ? 'mes' : 'meses')}</span></div>
                 <p className="text-xs text-gray-400 pt-2 text-center">Al aprobar, el crédito pasará a Activo y aparecerá en Préstamos</p>
               </div>
               <div className="flex border-t">

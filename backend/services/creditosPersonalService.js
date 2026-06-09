@@ -56,31 +56,50 @@ export async function updateConfigCreditoPersonal(data, userId) {
 
 export async function createCreditoPersonal(data, userId) {
   const config = await getConfigCreditoPersonal();
-  const interestRate = config.interest_rate;
+  const tasaMensualConfig = config.interest_rate;
 
   const {
     user_gestion_id, first_name, last_name, dni, document_type,
     email, phone, role, amount, number_of_installments,
-    payment_frequency = 'monthly',
     bank_name, bank_account, bank_account_type,
   } = data;
+
+  // Validar frecuencia (acepta payment_frequency o frecuencia_pago)
+  const freq = data.frecuencia_pago || data.payment_frequency;
+  if (freq !== 'semanal' && freq !== 'mensual') {
+    throw new Error('frecuencia_pago debe ser "semanal" o "mensual"');
+  }
+  const payment_frequency = freq;
+
+  // Calcular tasa efectiva según frecuencia
+  let tasaInteres;
+  const tasaOverride = data.tasa_interes != null ? parseFloat(data.tasa_interes) : null;
+  if (payment_frequency === 'semanal') {
+    tasaInteres = tasaMensualConfig / 4;
+  } else {
+    tasaInteres = tasaOverride != null ? tasaOverride : tasaMensualConfig;
+  }
+
+  const diasEntreCuotas = payment_frequency === 'semanal' ? 7 : 30;
+  const labelFrecuencia = payment_frequency === 'semanal' ? 'semana' : 'mes';
+
+  const totalInterest = amount * (tasaInteres / 100) * number_of_installments;
+  const totalAmount = amount + totalInterest;
+  const installmentAmount = totalAmount / number_of_installments;
 
   const bankName = bank_name || null;
   const bankAccount = bank_account || null;
   const bankAccountType = bank_account_type || null;
-  const totalInterest = amount * (interestRate / 100) * number_of_installments;
-  const totalAmount = amount + totalInterest;
-  const installmentAmount = totalAmount / number_of_installments;
 
   const result = await query(
     `INSERT INTO module_rapidin_creditos_personal
      (user_gestion_id, first_name, last_name, dni, document_type, email, phone, role,
-      amount, total_amount, interest_rate, number_of_installments, payment_frequency,
+      amount, total_amount, interest_rate, tasa_interes, number_of_installments, payment_frequency, frecuencia_pago,
       pending_balance, bank_name, bank_account, bank_account_type, created_by, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
      RETURNING id`,
     [user_gestion_id, first_name, last_name, dni, document_type, email, phone, role,
-     amount, totalAmount, interestRate, number_of_installments, payment_frequency,
+     amount, totalAmount, tasaMensualConfig, tasaInteres, number_of_installments, payment_frequency, payment_frequency,
      totalAmount, bankName, bankAccount, bankAccountType, userId, 'pending']
   );
 
@@ -88,7 +107,7 @@ export async function createCreditoPersonal(data, userId) {
 
   for (let i = 1; i <= number_of_installments; i++) {
     const dueDate = new Date();
-    dueDate.setMonth(dueDate.getMonth() + i);
+    dueDate.setDate(dueDate.getDate() + (i * diasEntreCuotas));
     await query(
       `INSERT INTO module_rapidin_creditos_personal_cuotas
        (credito_id, installment_number, installment_amount, due_date)
@@ -219,6 +238,127 @@ export async function deleteCreditoPersonal(creditoId) {
   await query('DELETE FROM module_rapidin_creditos_personal WHERE id = $1', [creditoId]);
 }
 
+export async function generarMoraCuotasVencidas() {
+  const r = await query(
+    `SELECT c.*, p.tasa_interes, p.frecuencia_pago
+     FROM module_rapidin_creditos_personal_cuotas c
+     JOIN module_rapidin_creditos_personal p ON p.id = c.credito_id
+     WHERE c.due_date < CURRENT_DATE
+       AND c.status NOT IN ('paid')`
+  );
+
+  let updated = 0;
+  for (const cuota of r.rows) {
+    const tasa = parseFloat(cuota.tasa_interes || 0);
+    const frecuencia = cuota.frecuencia_pago || 'mensual';
+    const divisor = frecuencia === 'semanal' ? 7 : 30;
+    const pendiente = parseFloat(cuota.installment_amount) - parseFloat(cuota.paid_amount || 0);
+    const diasAtraso = Math.max(0, Math.floor((Date.now() - new Date(cuota.due_date).getTime()) / (24 * 60 * 60 * 1000)));
+
+    if (pendiente <= 0.01 || tasa <= 0 || diasAtraso <= 0) continue;
+
+    const mora = Math.round(pendiente * (tasa / 100) / divisor * diasAtraso * 100) / 100;
+    await query(
+      `UPDATE module_rapidin_creditos_personal_cuotas SET late_fee = $1, status = 'overdue', updated_at = NOW() WHERE id = $2`,
+      [mora, cuota.id]
+    );
+    updated++;
+  }
+  return { updated };
+}
+
+export async function getCuotaMora(cuotaId) {
+  const r = await query(
+    `SELECT c.*, p.tasa_interes, p.frecuencia_pago
+     FROM module_rapidin_creditos_personal_cuotas c
+     JOIN module_rapidin_creditos_personal p ON p.id = c.credito_id
+     WHERE c.id = $1`,
+    [cuotaId]
+  );
+  const cuota = r.rows[0];
+  if (!cuota) throw new Error('Cuota no encontrada');
+
+  const dueDate = new Date(cuota.due_date);
+  const today = new Date();
+  const diasAtraso = Math.max(0, Math.floor((today.getTime() - dueDate.getTime()) / (24 * 60 * 60 * 1000)));
+
+  const pendiente = parseFloat(cuota.installment_amount) - parseFloat(cuota.paid_amount || 0);
+
+  if (diasAtraso <= 0) {
+    return { diasAtraso: 0, mora: 0, pendiente };
+  }
+
+  const tasa = parseFloat(cuota.tasa_interes || 0);
+  const frecuencia = cuota.frecuencia_pago || 'mensual';
+  const divisor = frecuencia === 'semanal' ? 7 : 30;
+
+  if (pendiente <= 0.01 || tasa <= 0) {
+    return { diasAtraso, mora: 0, pendiente, tasa, frecuencia };
+  }
+
+  const mora = Math.round(pendiente * (tasa / 100) / divisor * diasAtraso * 100) / 100;
+  return { diasAtraso, mora, tasa, frecuencia, pendiente };
+}
+
+export async function updateCuotaStatus(cuotaId, status, userId, moraAmount = 0) {
+  const valid = ['pending', 'paid', 'overdue', 'partial'];
+  if (!valid.includes(status)) throw new Error('Estado inválido. Debe ser: pending, paid, overdue, partial');
+
+  let paidDate = null;
+  if (status === 'paid') {
+    paidDate = new Date().toISOString().slice(0, 10);
+  }
+
+  await query(
+    `UPDATE module_rapidin_creditos_personal_cuotas SET
+       status = $1::varchar,
+       paid_date = CASE WHEN $2::text IS NOT NULL THEN $2::date ELSE NULL END,
+       paid_amount = CASE 
+         WHEN $5::numeric > 0.005 THEN installment_amount + $5::numeric
+         WHEN $2::text IS NOT NULL THEN COALESCE(NULLIF(paid_amount, 0), installment_amount)
+         WHEN $1::text IN ('pending', 'overdue') THEN 0
+         ELSE paid_amount
+       END,
+       late_fee = CASE WHEN $5::numeric > 0.005 THEN $5::numeric WHEN $1::text IN ('paid', 'pending', 'overdue') THEN 0 ELSE late_fee END,
+       updated_by = $3,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE id = $4`,
+    [status, paidDate, userId, cuotaId, moraAmount]
+  );
+
+  // Si se marcó como pagada, verificar si todas las cuotas están pagadas
+  if (status === 'paid') {
+    const creditoRes = await query(
+      `SELECT credito_id FROM module_rapidin_creditos_personal_cuotas WHERE id = $1`,
+      [cuotaId]
+    );
+    const creditoId = creditoRes.rows[0]?.credito_id;
+    if (creditoId) {
+      const pendientes = await query(
+        `SELECT COUNT(*)::int AS pendientes
+         FROM module_rapidin_creditos_personal_cuotas
+         WHERE credito_id = $1 AND status NOT IN ('paid')`,
+        [creditoId]
+      );
+      if (pendientes.rows[0]?.pendientes === 0) {
+        await query(
+          `UPDATE module_rapidin_creditos_personal SET status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+          [creditoId]
+        );
+      }
+    }
+  }
+
+  const r = await query(
+    `SELECT c.*, COALESCE(u.first_name || ' ' || u.last_name, '') AS updated_by_name
+     FROM module_rapidin_creditos_personal_cuotas c
+     LEFT JOIN module_rapidin_users u ON u.id = c.updated_by
+     WHERE c.id = $1`,
+    [cuotaId]
+  );
+  return r.rows[0] || null;
+}
+
 export async function generateCompromisoWord(creditoId) {
   const credito = await getCreditoPersonalById(creditoId);
   if (!credito) throw new Error('Crédito no encontrado');
@@ -256,11 +396,11 @@ export async function generateCompromisoWord(creditoId) {
         new Paragraph({ spacing: { before: 300, after: 200 }, children: [new TextRun({ text: 'Condiciones del crédito', bold: true, size: 24 })], border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: '999999' } } }),
 
         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Monto solicitado: ', bold: true }), new TextRun({ text: `S/ ${amount.toFixed(2)}` })] }),
-        new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Tasa de interés (TNA fija): ', bold: true }), new TextRun({ text: `${credito.interest_rate}% mensual` })] }),
-        new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Plazo: ', bold: true }), new TextRun({ text: `${credito.number_of_installments} mes(es)` })] }),
-        new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Interés total: ', bold: true }), new TextRun({ text: `S/ ${totalInteres.toFixed(2)}` })] }),
-        new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Total a pagar: ', bold: true }), new TextRun({ text: `S/ ${parseFloat(credito.total_amount).toFixed(2)}` })] }),
-        new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Cuota mensual: ', bold: true }), new TextRun({ text: `S/ ${cuotaMensual.toFixed(2)}` })] }),
+         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Tasa de interés (TNA fija): ', bold: true }), new TextRun({ text: `${credito.tasa_interes != null ? credito.tasa_interes : credito.interest_rate}% ${credito.frecuencia_pago === 'semanal' ? 'semanal' : 'mensual'}` })] }),
+         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Plazo: ', bold: true }), new TextRun({ text: `${credito.number_of_installments} ${credito.frecuencia_pago === 'semanal' ? 'semana(s)' : 'mes(es)'}` })] }),
+         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Interés total: ', bold: true }), new TextRun({ text: `S/ ${totalInteres.toFixed(2)}` })] }),
+         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Total a pagar: ', bold: true }), new TextRun({ text: `S/ ${parseFloat(credito.total_amount).toFixed(2)}` })] }),
+         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: `Cuota ${credito.frecuencia_pago === 'semanal' ? 'semanal' : 'mensual'}: `, bold: true }), new TextRun({ text: `S/ ${cuotaMensual.toFixed(2)}` })] }),
 
         cuotas.length > 0 ? new Paragraph({ spacing: { before: 300, after: 200 }, children: [new TextRun({ text: 'Cronograma de pagos', bold: true, size: 24 })], border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: '999999' } } }) : new Paragraph({ text: '' }),
 

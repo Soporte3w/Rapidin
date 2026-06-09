@@ -20,6 +20,9 @@ import {
   approveCreditoPersonal,
   deleteCreditoPersonal,
   generateCompromisoWord,
+  updateCuotaStatus,
+  getCuotaMora,
+  generarMoraCuotasVencidas,
 } from '../services/creditosPersonalService.js';
 
 const router = express.Router();
@@ -129,6 +132,39 @@ router.delete('/:id', async (req, res) => {
   } catch (error) {
     logger.error('Error eliminando crédito:', error);
     return errorResponse(res, error.message, 500);
+  }
+});
+
+router.put('/cuotas/:id/estado', async (req, res) => {
+  try {
+    const { status, mora } = req.body;
+    if (!status) return errorResponse(res, 'Estado requerido', 400);
+    const moraAmount = parseFloat(mora) || 0;
+    const cuota = await updateCuotaStatus(req.params.id, status, req.user?.id, moraAmount);
+    return successResponse(res, cuota, 'Estado actualizado');
+  } catch (error) {
+    logger.error('Error actualizando estado de cuota:', error);
+    return errorResponse(res, error.message, 400);
+  }
+});
+
+router.get('/cuotas/:id/mora', async (req, res) => {
+  try {
+    const mora = await getCuotaMora(req.params.id);
+    return successResponse(res, mora);
+  } catch (error) {
+    logger.error('Error calculando mora:', error);
+    return errorResponse(res, error.message, 400);
+  }
+});
+
+router.post('/cuotas/generar-mora', async (req, res) => {
+  try {
+    const result = await generarMoraCuotasVencidas();
+    return successResponse(res, result, `Mora generada en ${result.updated} cuota(s)`);
+  } catch (error) {
+    logger.error('Error generando mora:', error);
+    return errorResponse(res, error.message, 400);
   }
 });
 

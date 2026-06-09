@@ -417,6 +417,8 @@ const Loans = () => {
   const personalTotalPages = Math.max(1, Math.ceil(personalTotal / personalPageSize));
 
   const [detailModal, setDetailModal] = useState<{ open: boolean; credito: any }>({ open: false, credito: null });
+  const [changingStatusId, setChangingStatusId] = useState<string | null>(null);
+  const [moraConfirmModal, setMoraConfirmModal] = useState<{ cuotaId: string; diasAtraso: number; mora: number; pendiente: number } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   const openDetail = async (id: string) => {
@@ -429,6 +431,62 @@ const Loans = () => {
     } finally {
       setDetailLoading(false);
     }
+  };
+
+  const handleCuotaStatusChange = async (cuotaId: string, newStatus: string) => {
+    if (newStatus === 'paid') {
+      try {
+        const res = await api.get(`/creditos-personal-yego/cuotas/${cuotaId}/mora`);
+        const { diasAtraso, mora, pendiente } = res.data?.data || {};
+        if (diasAtraso > 0 && mora > 0.01) {
+          setMoraConfirmModal({ cuotaId, diasAtraso, mora, pendiente });
+          return;
+        }
+      } catch {
+        toast.error('Error al calcular mora');
+        return;
+      }
+    }
+    await doStatusChange(cuotaId, newStatus);
+  };
+
+  const doStatusChange = async (cuotaId: string, newStatus: string) => {
+    setChangingStatusId(cuotaId);
+    try {
+      await api.put(`/creditos-personal-yego/cuotas/${cuotaId}/estado`, { status: newStatus });
+      toast.success('Estado actualizado');
+      if (detailModal.credito?.id) {
+        const res = await api.get(`/creditos-personal-yego/${detailModal.credito.id}`);
+        setDetailModal({ open: true, credito: res.data?.data || null });
+      }
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Error al actualizar estado');
+    } finally {
+      setChangingStatusId(null);
+    }
+  };
+
+  const confirmMoraAndPay = async (cuotaId: string) => {
+    const moraAmount = moraConfirmModal?.mora || 0;
+    setMoraConfirmModal(null);
+    setChangingStatusId(cuotaId);
+    try {
+      await api.put(`/creditos-personal-yego/cuotas/${cuotaId}/estado`, { status: 'paid', mora: moraAmount });
+      toast.success('Cuota pagada con mora');
+      if (detailModal.credito?.id) {
+        const res = await api.get(`/creditos-personal-yego/${detailModal.credito.id}`);
+        setDetailModal({ open: true, credito: res.data?.data || null });
+      }
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Error');
+    } finally {
+      setChangingStatusId(null);
+    }
+  };
+
+  const confirmPayWithoutMora = async (cuotaId: string) => {
+    setMoraConfirmModal(null);
+    await doStatusChange(cuotaId, 'paid');
   };
 
   const handleUploadDoc = async (creditoId: string, file: File) => {
@@ -802,9 +860,9 @@ const Loans = () => {
                       <td className="px-4 py-3 font-medium">{c.first_name} {c.last_name}</td>
                       <td className="px-4 py-3 text-gray-500">{c.dni}</td>
                       <td className="px-4 py-3">S/ {parseFloat(c.amount).toFixed(2)}</td>
-                      <td className="px-4 py-3">{c.interest_rate}%</td>
+                      <td className="px-4 py-3">{c.interest_rate}%{c.frecuencia_pago === 'semanal' ? ' sem' : ''}</td>
                       <td className="px-4 py-3 font-semibold">S/ {parseFloat(c.total_amount).toFixed(2)}</td>
-                      <td className="px-4 py-3">{c.number_of_installments} meses</td>
+                      <td className="px-4 py-3">{c.number_of_installments} {c.frecuencia_pago === 'semanal' ? (c.number_of_installments === 1 ? 'semana' : 'semanas') : (c.number_of_installments === 1 ? 'mes' : 'meses')}</td>
                       <td className="px-4 py-3 text-center">
                         {(c.doc_count > 0 && c.doc_file_path) ? (
                           <button onClick={() => window.open(c.doc_file_path, '_blank')} className="text-blue-600 hover:text-blue-800" title="Ver documento">
@@ -874,41 +932,128 @@ const Loans = () => {
         {detailModal.open && detailModal.credito && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" onClick={() => setDetailModal({ open: false, credito: null })}>
             <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-5 py-4 border-b">
-                <h3 className="font-bold text-gray-900">Detalle del Crédito</h3>
-                <button onClick={() => setDetailModal({ open: false, credito: null })} className="p-1 hover:bg-gray-100 rounded"><X className="w-5 h-5" /></button>
+              <div className="flex items-center justify-between px-5 py-4 border-b bg-gradient-to-r from-red-700 to-red-600 rounded-t-xl">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 bg-white/20 rounded-lg flex items-center justify-center">
+                    <Building2 className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-white">Crédito Personal Yego</h3>
+                    <p className="text-xs text-red-200">{detailModal.credito.frecuencia_pago === 'semanal' ? 'Semanal' : 'Mensual'} · {detailModal.credito.tasa_interes != null ? detailModal.credito.tasa_interes : detailModal.credito.interest_rate}%</p>
+                  </div>
+                </div>
+                <button onClick={() => setDetailModal({ open: false, credito: null })} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition"><X className="w-5 h-5" /></button>
               </div>
               <div className="p-5 space-y-5 overflow-y-auto">
                 {detailLoading ? (
                   <div className="flex justify-center py-8"><Loader2 className="w-6 h-6 animate-spin" /></div>
                 ) : (
                   <>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-                      <div><span className="text-gray-500">Trabajador:</span><p className="font-semibold">{detailModal.credito.first_name} {detailModal.credito.last_name}</p></div>
-                      <div><span className="text-gray-500">DNI:</span><p className="font-semibold">{detailModal.credito.dni}</p></div>
-                      <div><span className="text-gray-500">Rol:</span><p className="font-semibold">{detailModal.credito.role || '-'}</p></div>
-                      <div><span className="text-gray-500">Monto:</span><p className="font-semibold">S/ {parseFloat(detailModal.credito.amount).toFixed(2)}</p></div>
-                      <div><span className="text-gray-500">Interés:</span><p className="font-semibold">{detailModal.credito.interest_rate}%</p></div>
-                      <div><span className="text-gray-500">Total:</span><p className="font-semibold text-red-600">S/ {parseFloat(detailModal.credito.total_amount).toFixed(2)}</p></div>
-                      <div><span className="text-gray-500">Estado:</span><p className="font-semibold">{detailModal.credito.status === 'active' ? 'Activo' : detailModal.credito.status === 'pending' ? 'Pendiente' : detailModal.credito.status}</p></div>
-                      <div><span className="text-gray-500">Cuotas:</span><p className="font-semibold">{detailModal.credito.number_of_installments} meses</p></div>
-                      <div><span className="text-gray-500">Creado:</span><p className="font-semibold">{detailModal.credito.created_at?.slice(0, 10)}</p></div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-gray-50 rounded-xl border border-gray-100 p-4 space-y-2.5">
+                        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Trabajador</span>
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center text-sm font-bold text-red-700">
+                            {detailModal.credito.first_name?.[0]}{detailModal.credito.last_name?.[0]}
+                          </div>
+                          <div>
+                            <p className="font-semibold text-gray-900">{detailModal.credito.first_name} {detailModal.credito.last_name}</p>
+                            <p className="text-xs text-gray-500">DNI {detailModal.credito.dni} · {detailModal.credito.role || '—'}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-gray-50 rounded-xl border border-gray-100 p-4">
+                        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Detalles</span>
+                        <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+                          <div><span className="text-gray-500">Monto:</span> <span className="font-semibold">S/ {parseFloat(detailModal.credito.amount).toFixed(2)}</span></div>
+                          <div><span className="text-gray-500">Interés:</span> <span className="font-semibold">{detailModal.credito.tasa_interes != null ? detailModal.credito.tasa_interes : detailModal.credito.interest_rate}%{detailModal.credito.frecuencia_pago === 'semanal' ? ' semanal' : ''}</span></div>
+                          <div><span className="text-gray-500">Total:</span> <span className="font-semibold text-red-600">S/ {parseFloat(detailModal.credito.total_amount).toFixed(2)}</span></div>
+                          <div><span className="text-gray-500">Cuotas:</span> <span className="font-semibold">{detailModal.credito.number_of_installments} {detailModal.credito.frecuencia_pago === 'semanal' ? (detailModal.credito.number_of_installments === 1 ? 'semana' : 'semanas') : (detailModal.credito.number_of_installments === 1 ? 'mes' : 'meses')}</span></div>
+                          <div><span className="text-gray-500">Estado:</span> <span className="font-semibold">{detailModal.credito.status === 'active' ? 'Activo' : detailModal.credito.status === 'pending' ? 'Pendiente' : detailModal.credito.status === 'paid' ? 'Pagado' : detailModal.credito.status}</span></div>
+                          <div><span className="text-gray-500">Creado:</span> <span className="font-semibold">{detailModal.credito.created_at?.slice(0, 10)}</span></div>
+                        </div>
+                      </div>
                     </div>
+
                     {detailModal.credito.cuotas && detailModal.credito.cuotas.length > 0 && (
                       <div>
-                        <h4 className="text-sm font-bold text-gray-700 mb-2">Cuotas</h4>
-                        <div className="border rounded-lg overflow-hidden">
+                        <h4 className="text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                          <span className="w-1.5 h-4 bg-red-600 rounded-full"></span>
+                          Cuotas
+                        </h4>
+                        <div className="border border-gray-200 rounded-lg overflow-hidden">
                           <table className="w-full text-sm">
                             <thead className="bg-gray-50 border-b">
-                              <tr><th className="text-left px-3 py-2 text-xs font-semibold text-gray-500">#</th><th className="text-left px-3 py-2 text-xs font-semibold text-gray-500">Vencimiento</th><th className="text-right px-3 py-2 text-xs font-semibold text-gray-500">Monto</th><th className="text-left px-3 py-2 text-xs font-semibold text-gray-500">Estado</th></tr>
+                              <tr>
+                                <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500">#</th>
+                                <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500">Vencimiento</th>
+                                <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500">Monto</th>
+                                <th className="text-center px-4 py-2.5 text-xs font-semibold text-gray-500">Estado</th>
+                                <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500">Mora</th>
+                                <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500">Pago Final</th>
+                                <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500">Cambió</th>
+                              </tr>
                             </thead>
                             <tbody>
                               {detailModal.credito.cuotas.map((cuota: any) => (
-                                <tr key={cuota.id} className="border-b last:border-0">
-                                  <td className="px-3 py-2 font-medium">{cuota.installment_number}</td>
-                                  <td className="px-3 py-2 text-gray-500">{cuota.due_date?.slice(0, 10)}</td>
-                                  <td className="px-3 py-2 text-right font-semibold">S/ {parseFloat(cuota.installment_amount).toFixed(2)}</td>
-                                  <td className="px-3 py-2"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${cuota.status === 'paid' ? 'bg-green-100 text-green-700' : cuota.status === 'overdue' ? 'bg-red-50 text-red-600' : 'bg-gray-100 text-gray-600'}`}>{cuota.status === 'paid' ? 'Pagada' : cuota.status === 'overdue' ? 'Vencida' : 'Pendiente'}</span></td>
+                                <tr key={cuota.id} className="border-b last:border-0 hover:bg-gray-50/50 transition-colors">
+                                  <td className="px-4 py-2.5 font-medium">{cuota.installment_number}</td>
+                                  <td className="px-4 py-2.5 text-gray-500">{cuota.due_date?.slice(0, 10)}</td>
+                                  <td className="px-4 py-2.5 text-right font-semibold">S/ {parseFloat(cuota.installment_amount).toFixed(2)}</td>
+                                  <td className="px-4 py-2.5 text-center">
+                                    <select
+                                      value={cuota.status}
+                                      onChange={(e) => handleCuotaStatusChange(cuota.id, e.target.value)}
+                                      disabled={changingStatusId === cuota.id}
+                                      className={`text-xs border rounded-lg px-2 py-1 font-medium transition-colors ${
+                                        changingStatusId === cuota.id ? 'opacity-50 cursor-wait' : 'cursor-pointer'
+                                      } ${
+                                        cuota.status === 'paid' ? 'bg-green-50 border-green-300 text-green-700' :
+                                        cuota.status === 'overdue' ? 'bg-red-50 border-red-300 text-red-600' :
+                                        'bg-gray-50 border-gray-300 text-gray-600'
+                                      }`}
+                                    >
+                                      <option value="pending">Pendiente</option>
+                                      <option value="paid">Pagada</option>
+                                      <option value="overdue">Vencida</option>
+                                    </select>
+                                  </td>
+                                  <td className="px-4 py-2.5 text-right text-xs">
+                                    {(() => {
+                                      const lateFee = parseFloat(cuota.late_fee || 0);
+                                      if (lateFee <= 0.005) return <span className="text-gray-400">—</span>;
+                                      if (cuota.status === 'paid') {
+                                        const paid = parseFloat(cuota.paid_amount || 0);
+                                        const cuotaMonto = parseFloat(cuota.installment_amount);
+                                        if (paid >= cuotaMonto + lateFee - 0.02) {
+                                          return <span className="text-red-600 font-medium">S/ {lateFee.toFixed(2)}</span>;
+                                        }
+                                        return <span className="text-gray-400">S/ {lateFee.toFixed(2)} <span className="text-[10px]">(no cobrado)</span></span>;
+                                      }
+                                      return <span className="text-red-600 font-medium">S/ {lateFee.toFixed(2)}</span>;
+                                    })()}
+                                  </td>
+                                  <td className="px-4 py-2.5 text-right text-xs">
+                                    {cuota.status === 'paid' ? (
+                                      <span className="font-semibold text-gray-900">
+                                        S/ {parseFloat(cuota.paid_amount || 0).toFixed(2)}
+                                        {(() => {
+                                          const lateFee = parseFloat(cuota.late_fee || 0);
+                                          if (lateFee <= 0.005) return null;
+                                          const paid = parseFloat(cuota.paid_amount || 0);
+                                          const cuotaMonto = parseFloat(cuota.installment_amount);
+                                          if (paid >= cuotaMonto + lateFee - 0.02) {
+                                            return <span className="text-red-500 text-[10px] ml-1">(con mora)</span>;
+                                          }
+                                          return <span className="text-gray-400 text-[10px] ml-1">(sin mora)</span>;
+                                        })()}
+                                      </span>
+                                    ) : (
+                                      <span className="text-gray-400">—</span>
+                                    )}
+                                  </td>
+                                  <td className="px-4 py-2.5 text-gray-400 text-xs">{cuota.updated_by_name || '—'}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -918,25 +1063,92 @@ const Loans = () => {
                     )}
                     {detailModal.credito.documentos && detailModal.credito.documentos.length > 0 && (
                       <div>
-                        <h4 className="text-sm font-bold text-gray-700 mb-2">Documento</h4>
+                        <h4 className="text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                          <span className="w-1.5 h-4 bg-red-600 rounded-full"></span>
+                          Documento
+                        </h4>
                         {(() => {
-                          const url = detailModal.credito.documentos[0].file_path || '';
-                          const isImage = /\.(jpg|jpeg|png|webp)$/i.test(url);
-                          if (isImage) {
-                            return <img src={url} alt="Documento" className="max-w-full max-h-72 object-contain rounded border" />;
-                          }
-                          return <embed src={url} type="application/pdf" className="w-full h-80 border rounded" />;
+                          const docs = detailModal.credito.documentos;
+                          const url = docs[0].file_path || '';
+                          const fileName = docs[0].file_name || 'Documento';
+                          return (
+                            <div className="bg-gray-50 rounded-xl border border-gray-100 p-4 flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center">
+                                  <ExternalLink className="w-5 h-5 text-red-600" />
+                                </div>
+                                <div>
+                                  <p className="font-medium text-gray-900 text-sm">{fileName}</p>
+                                  <p className="text-xs text-gray-400">Compromiso de pago</p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <a href={url} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 transition inline-flex items-center gap-1">
+                                  <Eye className="w-3.5 h-3.5" /> Ver
+                                </a>
+                                <a href={url} download={fileName} className="px-3 py-1.5 text-xs font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition inline-flex items-center gap-1">
+                                  <Download className="w-3.5 h-3.5" /> Descargar
+                                </a>
+                              </div>
+                            </div>
+                          );
                         })()}
                       </div>
                     )}
                   </>
                 )}
               </div>
-              <div className="px-5 py-4 border-t bg-gray-50 rounded-b-xl">
-                <button onClick={() => setDetailModal({ open: false, credito: null })} className="px-4 py-2.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm">Cerrar</button>
+              <div className="flex items-center justify-end px-5 py-4 border-t bg-gray-50 rounded-b-xl">
+                <button onClick={() => setDetailModal({ open: false, credito: null })} className="px-5 py-2.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium transition">
+                  Cerrar
+                </button>
               </div>
             </div>
           </div>
+        )}
+
+        {moraConfirmModal && createPortal(
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/50" onClick={() => setMoraConfirmModal(null)}>
+            <div className="bg-white rounded-xl shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-5 py-4 border-b bg-red-50">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-5 h-5 text-red-600" />
+                  <h3 className="text-lg font-semibold text-gray-900">¿Cobrar mora?</h3>
+                </div>
+                <button onClick={() => setMoraConfirmModal(null)} className="p-1 text-gray-400 hover:text-gray-600 rounded">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-5 space-y-3">
+                <p className="text-sm text-gray-600">
+                  Esta cuota tiene <span className="font-semibold text-red-600">{moraConfirmModal.diasAtraso} día(s)</span> de atraso.
+                </p>
+                <div className="bg-gray-50 rounded-lg p-3 space-y-2 text-sm">
+                  <div className="flex justify-between"><span className="text-gray-500">Cuota:</span><span className="font-semibold">S/ {moraConfirmModal.pendiente.toFixed(2)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">Mora:</span><span className="font-semibold text-red-600">S/ {moraConfirmModal.mora.toFixed(2)}</span></div>
+                  <div className="border-t border-gray-200 pt-2 flex justify-between">
+                    <span className="text-gray-700 font-semibold">Pago Final:</span>
+                    <span className="font-bold text-gray-900">S/ {(moraConfirmModal.pendiente + moraConfirmModal.mora).toFixed(2)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <button
+                    onClick={() => confirmMoraAndPay(moraConfirmModal.cuotaId)}
+                    className="w-full px-4 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium text-sm transition"
+                  >
+                    Sí, cobrar mora (S/ {(moraConfirmModal.pendiente + moraConfirmModal.mora).toFixed(2)})
+                  </button>
+                  <button
+                    onClick={() => confirmPayWithoutMora(moraConfirmModal.cuotaId)}
+                    className="w-full px-4 py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium text-sm transition"
+                  >
+                    No, solo cuota (S/ {moraConfirmModal.pendiente.toFixed(2)})
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body
         )}
 
         </>

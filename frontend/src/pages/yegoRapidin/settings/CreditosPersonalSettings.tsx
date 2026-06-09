@@ -6,6 +6,8 @@ import { Loader2, Save, Building2 } from 'lucide-react';
 export default function CreditosPersonalSettings() {
   const [interestRate, setInterestRate] = useState('7');
   const [maxInstallments, setMaxInstallments] = useState('10');
+  const [initialInterestRate, setInitialInterestRate] = useState('7');
+  const [initialMaxInstallments, setInitialMaxInstallments] = useState('10');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -16,8 +18,12 @@ export default function CreditosPersonalSettings() {
         const res = await api.get('/creditos-personal-yego/config');
         if (cancelled) return;
         if (res.data?.data) {
-          setInterestRate(String(res.data.data.interest_rate));
-          setMaxInstallments(String(res.data.data.max_installments));
+          const ir = String(res.data.data.interest_rate);
+          const mi = String(res.data.data.max_installments);
+          setInterestRate(ir);
+          setMaxInstallments(mi);
+          setInitialInterestRate(ir);
+          setInitialMaxInstallments(mi);
         }
       } catch {
         // defaults
@@ -42,6 +48,8 @@ export default function CreditosPersonalSettings() {
       setSaving(false);
     }
   };
+
+  const hasChanges = interestRate !== initialInterestRate || maxInstallments !== initialMaxInstallments;
 
   if (loading) return <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-gray-400" /></div>;
 
@@ -90,7 +98,7 @@ export default function CreditosPersonalSettings() {
           <div className="flex items-center gap-3 pt-1">
             <button
               onClick={handleSave}
-              disabled={saving}
+              disabled={!hasChanges || saving}
               className="flex items-center gap-2 px-8 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 font-medium text-sm shadow-sm"
             >
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}

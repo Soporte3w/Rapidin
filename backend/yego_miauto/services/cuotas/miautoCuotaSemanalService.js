@@ -891,8 +891,8 @@ function amountDueAndLateForOpenSinglePhase(
 
   const cuotaNetaProg = round2(Math.max(0, amount_due_sched));
   const cuotaBruta = round2(Math.max(0, parseFloat(cuota_semanal) || 0));
-  /** Base para mora (tasa diaria × días): cuota bruta del tramo; si no hay bruta, neta. */
-  const baseReparto = cuotaBruta > 0.005 ? cuotaBruta : cuotaNetaProg;
+  /** Base para mora (tasa diaria × días): sobre lo pendiente neto, descontando lo ya pagado. */
+  const baseReparto = round2(Math.max(0.005, cuotaNetaProg - paid));
   const moraParaReparto = computeLateFeeDisplay(
     cronograma,
     dueForMora,
@@ -1425,7 +1425,10 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
      * a abiertas (cobro Fleet, `processCobroCuota`, etc.).
      */
     let lateFeePersist = lateFeeOut;
-    if (!freezeMoraPorComprobante && stRow !== 'bonificada') {
+    /** Si ya hay abono (Fleet, comprobante, cascada) la mora base se cubrió y va a mora_extra. */
+    if (paidDb > 0.005) {
+      lateFeePersist = 0;
+    } else if (!freezeMoraPorComprobante && stRow !== 'bonificada') {
       lateFeePersist = round2(Math.max(lateFeeDb, lateFeeOut, moraFullD, moraSchedD));
     }
     if (freezeMoraPorComprobante) {
@@ -1440,7 +1443,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     const pagoAnterior = round2(parseFloat(row.paid_amount) || 0) - (paidDb - pagoHecho); // aprox del pago anterior
     const pendienteTotal = round2(round2(parseFloat(row.amount_due) || 0) + round2(parseFloat(row.late_fee) || 0) - pagoHecho);
     
-    if (statusOut === 'overdue' && pendienteTotal > 0.005) {
+    if (statusOut === 'overdue' && pendienteTotal > 0.005 && pagoHecho > 0.005) {
       // Detectar si hubo un NUEVO pago desde la última vez que se fijó mora_extra_desde
       const fechaUltimoAbono = ymdFromDbDate(row.fecha_ultimo_abono);
       const huboNuevoPago = pagoHecho > 0.005 && fechaUltimoAbono && (!moraExtraDesde || fechaUltimoAbono > moraExtraDesde);
@@ -1762,19 +1765,22 @@ function computeCuotaDerivedForRow(r, cronograma, vehId, options = {}) {
     : round2(
         resolvedAmountDueSchedForOpenRow(rForFees, cuota_semanal, bono_auto, pct_comision, cobro_saldo, isPrimera)
       );
-  /** Tope de la deuda del periodo (cuota programada + mora generada), sin descontar pagos — para cap de paid_amount / persist. */
-  const obligacion_total = mOpen
-    ? round2(
-        mOpen.obligacion_total_open != null && Number.isFinite(Number(mOpen.obligacion_total_open))
-          ? mOpen.obligacion_total_open
-          : mOpen.amount_due_sched + mOpen.mora_full
-      )
-    : round2(amount_due_remaining + late_fee);
+  /** Tope de la deuda del periodo (cuota programada + mora generada + mora extra), sin descontar pagos — para cap de paid_amount / persist. */
+  const moraExtraDb = round2(parseFloat(r.mora_extra) || 0);
+  const obligacion_total = round2(
+    (mOpen
+      ? round2(
+          mOpen.obligacion_total_open != null && Number.isFinite(Number(mOpen.obligacion_total_open))
+            ? mOpen.obligacion_total_open
+            : mOpen.amount_due_sched + mOpen.mora_full
+        )
+      : round2(amount_due_remaining + late_fee)) + moraExtraDb
+  );
   /**
-   * Saldo aún por cubrir del periodo: **mora pendiente + cuota pendiente** (misma imputación que el pago: primero mora, luego capital).
+   * Saldo aún por cubrir del periodo: **mora pendiente + cuota pendiente + mora extra** (misma imputación que el pago: primero mora, luego capital).
    * Si la mora queda cubierta, `late_fee` aquí es 0 y solo resta cuota.
    */
-  const cuota_final = round2(amount_due_remaining + late_fee);
+  const cuota_final = round2(amount_due_remaining + late_fee + moraExtraDb);
   return {
     cuota_semanal,
     /** Cuota del periodo: preferentemente columna `amount_due` de la fila (persistida al generar la semana). */

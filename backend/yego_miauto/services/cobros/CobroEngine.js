@@ -389,7 +389,7 @@ export async function generateWeeklyCharge({
     tasaInteresMora: cronograma.tasa_interes_mora || 0,
     dueDateYmd: dueDate,
     todayYmd: limaTodayYmd(),
-    capitalMoroso: cuotaSemanal,
+    capitalMoroso: amountDueInsert,
   });
 
   auditSteps.mora = moraResult;

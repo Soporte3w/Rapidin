@@ -179,6 +179,15 @@ export default function YegoMiAutoRentSaleDetail() {
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
+  const whatsAppCuotaReciente = useMemo(() => {
+    return [...cuotas].sort((a: any, b: any) => {
+      const wa = a.week_start_date || '';
+      const wb = b.week_start_date || '';
+      if (wa > wb) return -1;
+      if (wa < wb) return 1;
+      return 0;
+    })[0] || null;
+  }, [cuotas]);
 
   const toggleComprobantesSemana = useCallback((cuotaId: string) => {
     setComprobantesSemanaAbierta((prev) => ({ ...prev, [cuotaId]: !prev[cuotaId] }));
@@ -242,45 +251,71 @@ export default function YegoMiAutoRentSaleDetail() {
     let defaultText: string;
 
     if (overdueCuotas.length > 0) {
-      const lineas = overdueCuotas.slice(0, 10).map((c) => {
-        const sym = symMoneda(monedaCuotaRow(c));
-        const pagoTotal = Number(c.amount_due ?? c.cuota_semanal) || 0;
-        const pagado = Number(c.paid_amount) || 0;
-        const pendiente = Math.max(0, pagoTotal - pagado);
-        const moraPendiente = Number(c.mora_pendiente ?? c.late_fee) || 0;
-        const total = pendiente + moraPendiente;
+      const sym = cuotaReciente ? symMoneda(monedaCuotaRow(cuotaReciente)) : 'S/';
+      const viajes = cuotaReciente?.num_viajes ?? 0;
+      const cuotaSemanal = Number(cuotaReciente?.cuota_semanal || 0);
+
+      let header = `Hola ${name},\n\nLe compartimos el detalle de su pago:\n`;
+      if (cuotaReciente) {
+        header += `- Semana ${miautoSemanaOrdinalPorVencimiento(cuotas, cuotaReciente.due_date, cuotaReciente.week_start_date)}: ${viajes} viajes - ${sym} ${cuotaSemanal.toFixed(2)}\n`;
+      }
+
+      const pfYangoRaw = Number(cuotaReciente?.partner_fees_yango_raw || 0);
+      const pf83Real = pfYangoRaw > 0.01 ? roundToTwoDecimals(pfYangoRaw * 0.8333) : 0;
+      const cobroDesdeSaldo = Number(cuotaReciente?.cobro_desde_saldo_conductor || 0);
+      const cobroSaldoRegla = Number(cuotaReciente?.cobro_saldo || 0);
+
+      let descuentos = '\nDESCUENTOS:\n';
+      let hasDescuentos = false;
+      if (pf83Real > 0.01) { descuentos += `🔹 Cobro por ingresos (83.33%): ${sym} ${pf83Real.toFixed(2)}\n`; hasDescuentos = true; }
+      if (cobroSaldoRegla > 0.01) { descuentos += `🔹 Cobro de saldo: ${sym} ${cobroSaldoRegla.toFixed(2)}\n`; hasDescuentos = true; }
+      if (cobroDesdeSaldo > 0.01) { descuentos += `🔹 Cobro de saldo (Fleet): ${sym} ${cobroDesdeSaldo.toFixed(2)}\n`; hasDescuentos = true; }
+      if (!hasDescuentos) descuentos += `🔹 Sin descuentos esta semana\n`;
+
+      descuentos += `\n------------------------------------------------------------------------\nPENDIENTE:\n`;
+
+      const pendientes = overdueCuotas.slice(0, 10).map((c) => {
+        const s = symMoneda(monedaCuotaRow(c));
+        const pendingTotal = Number(c.pending_total ?? 0) || 0;
         const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
-        const fecha = c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '';
-        if (moraPendiente > 0) {
-          return `• Semana ${semana}: ${sym} ${pendiente.toFixed(2)} + ${sym} ${moraPendiente.toFixed(2)} mora = ${sym} ${total.toFixed(2)} total (venció ${fecha})`;
-        }
-        return `• Semana ${semana}: ${sym} ${total.toFixed(2)} (venció ${fecha})`;
+        return { semana, sym: s, pendingTotal };
       });
-      const mas = overdueCuotas.length > 10 ? `\n• Y ${overdueCuotas.length - 10} cuota(s) más.` : '';
-      defaultText = `Hola ${name},\n\nTienes ${overdueCuotas.length} cuota(s) vencida(s) en tu contrato Yego Mi Auto:\n\n${lineas.join('\n')}${mas}\n\nPor favor regulariza tu situación lo antes posible. Gracias.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
+      const mas = overdueCuotas.length > 10 ? overdueCuotas.length - 10 : 0;
+
+      const lineasPendientes = pendientes.map((p) => `🔹 Semana ${p.semana}: ${p.sym} ${p.pendingTotal.toFixed(2)} 🚨`);
+      descuentos += lineasPendientes.join('\n');
+      if (mas > 0)       descuentos += `\n🔹 Y ${mas} cuota(s) más... 🚨`;
+      defaultText = `${header}${descuentos}\n\nCualquier consulta quedamos atentos 👍\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
     } else if (cuotaReciente) {
       const sym = symMoneda(monedaCuotaRow(cuotaReciente));
       const viajes = cuotaReciente.num_viajes ?? 0;
       const cuotaSemanal = Number(cuotaReciente.cuota_semanal || cuotaReciente.amount_due || 0);
-      const pf83 = Number(cuotaReciente.partner_fees_83 || 0);
+      const pfYangoRaw = Number(cuotaReciente.partner_fees_yango_raw || 0);
+      const pf83Real = roundToTwoDecimals(pfYangoRaw * 0.8333);
+      const cobroSaldoRegla = Number(cuotaReciente.cobro_saldo || 0);
       const cobroDesdeSaldo = Number(cuotaReciente.cobro_desde_saldo_conductor || 0);
-      const pagado = Number(cuotaReciente.paid_amount || 0);
       const saldoFavor = Number(cuotaReciente.saldo_favor_conductor || 0);
-      const pendiente = Math.max(0, cuotaSemanal - pf83 - pagado - cobroDesdeSaldo);
+      const pagado = Number(cuotaReciente.paid_amount || 0);
+      const pendiente = Math.max(0, cuotaSemanal - pf83Real - cobroSaldoRegla - pagado - cobroDesdeSaldo);
+      const pendingTotalCuota = Number(cuotaReciente.pending_total ?? pendiente) || pendiente;
       const semana = miautoSemanaOrdinalPorVencimiento(cuotas, cuotaReciente.due_date, cuotaReciente.week_start_date);
-      const cubierto = pendiente <= 0.01;
+      const cubierto = pendingTotalCuota <= 0.01;
 
-      let descuentos = '';
-      if (pf83 > 0.01) descuentos += `🔹 Cobro por ingresos (app):    - ${sym} ${pf83.toFixed(2)}\n`;
-      if (cobroDesdeSaldo > 0.01) descuentos += `🔹 Cobro desde tu saldo:        - ${sym} ${cobroDesdeSaldo.toFixed(2)}\n`;
-      if (descuentos) descuentos += `────────────────────────────────────\n`;
+      let header = `Hola ${name},\n\nLe compartimos el detalle de su pago:\n- Semana ${semana}: ${viajes} viajes - ${sym} ${cuotaSemanal.toFixed(2)}\n`;
+
+      let descuentos = '\nDESCUENTOS:\n';
+      let hasDescuentos = false;
+      if (pf83Real > 0.01) { descuentos += `🔹 Cobro por ingresos (83.33%): ${sym} ${pf83Real.toFixed(2)}\n`; hasDescuentos = true; }
+      if (cobroSaldoRegla > 0.01) { descuentos += `🔹 Cobro de saldo: ${sym} ${cobroSaldoRegla.toFixed(2)}\n`; hasDescuentos = true; }
+      if (cobroDesdeSaldo > 0.01) { descuentos += `🔹 Cobro de saldo (Fleet): ${sym} ${cobroDesdeSaldo.toFixed(2)}\n`; hasDescuentos = true; }
+      if (!hasDescuentos) descuentos += `🔹 Sin descuentos esta semana\n`;
 
       if (cubierto) {
-        defaultText = `Hola ${name},\n\nTe compartimos el resumen de tu semana en Yego Mi Auto - Semana ${semana}:\n\n• ${viajes} viajes | Cuota semanal: ${sym} ${cuotaSemanal.toFixed(2)}\n\nDescuentos aplicados:\n${descuentos}🔸 Cuota neta a pagar:            ${sym} 0.00 ✅\n\n¡Todo cubierto! No tienes pagos pendientes esta semana.`;
+        defaultText = `${header}${descuentos}\n------------------------------------------------------------------------\nPENDIENTE:\n🔸 Cuota neta a pagar:            ${sym} 0.00 ✅\n\n¡Todo cubierto! No tienes pagos pendientes esta semana.`;
         if (saldoFavor > 0.01) defaultText += `\nSaldo a tu favor: ${sym} ${saldoFavor.toFixed(2)} 🎉`;
-        defaultText += `\n\nCualquier consulta quedamos atentos.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
+        defaultText += `\n\nCualquier consulta quedamos atentos 👍\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
       } else {
-        defaultText = `Hola ${name},\n\nTe compartimos el detalle de tu cuota Yego Mi Auto - Semana ${semana}:\n\n• ${viajes} viajes\n• Cuota semanal: ${sym} ${cuotaSemanal.toFixed(2)}\n\nDescuentos aplicados:\n${descuentos}🔸 Cuota neta a pagar:            ${sym} ${pendiente.toFixed(2)}\n\nPendiente por regularizar: ${sym} ${pendiente.toFixed(2)}\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
+        defaultText = `${header}${descuentos}\n------------------------------------------------------------------------\nPENDIENTE:\n🔹 Semana ${semana}: ${sym} ${pendingTotalCuota.toFixed(2)} 🚨\n\nCualquier consulta quedamos atentos 👍\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
       }
     } else {
       defaultText = `Hola ${name},\n\nTe contactamos respecto a tu contrato Yego Mi Auto. Cualquier duda estamos a tu disposición.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
@@ -2019,7 +2054,7 @@ export default function YegoMiAutoRentSaleDetail() {
 
       {showWhatsAppModal && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setShowWhatsAppModal(false)}>
-          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 bg-gray-50">
               <div className="flex items-center gap-2">
                 <div className="w-9 h-9 bg-[#25D366] rounded-lg flex items-center justify-center">
@@ -2031,61 +2066,97 @@ export default function YegoMiAutoRentSaleDetail() {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-5 space-y-4 overflow-y-auto flex-1">
-              <div>
-                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conductor</span>
-                <p className="mt-1 text-gray-900 font-medium">
-                  {driverNameFromState || solicitud?.phone || solicitud?.dni || '—'}
-                </p>
-                {solicitud?.phone && (
-                  <p className="text-sm text-gray-500 mt-0.5">{solicitud.phone}</p>
+            <div className="p-5 overflow-y-auto flex-1 grid grid-cols-2 gap-4">
+              {/* Columna izquierda: Datos de cuotas vencidas */}
+              <div className="space-y-3 border-r border-gray-100 pr-3">
+                <div>
+                  <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conductor</span>
+                  <p className="mt-1 text-gray-900 font-medium">
+                    {driverNameFromState || solicitud?.phone || solicitud?.dni || '—'}
+                  </p>
+                  {solicitud?.phone && (
+                    <p className="text-sm text-gray-500 mt-0.5">{solicitud.phone}</p>
+                  )}
+                </div>
+                <div>
+                  <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                    {overdueCuotas.length > 0 ? 'Cuotas vencidas' : pendingCuotasHoy.length > 0 ? 'Cuotas que vencen hoy' : 'Estado'}
+                  </span>
+                  {overdueCuotas.length === 0 && pendingCuotasHoy.length === 0 ? (
+                    <p className="mt-1 text-gray-600 text-sm">No hay cuotas vencidas ni pendientes hoy</p>
+                  ) : (
+                    <ul className="mt-2 space-y-2">
+                      {(overdueCuotas.length > 0 ? overdueCuotas : pendingCuotasHoy).slice(0, 10).map((c) => {
+                        const sym = symMoneda(monedaCuotaRow(c));
+                        const cuotaNeta = Number(c.cuota_neta ?? c.amount_due) || 0;
+                        const pagado = Number(c.paid_amount) || 0;
+                        const pendiente = Math.max(0, cuotaNeta - pagado);
+                        const moraPendiente = Number(c.mora_pendiente ?? c.late_fee) || 0;
+                        const moraExtra = Number(c.mora_extra) || 0;
+                        const total = pendiente + moraPendiente + moraExtra;
+                        const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
+                        return (
+                          <li key={c.id} className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+                            <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5">
+                              <span className="font-semibold text-gray-700">Semana {semana}</span>
+                              <span>{c.status === 'overdue' ? 'Venció' : 'Vence'} {c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '—'}</span>
+                            </div>
+                            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
+                              <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{sym} {pendiente.toFixed(2)}</span></span>
+                              {pagado > 0.01 && (
+                                <span><span className="text-gray-500">Pagado:</span> <span className="font-medium text-gray-900">{sym} {pagado.toFixed(2)}</span></span>
+                              )}
+                              {moraPendiente > 0 && (
+                                <span><span className="text-gray-500">Mora:</span> <span className="font-medium text-red-600">{sym} {moraPendiente.toFixed(2)}</span></span>
+                              )}
+                              {moraExtra > 0.01 && (
+                                <span><span className="text-gray-500">Mora extra:</span> <span className="font-medium text-red-500">{sym} {moraExtra.toFixed(2)}</span></span>
+                              )}
+                              <span><span className="text-gray-500">Total:</span> <span className="font-semibold text-gray-900">{sym} {total.toFixed(2)}</span></span>
+                            </div>
+                          </li>
+                        );
+                      })}
+                      {(overdueCuotas.length > 10 || pendingCuotasHoy.length > 10) && (
+                        <li className="text-sm text-gray-500 py-1">y {Math.max(overdueCuotas.length, pendingCuotasHoy.length) - 10} cuota(s) más</li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+                {/* Recaudo y cobros de la semana reciente */}
+                {whatsAppCuotaReciente && (
+                  <div>
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Recaudo de la semana</span>
+                    <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3 text-sm space-y-1">
+                      {(() => {
+                        const pfYangoRaw = Number(whatsAppCuotaReciente.partner_fees_yango_raw || 0);
+                        const pf83Real = pfYangoRaw > 0.01 ? roundToTwoDecimals(pfYangoRaw * 0.8333) : 0;
+                        const cobroDesdeSaldo = Number(whatsAppCuotaReciente.cobro_desde_saldo_conductor || 0);
+                        const cobroSaldoRegla = Number(whatsAppCuotaReciente.cobro_saldo || 0);
+                        const sym = symMoneda(monedaCuotaRow(whatsAppCuotaReciente));
+                        const viajes = whatsAppCuotaReciente.num_viajes ?? 0;
+                        return (
+                          <>
+                            <div className="flex justify-between"><span className="text-gray-500">Viajes:</span> <span className="font-medium">{viajes}</span></div>
+                            {pfYangoRaw > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Recaudo Yango:</span> <span className="font-medium">{sym} {pfYangoRaw.toFixed(2)}</span></div>}
+                            {pf83Real > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro ingresos (83%):</span> <span className="font-medium text-orange-600">-{sym} {pf83Real.toFixed(2)}</span></div>}
+                            {cobroSaldoRegla > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro de saldo:</span> <span className="font-medium text-orange-600">-{sym} {cobroSaldoRegla.toFixed(2)}</span></div>}
+                            {cobroDesdeSaldo > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro saldo (Fleet):</span> <span className="font-medium text-orange-600">-{sym} {cobroDesdeSaldo.toFixed(2)}</span></div>}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
                 )}
               </div>
-              <div>
-                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  {overdueCuotas.length > 0 ? 'Cuotas vencidas' : pendingCuotasHoy.length > 0 ? 'Cuotas que vencen hoy' : 'Estado'}
-                </span>
-                {overdueCuotas.length === 0 && pendingCuotasHoy.length === 0 ? (
-                  <p className="mt-1 text-gray-600 text-sm">No hay cuotas vencidas ni pendientes hoy</p>
-                ) : (
-                  <ul className="mt-2 space-y-2">
-                    {(overdueCuotas.length > 0 ? overdueCuotas : pendingCuotasHoy).slice(0, 10).map((c) => {
-                      const sym = symMoneda(monedaCuotaRow(c));
-                      const cuotaNeta = Number(c.cuota_neta ?? c.amount_due) || 0;
-                      const pagado = Number(c.paid_amount) || 0;
-                      const pendiente = Math.max(0, cuotaNeta - pagado);
-                      const moraPendiente = Number(c.mora_pendiente ?? c.late_fee) || 0;
-                      const total = pendiente + moraPendiente;
-                      const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
-                      return (
-                        <li key={c.id} className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
-                          <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5">
-                            <span className="font-semibold text-gray-700">Semana {semana}</span>
-                            <span>{c.status === 'overdue' ? 'Venció' : 'Vence'} {c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '—'}</span>
-                          </div>
-                          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-sm">
-                            <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{sym} {pendiente.toFixed(2)}</span></span>
-                            {moraPendiente > 0 && (
-                              <span><span className="text-gray-500">Mora:</span> <span className="font-medium text-red-600">{sym} {moraPendiente.toFixed(2)}</span></span>
-                            )}
-                            <span><span className="text-gray-500">Total:</span> <span className="font-semibold text-gray-900">{sym} {total.toFixed(2)}</span></span>
-                          </div>
-                        </li>
-                      );
-                    })}
-                    {(overdueCuotas.length > 10 || pendingCuotasHoy.length > 10) && (
-                      <li className="text-sm text-gray-500 py-1">y {Math.max(overdueCuotas.length, pendingCuotasHoy.length) - 10} cuota(s) más</li>
-                    )}
-                  </ul>
-                )}
-              </div>
+              {/* Columna derecha: Mensaje que verá el conductor */}
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Mensaje que verá el conductor</label>
                 <textarea
                   value={whatsAppMessage}
                   onChange={(e) => setWhatsAppMessage(e.target.value)}
-                  rows={5}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  rows={16}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 resize-none"
                   placeholder="Escribe el mensaje..."
                 />
               </div>

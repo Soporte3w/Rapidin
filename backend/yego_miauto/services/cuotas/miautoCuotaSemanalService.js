@@ -1440,10 +1440,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
      * a abiertas (cobro Fleet, `processCobroCuota`, etc.).
      */
     let lateFeePersist = lateFeeOut;
-    /** Si ya hay abono (Fleet, comprobante, cascada) la mora base se cubrió y va a mora_extra. */
-    if (paidDb > 0.005) {
-      lateFeePersist = 0;
-    } else if (!freezeMoraPorComprobante && stRow !== 'bonificada') {
+    if (!freezeMoraPorComprobante && stRow !== 'bonificada') {
       lateFeePersist = round2(Math.max(lateFeeDb, lateFeeOut, moraFullD, moraSchedD));
     }
     if (freezeMoraPorComprobante) {
@@ -1546,6 +1543,18 @@ export function resolveMontosPlanCuotaSemanalCore(
   let pct_comision = round2(Number(parseFloat(r.pct_comision) || 0));
   let cobro_saldo = round2(parseFloat(r.cobro_saldo) || 0);
   let moneda = r.moneda === 'USD' ? 'USD' : 'PEN';
+
+  if (String(r.montos_fuente || '').toLowerCase() === 'sistema') {
+    /** La fila ya fue generada por CobroEngine con los montos correctos. */
+    return {
+      cuota_semanal,
+      bono_auto: isPrimera ? 0 : bono_auto,
+      pct_comision,
+      cobro_saldo,
+      moneda,
+      usoCronogramaParaMontos: true,
+    };
+  }
 
   if (rowMontosFuenteExcel(r)) {
     return {

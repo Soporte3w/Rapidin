@@ -9,7 +9,7 @@ import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
 import { CUENTAS_BANCARIAS_WHATSAPP } from '../yegoRapidin/LoanDetail';
 import { TablePaginationBar } from '../../components/TablePaginationBar';
 import { useTablePagination } from '../../hooks/useTablePagination';
-import { labelOtrosGastoStatus, type MiautoOtrosGastoRow, type ComprobanteOtrosGastos } from '../../utils/miautoOtrosGastos';
+import { type MiautoOtrosGastoRow } from '../../utils/miautoOtrosGastos';
 import { monedaCuotasLabel, symMoneda } from '../../utils/miautoAlquilerVentaList';
 import { MIAUTO_NO_CACHE_HEADERS, emptyListIfNotAbort, isAxiosAbortError } from '../../utils/miautoApiUtils';
 import {
@@ -40,6 +40,16 @@ import {
   montoConvertidoPenUsdFormatted,
   resolveTipoCambioUsdALocalFromRows,
 } from '../../utils/miautoPenUsdConversion';
+
+const TIPO_OTROS_GASTOS_LABELS: Record<string, string> = {
+  gps: 'GPS',
+  src: 'Seguro RC (SRC)',
+  soat: 'SOAT',
+  impuesto_vehicular: 'Impuesto Vehicular',
+  todo_riesgo_mas_gps_agrupado: 'STR + GPS',
+  inicial_parcial: 'Inicial Parcial',
+  generico: 'Otros Gastos',
+};
 
 interface CuotaSemanal {
   id: string;
@@ -181,10 +191,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const [validandoCompId, setValidandoCompId] = useState<string | null>(null);
   const [rechazandoCompId, setRechazandoCompId] = useState<string | null>(null);
   const [comprobantesSemanaAbierta, setComprobantesSemanaAbierta] = useState<Record<string, boolean>>({});
-  const [comprobantesOtrosGastos, setComprobantesOtrosGastos] = useState<ComprobanteOtrosGastos[]>([]);
-  const [comprobantesOtrosAbierto, setComprobantesOtrosAbierto] = useState<Record<string, boolean>>({});
-  const [validandoCompOgId, setValidandoCompOgId] = useState<string | null>(null);
-  const [rechazandoCompOgId, setRechazandoCompOgId] = useState<string | null>(null);
+  const [otrosTiposAbiertos, setOtrosTiposAbiertos] = useState<Record<string, boolean>>({});
   const [subiendoConformidadCuotaId, setSubiendoConformidadCuotaId] = useState<string | null>(null);
   /** Archivo elegido por cuota; la subida es explícita con el botón «Subir». */
   const [conformidadArchivoPendiente, setConformidadArchivoPendiente] = useState<Record<string, File | null>>({});
@@ -382,22 +389,20 @@ export default function YegoMiAutoRentSaleDetail() {
       else setLoading(true);
       setError('');
       const req = { signal, headers: MIAUTO_NO_CACHE_HEADERS };
-      const [resSol, resCuotas, resComp, resCompOg, resEvidencias] = await Promise.all([
+      const [resSol, resCuotas, resComp, resEvidencias] = await Promise.all([
         api.get(`/miauto/solicitudes/${id}`, req),
         api.get(`/miauto/solicitudes/${id}/cuotas-semanales`, req),
         api.get(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal`, req).catch(emptyListIfNotAbort),
-        api.get(`/miauto/solicitudes/${id}/comprobantes-otros-gastos`, req).catch(emptyListIfNotAbort),
         api.get(`/miauto/solicitudes/${id}/evidencias-fleet`, req).catch(emptyListIfNotAbort),
       ]);
       const sol = resSol.data?.data ?? resSol.data;
       const { cuotas: rawCuotas, racha: rachaNum, cuotasSemanalesBonificadas: bonoNum } = parseCuotasSemanalesPayload(resCuotas);
       const comp = resComp.data?.data ?? resComp.data ?? [];
-      const compOg = resCompOg.data?.data ?? resCompOg.data ?? [];
       const evFleet = resEvidencias.data?.data ?? resEvidencias.data ?? [];
       setSolicitud(sol || null);
       setCuotas(rawCuotas as CuotaSemanal[]);
       setComprobantesPagos(Array.isArray(comp) ? comp : []);
-      setComprobantesOtrosGastos(Array.isArray(compOg) ? compOg : []);
+
       setEvidenciasFleet(Array.isArray(evFleet) ? evFleet : []);
       setRacha(rachaNum);
       setBonoAplicado(bonoNum);
@@ -411,7 +416,7 @@ export default function YegoMiAutoRentSaleDetail() {
         setSolicitud(null);
         setCuotas([]);
         setComprobantesPagos([]);
-        setComprobantesOtrosGastos([]);
+  
         setEvidenciasFleet([]);
         setRacha(null);
         setBonoAplicado(0);
@@ -523,31 +528,16 @@ export default function YegoMiAutoRentSaleDetail() {
     }
   };
 
-  const handleValidarComprobanteOg = (comprobanteId: string, monto: number, moneda: 'PEN' | 'USD') =>
-    runComprobantePatch({
-      setBusy: setValidandoCompOgId,
-      busyId: comprobanteId,
-      request: () =>
-        api.patch(`/miauto/solicitudes/${id}/comprobantes-otros-gastos/${comprobanteId}/validar`, { monto, moneda }),
-      successMsg: 'Comprobante validado',
-      errorMsg: 'Error al validar',
-    });
-
-  const handleRechazarComprobanteOg = (comprobanteId: string, motivo: string) =>
-    runComprobantePatch({
-      setBusy: setRechazandoCompOgId,
-      busyId: comprobanteId,
-      request: () =>
-        api.patch(`/miauto/solicitudes/${id}/comprobantes-otros-gastos/${comprobanteId}/rechazar`, {
-          motivo: motivo.trim(),
-        }),
-      successMsg: 'Comprobante rechazado',
-      errorMsg: 'Error al rechazar',
-    });
-
-  const toggleComprobantesOtros = useCallback((otrosGastosId: string) => {
-    setComprobantesOtrosAbierto((prev) => ({ ...prev, [otrosGastosId]: !prev[otrosGastosId] }));
-  }, []);
+  const handleOtroGastoStatusChange = useCallback(async (ogId: string, newStatus: string) => {
+    try {
+      if (!id) return;
+      await api.put(`/miauto/solicitudes/${id}/otros-gastos/${ogId}/estado`, { status: newStatus });
+      toast.success('Estado actualizado');
+      fetchDetail(undefined, { refresh: true });
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Error');
+    }
+  }, [id]);
 
   const handleSubirEvidenciasFleetCuota = async (cuotaId: string) => {
     if (!id) return;
@@ -606,7 +596,6 @@ export default function YegoMiAutoRentSaleDetail() {
     () => (Array.isArray(solicitud?.otros_gastos) ? solicitud.otros_gastos : []),
     [solicitud?.otros_gastos]
   );
-  const otrosPg = useTablePagination(otrosGastosRows);
 
   const comprobantesByCuotaId = useMemo(() => {
     const by: Record<string, ComprobanteCuotaSemanal[]> = {};
@@ -654,15 +643,6 @@ export default function YegoMiAutoRentSaleDetail() {
     : (solicitud?.cronograma_vehiculo?.inicial_moneda === 'USD' ? 'USD' : 'PEN');
 
   /** Comprobantes de otros gastos agrupados por otros_gastos_id */
-  const comprobantesPorOtrosGastos = useMemo(() => {
-    const byOg: Record<string, ComprobanteOtrosGastos[]> = {};
-    for (const comp of comprobantesOtrosGastos) {
-      const id = comp.otros_gastos_id;
-      if (!byOg[id]) byOg[id] = [];
-      byOg[id].push(comp);
-    }
-    return byOg;
-  }, [comprobantesOtrosGastos]);
 
   if (loading) {
     return (
@@ -1764,202 +1744,90 @@ export default function YegoMiAutoRentSaleDetail() {
         {tabCronograma === 'otros_gastos' && (
         <>
             {otrosGastosRows.length === 0 ? (
-              <p className="text-sm text-gray-500 text-center py-8 px-4">No hay cuotas de otros gastos para este contrato (solo aplica con pago parcial al generar Yego Mi Auto).</p>
+              <p className="text-sm text-gray-500 text-center py-8 px-4">No hay cuotas de otros gastos para este contrato.</p>
             ) : (
-              <>
-                <div className="px-4 pb-3 pt-2">
-                  <div className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0 rounded-lg border border-gray-100 bg-white">
-                  <table className="w-full min-w-[720px] table-fixed border-collapse text-sm">
-                    <colgroup>
-                      <col style={{ width: '16%' }} />
-                      <col style={{ width: '26%' }} />
-                      <col style={{ width: '19%' }} />
-                      <col style={{ width: '19%' }} />
-                      <col style={{ width: '20%' }} />
-                    </colgroup>
-                    <thead>
-                      <tr className="border-b border-gray-200 bg-gray-50/80">
-                        <th className="sticky left-0 z-[1] bg-gray-50/95 py-3 pl-3 pr-2 align-middle text-left text-xs font-semibold uppercase tracking-wide text-gray-700 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)]">
-                          Semana
-                        </th>
-                        <th className="py-3 pr-3 align-middle text-left text-xs font-semibold uppercase tracking-wide text-gray-600 whitespace-nowrap">
-                          Vencimiento
-                        </th>
-                        <th className="py-3 pr-2 align-middle text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-gray-900 whitespace-nowrap">
-                          Monto
-                        </th>
-                        <th className="py-3 pr-2 align-middle text-right text-xs font-semibold uppercase tracking-wide tabular-nums text-green-700 whitespace-nowrap">
-                          Pagado
-                        </th>
-                        <th className="py-3 pr-3 align-middle text-center text-xs font-semibold uppercase tracking-wide text-gray-700 whitespace-nowrap">
-                          Estado
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {otrosPg.paginatedItems.map((og) => {
-                        const compsOg = comprobantesPorOtrosGastos[og.id] ?? [];
-                        const abiertoOg = comprobantesOtrosAbierto[og.id] === true;
-                        const symOg = symMoneda(solicitud?.cronograma_vehiculo?.inicial_moneda);
-                        return (
-                          <Fragment key={og.id}>
-                            <tr className="group border-b border-gray-100 hover:bg-gray-50/60">
-                              <td className="sticky left-0 z-[1] bg-white py-2.5 pl-3 pr-2 align-middle shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)] group-hover:bg-gray-50/80">
-                                {compsOg.length > 0 ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => toggleComprobantesOtros(og.id)}
-                                    className="flex w-full min-w-0 items-center gap-1.5 rounded-md py-0 text-left text-[13px] leading-snug text-gray-700 transition-colors hover:bg-gray-100/90"
-                                  >
-                                    {abiertoOg ? (
-                                      <ChevronDown className="h-4 w-4 flex-shrink-0 self-center text-gray-500" aria-hidden />
-                                    ) : (
-                                      <ChevronRight className="h-4 w-4 flex-shrink-0 self-center text-gray-500" aria-hidden />
-                                    )}
-                                    <span className="min-w-0 truncate font-semibold text-[#8B1A1A]">Semana {og.week_index}</span>
-                                  </button>
-                                ) : (
-                                  <div className="min-w-0 py-0.5 text-[13px] leading-snug">
-                                    <span className="block font-semibold text-[#8B1A1A]">Semana {og.week_index}</span>
-                                  </div>
-                                )}
-                              </td>
-                              <td className="py-2.5 pr-3 align-middle text-[13px] leading-snug text-gray-700 whitespace-nowrap">
-                                {formatDate(og.due_date, 'es-ES')}
-                              </td>
-                              <td className="py-2.5 pr-2 align-middle font-medium tabular-nums text-right text-gray-900 text-[13px]">
-                                {symOg} {Number(og.amount_due).toFixed(2)}
-                              </td>
-                              <td className="py-2.5 pr-2 align-middle text-[13px] text-right tabular-nums text-green-700">
-                                {symOg} {Number(og.paid_amount).toFixed(2)}
-                              </td>
-                              <td className="py-2.5 pr-3 align-middle whitespace-nowrap">
-                                <div className="flex justify-center">
-                                  <span
-                                    className={`inline-flex w-fit whitespace-nowrap px-1.5 py-0.5 rounded text-xs font-medium ${
-                                      MIAUTO_CUOTA_STATUS_PILL[og.status] ?? 'bg-gray-100 text-gray-700'
-                                    }`}
-                                  >
-                                    {MIAUTO_CUOTA_STATUS_LABELS[og.status] ?? labelOtrosGastoStatus(og.status)}
-                                  </span>
-                                </div>
-                              </td>
-                            </tr>
-                            {compsOg.length > 0 && (
-                              <tr className="border-b border-gray-100">
-                                <td colSpan={5} className="p-0 align-top">
-                                  <div
-                                    className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
-                                    style={{ maxHeight: abiertoOg ? 1400 : 0, opacity: abiertoOg ? 1 : 0 }}
-                                  >
-                                    <div className="px-4 py-3 bg-gray-50/80 border-t border-gray-200">
-                                      <div className="flex items-center gap-2 mb-3">
-                                        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-[#8B1A1A]/10">
-                                          <FileText className="w-4 h-4 text-[#8B1A1A]" />
-                                        </div>
-                                        <div>
-                                          <h4 className="text-sm font-semibold text-gray-900">Comprobantes — Semana {og.week_index}</h4>
-                                          <p className="text-xs text-gray-500">{formatDate(og.due_date, 'es-ES')}</p>
-                                        </div>
-                                      </div>
-                                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                                        {compsOg.map((comp, compIdx) => {
-                                          const isPendiente = (comp.estado || '').toLowerCase() === 'pendiente';
-                                          const montoMaximo = Math.max(0, Number(og.amount_due) - Number(og.paid_amount));
-                                          const compLabel = `Comprobante ${compIdx + 1}`;
-                                          const estado = (comp.estado || '').toLowerCase();
-                                          const cardBg = estado === 'validado' ? 'bg-green-50/90 border-green-200' : estado === 'rechazado' ? 'bg-red-50/90 border-red-200' : 'bg-amber-50/90 border-amber-200';
-                                          const url = comp.file_path ? (comp.file_path.startsWith('http') ? comp.file_path : getMiautoAdjuntoUrl(comp.file_path)) : '';
-                                          const isImage = comp.file_path && !/\.pdf$/i.test(comp.file_name || '') && /\.(jpe?g|png|gif|webp)$/i.test(comp.file_name || '');
-                                          const openPreview = () => url && setComprobantePreview({ url, fileName: compLabel, isImage: !!isImage });
-                                          const sym = symMoneda(comp.moneda);
-                                          return (
-                                            <div key={comp.id} className={`rounded-xl border-2 p-3 ${cardBg} hover:shadow-md transition-all flex flex-col gap-2`}>
-                                              <div className="flex gap-3">
-                                                <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center overflow-hidden">
-                                                  {comp.file_path && isImage ? (
-                                                    <button type="button" onClick={openPreview} className="w-full h-full rounded-lg overflow-hidden border border-white/50 shadow-sm hover:opacity-90">
-                                                      <img src={url} alt="" className="w-full h-full object-cover" />
-                                                    </button>
-                                                  ) : comp.file_path ? (
-                                                    <button type="button" onClick={openPreview} className="w-full h-full rounded-lg border border-gray-200 bg-white/80 flex items-center justify-center hover:bg-gray-50">
-                                                      <FileText className="w-6 h-6 text-gray-500" />
-                                                    </button>
-                                                  ) : (
-                                                    <span className="w-12 h-12 rounded-lg border border-gray-200 bg-white/80 flex items-center justify-center">
-                                                      <FileText className="w-6 h-6 text-gray-500" />
-                                                    </span>
-                                                  )}
-                                                </div>
-                                                <div className="min-w-0 flex-1">
-                                                  <p className="text-sm font-semibold text-gray-900">{compLabel}</p>
-                                                  {comp.created_at && (
-                                                    <p className="text-xs text-gray-500 mt-0.5">{formatDateTime(comp.created_at, 'es-ES')}</p>
-                                                  )}
-                                                  <p className="text-xs text-gray-600">
-                                                    {isPendiente ? '—' : comp.monto != null ? `${sym} ${Number(comp.monto).toFixed(2)}` : '—'}
-                                                  </p>
-                                                  <span className={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium mt-1 ${estado === 'validado' ? 'bg-green-100 text-green-800' : estado === 'rechazado' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
-                                                    {estado === 'validado' ? 'Validado' : estado === 'rechazado' ? 'Rechazado' : 'Pendiente'}
-                                                  </span>
-                                                </div>
-                                              </div>
-                                              {estado === 'rechazado' && (comp.rechazo_razon?.trim() ?? '') && (
-                                                <p className="flex items-start gap-1.5 text-xs text-red-700 bg-red-50/90 rounded-lg px-2 py-1.5 border border-red-100">
-                                                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                                                  <span className="line-clamp-2">{(comp.rechazo_razon ?? '').trim()}</span>
-                                                </p>
-                                              )}
-                                              {comp.file_path && (
-                                                <button
-                                                  type="button"
-                                                  onClick={openPreview}
-                                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border-2 border-gray-200 bg-white text-gray-800 hover:bg-gray-50 self-start"
-                                                >
-                                                  <ExternalLink className="w-3.5 h-3.5" />
-                                                  Ver comprobante
-                                                </button>
-                                              )}
-                                              {isPendiente && (
-                                                <div className="pt-2 border-t border-gray-200/80">
-                                                  <MiautoComprobantePagoActions
-                                                    comprobanteId={comp.id}
-                                                    validando={validandoCompOgId === comp.id}
-                                                    rechazando={rechazandoCompOgId === comp.id}
-                                                    onValidar={handleValidarComprobanteOg}
-                                                    onRechazar={handleRechazarComprobanteOg}
-                                                    montoMaximo={montoMaximo}
-                                                    defaultMoneda={monedaCuotasLabel(solicitud?.cronograma_vehiculo?.inicial_moneda)}
-                                                    valorUsdALocal={tipoCambioUsdLocal}
-                                                  />
-                                                </div>
-                                              )}
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </td>
+              <div className="px-4 pb-3 pt-2 space-y-4">
+                {Object.entries(
+                  otrosGastosRows.reduce((acc, og) => {
+                    const t = og.tipo || 'generico';
+                    if (!acc[t]) acc[t] = [];
+                    acc[t].push(og);
+                    return acc;
+                  }, {} as Record<string, MiautoOtrosGastoRow[]>)
+                ).map(([tipo, cuotas]) => {
+                  const isOpen = otrosTiposAbiertos[tipo] !== false;
+                  const totalTipo = cuotas.reduce((s, c) => s + Number(c.amount_due), 0);
+                  const label = TIPO_OTROS_GASTOS_LABELS[tipo] || tipo;
+                  const moneda = cuotas[0]?.moneda || 'PEN';
+                  const sym = symMoneda(moneda);
+                  return (
+                    <div key={tipo} className="rounded-xl border border-gray-200 overflow-hidden bg-white">
+                      <button
+                        type="button"
+                        onClick={() => setOtrosTiposAbiertos(prev => ({ ...prev, [tipo]: prev[tipo] === false ? true : false }))}
+                        className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          {isOpen ? <ChevronDown className="w-4 h-4 text-gray-500" /> : <ChevronRight className="w-4 h-4 text-gray-500" />}
+                          <span className="text-sm font-bold text-gray-900">{label}</span>
+                          <span className="text-xs text-gray-400">· {cuotas.length} cuotas · Total: {sym} {totalTipo.toFixed(2)}</span>
+                        </div>
+                      </button>
+                      {isOpen && (
+                        <div className="overflow-x-auto border-t border-gray-100">
+                          <table className="min-w-max text-sm">
+                            <thead>
+                              <tr className="bg-gray-50/80">
+                                <th className="sticky left-0 z-[1] bg-gray-50/95 px-4 py-2 text-left text-xs font-semibold text-gray-500 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)] min-w-[90px] whitespace-nowrap">Monto · {sym}</th>
+                                {cuotas.map((og) => {
+                                  const months = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+                                  let shortDate = '—';
+                                  if (og.due_date) {
+                                    const parts = String(og.due_date).slice(0,10).split('-');
+                                    if (parts.length === 3) {
+                                      shortDate = parts[2] + '-' + months[parseInt(parts[1]) - 1];
+                                    }
+                                  }
+                                  return (
+                                    <th key={og.id} className="px-3 py-2 text-center text-[10px] font-medium text-gray-500 whitespace-nowrap">{shortDate}</th>
+                                  );
+                                })}
                               </tr>
-                            )}
-                          </Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  </div>
-                </div>
-                <TablePaginationBar
-                  page={otrosPg.page}
-                  setPage={otrosPg.setPage}
-                  totalPages={otrosPg.totalPages}
-                  limit={otrosPg.limit}
-                  setLimit={otrosPg.setLimit}
-                  pageSizes={otrosPg.pageSizes}
-                  containerClassName="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 py-3 border-t border-gray-100"
-                />
-              </>
+                            </thead>
+                            <tbody>
+                              <tr>
+                                <td className="sticky left-0 z-[1] bg-white px-4 py-2 font-semibold text-gray-900 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)] text-xs">
+                                  {(() => {
+                                    const allSame = cuotas.every(c => Math.abs(Number(c.amount_due) - Number(cuotas[0].amount_due)) < 0.01);
+                                    return allSame ? Number(cuotas[0].amount_due).toFixed(2) : '—';
+                                  })()}
+                                </td>
+                                {cuotas.map((og) => (
+                                  <td key={og.id} className="px-3 py-2 text-center">
+                                    <select
+                                      value={og.status}
+                                      onChange={(e) => handleOtroGastoStatusChange(og.id, e.target.value)}
+                                      className={`text-[11px] border rounded px-1.5 py-0.5 font-medium cursor-pointer ${
+                                        og.status === 'paid' ? 'bg-green-50 border-green-300 text-green-700' :
+                                        og.status === 'overdue' ? 'bg-red-50 border-red-300 text-red-600' :
+                                        'bg-gray-50 border-gray-300 text-gray-600'
+                                      }`}
+                                    >
+                                      <option value="pending">Pendiente</option>
+                                      <option value="paid">Pagado</option>
+                                      <option value="overdue">Vencido</option>
+                                    </select>
+                                  </td>
+                                ))}
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             )}
         </>
         )}

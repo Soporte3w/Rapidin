@@ -1,11 +1,13 @@
 /** Fila de cuota “otros gastos” (pago parcial inicial) */
 export type MiautoOtrosGastoRow = {
   id: string;
+  tipo?: string;
   week_index: number;
   due_date: string;
   amount_due: number;
   paid_amount: number;
   status: string;
+  moneda?: string;
 };
 
 /** Comprobante de pago subido por el conductor para una cuota de otros gastos */

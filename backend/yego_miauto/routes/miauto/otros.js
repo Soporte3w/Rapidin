@@ -6,7 +6,7 @@ import { logger } from '../../../utils/logger.js';
 import { getTipoCambioByCountry, setTipoCambio, listTiposCambio } from '../../services/tipo-cambio/miautoTipoCambioService.js';
 import { listBySolicitud, createAdjunto } from '../../services/adjuntos/miautoAdjuntoService.js';
 import { sendWhatsAppMessage } from '../../../services/authService.js';
-import { listBySolicitud as listOtrosGastosBySolicitud } from '../../services/gastos/miautoOtrosGastosService.js';
+import { listBySolicitud as listOtrosGastosBySolicitud, updateOtroGastoStatus } from '../../services/gastos/miautoOtrosGastosService.js';
 import { getSolicitudById } from '../../services/solicitud/miautoSolicitudService.js';
 import pool from '../../../database/connection.js';
 
@@ -154,6 +154,18 @@ router.get('/solicitudes/:id/otros-gastos', validateUUID, async (req, res) => {
   } catch (error) {
     logger.error('Error listando otros gastos Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al listar otros gastos', 500);
+  }
+});
+
+router.put('/solicitudes/:id/otros-gastos/:ogId/estado', validateUUID, async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) return errorResponse(res, 'Estado requerido', 400);
+    const cuota = await updateOtroGastoStatus(req.params.ogId, status, req.user?.id);
+    return successResponse(res, cuota, 'Estado actualizado');
+  } catch (error) {
+    logger.error('Error actualizando estado de otro gasto:', error);
+    return errorResponse(res, error.message, 400);
   }
 });
 

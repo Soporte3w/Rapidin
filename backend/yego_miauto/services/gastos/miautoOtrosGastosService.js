@@ -158,6 +158,65 @@ export async function ensureOtroGastoForWeek(solicitudId, weekIndex) {
   };
 }
 
+async function ensureTiposFromRequisitos(solicitudId, tiposExistentes) {
+  // Leer requisitos_gastos del cronograma_vehiculo
+  const reqRes = await query(
+    `SELECT cv.requisitos_gastos, s.fecha_inicio_cobro_semanal
+     FROM module_miauto_solicitud s
+     JOIN module_miauto_cronograma_vehiculo cv ON cv.id = s.cronograma_vehiculo_id
+     WHERE s.id = $1 AND cv.requisitos_gastos IS NOT NULL`,
+    [solicitudId]
+  );
+  if (reqRes.rows.length === 0) return;
+  const reqGastos = typeof reqRes.rows[0].requisitos_gastos === 'string'
+    ? JSON.parse(reqRes.rows[0].requisitos_gastos) : reqRes.rows[0].requisitos_gastos || {};
+  const fechaInicio = reqRes.rows[0].fecha_inicio_cobro_semanal;
+  if (!fechaInicio) return;
+  const fi = new Date(fechaInicio);
+
+  // Tipos a generar si no existen
+  const tipos = [];
+  const modo = reqGastos.todo_riesgo_y_gps_modo || 'separado';
+
+  if (!tiposExistentes.has('soat') && reqGastos.soat?.monto > 0)
+    tipos.push({ tipo: 'soat', g: reqGastos.soat, cuotas: 4, diasOffsetPorCuota: (i) => Math.round(365/4) * (i-1) });
+  if (!tiposExistentes.has('impuesto_vehicular') && reqGastos.impuesto_vehicular?.monto > 0)
+    tipos.push({ tipo: 'impuesto_vehicular', g: reqGastos.impuesto_vehicular, cuotas: 4, diasOffsetPorCuota: (i) => Math.round(365/4) * (i-1) });
+
+  if (modo === 'agrupado') {
+    if (!tiposExistentes.has('todo_riesgo_mas_gps_agrupado') && reqGastos.todo_riesgo_mas_gps_agrupado?.monto > 0)
+      tipos.push({ tipo: 'todo_riesgo_mas_gps_agrupado', g: reqGastos.todo_riesgo_mas_gps_agrupado, cuotas: 26, diasOffsetPorCuota: (i) => 7 * (i-1) });
+  } else {
+    if (!tiposExistentes.has('src') && reqGastos.src?.monto > 0)
+      tipos.push({ tipo: 'src', g: reqGastos.src, cuotas: 5, diasOffsetPorCuota: (i) => 30 * (i-1) });
+    if (!tiposExistentes.has('gps') && reqGastos.gps?.monto > 0)
+      tipos.push({ tipo: 'gps', g: reqGastos.gps, cuotas: 18, diasOffsetPorCuota: (i) => 30 * (i-1) });
+  }
+
+  if (!tiposExistentes.has('inicial_parcial') && reqGastos.inicial_parcial?.monto > 0)
+    tipos.push({ tipo: 'inicial_parcial', g: reqGastos.inicial_parcial, cuotas: 26, diasOffsetPorCuota: (i) => 7 * (i-1) });
+
+  for (const t of tipos) {
+    const moneda = t.g.moneda || 'PEN';
+    const monto = parseFloat(t.g.monto);
+    const numCuotas = t.cuotas;
+
+    for (let i = 1; i <= numCuotas; i++) {
+      const dueDate = new Date(fi);
+      dueDate.setDate(dueDate.getDate() + t.diasOffsetPorCuota(i));
+      const dueStr = dueDate.toISOString().slice(0, 10);
+      const amountDue = Math.round(monto / numCuotas * 100) / 100;
+
+      await query(
+        `INSERT INTO module_miauto_otros_gastos (solicitud_id, tipo, week_index, due_date, amount_due, status, moneda)
+         VALUES ($1, $2, $3, $4::date, $5, 'pending', $6)
+         ON CONFLICT (solicitud_id, week_index, tipo) DO NOTHING`,
+        [solicitudId, t.tipo, i, dueStr, amountDue, moneda]
+      );
+    }
+  }
+}
+
 /** Lista las cuotas de otros gastos de una solicitud, ordenadas por week_index. Crea filas bajo demanda (lazy) hasta la semana actual si la solicitud tiene otros_gastos_num_cuotas. */
 export async function listBySolicitud(solicitudId) {
   const sol = await query(
@@ -177,16 +236,31 @@ export async function listBySolicitud(solicitudId) {
     }
   }
 
-  const res = await query(
-    `SELECT id, solicitud_id, week_index, due_date, amount_due, paid_amount, status, moneda, created_at, updated_at
+   const res = await query(
+    `SELECT id, solicitud_id, tipo, week_index, due_date, amount_due, paid_amount, status, moneda, created_at, updated_at, updated_by
      FROM module_miauto_otros_gastos
      WHERE solicitud_id = $1
-     ORDER BY week_index ASC`,
+     ORDER BY tipo, week_index ASC`,
     [solicitudId]
   );
-  return (res.rows || []).map((r) => ({
+  const cuotas = (res.rows || []);
+
+  // Auto-generar cuotas faltantes desde requisitos_gastos del cronograma
+  const tiposExistentes = new Set(cuotas.map(r => r.tipo));
+  await ensureTiposFromRequisitos(solicitudId, tiposExistentes);
+
+  // Re-leer después de posible auto-generación
+  const res2 = await query(
+    `SELECT id, solicitud_id, tipo, week_index, due_date, amount_due, paid_amount, status, moneda, created_at, updated_at, updated_by
+     FROM module_miauto_otros_gastos
+     WHERE solicitud_id = $1
+     ORDER BY tipo, week_index ASC`,
+    [solicitudId]
+  );
+  return (res2.rows || []).map((r) => ({
     id: r.id,
     solicitud_id: r.solicitud_id,
+    tipo: r.tipo || 'generico',
     week_index: r.week_index,
     due_date: r.due_date,
     amount_due: parseFloat(r.amount_due) || 0,
@@ -196,4 +270,28 @@ export async function listBySolicitud(solicitudId) {
     created_at: r.created_at,
     updated_at: r.updated_at,
   }));
+}
+
+export async function updateOtroGastoStatus(id, status, userId) {
+  const valid = ['pending', 'paid', 'overdue'];
+  if (!valid.includes(status)) throw new Error('Estado inválido. Debe ser: pending, paid, overdue');
+
+  await query(
+    `UPDATE module_miauto_otros_gastos SET
+       status = $1,
+       paid_amount = CASE WHEN $1 = 'paid' THEN COALESCE(NULLIF(paid_amount, 0), amount_due) WHEN $1 IN ('pending', 'overdue') THEN 0 ELSE paid_amount END,
+       updated_by = $2,
+       updated_at = NOW()
+     WHERE id = $3`,
+    [status, userId, id]
+  );
+
+  const r = await query(
+    `SELECT og.*, COALESCE(u.first_name || ' ' || u.last_name, '') AS updated_by_name
+     FROM module_miauto_otros_gastos og
+     LEFT JOIN module_rapidin_users u ON u.id = og.updated_by
+     WHERE og.id = $1`,
+    [id]
+  );
+  return r.rows[0] || null;
 }

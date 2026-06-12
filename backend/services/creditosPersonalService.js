@@ -74,10 +74,6 @@ export async function createCreditoPersonal(data, userId) {
     throw new Error('Fecha de primer cobro inválida. Use formato YYYY-MM-DD');
   }
   const fechaBaseObj = new Date(fechaBase + 'T12:00:00');
-  const hoy = new Date(new Date().toISOString().slice(0, 10) + 'T12:00:00');
-  if (fechaBaseObj < hoy) {
-    throw new Error('La fecha de primer cobro debe ser hoy o una fecha futura');
-  }
 
   // Validar frecuencia (acepta payment_frequency o frecuencia_pago)
   const freq = data.frecuencia_pago || data.payment_frequency;

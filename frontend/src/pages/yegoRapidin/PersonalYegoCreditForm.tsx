@@ -219,7 +219,6 @@ export default function PersonalYegoCreditForm() {
               <input
                 type="date"
                 value={fechaPrimerCobro}
-                min={new Date(Date.now() + 86400000).toISOString().slice(0, 10)}
                 onChange={(e) => setFechaPrimerCobro(e.target.value)}
                 className="w-full md:w-64 px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500"
               />

@@ -21,6 +21,7 @@ export default function PersonalYegoCreditForm() {
   const [selectedUser, setSelectedUser] = useState<RRHHUser | null>(null);
   const [form, setForm] = useState({ amount: '', installments: '12' });
   const [paymentFrequency, setPaymentFrequency] = useState<'semanal' | 'mensual'>('mensual');
+  const [fechaPrimerCobro, setFechaPrimerCobro] = useState('');
   const [bank, setBank] = useState({ bank: '', accountType: 'ahorros' as 'ahorros' | 'corriente', accountNumber: '' });
   const [bankOther, setBankOther] = useState('');
   const [bankError, setBankError] = useState('');
@@ -79,6 +80,7 @@ export default function PersonalYegoCreditForm() {
   const handleSubmit = async () => {
     if (!selectedUser) { toast.error('Selecciona un colaborador'); return; }
     if (!form.amount) { toast.error('Ingresa el monto'); return; }
+    if (!fechaPrimerCobro) { toast.error('Selecciona la fecha de primer cobro'); return; }
     if (bank.bank && bank.accountNumber && bank.bank !== 'OTRO') {
       const digits = bank.accountNumber.replace(/\D/g, '');
       let valid = true;
@@ -99,6 +101,7 @@ export default function PersonalYegoCreditForm() {
         amount: parseFloat(form.amount),
         number_of_installments: parseInt(form.installments),
         payment_frequency: paymentFrequency,
+        fecha_primer_cobro: fechaPrimerCobro,
         bank_name: bank.bank === 'OTRO' ? bankOther : bank.bank || undefined,
         bank_account: bank.bank !== 'OTRO' ? bank.accountNumber || undefined : undefined,
         bank_account_type: bank.bank !== 'OTRO' ? (bank.accountType === 'ahorros' ? 'Ahorros' : 'Corriente') : undefined,
@@ -182,7 +185,7 @@ export default function PersonalYegoCreditForm() {
                     <p className="font-bold text-gray-900 text-sm">{selectedUser.first_name} {selectedUser.last_name}</p>
                     <p className="text-xs text-gray-600">DNI {selectedUser.dni} · {selectedUser.role}</p>
                   </div>
-                  <button onClick={() => { setSelectedUser(null); setDocFile(null); setDocPreviewUrl(null); setForm({ amount: '', installments: '12' }); setBank({ bank: '', accountType: 'ahorros', accountNumber: '' }); setBankOther(''); setBankError(''); }} className="text-gray-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+                  <button onClick={() => { setSelectedUser(null); setDocFile(null); setDocPreviewUrl(null); setForm({ amount: '', installments: '12' }); setBank({ bank: '', accountType: 'ahorros', accountNumber: '' }); setBankOther(''); setBankError(''); setFechaPrimerCobro(''); }} className="text-gray-400 hover:text-red-500"><X className="w-4 h-4" /></button>
                 </div>
               </div>
             )}
@@ -210,6 +213,17 @@ export default function PersonalYegoCreditForm() {
                   <option value="mensual">Mensual ({rateMensual}%)</option>
                 </select>
               </div>
+            </div>
+            <div className="mt-3">
+              <label className="block text-xs font-semibold text-gray-500 mb-1">Fecha de primer cobro *</label>
+              <input
+                type="date"
+                value={fechaPrimerCobro}
+                min={new Date(Date.now() + 86400000).toISOString().slice(0, 10)}
+                onChange={(e) => setFechaPrimerCobro(e.target.value)}
+                className="w-full md:w-64 px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500"
+              />
+              <p className="text-xs text-gray-400 mt-1">La primera cuota vencerá en esta fecha. Las siguientes se calculan según la frecuencia.</p>
             </div>
           </div>
 
@@ -307,9 +321,13 @@ export default function PersonalYegoCreditForm() {
                     </div>
                     <span className="text-sm text-gray-700">{rateEfectiva.toFixed(2)}% {freqLabel}</span>
                   </div>
-                  <div className="flex justify-between py-2.5 border-b border-gray-100">
+                   <div className="flex justify-between py-2.5 border-b border-gray-100">
                     <span className="text-sm text-gray-500">Plazo</span>
                     <span className="text-sm text-gray-700">{installments} {paymentFrequency === 'semanal' ? (installments === 1 ? 'semana' : 'semanas') : (installments === 1 ? 'mes' : 'meses')}</span>
+                  </div>
+                  <div className="flex justify-between py-2.5 border-b border-gray-100">
+                    <span className="text-sm text-gray-500">Primer cobro</span>
+                    <span className="text-sm text-gray-700">{fechaPrimerCobro || '—'}</span>
                   </div>
                   <div className="flex justify-between py-2.5 border-b border-gray-100">
                     <span className="text-sm text-gray-500">Interés por {freqLabel}</span>
@@ -343,7 +361,7 @@ export default function PersonalYegoCreditForm() {
                   <button type="button" onClick={() => navigate('/admin/loan-requests/credit-type')} className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 text-sm">
                     <ArrowLeft className="w-4 h-4" /> Volver
                   </button>
-                  <button type="button" onClick={handleSubmit} disabled={!selectedUser || submitting} className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 font-medium text-sm">
+                  <button type="button" onClick={handleSubmit} disabled={!selectedUser || !fechaPrimerCobro || submitting} className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 font-medium text-sm">
                     {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
                     {submitting ? 'Creando...' : 'Crear Crédito'}
                   </button>

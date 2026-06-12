@@ -62,7 +62,22 @@ export async function createCreditoPersonal(data, userId) {
     user_gestion_id, first_name, last_name, dni, document_type,
     email, phone, role, amount, number_of_installments,
     bank_name, bank_account, bank_account_type,
+    fecha_primer_cobro,
   } = data;
+
+  if (!fecha_primer_cobro) {
+    throw new Error('La fecha de primer cobro es obligatoria');
+  }
+
+  const fechaBase = String(fecha_primer_cobro).trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaBase)) {
+    throw new Error('Fecha de primer cobro inválida. Use formato YYYY-MM-DD');
+  }
+  const fechaBaseObj = new Date(fechaBase + 'T12:00:00');
+  const hoy = new Date(new Date().toISOString().slice(0, 10) + 'T12:00:00');
+  if (fechaBaseObj < hoy) {
+    throw new Error('La fecha de primer cobro debe ser hoy o una fecha futura');
+  }
 
   // Validar frecuencia (acepta payment_frequency o frecuencia_pago)
   const freq = data.frecuencia_pago || data.payment_frequency;
@@ -92,22 +107,21 @@ export async function createCreditoPersonal(data, userId) {
   const bankAccountType = bank_account_type || null;
 
   const result = await query(
-    `INSERT INTO module_rapidin_creditos_personal
+    `     INSERT INTO module_rapidin_creditos_personal
      (user_gestion_id, first_name, last_name, dni, document_type, email, phone, role,
       amount, total_amount, interest_rate, tasa_interes, number_of_installments, payment_frequency, frecuencia_pago,
-      pending_balance, bank_name, bank_account, bank_account_type, created_by, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+      pending_balance, bank_name, bank_account, bank_account_type, created_by, status, fecha_primer_cobro)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
      RETURNING id`,
     [user_gestion_id, first_name, last_name, dni, document_type, email, phone, role,
      amount, totalAmount, tasaMensualConfig, tasaInteres, number_of_installments, payment_frequency, payment_frequency,
-     totalAmount, bankName, bankAccount, bankAccountType, userId, 'pending']
+     totalAmount, bankName, bankAccount, bankAccountType, userId, 'pending', fechaBase]
   );
 
   const creditoId = result.rows[0].id;
 
   for (let i = 1; i <= number_of_installments; i++) {
-    const dueDate = new Date();
-    dueDate.setDate(dueDate.getDate() + (i * diasEntreCuotas));
+    const dueDate = new Date(fechaBaseObj.getTime() + ((i - 1) * diasEntreCuotas * 86400000));
     await query(
       `INSERT INTO module_rapidin_creditos_personal_cuotas
        (credito_id, installment_number, installment_amount, due_date)
@@ -208,14 +222,25 @@ export async function addDocumentoCredito(creditoId, fileName, filePath, userId)
 
 export async function approveCreditoPersonal(creditoId, userId) {
   const now = new Date().toISOString().slice(0, 10);
+
+  // Check if credit has fecha_primer_cobro set
+  const creditoRes = await query(
+    'SELECT fecha_primer_cobro FROM module_rapidin_creditos_personal WHERE id = $1',
+    [creditoId]
+  );
+  const tieneFechaPrimerCobro = creditoRes.rows[0]?.fecha_primer_cobro != null;
+
   await query(
     `UPDATE module_rapidin_creditos_personal SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'pending'`,
     [creditoId]
   );
-  await query(
-    `UPDATE module_rapidin_creditos_personal_cuotas SET due_date = due_date + ($1::date - created_at::date) WHERE credito_id = $2`,
-    [now, creditoId]
-  );
+
+  if (!tieneFechaPrimerCobro) {
+    await query(
+      `UPDATE module_rapidin_creditos_personal_cuotas SET due_date = due_date + ($1::date - created_at::date) WHERE credito_id = $2`,
+      [now, creditoId]
+    );
+  }
   return getCreditoPersonalById(creditoId);
 }
 

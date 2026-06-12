@@ -971,6 +971,7 @@ const Loans = () => {
                           <div><span className="text-gray-500">Total:</span> <span className="font-semibold text-red-600">S/ {parseFloat(detailModal.credito.total_amount).toFixed(2)}</span></div>
                           <div><span className="text-gray-500">Cuotas:</span> <span className="font-semibold">{detailModal.credito.number_of_installments} {detailModal.credito.frecuencia_pago === 'semanal' ? (detailModal.credito.number_of_installments === 1 ? 'semana' : 'semanas') : (detailModal.credito.number_of_installments === 1 ? 'mes' : 'meses')}</span></div>
                           <div><span className="text-gray-500">Estado:</span> <span className="font-semibold">{detailModal.credito.status === 'active' ? 'Activo' : detailModal.credito.status === 'pending' ? 'Pendiente' : detailModal.credito.status === 'paid' ? 'Pagado' : detailModal.credito.status}</span></div>
+                          <div><span className="text-gray-500">Primer cobro:</span> <span className="font-semibold">{detailModal.credito.fecha_primer_cobro ? new Date(detailModal.credito.fecha_primer_cobro).toLocaleDateString('es-PE') : '—'}</span></div>
                           <div><span className="text-gray-500">Creado:</span> <span className="font-semibold">{detailModal.credito.created_at?.slice(0, 10)}</span></div>
                         </div>
                       </div>

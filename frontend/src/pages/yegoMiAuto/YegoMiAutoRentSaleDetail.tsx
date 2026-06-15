@@ -307,12 +307,15 @@ export default function YegoMiAutoRentSaleDetail() {
 
       descuentos += `\n------------------------------------------------------------------------\nPENDIENTE:\n`;
 
-      const pendientes = overdueCuotas.slice(0, 10).map((c) => {
-        const s = symMoneda(monedaCuotaRow(c));
-        const pendingTotal = Number(c.pending_total ?? 0) || 0;
-        const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
-        return { semana, sym: s, pendingTotal };
-      });
+      const pendientes = overdueCuotas
+        .filter((c) => (Number(c.pending_total ?? 0) || 0) > 0.01)
+        .slice(0, 10)
+        .map((c) => {
+          const s = symMoneda(monedaCuotaRow(c));
+          const pendingTotal = Number(c.pending_total ?? 0) || 0;
+          const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
+          return { semana, sym: s, pendingTotal };
+        });
       const mas = overdueCuotas.length > 10 ? overdueCuotas.length - 10 : 0;
 
       const lineasPendientes = pendientes.map((p) => `🔹 Semana ${p.semana}: ${p.sym} ${p.pendingTotal.toFixed(2)} 🚨`);
@@ -344,9 +347,11 @@ export default function YegoMiAutoRentSaleDetail() {
       if (!hasDescuentos) descuentos += `🔹 Sin descuentos esta semana\n`;
 
       if (cubierto) {
-        defaultText = `${header}${descuentos}\n------------------------------------------------------------------------\nPENDIENTE:\n🔸 Cuota neta a pagar:            ${sym} 0.00 ✅\n\n¡Todo cubierto! No tienes pagos pendientes esta semana.`;
-        if (saldoFavor > 0.01) defaultText += `\nSaldo a tu favor: ${sym} ${saldoFavor.toFixed(2)} 🎉`;
-        defaultText += `\n\nCualquier consulta quedamos atentos 👍\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
+        let pagadoText = `\n------------------------------------------------------------------------\nPAGADO:\n`;
+        if (pagado > 0.01) pagadoText += `🔹 Pagado: ${sym} ${pagado.toFixed(2)} ✅\n`;
+        pagadoText += `\n🔸 ¡Cuota cubierta! ✅\n`;
+        if (saldoFavor > 0.01) pagadoText += `\nSaldo a tu favor: ${sym} ${saldoFavor.toFixed(2)} 🎉`;
+        defaultText = `${header}${descuentos}${pagadoText}\n\nCualquier consulta quedamos atentos 👍`;
       } else {
         defaultText = `${header}${descuentos}\n------------------------------------------------------------------------\nPENDIENTE:\n🔹 Semana ${semana}: ${sym} ${pendingTotalCuota.toFixed(2)} 🚨\n\nCualquier consulta quedamos atentos 👍\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
       }

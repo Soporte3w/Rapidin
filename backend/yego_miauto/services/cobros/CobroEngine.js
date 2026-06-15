@@ -371,8 +371,8 @@ export async function generateWeeklyCharge({
       partnerFees83Stored = 0;
       partnerFeesYangoStored = null;
     } else {
-      partnerFeesRawStored = partnerFeesRaw;
-      partnerFees83Stored = cuotaCalc.partnerFees83;
+      partnerFeesRawStored = snap.partnerFeesRaw;
+      partnerFees83Stored = snap.partnerFees83;
       partnerFeesYangoStored = partnerFeesRaw > 0.005 ? partnerFeesRaw : null;
     }
     amountDueInsert = snap.amountDue;

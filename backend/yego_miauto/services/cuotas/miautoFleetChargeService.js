@@ -56,7 +56,7 @@ function sqlYangoDriverLateralJoin(parkParamNumber) {
                   REGEXP_REPLACE(COALESCE(TRIM(s.dni), ''), '[^0-9]', '', 'g')
               AND REGEXP_REPLACE(COALESCE(TRIM(s.dni), ''), '[^0-9]', '', 'g') <> ''
             )
-            OR UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_normalized_number, d.car_number, '')), '\\s', '', 'g')) =
+            OR UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '\\s', '', 'g')) =
                 UPPER(REGEXP_REPLACE(TRIM(COALESCE(s.placa_asignada, '')), '\\s', '', 'g'))
             OR (
               REGEXP_REPLACE(COALESCE(TRIM(d.phone), ''), '[^0-9]', '', 'g') =
@@ -70,7 +70,7 @@ function sqlYangoDriverLateralJoin(parkParamNumber) {
                WHEN REGEXP_REPLACE(COALESCE(TRIM(d.document_number), ''), '[^0-9]', '', 'g') =
                     REGEXP_REPLACE(COALESCE(TRIM(s.dni), ''), '[^0-9]', '', 'g')
                     AND REGEXP_REPLACE(COALESCE(TRIM(s.dni), ''), '[^0-9]', '', 'g') <> '' THEN 1
-               WHEN UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_normalized_number, d.car_number, '')), '\\s', '', 'g')) =
+               WHEN UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '\\s', '', 'g')) =
                     UPPER(REGEXP_REPLACE(TRIM(COALESCE(s.placa_asignada, '')), '\\s', '', 'g'))
                     AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(s.placa_asignada, '')), '\\s', '', 'g')) <> '' THEN 2
                WHEN REGEXP_REPLACE(COALESCE(TRIM(d.phone), ''), '[^0-9]', '', 'g') = REGEXP_REPLACE(COALESCE(TRIM(s.phone), ''), '[^0-9]', '', 'g') THEN 3
@@ -84,7 +84,7 @@ function sqlYangoDriverLateralJoin(parkParamNumber) {
         FROM drivers d2
         WHERE TRIM(COALESCE(d2.park_id::text, '')) = $${p}
           AND d2.work_status = 'working'
-          AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d2.car_normalized_number, d2.car_number, '')), '\\s', '', 'g')) =
+          AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d2.car_number, '')), '\\s', '', 'g')) =
               UPPER(REGEXP_REPLACE(TRIM(COALESCE(s.placa_asignada, '')), '\\s', '', 'g'))
           AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(s.placa_asignada, '')), '\\s', '', 'g')) <> ''
         LIMIT 1

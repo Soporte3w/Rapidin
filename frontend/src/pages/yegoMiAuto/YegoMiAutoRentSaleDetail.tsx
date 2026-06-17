@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, Copy, Check, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2 } from 'lucide-react';
+import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, Copy, Check, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
@@ -34,6 +34,7 @@ import {
 } from '../../utils/miautoRentSaleHelpers';
 import { MiautoComprobantePagoActions } from '../../components/yegoMiAuto/MiautoComprobantePagoActions';
 import { MiautoComprobantesResumenSemana } from '../../components/yegoMiAuto/MiautoComprobantesResumenSemana';
+import { MiautoGenerarCuotaModal } from '../../components/yegoMiAuto/MiautoGenerarCuotaModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { roundToTwoDecimals } from '../../utils/currency';
 import {
@@ -231,6 +232,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const [eliminandoEvidenciaId, setEliminandoEvidenciaId] = useState<string | null>(null);
   const evidenciaFleetFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
+  const [showGenerarCuotaModal, setShowGenerarCuotaModal] = useState(false);
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
   const whatsAppCuotaReciente = useMemo(() => {
@@ -720,6 +722,20 @@ export default function YegoMiAutoRentSaleDetail() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {solicitud?.status === 'aprobado' && solicitud?.fecha_inicio_cobro_semanal && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowGenerarCuotaModal(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium transition-colors"
+                  title="Generar cuota semanal manual"
+                >
+                  <Plus className="w-4 h-4" />
+                  Cuota
+                </button>
+                <div className="w-px h-6 bg-white/20" />
+              </>
+            )}
             <button
               type="button"
               onClick={openWhatsAppModal}
@@ -2176,6 +2192,13 @@ export default function YegoMiAutoRentSaleDetail() {
         </div>,
         document.body
       )}
+
+      {id && <MiautoGenerarCuotaModal
+        solicitudId={id}
+        open={showGenerarCuotaModal}
+        onClose={() => setShowGenerarCuotaModal(false)}
+        onGenerated={() => fetchDetail(undefined, { refresh: true })}
+      />}
     </div>
   );
 }

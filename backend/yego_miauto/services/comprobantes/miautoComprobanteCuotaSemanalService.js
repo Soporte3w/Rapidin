@@ -311,7 +311,11 @@ export async function createComprobanteConformidadAdmin(solicitudId, cuotaSemana
         'El comprobante de conformidad solo se puede subir sin monto cuando la cuota está pagada o bonificada. Indica monto y moneda del comprobante.'
       );
     }
-    const totalDue = round2(Number(c.amount_due || 0) + Number(c.late_fee || 0));
+    const fiCobro = derivCtx?.sol?.fecha_inicio_cobro_semanal;
+    const isPrimera = c.week_start_date && fiCobro ? isSemanaDepositoMiAuto(c.week_start_date, fiCobro) : false;
+    const totalDue = isPrimera
+      ? round2(Number(c.amount_due || 0))
+      : round2(Number(c.amount_due || 0) + Number(c.late_fee || 0));
     const paid = round2(Number(c.paid_amount || 0));
     montoVal = paid > 0 ? paid : totalDue;
     monedaVal = normalizePenUsd(c.moneda || 'PEN');

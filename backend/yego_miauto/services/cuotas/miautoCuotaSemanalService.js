@@ -3,6 +3,7 @@
  */
 import { query } from '../../../config/database.js';
 import {
+  addDaysYmd,
   computeDueDateForMiAutoCuota,
   isWeekYangoClosedForMiAutoCuotaMetrics,
   mondayOfWeekContainingYmd,
@@ -69,7 +70,7 @@ function sqlYangoDriverLateralJoin(parkParamNumber) {
                   REGEXP_REPLACE(COALESCE(TRIM(s.dni), ''), '[^0-9]', '', 'g')
               AND REGEXP_REPLACE(COALESCE(TRIM(s.dni), ''), '[^0-9]', '', 'g') <> ''
             )
-            OR UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_normalized_number, d.car_number, '')), '\\s', '', 'g')) =
+            OR UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '\\s', '', 'g')) =
                 UPPER(REGEXP_REPLACE(TRIM(COALESCE(s.placa_asignada, '')), '\\s', '', 'g'))
             OR (
               REGEXP_REPLACE(COALESCE(TRIM(d.phone), ''), '[^0-9]', '', 'g') =
@@ -83,7 +84,7 @@ function sqlYangoDriverLateralJoin(parkParamNumber) {
                WHEN REGEXP_REPLACE(COALESCE(TRIM(d.document_number), ''), '[^0-9]', '', 'g') =
                     REGEXP_REPLACE(COALESCE(TRIM(s.dni), ''), '[^0-9]', '', 'g')
                     AND REGEXP_REPLACE(COALESCE(TRIM(s.dni), ''), '[^0-9]', '', 'g') <> '' THEN 1
-               WHEN UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_normalized_number, d.car_number, '')), '\\s', '', 'g')) =
+               WHEN UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '\\s', '', 'g')) =
                     UPPER(REGEXP_REPLACE(TRIM(COALESCE(s.placa_asignada, '')), '\\s', '', 'g'))
                     AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(s.placa_asignada, '')), '\\s', '', 'g')) <> '' THEN 2
                WHEN REGEXP_REPLACE(COALESCE(TRIM(d.phone), ''), '[^0-9]', '', 'g') = REGEXP_REPLACE(COALESCE(TRIM(s.phone), ''), '[^0-9]', '', 'g') THEN 3
@@ -97,7 +98,7 @@ function sqlYangoDriverLateralJoin(parkParamNumber) {
         FROM drivers d2
         WHERE TRIM(COALESCE(d2.park_id::text, '')) = $${p}
           AND d2.work_status = 'working'
-          AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d2.car_normalized_number, d2.car_number, '')), '\\s', '', 'g')) =
+          AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d2.car_number, '')), '\\s', '', 'g')) =
               UPPER(REGEXP_REPLACE(TRIM(COALESCE(s.placa_asignada, '')), '\\s', '', 'g'))
           AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(s.placa_asignada, '')), '\\s', '', 'g')) <> ''
         LIMIT 1
@@ -883,6 +884,19 @@ function amountDueAndLateForOpenSinglePhase(
     cobro_saldo,
     isPrimeraCuotaSemanal
   );
+
+  if (isPrimeraCuotaSemanal) {
+    return {
+      amount_due_sched,
+      mora_sched: 0,
+      mora_full: 0,
+      mora_saldo_capital_pendiente: 0,
+      late_fee_remaining: 0,
+      amount_due_remaining: round2(Math.max(0, amount_due_sched - round2(parseFloat(r.paid_amount) || 0))),
+      obligacion_total_open: round2(amount_due_sched),
+    };
+  }
+
   const paid = round2(parseFloat(paidPhase) || 0);
   const lateFeeDb = round2(parseFloat(r.late_fee) || 0);
   const fechaPago = ymdFromDbDate(r.fecha_ultimo_abono);
@@ -1440,7 +1454,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       pendColsUse = round2(Math.max(0, d.cuota_final - moraComputed + lateFeeDb));
     }
     const pend = pendienteStatusCuotaAbiertaPostCorte(d, pendDerivedUse, pendColsUse, { hasOlderBlockingDebt });
-    const statusOut = miAutoOpenStatusSaldoVencimiento(dueEffYmd, pend, paidDb);
+    let statusOut = miAutoOpenStatusSaldoVencimiento(dueEffYmd, pend, paidDb);
     const stRow = String(row.status || '').toLowerCase();
     /**
      * Persistir mora completa (no solo la restante tras imputar pago) para que
@@ -1496,6 +1510,13 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       }
       moraExtraPersist = 0;
       moraExtraDesde = null;
+    }
+
+    if (isPrimera) {
+      lateFeePersist = 0;
+      moraExtraPersist = 0;
+      moraExtraDesde = null;
+      if (statusOut === 'overdue') statusOut = paidDb > 0.005 ? 'partial' : 'pending';
     }
 
     await query(
@@ -1905,7 +1926,10 @@ function computeDerivedForComprobanteRow(cuotaRow, ctx) {
     }
     const paid = round2(parseFloat(cuotaRow.paid_amount) || 0);
     const ad = round2(parseFloat(cuotaRow.amount_due) || 0);
-    const lf = round2(parseFloat(cuotaRow.late_fee) || 0);
+    const ws = ymdFromDbDate(cuotaRow.week_start_date);
+    const fi = cuotaRow.fecha_inicio_cobro_semanal;
+    const isPrimera = ws && fi ? isSemanaDepositoMiAuto(ws, fi) : false;
+    const lf = isPrimera ? 0 : round2(parseFloat(cuotaRow.late_fee) || 0);
     return { cuota_final: Math.max(0, round2(ad + lf - paid)) };
   }
   const { sol, cronograma, cascadeMap } = ctx;
@@ -1929,7 +1953,7 @@ function computeDerivedForComprobanteRow(cuotaRow, ctx) {
  * Piso por columnas BD: si `d.obligacion_total` subestima `amount_due`+`late_fee`, el pendiente no puede ser menor que
  * `amount_due`+`late_fee` − `paidRaw`. Misma regla que `buildCuotaSemanalApiRow` y necesaria para cascada de comprobantes.
  */
-function aplicarPisoColumnasPendienteCuota(cuotaRow, d, pendienteEconPrePiso) {
+function aplicarPisoColumnasPendienteCuota(cuotaRow, d, pendienteEconPrePiso, isPrimeraCuotaSemanal = false) {
   if (excelPaidIgualCuotaSemanalIgnoraMora(cuotaRow)) {
     return round2(Math.max(0, pendienteEconPrePiso));
   }
@@ -1952,7 +1976,9 @@ function aplicarPisoColumnasPendienteCuota(cuotaRow, d, pendienteEconPrePiso) {
   ) {
     adParaPiso = schedD;
   }
-  const obligacionColumnas = round2(adParaPiso + round2(parseFloat(cuotaRow.late_fee) || 0));
+  const obligacionColumnas = isPrimeraCuotaSemanal
+    ? round2(adParaPiso)
+    : round2(adParaPiso + round2(parseFloat(cuotaRow.late_fee) || 0));
   const pendientePorColumnas = round2(Math.max(0, obligacionColumnas - paidRaw));
   /**
    * Si `obligacion_total` del derivado queda por debajo de `amount_due`+`late_fee` (columnas), el pendiente no puede ser
@@ -1969,14 +1995,22 @@ function aplicarPisoColumnasPendienteCuota(cuotaRow, d, pendienteEconPrePiso) {
 export function miautoCuotaFinalDerivada(cuotaRow, ctx) {
   const d = computeDerivedForComprobanteRow(cuotaRow, ctx);
   const base = round2(Math.max(0, d.cuota_final));
-  return aplicarPisoColumnasPendienteCuota(cuotaRow, d, base);
+  const ws = ymdFromDbDate(cuotaRow.week_start_date);
+  const isPrimera = ws && ctx?.sol?.fecha_inicio_cobro_semanal
+    ? isSemanaDepositoMiAuto(ws, ctx.sol.fecha_inicio_cobro_semanal)
+    : false;
+  return aplicarPisoColumnasPendienteCuota(cuotaRow, d, base, isPrimera);
 }
 
 /** Estado tras abonar `newPaid` según derivado (evita marcar pagada si solo cubre cuota en columnas y falta mora). */
 export function miautoStatusCuotaTrasAbonoDerivado(cuotaRow, newPaid, ctx) {
   const row = { ...cuotaRow, paid_amount: newPaid };
   const d = computeDerivedForComprobanteRow(row, ctx);
-  const pend = aplicarPisoColumnasPendienteCuota(row, d, round2(Math.max(0, d.cuota_final)));
+  const ws = ymdFromDbDate(cuotaRow.week_start_date);
+  const isPrimera = ws && ctx?.sol?.fecha_inicio_cobro_semanal
+    ? isSemanaDepositoMiAuto(ws, ctx.sol.fecha_inicio_cobro_semanal)
+    : false;
+  const pend = aplicarPisoColumnasPendienteCuota(row, d, round2(Math.max(0, d.cuota_final)), isPrimera);
   const dueY = ymdFromDbDate(cuotaRow.due_date);
   return miAutoOpenStatusSaldoVencimiento(dueY, pend, newPaid);
 }
@@ -2051,7 +2085,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
       ? round2(Math.max(0, d.cuota_final))
       : round2(Math.max(0, d.obligacion_total - paid_amount));
   if (extraAbonoRevision <= 0.005) {
-    pendienteEcon = aplicarPisoColumnasPendienteCuota(r, d, pendienteEcon);
+    pendienteEcon = aplicarPisoColumnasPendienteCuota(r, d, pendienteEcon, isPrimera);
   }
   const filaCerradaEfectiva = filaCerrada && pendienteEcon <= 0.005;
   const cobroSaldoRegla = round2(parseFloat(r.cobro_saldo) || 0);
@@ -2408,7 +2442,7 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
             fecha_ultimo_abono, fecha_primer_comprobante, montos_fuente, cobro_desde_saldo_conductor,
             saldo_favor_conductor, mora_desde, mora_extra, mora_extra_desde, cobro_saldo_referencia, created_at, updated_at
      FROM module_miauto_cuota_semanal
-     WHERE solicitud_id = $1
+     WHERE solicitud_id = $1 AND deleted_at IS NULL
      ORDER BY week_start_date ASC NULLS LAST, due_date ASC NULLS LAST, id ASC`,
     [solicitudId]
   );
@@ -2724,4 +2758,97 @@ export async function recalcMontosCuotasSemanalesDesdeCronograma(opts = {}) {
     `Yego Mi Auto: recalcMontosCuotasSemanalesDesdeCronograma ${updated} fila(s), ${solicitudesAfectadas.size} solicitud(es)`
   );
   return { updated, solicitudes: solicitudesAfectadas.size };
+}
+
+/**
+ * Devuelve todas las semanas del cronograma para una solicitud, indicando cuáles ya tienen cuota generada.
+ * Solo las semanas cuyo lunes ≤ hoy aparecen como disponibles para generación manual.
+ */
+export async function getSemanasDisponibles(solicitudId) {
+  const solRes = await query(
+    `SELECT s.id, s.fecha_inicio_cobro_semanal, s.cronograma_vehiculo_id, s.status
+     FROM module_miauto_solicitud s
+     WHERE s.id = $1`,
+    [solicitudId]
+  );
+  const sol = solRes.rows[0];
+  if (!sol) throw new Error('Solicitud no encontrada');
+  if (!sol.fecha_inicio_cobro_semanal) throw new Error('La solicitud aún no tiene fecha de inicio de cobro semanal');
+  if (!sol.cronograma_vehiculo_id) throw new Error('La solicitud no tiene vehículo de cronograma asignado');
+
+  const fiRaw = sol.fecha_inicio_cobro_semanal;
+  const fiYmd = typeof fiRaw === 'string'
+    ? fiRaw.trim().slice(0, 10)
+    : (fiRaw ? new Date(fiRaw).toISOString().slice(0, 10) : '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fiYmd)) throw new Error('Fecha de inicio de cobro inválida');
+
+  const vehRes = await query(
+    `SELECT cuotas_semanales FROM module_miauto_cronograma_vehiculo WHERE id = $1`,
+    [sol.cronograma_vehiculo_id]
+  );
+  const totalSemanas = parseInt(vehRes.rows[0]?.cuotas_semanales, 10) || 0;
+  if (totalSemanas <= 0) throw new Error('El vehículo del cronograma no tiene cuotas_semanales definido');
+
+  const firstMonday = mondayOfWeekContainingYmd(fiYmd);
+  const todayYmd = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Lima',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+
+  const cuotasExistentes = await query(
+    `SELECT id, week_start_date, amount_due, paid_amount, status, late_fee
+     FROM module_miauto_cuota_semanal
+     WHERE solicitud_id = $1 AND deleted_at IS NULL
+     ORDER BY week_start_date ASC`,
+    [solicitudId]
+  );
+  const cuotaByWeek = new Map();
+  for (const c of cuotasExistentes.rows) {
+    const wsRaw = c.week_start_date;
+    const ws = typeof wsRaw === 'string'
+      ? (wsRaw || '').trim().slice(0, 10)
+      : (wsRaw ? new Date(wsRaw).toISOString().slice(0, 10) : '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ws)) {
+      cuotaByWeek.set(ws, {
+        cuota_id: c.id,
+        amount_due: parseFloat(c.amount_due) || 0,
+        paid_amount: parseFloat(c.paid_amount) || 0,
+        status: c.status,
+        late_fee: parseFloat(c.late_fee) || 0,
+      });
+    }
+  }
+
+  const semanas = [];
+  for (let i = 0; i < totalSemanas; i++) {
+    const weekStart = addDaysYmd(firstMonday, i * 7);
+    const esPasadoOFuturo = weekStart <= todayYmd ? 'pasado' : 'futuro';
+    const existente = cuotaByWeek.get(weekStart) || null;
+
+    semanas.push({
+      week_start: weekStart,
+      semana: i + 1,
+      es_deposito: i === 0,
+      disponible: esPasadoOFuturo === 'pasado' && !existente,
+      tiene_cuota: !!existente,
+      ...(existente
+        ? {
+            cuota_id: existente.cuota_id,
+            amount_due: existente.amount_due,
+            paid_amount: existente.paid_amount,
+            status: existente.status,
+            late_fee: existente.late_fee,
+          }
+        : {}),
+    });
+  }
+
+  return {
+    fecha_inicio: fiYmd,
+    first_monday: firstMonday,
+    total_semanas: totalSemanas,
+    semanas,
+  };
 }

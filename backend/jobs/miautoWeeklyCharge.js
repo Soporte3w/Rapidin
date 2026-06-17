@@ -81,7 +81,7 @@ async function resolveTripsFromPlacaDriver(placa) {
     `SELECT d.driver_id, d.park_id FROM drivers d
      WHERE TRIM(COALESCE(d.park_id::text, '')) = \$1
        AND d.work_status = 'working'
-       AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_normalized_number, d.car_number, '')), '\\\\s', '', 'g')) = \$2
+        AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '\\\\s', '', 'g')) = \$2
      LIMIT 1`,
     [MIAUTO_PARK_ID, placaNorm]
   );
@@ -647,7 +647,7 @@ async function runDailyMora() {
 
 export function startMiautoWeeklyChargeJob() {
   cron.schedule('0 1 * * *', runDailyMora, { timezone: TIMEZONE });
-  cron.schedule('10 1 * * 1', runWeeklyCuotaGenerationMonday, { timezone: TIMEZONE });
+  cron.schedule('0 6 * * 1', runWeeklyCuotaGenerationMonday, { timezone: TIMEZONE });
   cron.schedule('10 7 * * 1', runWeeklyFleetChargeMonday, { timezone: TIMEZONE });
-  logger.info('Mi Auto: mora 1:00 | lun 1:10 cuotas | lun 7:10 Fleet (Lima)');
+  logger.info('Mi Auto: mora 1:00 | lun 6:00 cuotas | lun 7:10 Fleet (Lima)');
 }

@@ -204,12 +204,12 @@ export const listSolicitudes = async (filters = {}) => {
   const fleetIds = [...new Set(dataResult.rows.map((r) => r.driver_id_fleet).filter(Boolean))];
   if (placas.length > 0) {
     const { rows: wRows } = await query(
-      `SELECT UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_normalized_number, car_number, '')), ' ', '', 'g')) AS placa_norm,
+      `SELECT UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) AS placa_norm,
               first_name, last_name
        FROM drivers
        WHERE TRIM(COALESCE(park_id::text, '')) = $1
          AND work_status = 'working'
-         AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_normalized_number, car_number, '')), ' ', '', 'g')) = ANY($2::text[])`,
+         AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) = ANY($2::text[])`,
       [MIAUTO_PARK_ID, placas.map((p) => p.toUpperCase().replace(/\s/g, ''))]
     );
     for (const w of wRows) {
@@ -419,12 +419,12 @@ export const listAlquilerVenta = async (filters = {}) => {
   const fleetIds = [...new Set(rows.map((r) => r.driver_id_fleet).filter(Boolean))];
   if (placasAv.length > 0) {
     const { rows: wRows } = await query(
-      `SELECT UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_normalized_number, car_number, '')), ' ', '', 'g')) AS placa_norm,
+      `SELECT UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) AS placa_norm,
               first_name, last_name
        FROM drivers
        WHERE TRIM(COALESCE(park_id::text, '')) = $1
          AND work_status = 'working'
-         AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_normalized_number, car_number, '')), ' ', '', 'g')) = ANY($2::text[])`,
+         AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) = ANY($2::text[])`,
       [MIAUTO_PARK_ID, placasAv.map((p) => p.toUpperCase().replace(/\s/g, ''))]
     );
     for (const w of wRows) {
@@ -595,7 +595,7 @@ export const getSolicitudById = async (id, options = {}) => {
       `SELECT first_name, last_name FROM drivers
        WHERE TRIM(COALESCE(park_id::text, '')) = $1
          AND work_status = 'working'
-         AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_normalized_number, car_number, '')), ' ', '', 'g')) =
+         AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) =
              UPPER(REGEXP_REPLACE(TRIM($2), ' ', '', 'g'))
        LIMIT 1`,
       [MIAUTO_PARK_ID, row.placa_asignada]

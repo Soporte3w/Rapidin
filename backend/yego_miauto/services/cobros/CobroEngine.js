@@ -391,12 +391,14 @@ export async function generateWeeklyCharge({
 
   // --- 7. Calcular mora y due_date ---
   const dueDate = computeDueDateForMiAutoCuota(weekYmd, fechaInicioYmd, isPrimera);
-  const moraResult = computeLateFee({
-    tasaInteresMora: cronograma.tasa_interes_mora || 0,
-    dueDateYmd: dueDate,
-    todayYmd: limaTodayYmd(),
-    capitalMoroso: amountDueInsert,
-  });
+  const moraResult = isPrimera
+    ? { moraTotal: 0, tasaDiaria: 0, diasAtraso: 0, moraDiaria: 0, breakdown: { motivo: 'primera_cuota_sin_mora' } }
+    : computeLateFee({
+        tasaInteresMora: cronograma.tasa_interes_mora || 0,
+        dueDateYmd: dueDate,
+        todayYmd: limaTodayYmd(),
+        capitalMoroso: amountDueInsert,
+      });
 
   auditSteps.mora = moraResult;
 

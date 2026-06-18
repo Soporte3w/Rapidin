@@ -500,3 +500,23 @@ export async function getContractorProfile(contractorId) {
     return { success: false, error: error.response?.status ? `HTTP ${error.response.status}` : error.message };
   }
 }
+
+export async function getDriverGoals(driverProfileId) {
+  const id = String(driverProfileId || '').trim();
+  if (!id) return { success: false, error: 'driver_profile_id vacío' };
+  const cookie = fleetCookieCobroForMiAuto();
+  if (!cookie) return { success: false, error: 'cookie de Fleet no configurada' };
+  const url = `${fleetBaseUrl()}/api/fleet/v1/subvention-view/v1/goals?driver_profile_id=${encodeURIComponent(id)}`;
+  const headers = { 'Accept-Language': 'es-ES,es', Cookie: cookie, 'X-Park-Id': fleetParkIdForMiAuto() };
+  try {
+    const res = await axios.get(url, { headers, timeout: 15000 });
+    return {
+      success: true,
+      driver_tz: res.data?.driver_tz || null,
+      active_goals: res.data?.active_goals || [],
+      previous_goals: res.data?.previous_goals || [],
+    };
+  } catch (error) {
+    return { success: false, error: error.response?.status ? `HTTP ${error.response.status}` : error.message };
+  }
+}

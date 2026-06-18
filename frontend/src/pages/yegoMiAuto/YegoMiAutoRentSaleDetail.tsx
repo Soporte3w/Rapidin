@@ -235,6 +235,11 @@ export default function YegoMiAutoRentSaleDetail() {
   const [showGenerarCuotaModal, setShowGenerarCuotaModal] = useState(false);
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
+  const [whatsAppTab, setWhatsAppTab] = useState<'cuotas' | 'metricas'>('cuotas');
+  const [whatsAppCuotasMsg, setWhatsAppCuotasMsg] = useState('');
+  const [metricasData, setMetricasData] = useState<any>(null);
+  const [loadingMetricas, setLoadingMetricas] = useState(false);
+  const [metricasError, setMetricasError] = useState('');
   const whatsAppCuotaReciente = useMemo(() => {
     return [...cuotas].sort((a: any, b: any) => {
       const wa = a.week_start_date || '';
@@ -294,6 +299,9 @@ export default function YegoMiAutoRentSaleDetail() {
   const whatsAppPhone = solicitud ? getWhatsAppPhone(solicitud.phone, solicitud.country || 'PE') : '';
 
   const openWhatsAppModal = () => {
+    setWhatsAppTab('cuotas');
+    setMetricasData(null);
+    setMetricasError('');
     const name = driverNameFromState || 'Conductor';
 
     const cuotaReciente = [...cuotas].sort((a, b) => {
@@ -383,6 +391,7 @@ export default function YegoMiAutoRentSaleDetail() {
     }
 
     setWhatsAppMessage(defaultText);
+    setWhatsAppCuotasMsg(defaultText);
     setShowWhatsAppModal(true);
   };
 
@@ -399,6 +408,87 @@ export default function YegoMiAutoRentSaleDetail() {
       setSendingWhatsApp(false);
     }
   };
+
+  const fetchMetricas = useCallback(async () => {
+    if (!id) return;
+    setLoadingMetricas(true);
+    setMetricasError('');
+    try {
+      const res = await api.get(`/miauto/solicitudes/${id}/metricas-yango`);
+      const data = res.data?.data ?? res.data;
+      setMetricasData(data);
+    } catch (err: any) {
+      setMetricasError(err.response?.data?.message || 'Error al cargar metricas');
+    } finally {
+      setLoadingMetricas(false);
+    }
+  }, [id]);
+
+  const handleWhatsAppTabChange = useCallback((tab: 'cuotas' | 'metricas') => {
+    setWhatsAppTab(tab);
+    if (tab === 'metricas' && !loadingMetricas) {
+      fetchMetricas();
+    }
+  }, [loadingMetricas, fetchMetricas]);
+
+  const metricasMessages = useMemo(() => {
+    if (!metricasData?.active_goals?.length) return [];
+    const goal = metricasData.active_goals[0];
+    const step = goal.steps?.[0];
+    if (!step) return [];
+    const name = metricasData.driver_name || 'Conductor';
+    const meta = step.nrides || 0;
+    const completados = goal.total_rides || 0;
+    const pct = meta > 0 ? Math.round((completados / meta) * 100) : 0;
+    const restantes = Math.max(0, meta - completados);
+
+    const prevGoal = metricasData.previous_goals?.[0];
+    const prevMeta = prevGoal?.steps?.[0]?.nrides || 0;
+    const prevTotal = prevGoal?.total_rides || 0;
+    const prevPct = prevMeta > 0 ? Math.round((prevTotal / prevMeta) * 100) : 0;
+
+    const prevLine = prevGoal?.steps?.[0]?.is_completed && prevMeta > 0
+      ? `La semana pasada completaste ${prevMeta} viajes (${prevPct}%). Sigue asi!\n\n`
+      : '';
+
+    const messages: string[] = [];
+
+    const partnerFees = metricasData?.currentIncome?.partner_fees || 0;
+    const comision = partnerFees > 0 ? Math.round(partnerFees * 0.8333 * 100) / 100 : 0;
+    const comisionLine = comision > 0 ? `\n\u2022 Comision acumulada: S/ ${comision.toFixed(2)}` : '';
+    const closing = pct >= 100
+      ? '\nSigue asi campeon! \uD83D\uDCAA'
+      : '\nSigue sumando viajes para acercarte a tu proximo BONO AUTO. Aun estas a tiempo de alcanzar tu meta! \uD83D\uDCAA';
+
+    let title: string;
+    if (pct === 0) title = 'Empecemos esta semana con todo!';
+    else if (pct <= 25) title = 'Vamos, tu puedes lograrlo!';
+    else if (pct <= 50) title = 'Buen ritmo, sigue asi!';
+    else if (pct <= 75) title = 'Vas por buen camino!';
+    else if (pct < 100) title = 'Casi lo logras!';
+    else title = 'Felicitaciones, objetivo cumplido!';
+
+    const msg =
+      `${prevLine}Hola, ${name}\n\n` +
+      `${title} \uD83D\uDE97\uD83D\uDCA8\n\n` +
+      `\uD83D\uDCCA Tu avance semanal:\n` +
+      `\u2022 Viajes realizados: ${completados} de ${meta} (${pct}% de la meta)\n` +
+      `\u2022 Viajes restantes: ${restantes}` +
+      `${comisionLine}\n\n` +
+      `${closing}`;
+
+    messages.push(msg);
+
+    return messages;
+  }, [metricasData]);
+
+  useEffect(() => {
+    if (whatsAppTab === 'metricas' && metricasMessages.length > 0) {
+      setWhatsAppMessage(metricasMessages[0]);
+    } else if (whatsAppTab === 'cuotas' && whatsAppCuotasMsg) {
+      setWhatsAppMessage(whatsAppCuotasMsg);
+    }
+  }, [whatsAppTab, metricasMessages, whatsAppCuotasMsg]);
 
   const handleCopyId = useCallback(() => {
     if (!id) return;
@@ -2076,91 +2166,205 @@ export default function YegoMiAutoRentSaleDetail() {
                 <X className="w-5 h-5" />
               </button>
             </div>
+            <div className="flex border-b border-gray-200">
+              <button type="button" onClick={() => { setWhatsAppTab('cuotas'); }} className={`px-5 py-2.5 text-sm font-medium transition-colors ${whatsAppTab === 'cuotas' ? 'text-[#8B1A1A] border-b-2 border-[#8B1A1A]' : 'text-gray-500 hover:text-gray-700'}`}>
+                Cuotas
+              </button>
+              <button type="button" onClick={() => handleWhatsAppTabChange('metricas')} className={`px-5 py-2.5 text-sm font-medium transition-colors ${whatsAppTab === 'metricas' ? 'text-[#8B1A1A] border-b-2 border-[#8B1A1A]' : 'text-gray-500 hover:text-gray-700'}`}>
+                Metricas
+              </button>
+            </div>
             <div className="p-5 overflow-y-auto flex-1 grid grid-cols-2 gap-4">
-              {/* Columna izquierda: Datos de cuotas vencidas */}
+              {/* Columna izquierda */}
               <div className="space-y-3 border-r border-gray-100 pr-3">
-                <div>
-                  <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conductor</span>
-                  <p className="mt-1 text-gray-900 font-medium">
-                    {driverNameFromState || solicitud?.phone || solicitud?.dni || '—'}
-                  </p>
-                  {solicitud?.phone && (
-                    <p className="text-sm text-gray-500 mt-0.5">{solicitud.phone}</p>
-                  )}
-                </div>
-                <div>
-                  <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                    {overdueCuotas.length > 0 ? 'Cuotas vencidas' : pendingCuotasHoy.length > 0 ? 'Cuotas que vencen hoy' : 'Estado'}
-                  </span>
-                  {overdueCuotas.length === 0 && pendingCuotasHoy.length === 0 ? (
-                    <p className="mt-1 text-gray-600 text-sm">No hay cuotas vencidas ni pendientes hoy</p>
-                  ) : (
-                    <ul className="mt-2 space-y-2 max-h-[300px] overflow-y-auto pr-1">
-                      {(overdueCuotas.length > 0 ? overdueCuotas : pendingCuotasHoy).slice(0, 10).map((c) => {
-                        const sym = symMoneda(monedaCuotaRow(c));
-                        const cuotaTotal = Number(c.amount_due || c.cuota_neta) || 0;
-                        const pagado = Number(c.paid_amount) || 0;
-                        const moraPendiente = Math.max(Number(c.mora_pendiente) || 0, Number(c.mora_acumulada ?? c.late_fee) || 0);
-                        const moraExtra = Number(c.mora_extra) || 0;
-                        const total = Number(c.pending_total ?? 0) || (Math.max(0, cuotaTotal - pagado) + moraPendiente + moraExtra);
-                        const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
-                        return (
-                          <li key={c.id} className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
-                            <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5">
-                              <span className="font-semibold text-gray-700">Semana {semana}</span>
-                              <span>{c.status === 'overdue' ? 'Venció' : 'Vence'} {c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '—'}</span>
-                            </div>
-                            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
-                              <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{sym} {cuotaTotal.toFixed(2)}</span></span>
-                              {pagado > 0.01 && (
-                                <span><span className="text-gray-500">Pagado:</span> <span className="font-medium text-gray-900">{sym} {pagado.toFixed(2)}</span></span>
-                              )}
-                              {moraPendiente > 0 && (
-                                <span><span className="text-gray-500">Mora:</span> <span className="font-medium text-red-600">{sym} {moraPendiente.toFixed(2)}</span></span>
-                              )}
-                              {moraExtra > 0.01 && (
-                                <span><span className="text-gray-500">Mora extra:</span> <span className="font-medium text-red-500">{sym} {moraExtra.toFixed(2)}</span></span>
-                              )}
-                              <span><span className="text-gray-500">Total:</span> <span className="font-semibold text-gray-900">{sym} {total.toFixed(2)}</span></span>
-                            </div>
-                          </li>
-                        );
-                      })}
-                      {(overdueCuotas.length > 10 || pendingCuotasHoy.length > 10) && (
-                        <li className="text-sm text-gray-500 py-1">y {Math.max(overdueCuotas.length, pendingCuotasHoy.length) - 10} cuota(s) más</li>
+                {whatsAppTab === 'cuotas' ? (
+                  <>
+                    <div>
+                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conductor</span>
+                      <p className="mt-1 text-gray-900 font-medium">
+                        {driverNameFromState || solicitud?.phone || solicitud?.dni || '—'}
+                      </p>
+                      {solicitud?.phone && (
+                        <p className="text-sm text-gray-500 mt-0.5">{solicitud.phone}</p>
                       )}
-                    </ul>
-                  )}
-                </div>
-                {/* Recaudo y cobros de la semana reciente */}
-                {whatsAppCuotaReciente && (
-                  <div>
-                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Recaudo de la semana</span>
-                    <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3 text-sm space-y-1">
-                      {(() => {
-                        const pfYangoRaw = Number(whatsAppCuotaReciente.partner_fees_yango_raw || 0);
-                        const pf83Real = pfYangoRaw > 0.01 ? roundToTwoDecimals(pfYangoRaw * 0.8333) : 0;
-                        const cobroDesdeSaldo = Number(whatsAppCuotaReciente.cobro_desde_saldo_conductor || 0);
-                        const cobroSaldoRegla = Number(whatsAppCuotaReciente.cobro_saldo || 0);
-                        const sym = symMoneda(monedaCuotaRow(whatsAppCuotaReciente));
-                        const viajes = whatsAppCuotaReciente.num_viajes ?? 0;
-                        return (
-                          <>
-                            <div className="flex justify-between"><span className="text-gray-500">Viajes:</span> <span className="font-medium">{viajes}</span></div>
-                            {pfYangoRaw > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Recaudo Yango:</span> <span className="font-medium">{sym} {pfYangoRaw.toFixed(2)}</span></div>}
-                            {pf83Real > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro ingresos (83%):</span> <span className="font-medium text-orange-600">-{sym} {pf83Real.toFixed(2)}</span></div>}
-                            {cobroSaldoRegla > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro de saldo:</span> <span className="font-medium text-orange-600">-{sym} {cobroSaldoRegla.toFixed(2)}</span></div>}
-                            {cobroDesdeSaldo > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro saldo (Fleet):</span> <span className="font-medium text-orange-600">-{sym} {cobroDesdeSaldo.toFixed(2)}</span></div>}
-                          </>
-                        );
-                      })()}
                     </div>
-                  </div>
+                    <div>
+                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                        {overdueCuotas.length > 0 ? 'Cuotas vencidas' : pendingCuotasHoy.length > 0 ? 'Cuotas que vencen hoy' : 'Estado'}
+                      </span>
+                      {overdueCuotas.length === 0 && pendingCuotasHoy.length === 0 ? (
+                        <p className="mt-1 text-gray-600 text-sm">No hay cuotas vencidas ni pendientes hoy</p>
+                      ) : (
+                        <ul className="mt-2 space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                          {(overdueCuotas.length > 0 ? overdueCuotas : pendingCuotasHoy).slice(0, 10).map((c) => {
+                            const sym = symMoneda(monedaCuotaRow(c));
+                            const cuotaTotal = Number(c.amount_due || c.cuota_neta) || 0;
+                            const pagado = Number(c.paid_amount) || 0;
+                            const moraPendiente = Math.max(Number(c.mora_pendiente) || 0, Number(c.mora_acumulada ?? c.late_fee) || 0);
+                            const moraExtra = Number(c.mora_extra) || 0;
+                            const total = Number(c.pending_total ?? 0) || (Math.max(0, cuotaTotal - pagado) + moraPendiente + moraExtra);
+                            const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
+                            return (
+                              <li key={c.id} className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+                                <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5">
+                                  <span className="font-semibold text-gray-700">Semana {semana}</span>
+                                  <span>{c.status === 'overdue' ? 'Vencio' : 'Vence'} {c.due_date ? formatDateUTC(c.due_date, 'es-ES') : '—'}</span>
+                                </div>
+                                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
+                                  <span><span className="text-gray-500">Cuota:</span> <span className="font-medium text-gray-900">{sym} {cuotaTotal.toFixed(2)}</span></span>
+                                  {pagado > 0.01 && (
+                                    <span><span className="text-gray-500">Pagado:</span> <span className="font-medium text-gray-900">{sym} {pagado.toFixed(2)}</span></span>
+                                  )}
+                                  {moraPendiente > 0 && (
+                                    <span><span className="text-gray-500">Mora:</span> <span className="font-medium text-red-600">{sym} {moraPendiente.toFixed(2)}</span></span>
+                                  )}
+                                  {moraExtra > 0.01 && (
+                                    <span><span className="text-gray-500">Mora extra:</span> <span className="font-medium text-red-500">{sym} {moraExtra.toFixed(2)}</span></span>
+                                  )}
+                                  <span><span className="text-gray-500">Total:</span> <span className="font-semibold text-gray-900">{sym} {total.toFixed(2)}</span></span>
+                                </div>
+                              </li>
+                            );
+                          })}
+                          {(overdueCuotas.length > 10 || pendingCuotasHoy.length > 10) && (
+                            <li className="text-sm text-gray-500 py-1">y {Math.max(overdueCuotas.length, pendingCuotasHoy.length) - 10} cuota(s) mas</li>
+                          )}
+                        </ul>
+                      )}
+                    </div>
+                    {whatsAppCuotaReciente && (
+                      <div>
+                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Recaudo de la semana</span>
+                        <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3 text-sm space-y-1">
+                          {(() => {
+                            const pfYangoRaw = Number(whatsAppCuotaReciente.partner_fees_yango_raw || 0);
+                            const pf83Real = pfYangoRaw > 0.01 ? roundToTwoDecimals(pfYangoRaw * 0.8333) : 0;
+                            const cobroDesdeSaldo = Number(whatsAppCuotaReciente.cobro_desde_saldo_conductor || 0);
+                            const cobroSaldoRegla = Number(whatsAppCuotaReciente.cobro_saldo || 0);
+                            const sym = symMoneda(monedaCuotaRow(whatsAppCuotaReciente));
+                            const viajes = whatsAppCuotaReciente.num_viajes ?? 0;
+                            return (
+                              <>
+                                <div className="flex justify-between"><span className="text-gray-500">Viajes:</span> <span className="font-medium">{viajes}</span></div>
+                                {pfYangoRaw > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Recaudo Yango:</span> <span className="font-medium">{sym} {pfYangoRaw.toFixed(2)}</span></div>}
+                                {pf83Real > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro ingresos (83%):</span> <span className="font-medium text-orange-600">-{sym} {pf83Real.toFixed(2)}</span></div>}
+                                {cobroSaldoRegla > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro de saldo:</span> <span className="font-medium text-orange-600">-{sym} {cobroSaldoRegla.toFixed(2)}</span></div>}
+                                {cobroDesdeSaldo > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro saldo (Fleet):</span> <span className="font-medium text-orange-600">-{sym} {cobroDesdeSaldo.toFixed(2)}</span></div>}
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conductor</span>
+                      <p className="mt-1 text-gray-900 font-medium">
+                        {metricasData?.driver_name || driverNameFromState || solicitud?.dni || '—'}
+                      </p>
+                    </div>
+                    {loadingMetricas && (
+                      <div className="flex items-center gap-2 py-4">
+                        <div className="w-5 h-5 border-2 border-gray-300 border-t-[#8B1A1A] rounded-full animate-spin" />
+                        <span className="text-sm text-gray-500">Cargando metricas...</span>
+                      </div>
+                    )}
+                    {metricasError && (
+                      <div className="rounded-lg border border-red-200 bg-red-50 p-3">
+                        <p className="text-sm text-red-600">{metricasError}</p>
+                        <button type="button" onClick={fetchMetricas} className="mt-2 text-sm font-medium text-red-700 hover:text-red-800">
+                          Reintentar
+                        </button>
+                      </div>
+                    )}
+                    {metricasData?.active_goals?.length > 0 && (() => {
+                      const goal = metricasData.active_goals[0];
+                      const step = goal.steps?.[0];
+                      if (!step) return null;
+                      const meta = step.nrides || 0;
+                      const completados = goal.total_rides || 0;
+                      const pct = meta > 0 ? Math.round((completados / meta) * 100) : 0;
+                      const restantes = Math.max(0, meta - completados);
+                      const bonus = step.max_bonus || 0;
+                      const mult = step.amount || 0;
+                      const diasRestantes = goal.window?.end
+                        ? Math.max(0, Math.ceil((new Date(goal.window.end).getTime() - Date.now()) / (24 * 60 * 60 * 1000)))
+                        : 0;
+                      const moneda = goal.currency_code || 'PEN';
+                      const sym = moneda === 'USD' ? '$' : 'S/';
+                      const startDate = goal.window?.start ? formatDateUTC(goal.window.start, 'es-ES') : '—';
+                      const endDate = goal.window?.end ? formatDateUTC(goal.window.end, 'es-ES') : '—';
+                      const barColor = pct >= 100 ? 'bg-green-500' : pct >= 50 ? 'bg-blue-500' : pct >= 25 ? 'bg-yellow-500' : 'bg-red-400';
+
+                      return (
+                        <>
+                          <div>
+                            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Objetivo actual</span>
+                            <p className="text-xs text-gray-400 mt-0.5">{startDate} - {endDate}</p>
+                            <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3 space-y-2">
+                              <div className="flex items-center gap-3">
+                                <span className="text-xl font-bold text-gray-900">{completados}<span className="text-base text-gray-400 font-normal">/{meta}</span></span>
+                                <span className="text-xs text-gray-500">{pct}%</span>
+                              </div>
+                              <div className="w-full bg-gray-200 rounded-full h-2">
+                                <div className={`${barColor} h-2 rounded-full transition-all`} style={{ width: `${Math.min(100, pct)}%` }} />
+                              </div>
+                              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                                <span><span className="text-gray-500">Meta: </span><span className="font-medium">{meta} viajes</span></span>
+                                <span><span className="text-gray-500">Bonus: </span><span className="font-medium">{sym} {Number(bonus).toFixed(2)}</span></span>
+                                <span><span className="text-gray-500">Mult: </span><span className="font-medium">{mult}%</span></span>
+                                <span><span className="text-gray-500">Faltan: </span><span className="font-medium">{restantes} viajes</span></span>
+                                <span><span className="text-gray-500">Restan: </span><span className="font-medium">{diasRestantes} dias</span></span>
+                              </div>
+                            </div>
+                          </div>
+                          {metricasData.previous_goals?.length > 0 && (() => {
+                            const prev = metricasData.previous_goals[0];
+                            const prevStep = prev.steps?.[0];
+                            if (!prevStep) return null;
+                            const prevMeta = prevStep.nrides || 0;
+                            const prevTotal = prev.total_rides || 0;
+                            const prevCompleted = prevStep.is_completed;
+                            const prevPago = prev.payment_info?.amount || 0;
+                            const prevPagoFecha = prev.payment_info?.expected_payment_date || '';
+                            const prevStart = prev.window?.start ? formatDateUTC(prev.window.start, 'es-ES') : '—';
+                            const prevEnd = prev.window?.end ? formatDateUTC(prev.window.end, 'es-ES') : '—';
+                            return (
+                              <div>
+                                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Semana anterior</span>
+                                <p className="text-xs text-gray-400 mt-0.5">{prevStart} - {prevEnd}</p>
+                                <div className="mt-1.5 rounded-lg border border-gray-200 bg-gray-50/80 p-2.5 text-xs space-y-1">
+                                  <div className="flex justify-between">
+                                    <span className="text-gray-500">Estado:</span>
+                                    <span className={`font-medium ${prevCompleted ? 'text-green-600' : 'text-gray-900'}`}>
+                                      {prevCompleted ? 'Completada' : 'No completada'}
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-between"><span className="text-gray-500">Viajes:</span> <span className="font-medium">{prevTotal}/{prevMeta}</span></div>
+                                  {Number(prevPago) > 0 && (
+                                    <div className="flex justify-between"><span className="text-gray-500">Pago:</span> <span className="font-medium">{sym} {Number(prevPago).toFixed(2)}</span></div>
+                                  )}
+                                  {prevPagoFecha && (
+                                    <div className="flex justify-between"><span className="text-gray-500">Fecha pago:</span> <span className="font-medium">{formatDateUTC(prevPagoFecha, 'es-ES')}</span></div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </>
+                      );
+                    })()}
+                    {!loadingMetricas && !metricasError && (!metricasData?.active_goals || metricasData.active_goals.length === 0) && (
+                      <p className="text-sm text-gray-500 py-4">No hay objetivos activos para este conductor.</p>
+                    )}
+                  </>
                 )}
               </div>
-              {/* Columna derecha: Mensaje que verá el conductor */}
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Mensaje que verá el conductor</label>
+              {/* Columna derecha: Mensaje */}
+              <div className="flex flex-col">
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Mensaje que vera el conductor</label>
                 <textarea
                   value={whatsAppMessage}
                   onChange={(e) => setWhatsAppMessage(e.target.value)}
@@ -2185,7 +2389,7 @@ export default function YegoMiAutoRentSaleDetail() {
                 className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium text-white ${whatsAppPhone && whatsAppMessage.trim() && !sendingWhatsApp ? 'bg-[#25D366] hover:bg-[#20BD5A]' : 'bg-gray-300 cursor-not-allowed'}`}
               >
                 <FaWhatsapp className="w-5 h-5" />
-                {sendingWhatsApp ? 'Enviando...' : whatsAppPhone ? 'Enviar por WhatsApp' : 'Sin número'}
+                {sendingWhatsApp ? 'Enviando...' : whatsAppPhone ? 'Enviar por WhatsApp' : 'Sin numero'}
               </button>
             </div>
           </div>

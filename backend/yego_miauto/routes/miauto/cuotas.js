@@ -4,6 +4,7 @@ import { successResponse, errorResponse } from '../../../utils/responses.js';
 import { logger } from '../../../utils/logger.js';
 import { getCuotasSemanalesConRacha, getSemanasDisponibles, recalcularMoraGlobal, updateMoraDiaria } from '../../services/cuotas/miautoCuotaSemanalService.js';
 import { regenerateMiAutoCuotaForWeekMonday } from '../../../jobs/miautoWeeklyCharge.js';
+import { getDriverGoals, getDriverIncome } from '../../../services/yangoService.js';
 import pool from '../../../database/connection.js';
 
 const router = Router();
@@ -138,6 +139,74 @@ router.post('/solicitudes/:id/cuotas-semanales/generar', validateUUID, async (re
   } catch (error) {
     logger.error('Error generando cuota semanal manual Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al generar cuota semanal', 500);
+  }
+});
+
+// GET /api/miauto/solicitudes/:id/metricas-yango
+router.get('/solicitudes/:id/metricas-yango', validateUUID, async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'Sin permisos para ver metricas', 403);
+    }
+    const solRes = await pool.query(
+      `SELECT s.driver_id_fleet,
+              COALESCE(d.first_name, '') AS first_name,
+              COALESCE(d.last_name, '') AS last_name,
+              d.park_id
+       FROM module_miauto_solicitud s
+       LEFT JOIN LATERAL (
+         SELECT first_name, last_name, park_id FROM drivers
+         WHERE driver_id::text = s.driver_id_fleet OR document_number = s.dni
+         LIMIT 1
+       ) d ON TRUE
+       WHERE s.id = $1`,
+      [req.params.id]
+    );
+    const sol = solRes.rows[0];
+    if (!sol) return errorResponse(res, 'Solicitud no encontrada', 404);
+    if (!sol.driver_id_fleet) return errorResponse(res, 'La solicitud no tiene driver_id_fleet configurado', 400);
+
+    const goals = await getDriverGoals(sol.driver_id_fleet);
+    if (!goals.success) return errorResponse(res, goals.error || 'Error al obtener metricas de Yango', 502);
+
+    let currentIncome = null;
+    if (goals.active_goals?.length > 0) {
+      try {
+        const goal = goals.active_goals[0];
+        const dateFrom = goal.window?.start;
+        if (dateFrom) {
+          const todayLima = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'America/Lima',
+            year: 'numeric', month: '2-digit', day: '2-digit',
+          }).format(new Date());
+          const endRaw = goal.window?.end;
+          const dateTo = endRaw && endRaw < `${todayLima}T23:59:59-05:00`
+            ? endRaw
+            : `${todayLima}T23:59:59-05:00`;
+
+          const income = await getDriverIncome(dateFrom, dateTo, sol.driver_id_fleet, sol.park_id);
+          if (income.success) {
+            currentIncome = {
+              partner_fees: income.partner_fees || 0,
+              count_completed: income.count_completed || 0,
+            };
+          }
+        }
+      } catch (err) {
+        logger.warn('No se pudo obtener income actual para metricas:', err.message);
+      }
+    }
+
+    return successResponse(res, {
+      driver_name: [sol.first_name, sol.last_name].filter(Boolean).join(' ').trim() || null,
+      driver_tz: goals.driver_tz,
+      active_goals: goals.active_goals,
+      previous_goals: goals.previous_goals,
+      currentIncome,
+    });
+  } catch (error) {
+    logger.error('Error obteniendo metricas Yango Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al obtener metricas', 500);
   }
 });
 

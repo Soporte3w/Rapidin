@@ -173,9 +173,9 @@ export const getPaymentPunctuality = async (driverId) => {
   return onTime / total;
 };
 
-export const getCreditLine = async (driverId, country) => {
+export const getCreditLine = async (driverId, country, isMiauto = null) => {
   const driver = await query(
-    'SELECT cycle FROM module_rapidin_drivers WHERE id = $1',
+    'SELECT cycle, miauto_cycle FROM module_rapidin_drivers WHERE id = $1',
     [driverId]
   );
 
@@ -183,10 +183,12 @@ export const getCreditLine = async (driverId, country) => {
     return 0;
   }
 
-  const cycle = driver.rows[0].cycle;
+  const esMiauto = isMiauto ?? await isMiautoDriver(driverId);
+  const table = esMiauto ? 'module_rapidin_miauto_cycle_config' : 'module_rapidin_cycle_config';
+  const cycle = esMiauto ? (driver.rows[0].miauto_cycle ?? 1) : driver.rows[0].cycle;
 
   const conditions = await query(
-    'SELECT max_credit_line FROM module_rapidin_cycle_config WHERE country = $1 AND cycle = $2 AND active = true',
+    `SELECT max_credit_line FROM ${table} WHERE country = $1 AND cycle = $2 AND active = true`,
     [country, cycle]
   );
 
@@ -197,17 +199,61 @@ export const getCreditLine = async (driverId, country) => {
   return parseFloat(conditions.rows[0].max_credit_line);
 };
 
-export const getInterestRate = async (country, cycle) => {
+export const getInterestRate = async (country, cycle, isMiauto = false) => {
+  const table = isMiauto ? 'module_rapidin_miauto_cycle_config' : 'module_rapidin_cycle_config';
   const result = await query(
-    'SELECT interest_rate FROM module_rapidin_cycle_config WHERE country = $1 AND cycle = $2 AND active = true',
+    `SELECT interest_rate FROM ${table} WHERE country = $1 AND cycle = $2 AND active = true`,
     [country, cycle]
   );
 
   if (result.rows.length === 0) {
-    return 5.0; // solo si no hay fila en module_rapidin_cycle_config para este country/ciclo
+    return 5.0;
   }
 
   return parseFloat(result.rows[0].interest_rate);
+};
+
+/**
+ * Verifica si un conductor tiene una solicitud Yego Mi Auto activa (aprobada).
+ */
+export const isMiautoDriver = async (driverId) => {
+  const res = await query(
+    `SELECT EXISTS (
+      SELECT 1 FROM module_miauto_solicitud ms
+      JOIN module_rapidin_drivers rd ON rd.dni = ms.dni AND rd.country = ms.country
+      WHERE rd.id = $1 AND ms.status = 'aprobado'
+    ) AS es_miauto`,
+    [driverId]
+  );
+  return res.rows[0]?.es_miauto === true;
+};
+
+/**
+ * Calcula el siguiente miauto_cycle según préstamos Mi Auto cancelados.
+ */
+export const calculateMiautoCycle = async (driverId) => {
+  const driverRow = await query(
+    'SELECT country FROM module_rapidin_drivers WHERE id = $1',
+    [driverId]
+  );
+  const country = driverRow.rows[0]?.country || 'PE';
+
+  const paidResult = await query(
+    `SELECT COUNT(*) as total_paid_loans 
+     FROM module_rapidin_loans 
+     WHERE driver_id = $1 AND status = 'cancelled' AND es_miauto = true`,
+    [driverId]
+  );
+  const paidLoans = parseInt(paidResult.rows[0].total_paid_loans) || 0;
+  const nextCycle = paidLoans + 1;
+
+  const maxCycleResult = await query(
+    'SELECT COALESCE(MAX(cycle), 5) AS max_cycle FROM module_rapidin_miauto_cycle_config WHERE country = $1 AND active = true',
+    [country]
+  );
+  const maxCycle = Math.max(1, parseInt(maxCycleResult.rows[0]?.max_cycle, 10) || 5);
+
+  return Math.min(nextCycle, maxCycle);
 };
 
 /**
@@ -260,8 +306,8 @@ function buildScheduleFromFixedCuota(P, iPerPeriod, n, fixedCuota) {
 /** Número fijo de cuotas para el conductor (regla de negocio). El admin puede elegir otro número. */
 const EXACT_INSTALLMENTS = 5;
 
-export const simulateLoanOptions = async (amount, country, cycle, conditions, optionalWeeks = null) => {
-  const interestRate = await getInterestRate(country, cycle);
+export const simulateLoanOptions = async (amount, country, cycle, conditions, optionalWeeks = null, isMiauto = false) => {
+  const interestRate = await getInterestRate(country, cycle, isMiauto);
   const i = (interestRate / 100);
   const minW = conditions?.min_weeks != null ? parseInt(conditions.min_weeks, 10) : 4;
   const maxW = conditions?.max_weeks != null ? parseInt(conditions.max_weeks, 10) : 24;

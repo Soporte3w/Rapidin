@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 const PAGE_SIZES = [5, 10, 20, 50];
 
 const CycleConfigSettings = () => {
+  const [tab, setTab] = useState<'rapidin' | 'miauto'>('rapidin');
   const [configs, setConfigs] = useState<any[]>([]);
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
@@ -14,22 +15,17 @@ const CycleConfigSettings = () => {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [editingConfig, setEditingConfig] = useState<any>(null);
   const [deletingConfig, setDeletingConfig] = useState<any>(null);
-  const [interestRates, setInterestRates] = useState<any[]>([]);
   const [formData, setFormData] = useState({
     country: 'PE',
     cycle: '',
     max_credit_line: '',
     interest_rate: '',
-    interest_rate_type: '',
-    reference_rate_id: '',
     requires_guarantor: false,
     min_guarantor_amount: '',
   });
   const [editFormData, setEditFormData] = useState({
     max_credit_line: '',
     interest_rate: '',
-    interest_rate_type: '',
-    reference_rate_id: '',
     requires_guarantor: false,
     min_guarantor_amount: '',
     active: true,
@@ -44,8 +40,7 @@ const CycleConfigSettings = () => {
 
   useEffect(() => {
     fetchConfigs();
-    fetchInterestRates();
-  }, []);
+  }, [tab]);
 
   useEffect(() => {
     if (totalPages > 0 && page > totalPages) setPage(totalPages);
@@ -53,54 +48,23 @@ const CycleConfigSettings = () => {
 
   const fetchConfigs = async () => {
     try {
-      const response = await api.get('/cycle-config');
+      const url = tab === 'miauto' ? '/cycle-config/miauto' : '/cycle-config';
+      const response = await api.get(url);
       setConfigs(response.data.data);
     } catch (error) {
       console.error('Error fetching configs:', error);
     }
   };
 
-  const fetchInterestRates = async () => {
-    try {
-      const response = await api.get('/interest-rates/active');
-      let ratesData = [];
-      if (response.data) {
-        if (response.data.success && Array.isArray(response.data.data)) {
-          ratesData = response.data.data;
-        } else if (response.data.data && Array.isArray(response.data.data)) {
-          ratesData = response.data.data;
-        } else if (Array.isArray(response.data)) {
-          ratesData = response.data;
-        }
-      }
-      setInterestRates(ratesData);
-    } catch (error) {
-      console.error('Error fetching interest rates:', error);
-    }
-  };
-
-  const handleRateChange = (rateId: string) => {
-    const selectedRate = interestRates.find((r) => r.id === rateId);
-    if (selectedRate) {
-      setFormData({
-        ...formData,
-        reference_rate_id: rateId,
-        interest_rate_type: selectedRate.rate_type,
-        // No copiar rate_value: la tasa que se aplica al préstamo es solo interest_rate (abajo). La referencia es solo vínculo.
-      });
-    } else {
-      setFormData({ ...formData, reference_rate_id: '', interest_rate_type: '' });
-    }
-  };
-
   const handleSubmit = async () => {
     try {
-      await api.post('/cycle-config', {
-        ...formData,
+      const url = tab === 'miauto' ? '/cycle-config/miauto' : '/cycle-config';
+      await api.post(url, {
+        country: formData.country,
+        cycle: parseInt(formData.cycle),
         max_credit_line: parseFloat(formData.max_credit_line),
         interest_rate: parseFloat(formData.interest_rate),
-        reference_rate_id: formData.reference_rate_id || null,
-        interest_rate_type: formData.interest_rate_type || null,
+        requires_guarantor: formData.requires_guarantor,
         min_guarantor_amount: formData.min_guarantor_amount ? parseFloat(formData.min_guarantor_amount) : null,
       });
       toast.success('Configuración creada correctamente');
@@ -112,8 +76,6 @@ const CycleConfigSettings = () => {
         cycle: '',
         max_credit_line: '',
         interest_rate: '',
-        interest_rate_type: '',
-        reference_rate_id: '',
         requires_guarantor: false,
         min_guarantor_amount: '',
       });
@@ -128,8 +90,6 @@ const CycleConfigSettings = () => {
     setEditFormData({
       max_credit_line: config.max_credit_line?.toString() || '',
       interest_rate: config.interest_rate?.toString() || '',
-      interest_rate_type: config.interest_rate_type || '',
-      reference_rate_id: config.reference_rate_id || '',
       requires_guarantor: config.requires_guarantor || false,
       min_guarantor_amount: config.min_guarantor_amount?.toString() || '',
       active: config.active ?? true,
@@ -137,27 +97,12 @@ const CycleConfigSettings = () => {
     setEditOpen(true);
   };
 
-  const handleEditRateChange = (rateId: string) => {
-    const selectedRate = interestRates.find((r) => r.id === rateId);
-    if (selectedRate) {
-      setEditFormData({
-        ...editFormData,
-        reference_rate_id: rateId,
-        interest_rate_type: selectedRate.rate_type,
-        // No copiar rate_value: la tasa aplicada al préstamo es solo interest_rate.
-      });
-    } else {
-      setEditFormData({ ...editFormData, reference_rate_id: '', interest_rate_type: '' });
-    }
-  };
-
   const handleUpdate = async () => {
     try {
-      await api.put(`/cycle-config/${editingConfig.id}`, {
+      const url = tab === 'miauto' ? `/cycle-config/miauto/${editingConfig.id}` : `/cycle-config/${editingConfig.id}`;
+      await api.put(url, {
         max_credit_line: parseFloat(editFormData.max_credit_line),
         interest_rate: parseFloat(editFormData.interest_rate),
-        reference_rate_id: editFormData.reference_rate_id || null,
-        interest_rate_type: editFormData.interest_rate_type || null,
         requires_guarantor: editFormData.requires_guarantor,
         min_guarantor_amount: editFormData.min_guarantor_amount ? parseFloat(editFormData.min_guarantor_amount) : null,
         active: editFormData.active,
@@ -179,7 +124,8 @@ const CycleConfigSettings = () => {
 
   const handleDelete = async () => {
     try {
-      await api.delete(`/cycle-config/${deletingConfig.id}`);
+      const url = tab === 'miauto' ? `/cycle-config/miauto/${deletingConfig.id}` : `/cycle-config/${deletingConfig.id}`;
+      await api.delete(url);
       toast.success('Configuración eliminada correctamente');
       setDeleteOpen(false);
       setDeletingConfig(null);
@@ -203,6 +149,23 @@ const CycleConfigSettings = () => {
         </button>
       </div>
 
+      <div className="flex border-b border-gray-200 mb-4">
+        <button
+          type="button"
+          onClick={() => { setTab('rapidin'); setPage(1); }}
+          className={`px-5 py-2.5 text-sm font-medium transition-colors ${tab === 'rapidin' ? 'text-[#8B1A1A] border-b-2 border-[#8B1A1A]' : 'text-gray-500 hover:text-gray-700'}`}
+        >
+          Rapidin
+        </button>
+        <button
+          type="button"
+          onClick={() => { setTab('miauto'); setPage(1); }}
+          className={`px-5 py-2.5 text-sm font-medium transition-colors ${tab === 'miauto' ? 'text-[#8B1A1A] border-b-2 border-[#8B1A1A]' : 'text-gray-500 hover:text-gray-700'}`}
+        >
+          Mi Auto
+        </button>
+      </div>
+
       <div className="bg-white rounded-lg sm:rounded-xl shadow-lg border border-gray-100 overflow-hidden">
         <div className="overflow-x-auto -mx-4 sm:mx-0">
           <div className="inline-block min-w-full align-middle">
@@ -220,9 +183,6 @@ const CycleConfigSettings = () => {
                   </th>
                   <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Tasa Interés
-                  </th>
-                  <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell">
-                    Tasa Referencia
                   </th>
                   <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">
                     Requiere Fiador
@@ -252,15 +212,6 @@ const CycleConfigSettings = () => {
                     </td>
                     <td className="px-3 sm:px-6 py-4 whitespace-nowrap text-xs sm:text-sm text-gray-900">
                       {config.interest_rate}%
-                    </td>
-                    <td className="px-3 sm:px-6 py-4 whitespace-nowrap text-xs sm:text-sm text-gray-900 hidden lg:table-cell">
-                      {config.reference_rate_type ? (
-                        <span className="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
-                          {config.reference_rate_type}: {parseFloat(config.reference_rate_value || 0).toFixed(2)}%
-                        </span>
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
                     </td>
                     <td className="px-3 sm:px-6 py-4 whitespace-nowrap text-xs sm:text-sm text-gray-900 hidden md:table-cell">
                       {config.requires_guarantor ? 'Sí' : 'No'}
@@ -405,8 +356,6 @@ const CycleConfigSettings = () => {
                     setFormData({
                       ...formData,
                       country: e.target.value,
-                      reference_rate_id: '',
-                      interest_rate_type: '',
                     });
                   }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
@@ -438,40 +387,7 @@ const CycleConfigSettings = () => {
 
               <div>
                 <label className="block text-xs font-semibold text-gray-900 mb-1.5">
-                  Vincular a tasa de referencia (opcional)
-                </label>
-                <select
-                  value={formData.reference_rate_id}
-                  onChange={(e) => handleRateChange(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
-                >
-                  <option value="">Ninguna (solo tasa a cobrar)</option>
-                  {interestRates
-                    .filter((rate) => rate.country === formData.country && rate.active)
-                    .map((rate) => (
-                      <option key={rate.id} value={rate.id}>
-                        {rate.rate_type} - {parseFloat(rate.rate_value || 0).toFixed(2)}% (Efectiva desde{' '}
-                        {rate.effective_date
-                          ? new Date(rate.effective_date).toLocaleDateString('es-ES', {
-                              year: 'numeric',
-                              month: 'short',
-                              day: 'numeric',
-                            })
-                          : 'N/A'}
-                        )
-                      </option>
-                    ))}
-                </select>
-                {formData.reference_rate_id && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    Referencia vinculada (auditoría). La tasa del cronograma es la de abajo.
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-gray-900 mb-1.5">
-                  Tasa a cobrar (% semanal) — usa el cronograma
+                  Tasa a cobrar (% semanal)
                 </label>
                 <input
                   type="number"
@@ -481,9 +397,6 @@ const CycleConfigSettings = () => {
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
                   placeholder="ej. 5.50"
                 />
-                <p className="text-xs text-gray-500 mt-1">
-                  Única tasa que se aplica al préstamo en simulación y cronograma.
-                </p>
               </div>
 
               <div>
@@ -577,35 +490,16 @@ const CycleConfigSettings = () => {
 
               <div>
                 <label className="block text-xs font-semibold text-gray-900 mb-1.5">
-                  Vincular a tasa de referencia (opcional)
+                  Tasa a cobrar (% semanal)
                 </label>
-                <select
-                  value={editFormData.reference_rate_id}
-                  onChange={(e) => handleEditRateChange(e.target.value)}
+                <input
+                  type="number"
+                  step="0.01"
+                  value={editFormData.interest_rate}
+                  onChange={(e) => setEditFormData({ ...editFormData, interest_rate: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
-                >
-                  <option value="">Ninguna (solo tasa a cobrar)</option>
-                  {interestRates
-                    .filter((rate) => rate.country === editingConfig.country && rate.active)
-                    .map((rate) => (
-                      <option key={rate.id} value={rate.id}>
-                        {rate.rate_type} - {parseFloat(rate.rate_value || 0).toFixed(2)}% (Efectiva desde{' '}
-                        {rate.effective_date
-                          ? new Date(rate.effective_date).toLocaleDateString('es-ES', {
-                              year: 'numeric',
-                              month: 'short',
-                              day: 'numeric',
-                            })
-                          : 'N/A'}
-                        )
-                      </option>
-                    ))}
-                </select>
-                {editFormData.reference_rate_id && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    Referencia vinculada (auditoría). La tasa del cronograma es la de abajo.
-                  </p>
-                )}
+                  placeholder="ej. 5.50"
+                />
               </div>
 
               <div>

@@ -161,7 +161,7 @@ export async function ensureOtroGastoForWeek(solicitudId, weekIndex) {
 async function ensureTiposFromRequisitos(solicitudId, tiposExistentes) {
   // Leer requisitos_gastos del cronograma_vehiculo
   const reqRes = await query(
-    `SELECT cv.requisitos_gastos, s.fecha_inicio_cobro_semanal
+    `SELECT cv.requisitos_gastos, s.fecha_inicio_cobro_semanal, cv.inicial, cv.cuotas_semanales
      FROM module_miauto_solicitud s
      JOIN module_miauto_cronograma_vehiculo cv ON cv.id = s.cronograma_vehiculo_id
      WHERE s.id = $1 AND cv.requisitos_gastos IS NOT NULL`,
@@ -171,6 +171,8 @@ async function ensureTiposFromRequisitos(solicitudId, tiposExistentes) {
   const reqGastos = typeof reqRes.rows[0].requisitos_gastos === 'string'
     ? JSON.parse(reqRes.rows[0].requisitos_gastos) : reqRes.rows[0].requisitos_gastos || {};
   const fechaInicio = reqRes.rows[0].fecha_inicio_cobro_semanal;
+  const inicial = parseFloat(reqRes.rows[0].inicial) || 0;
+  const totalSemanas = parseInt(reqRes.rows[0].cuotas_semanales) || 26;
   if (!fechaInicio) return;
   const fi = new Date(fechaInicio);
 
@@ -178,23 +180,29 @@ async function ensureTiposFromRequisitos(solicitudId, tiposExistentes) {
   const tipos = [];
   const modo = reqGastos.todo_riesgo_y_gps_modo || 'separado';
 
+  // SOAT: monto total ÷ 4 cuotas (anual)
   if (!tiposExistentes.has('soat') && reqGastos.soat?.monto > 0)
-    tipos.push({ tipo: 'soat', g: reqGastos.soat, cuotas: 4, diasOffsetPorCuota: (i) => Math.round(365/4) * (i-1) });
+    tipos.push({ tipo: 'soat', g: reqGastos.soat, cuotas: 4, dividir: true, diasOffsetPorCuota: (i) => 90 * (i-1) });
+  // Impuesto Vehicular: monto total ÷ 4 cuotas
   if (!tiposExistentes.has('impuesto_vehicular') && reqGastos.impuesto_vehicular?.monto > 0)
-    tipos.push({ tipo: 'impuesto_vehicular', g: reqGastos.impuesto_vehicular, cuotas: 4, diasOffsetPorCuota: (i) => Math.round(365/4) * (i-1) });
+    tipos.push({ tipo: 'impuesto_vehicular', g: reqGastos.impuesto_vehicular, cuotas: 4, dividir: true, diasOffsetPorCuota: (i) => 90 * (i-1) });
 
   if (modo === 'agrupado') {
     if (!tiposExistentes.has('todo_riesgo_mas_gps_agrupado') && reqGastos.todo_riesgo_mas_gps_agrupado?.monto > 0)
-      tipos.push({ tipo: 'todo_riesgo_mas_gps_agrupado', g: reqGastos.todo_riesgo_mas_gps_agrupado, cuotas: 26, diasOffsetPorCuota: (i) => 7 * (i-1) });
+      tipos.push({ tipo: 'todo_riesgo_mas_gps_agrupado', g: reqGastos.todo_riesgo_mas_gps_agrupado, cuotas: 26, dividir: false, diasOffsetPorCuota: (i) => 7 * (i-1) });
   } else {
+    // Seminuevos: SRC monto total ÷ cuotas, GPS monto por cuota fija
     if (!tiposExistentes.has('src') && reqGastos.src?.monto > 0)
-      tipos.push({ tipo: 'src', g: reqGastos.src, cuotas: 5, diasOffsetPorCuota: (i) => 30 * (i-1) });
+      tipos.push({ tipo: 'src', g: reqGastos.src, cuotas: 5, dividir: true, diasOffsetPorCuota: (i) => 90 * (i-1) });
     if (!tiposExistentes.has('gps') && reqGastos.gps?.monto > 0)
-      tipos.push({ tipo: 'gps', g: reqGastos.gps, cuotas: 18, diasOffsetPorCuota: (i) => 30 * (i-1) });
+      tipos.push({ tipo: 'gps', g: reqGastos.gps, cuotas: 18, dividir: false, diasOffsetPorCuota: (i) => 30 * (i-1) });
   }
 
-  if (!tiposExistentes.has('inicial_parcial') && reqGastos.inicial_parcial?.monto > 0)
-    tipos.push({ tipo: 'inicial_parcial', g: reqGastos.inicial_parcial, cuotas: 26, diasOffsetPorCuota: (i) => 7 * (i-1) });
+  // Inicial Parcial: monto por cuota = inicial / semanas, SIEMPRE para todos
+  if (!tiposExistentes.has('inicial_parcial') && inicial > 0 && totalSemanas > 0) {
+    const montoInicial = Math.round((inicial / 26) * 100) / 100;
+    tipos.push({ tipo: 'inicial_parcial', g: { monto: montoInicial, moneda: 'PEN' }, cuotas: 26, dividir: false, diasOffsetPorCuota: (i) => 7 * (i-1) });
+  }
 
   for (const t of tipos) {
     const moneda = t.g.moneda || 'PEN';
@@ -205,7 +213,7 @@ async function ensureTiposFromRequisitos(solicitudId, tiposExistentes) {
       const dueDate = new Date(fi);
       dueDate.setDate(dueDate.getDate() + t.diasOffsetPorCuota(i));
       const dueStr = dueDate.toISOString().slice(0, 10);
-      const amountDue = Math.round(monto * 100) / 100;
+      const amountDue = t.dividir ? Math.round(monto / numCuotas * 100) / 100 : Math.round(monto * 100) / 100;
 
       await query(
         `INSERT INTO module_miauto_otros_gastos (solicitud_id, tipo, week_index, due_date, amount_due, status, moneda)
@@ -224,10 +232,12 @@ export async function listBySolicitud(solicitudId) {
      FROM module_miauto_solicitud WHERE id = $1`,
     [solicitudId]
   );
+  // OLD lazy creation: solo si tiene los campos de pago parcial configurados (ya no se usa para nuevos)
   if (sol.rows.length > 0) {
     const row = sol.rows[0];
     const numCuotas = row.otros_gastos_num_cuotas != null ? parseInt(row.otros_gastos_num_cuotas, 10) : null;
-    if (numCuotas != null && numCuotas >= 1) {
+    const saldo = row.otros_gastos_saldo_total != null ? parseFloat(row.otros_gastos_saldo_total) : null;
+    if (numCuotas != null && numCuotas >= 1 && saldo != null && saldo > 0) {
       const currentWeek = getCurrentOtrosGastosWeekIndex(row.fecha_inicio_cobro_semanal);
       const upTo = Math.min(Math.max(2, currentWeek), 1 + numCuotas);
       for (let k = 2; k <= upTo; k++) {

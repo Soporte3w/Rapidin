@@ -1,7 +1,7 @@
 import { query } from '../../config/database.js';
 import { buildDriverNameSearchSqlFlat } from '../../utils/driverNameSearch.js';
 import { logger } from '../../utils/logger.js';
-import { getPaymentPunctuality, calculateCycle } from './calculationsService.js';
+import { getPaymentPunctuality, calculateCycle, calculateMiautoCycle } from './calculationsService.js';
 
 export const registerPayment = async (data, userId) => {
   const { loan_id, amount, payment_date, payment_method, observations, waive_late_fee_installment_ids } = data;
@@ -341,24 +341,26 @@ export const checkLoanCompleted = async (loanId) => {
     }
 
     const loanRow = await query(
-      'SELECT driver_id FROM module_rapidin_loans WHERE id = $1',
+      'SELECT driver_id, es_miauto FROM module_rapidin_loans WHERE id = $1',
       [loanId]
     );
     const driverId = loanRow.rows[0]?.driver_id;
+    const esMiauto = loanRow.rows[0]?.es_miauto === true;
     if (driverId) {
       const punctuality = await getPaymentPunctuality(driverId);
       let newCycle;
       if (punctuality < 0.4) {
         newCycle = 1;
-        logger.info(`Driver ${driverId} puntualidad ${(punctuality * 100).toFixed(1)}% < 40%: ciclo actualizado a 1`);
+        logger.info(`Driver ${driverId} puntualidad ${(punctuality * 100).toFixed(1)}% < 40%: ${esMiauto ? 'miauto_' : ''}ciclo actualizado a 1`);
       } else {
-        newCycle = await calculateCycle(driverId);
+        newCycle = esMiauto ? await calculateMiautoCycle(driverId) : await calculateCycle(driverId);
       }
+      const columna = esMiauto ? 'miauto_cycle' : 'cycle';
       await query(
-        'UPDATE module_rapidin_drivers SET cycle = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        `UPDATE module_rapidin_drivers SET ${columna} = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
         [newCycle, driverId]
       );
-      logger.info(`Driver ${driverId}: ciclo actualizado a ${newCycle} tras préstamo completado`);
+      logger.info(`Driver ${driverId}: ${columna} actualizado a ${newCycle} tras préstamo completado`);
     }
     return;
   }

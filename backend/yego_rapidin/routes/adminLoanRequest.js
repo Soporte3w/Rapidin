@@ -11,7 +11,7 @@ import { successResponse, errorResponse } from '../../utils/responses.js';
 import pool from '../../database/connection.js';
 import { query } from '../../config/database.js';
 import { logger } from '../../utils/logger.js';
-import { simulateLoanOptions } from '../services/calculationsService.js';
+import { simulateLoanOptions, isMiautoDriver } from '../services/calculationsService.js';
 import { getPartnerNameById } from '../../services/partnersService.js';
 import { getDniInfo } from '../../services/factilizaService.js';
 
@@ -763,14 +763,17 @@ router.post('/loan-request', uploadLoanDocFields, async (req, res) => {
       }
     }
     const driverId = driver.id;
+    const esMiauto = await isMiautoDriver(driverId);
 
-    const driverCycleResult = await query('SELECT cycle FROM module_rapidin_drivers WHERE id = $1', [driverId]);
-    const driverCycle = driverCycleResult.rows[0]?.cycle != null ? parseInt(driverCycleResult.rows[0].cycle, 10) : 1;
+    const driverCycleResult = await query('SELECT cycle, miauto_cycle FROM module_rapidin_drivers WHERE id = $1', [driverId]);
+    const driverCycle = esMiauto
+      ? (driverCycleResult.rows[0]?.miauto_cycle != null ? parseInt(driverCycleResult.rows[0].miauto_cycle, 10) : 1)
+      : (driverCycleResult.rows[0]?.cycle != null ? parseInt(driverCycleResult.rows[0].cycle, 10) : 1);
+    const configTable = esMiauto ? 'module_rapidin_miauto_cycle_config' : 'module_rapidin_cycle_config';
     const cycleConfigResult = await query(
-      `SELECT requires_guarantor FROM module_rapidin_cycle_config WHERE country = $1 AND cycle = $2 AND active = true LIMIT 1`,
+      `SELECT requires_guarantor FROM ${configTable} WHERE country = $1 AND cycle = $2 AND active = true LIMIT 1`,
       [country, driverCycle]
     );
-    // Ciclo >= 7 siempre requiere garante; si no, según configuración del ciclo
     const requiresGuarantor = driverCycle >= 7 || cycleConfigResult.rows[0]?.requires_guarantor === true;
 
     if (requiresGuarantor) {
@@ -815,7 +818,8 @@ router.post('/loan-request', uploadLoanDocFields, async (req, res) => {
             country,
             driverCycle,
             conditions.rows[0],
-            weeksNum
+            weeksNum,
+            esMiauto
           );
           if (sim?.option) {
             adminSelectedOption = {

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS module_rapidin_drivers (
     email VARCHAR(255),
     yego_premium BOOLEAN DEFAULT false,
     cycle INTEGER DEFAULT 1,
+    miauto_cycle INTEGER DEFAULT 1,
     credit_line DECIMAL(12, 2) DEFAULT 0,
     completed_trips INTEGER DEFAULT 0,
     acceptance_rate DECIMAL(5, 2) DEFAULT 0,
@@ -207,6 +208,21 @@ CREATE TABLE IF NOT EXISTS module_rapidin_cycle_config (
     interest_rate DECIMAL(5, 2) NOT NULL,
     interest_rate_type VARCHAR(10) CHECK (interest_rate_type IN ('TEA', 'TES', 'TED')),
     reference_rate_id UUID REFERENCES module_rapidin_interest_rates(id),
+    requires_guarantor BOOLEAN DEFAULT false,
+    min_guarantor_amount DECIMAL(12, 2),
+    active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(country, cycle)
+);
+
+-- Configuración por ciclo para conductores Yego Mi Auto (misma estructura sin reference_rate_id).
+CREATE TABLE IF NOT EXISTS module_rapidin_miauto_cycle_config (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    country VARCHAR(10) NOT NULL CHECK (country IN ('PE', 'CO')),
+    cycle INTEGER NOT NULL,
+    max_credit_line DECIMAL(12, 2) NOT NULL,
+    interest_rate DECIMAL(5, 2) NOT NULL,
     requires_guarantor BOOLEAN DEFAULT false,
     min_guarantor_amount DECIMAL(12, 2),
     active BOOLEAN DEFAULT true,

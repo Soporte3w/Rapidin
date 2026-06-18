@@ -1,7 +1,7 @@
 import { query } from '../../config/database.js';
 import { parseRequestObservations, resolveAdminLoanWeeks } from '../../utils/loanRequestObservations.js';
 import { buildDriverNameSearchSql } from '../../utils/driverNameSearch.js';
-import { getCreditLine, getInterestRate, simulateLoanOptions, generateInstallmentSchedule } from './calculationsService.js';
+import { getCreditLine, getInterestRate, simulateLoanOptions, generateInstallmentSchedule, isMiautoDriver } from './calculationsService.js';
 import { getNextMondayFrom, isSunday } from '../../utils/helpers.js';
 import { logger } from '../../utils/logger.js';
 
@@ -73,18 +73,22 @@ export const createLoanRequest = async (data, userId = null, options = {}) => {
 
   // Solo el flujo conductor debe respetar la línea de crédito por ciclo; el admin puede crear solicitudes por montos mayores.
   if (!createdByAdmin) {
-    const creditLine = await getCreditLine(driver_id, country);
+    const esMiauto = await isMiautoDriver(driver_id);
+    const creditLine = await getCreditLine(driver_id, country, esMiauto);
     if (requested_amount > creditLine) {
       throw new Error(`El monto solicitado excede la línea de crédito disponible (${creditLine})`);
     }
   }
 
   // Ciclo del conductor al momento de crear la solicitud (para tasa y condiciones correctas al desembolsar)
+  const esMiauto = await isMiautoDriver(driver_id);
   const driverRow = await query(
-    'SELECT COALESCE(cycle, 1) AS cycle FROM module_rapidin_drivers WHERE id = $1',
+    'SELECT COALESCE(cycle, 1) AS cycle, COALESCE(miauto_cycle, 1) AS miauto_cycle FROM module_rapidin_drivers WHERE id = $1',
     [driver_id]
   );
-  const cycle = driverRow.rows.length > 0 ? Math.max(1, parseInt(driverRow.rows[0].cycle, 10) || 1) : 1;
+  const cycle = esMiauto
+    ? Math.max(1, parseInt(driverRow.rows[0]?.miauto_cycle, 10) || 1)
+    : Math.max(1, parseInt(driverRow.rows[0]?.cycle, 10) || 1);
 
   const result = await query(
     `INSERT INTO module_rapidin_loan_requests 
@@ -323,7 +327,7 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
   if (option && option.weeks != null && option.weeklyInstallment != null) {
     option = { ...option, totalAmount: option.totalAmount ?? (option.weeklyInstallment * (option.weeks - 1) + (option.lastInstallment ?? option.weeklyInstallment)) };
     if (!createdByAdmin && option.weeks !== EXACT_INSTALLMENTS) {
-      const sim = await simulateLoanOptions(parseFloat(request.requested_amount) || 0, request.country, cycleFromDb, conditions);
+      const sim = await simulateLoanOptions(parseFloat(request.requested_amount) || 0, request.country, cycleFromDb, conditions, null, esMiauto);
       if (sim?.option) {
         option = { ...option, ...sim.option, interestRate: sim.option.interestRate ?? option.interestRate };
       } else {
@@ -331,7 +335,7 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
       }
     }
   } else {
-    const sim = await simulateLoanOptions(parseFloat(request.requested_amount) || 0, request.country, cycleFromDb, conditions);
+    const sim = await simulateLoanOptions(parseFloat(request.requested_amount) || 0, request.country, cycleFromDb, conditions, null, esMiauto);
     if (!sim?.option || sim.option.weeks == null || sim.option.weeklyInstallment == null) {
       throw new Error('No se pudo calcular la opción de préstamo. Verifique monto y condiciones.');
     }
@@ -353,15 +357,16 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
     firstPaymentDateStr = `${firstPaymentDateObj.getFullYear()}-${String(firstPaymentDateObj.getMonth() + 1).padStart(2, '0')}-${String(firstPaymentDateObj.getDate()).padStart(2, '0')}`;
   }
 
-  const interestRate = option.interestRate != null ? parseFloat(option.interestRate) : await getInterestRate(request.country, cycleFromDb);
+  const esMiauto = await isMiautoDriver(request.driver_id);
+  const interestRate = option.interestRate != null ? parseFloat(option.interestRate) : await getInterestRate(request.country, cycleFromDb, esMiauto);
 
   await query('BEGIN');
   try {
     const loanResult = await query(
       `INSERT INTO module_rapidin_loans 
        (request_id, driver_id, country, disbursed_amount, total_amount, interest_rate, 
-        number_of_installments, disbursed_at, first_payment_date, pending_balance, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, $8, $5, 'active')
+        number_of_installments, disbursed_at, first_payment_date, pending_balance, status, es_miauto)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, $8, $5, 'active', $9)
        RETURNING *`,
       [
         requestId,
@@ -372,6 +377,7 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
         interestRate,
         option.weeks,
         firstPaymentDateStr,
+        esMiauto,
       ]
     );
     const loan = loanResult.rows[0];

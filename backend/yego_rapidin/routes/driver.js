@@ -4,7 +4,7 @@ import { successResponse, errorResponse } from '../../utils/responses.js';
 import { getDriverDashboard, getDriverLoans } from '../services/driverService.js';
 import { getPendingInstallments, uploadVoucher, getDriverVouchers, uploadFileToMedia } from '../../services/voucherService.js';
 import { uploadVoucher as uploadMiddleware } from '../../middleware/upload.js';
-import { getCreditLine, getPaymentPunctuality, simulateLoanOptions } from '../services/calculationsService.js';
+import { getCreditLine, getPaymentPunctuality, simulateLoanOptions, isMiautoDriver } from '../services/calculationsService.js';
 import { createLoanRequest, getInstallmentSchedule } from '../services/loanService.js';
 import { checkMinimumTripsForLoanOffer } from '../services/tripsValidationService.js';
 import { getDniInfo } from '../../services/factilizaService.js';
@@ -914,10 +914,12 @@ router.get('/loan-offer', authenticate, async (req, res) => {
     }
 
     // Obtener monto máximo según el ciclo (usa cycle de la BD)
-    const maxAmount = await getCreditLine(driverId, country);
+    const esMiauto = driverId ? await isMiautoDriver(driverId) : false;
+    const maxAmount = await getCreditLine(driverId, country, esMiauto);
     // Garante: ciclo >= 7 siempre requiere garante; si no, según configuración del ciclo
+    const configTable = esMiauto ? 'module_rapidin_miauto_cycle_config' : 'module_rapidin_cycle_config';
     const cycleConfigRow = await pool.query(
-      `SELECT requires_guarantor FROM module_rapidin_cycle_config 
+      `SELECT requires_guarantor FROM ${configTable} 
        WHERE country = $1 AND cycle = $2 AND active = true LIMIT 1`,
       [country, cycleFromColumn]
     );
@@ -928,7 +930,8 @@ router.get('/loan-offer', authenticate, async (req, res) => {
       cycle: cycleFromColumn,
       maxAmount,
       hasOffer: maxAmount > 0,
-      requiresGuarantor
+      requiresGuarantor,
+      es_miauto: esMiauto,
     }, 'Oferta obtenida exitosamente');
   } catch (error) {
     logger.error('Error verificando oferta:', error);

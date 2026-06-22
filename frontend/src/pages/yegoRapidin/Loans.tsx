@@ -860,9 +860,9 @@ const Loans = () => {
                       <td className="px-4 py-3 font-medium">{c.first_name} {c.last_name}</td>
                       <td className="px-4 py-3 text-gray-500">{c.dni}</td>
                       <td className="px-4 py-3">S/ {parseFloat(c.amount).toFixed(2)}</td>
-                      <td className="px-4 py-3">{c.interest_rate}%{c.frecuencia_pago === 'semanal' ? ' sem' : ''}</td>
+                      <td className="px-4 py-3">{c.interest_rate}%{c.frecuencia_pago === 'semanal' ? ' sem' : c.frecuencia_pago === 'quincenal' ? ' quinc' : ''}</td>
                       <td className="px-4 py-3 font-semibold">S/ {parseFloat(c.total_amount).toFixed(2)}</td>
-                      <td className="px-4 py-3">{c.number_of_installments} {c.frecuencia_pago === 'semanal' ? (c.number_of_installments === 1 ? 'semana' : 'semanas') : (c.number_of_installments === 1 ? 'mes' : 'meses')}</td>
+                      <td className="px-4 py-3">{c.number_of_installments} {c.frecuencia_pago === 'semanal' ? (c.number_of_installments === 1 ? 'semana' : 'semanas') : c.frecuencia_pago === 'quincenal' ? (c.number_of_installments === 1 ? 'quincena' : 'quincenas') : (c.number_of_installments === 1 ? 'mes' : 'meses')}</td>
                       <td className="px-4 py-3 text-center">
                         {(c.doc_count > 0 && c.doc_file_path) ? (
                           <button onClick={() => window.open(c.doc_file_path, '_blank')} className="text-blue-600 hover:text-blue-800" title="Ver documento">
@@ -939,7 +939,7 @@ const Loans = () => {
                   </div>
                   <div>
                     <h3 className="font-bold text-white">Crédito Personal Yego</h3>
-                    <p className="text-xs text-red-200">{detailModal.credito.frecuencia_pago === 'semanal' ? 'Semanal' : 'Mensual'} · {detailModal.credito.tasa_interes != null ? detailModal.credito.tasa_interes : detailModal.credito.interest_rate}%</p>
+                    <p className="text-xs text-red-200">{detailModal.credito.frecuencia_pago === 'semanal' ? 'Semanal' : detailModal.credito.frecuencia_pago === 'quincenal' ? 'Quincenal' : 'Mensual'} · {detailModal.credito.tasa_interes != null ? detailModal.credito.tasa_interes : detailModal.credito.interest_rate}%</p>
                   </div>
                 </div>
                 <button onClick={() => setDetailModal({ open: false, credito: null })} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition"><X className="w-5 h-5" /></button>
@@ -967,9 +967,9 @@ const Loans = () => {
                         <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Detalles</span>
                         <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
                           <div><span className="text-gray-500">Monto:</span> <span className="font-semibold">S/ {parseFloat(detailModal.credito.amount).toFixed(2)}</span></div>
-                          <div><span className="text-gray-500">Interés:</span> <span className="font-semibold">{detailModal.credito.tasa_interes != null ? detailModal.credito.tasa_interes : detailModal.credito.interest_rate}%{detailModal.credito.frecuencia_pago === 'semanal' ? ' semanal' : ''}</span></div>
+                          <div><span className="text-gray-500">Interés:</span> <span className="font-semibold">{detailModal.credito.tasa_interes != null ? detailModal.credito.tasa_interes : detailModal.credito.interest_rate}%{detailModal.credito.frecuencia_pago === 'semanal' ? ' semanal' : detailModal.credito.frecuencia_pago === 'quincenal' ? ' quincenal' : ''}</span></div>
                           <div><span className="text-gray-500">Total:</span> <span className="font-semibold text-red-600">S/ {parseFloat(detailModal.credito.total_amount).toFixed(2)}</span></div>
-                          <div><span className="text-gray-500">Cuotas:</span> <span className="font-semibold">{detailModal.credito.number_of_installments} {detailModal.credito.frecuencia_pago === 'semanal' ? (detailModal.credito.number_of_installments === 1 ? 'semana' : 'semanas') : (detailModal.credito.number_of_installments === 1 ? 'mes' : 'meses')}</span></div>
+                          <div><span className="text-gray-500">Cuotas:</span> <span className="font-semibold">{detailModal.credito.number_of_installments} {detailModal.credito.frecuencia_pago === 'semanal' ? (detailModal.credito.number_of_installments === 1 ? 'semana' : 'semanas') : detailModal.credito.frecuencia_pago === 'quincenal' ? (detailModal.credito.number_of_installments === 1 ? 'quincena' : 'quincenas') : (detailModal.credito.number_of_installments === 1 ? 'mes' : 'meses')}</span></div>
                           <div><span className="text-gray-500">Estado:</span> <span className="font-semibold">{detailModal.credito.status === 'active' ? 'Activo' : detailModal.credito.status === 'pending' ? 'Pendiente' : detailModal.credito.status === 'paid' ? 'Pagado' : detailModal.credito.status}</span></div>
                           <div><span className="text-gray-500">Primer cobro:</span> <span className="font-semibold">{detailModal.credito.fecha_primer_cobro ? new Date(detailModal.credito.fecha_primer_cobro).toLocaleDateString('es-PE') : '—'}</span></div>
                           <div><span className="text-gray-500">Creado:</span> <span className="font-semibold">{detailModal.credito.created_at?.slice(0, 10)}</span></div>

@@ -77,8 +77,8 @@ export async function createCreditoPersonal(data, userId) {
 
   // Validar frecuencia (acepta payment_frequency o frecuencia_pago)
   const freq = data.frecuencia_pago || data.payment_frequency;
-  if (freq !== 'semanal' && freq !== 'mensual') {
-    throw new Error('frecuencia_pago debe ser "semanal" o "mensual"');
+  if (freq !== 'semanal' && freq !== 'quincenal' && freq !== 'mensual') {
+    throw new Error('frecuencia_pago debe ser "semanal", "quincenal" o "mensual"');
   }
   const payment_frequency = freq;
 
@@ -87,12 +87,14 @@ export async function createCreditoPersonal(data, userId) {
   const tasaOverride = data.tasa_interes != null ? parseFloat(data.tasa_interes) : null;
   if (payment_frequency === 'semanal') {
     tasaInteres = tasaMensualConfig / 4;
+  } else if (payment_frequency === 'quincenal') {
+    tasaInteres = tasaMensualConfig / 2;
   } else {
     tasaInteres = tasaOverride != null ? tasaOverride : tasaMensualConfig;
   }
 
-  const diasEntreCuotas = payment_frequency === 'semanal' ? 7 : 30;
-  const labelFrecuencia = payment_frequency === 'semanal' ? 'semana' : 'mes';
+  const diasEntreCuotas = payment_frequency === 'semanal' ? 7 : payment_frequency === 'quincenal' ? 15 : 30;
+  const labelFrecuencia = payment_frequency === 'semanal' ? 'semana' : payment_frequency === 'quincenal' ? 'quincena' : 'mes';
 
   const totalInterest = amount * (tasaInteres / 100) * number_of_installments;
   const totalAmount = amount + totalInterest;
@@ -272,7 +274,7 @@ export async function generarMoraCuotasVencidas() {
   for (const cuota of r.rows) {
     const tasa = parseFloat(cuota.tasa_interes || 0);
     const frecuencia = cuota.frecuencia_pago || 'mensual';
-    const divisor = frecuencia === 'semanal' ? 7 : 30;
+    const divisor = frecuencia === 'semanal' ? 7 : frecuencia === 'quincenal' ? 15 : 30;
     const pendiente = parseFloat(cuota.installment_amount) - parseFloat(cuota.paid_amount || 0);
     const diasAtraso = Math.max(0, Math.floor((Date.now() - new Date(cuota.due_date).getTime()) / (24 * 60 * 60 * 1000)));
 
@@ -311,7 +313,7 @@ export async function getCuotaMora(cuotaId) {
 
   const tasa = parseFloat(cuota.tasa_interes || 0);
   const frecuencia = cuota.frecuencia_pago || 'mensual';
-  const divisor = frecuencia === 'semanal' ? 7 : 30;
+  const divisor = frecuencia === 'semanal' ? 7 : frecuencia === 'quincenal' ? 15 : 30;
 
   if (pendiente <= 0.01 || tasa <= 0) {
     return { diasAtraso, mora: 0, pendiente, tasa, frecuencia };
@@ -417,11 +419,11 @@ export async function generateCompromisoWord(creditoId) {
         new Paragraph({ spacing: { before: 300, after: 200 }, children: [new TextRun({ text: 'Condiciones del crédito', bold: true, size: 24 })], border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: '999999' } } }),
 
         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Monto solicitado: ', bold: true }), new TextRun({ text: `S/ ${amount.toFixed(2)}` })] }),
-         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Tasa de interés (TNA fija): ', bold: true }), new TextRun({ text: `${credito.tasa_interes != null ? credito.tasa_interes : credito.interest_rate}% ${credito.frecuencia_pago === 'semanal' ? 'semanal' : 'mensual'}` })] }),
-         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Plazo: ', bold: true }), new TextRun({ text: `${credito.number_of_installments} ${credito.frecuencia_pago === 'semanal' ? 'semana(s)' : 'mes(es)'}` })] }),
+         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Tasa de interés (TNA fija): ', bold: true }), new TextRun({ text: `${credito.tasa_interes != null ? credito.tasa_interes : credito.interest_rate}% ${credito.frecuencia_pago === 'semanal' ? 'semanal' : credito.frecuencia_pago === 'quincenal' ? 'quincenal' : 'mensual'}` })] }),
+         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Plazo: ', bold: true }), new TextRun({ text: `${credito.number_of_installments} ${credito.frecuencia_pago === 'semanal' ? 'semana(s)' : credito.frecuencia_pago === 'quincenal' ? 'quincena(s)' : 'mes(es)'}` })] }),
          new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Interés total: ', bold: true }), new TextRun({ text: `S/ ${totalInteres.toFixed(2)}` })] }),
          new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: 'Total a pagar: ', bold: true }), new TextRun({ text: `S/ ${parseFloat(credito.total_amount).toFixed(2)}` })] }),
-         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: `Cuota ${credito.frecuencia_pago === 'semanal' ? 'semanal' : 'mensual'}: `, bold: true }), new TextRun({ text: `S/ ${cuotaMensual.toFixed(2)}` })] }),
+         new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: `Cuota ${credito.frecuencia_pago === 'semanal' ? 'semanal' : credito.frecuencia_pago === 'quincenal' ? 'quincenal' : 'mensual'}: `, bold: true }), new TextRun({ text: `S/ ${cuotaMensual.toFixed(2)}` })] }),
 
         cuotas.length > 0 ? new Paragraph({ spacing: { before: 300, after: 200 }, children: [new TextRun({ text: 'Cronograma de pagos', bold: true, size: 24 })], border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: '999999' } } }) : new Paragraph({ text: '' }),
 

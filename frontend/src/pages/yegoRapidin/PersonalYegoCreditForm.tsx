@@ -20,7 +20,7 @@ export default function PersonalYegoCreditForm() {
   const [search, setSearch] = useState('');
   const [selectedUser, setSelectedUser] = useState<RRHHUser | null>(null);
   const [form, setForm] = useState({ amount: '', installments: '12' });
-  const [paymentFrequency, setPaymentFrequency] = useState<'semanal' | 'mensual'>('mensual');
+  const [paymentFrequency, setPaymentFrequency] = useState<'semanal' | 'quincenal' | 'mensual'>('mensual');
   const [fechaPrimerCobro, setFechaPrimerCobro] = useState('');
   const [bank, setBank] = useState({ bank: '', accountType: 'ahorros' as 'ahorros' | 'corriente', accountNumber: '' });
   const [bankOther, setBankOther] = useState('');
@@ -127,13 +127,13 @@ export default function PersonalYegoCreditForm() {
   const filteredUsers = search.trim().length >= 2 ? users : [];
   const amount = parseFloat(form.amount) || 0;
   const rateMensual = config.interest_rate;
-  const rateEfectiva = paymentFrequency === 'semanal' ? rateMensual / 4 : rateMensual;
+  const rateEfectiva = paymentFrequency === 'semanal' ? rateMensual / 4 : paymentFrequency === 'quincenal' ? rateMensual / 2 : rateMensual;
   const installments = parseInt(form.installments || '1');
   const totalInterest = amount * rateEfectiva / 100 * installments;
   const totalAmount = amount + totalInterest;
   const cuotaAmount = totalAmount / installments;
-  const freqLabel = paymentFrequency === 'semanal' ? 'semana' : 'mes';
-  const freqLabelCap = paymentFrequency === 'semanal' ? 'Semanal' : 'Mensual';
+  const freqLabel = paymentFrequency === 'semanal' ? 'semana' : paymentFrequency === 'quincenal' ? 'quincena' : 'mes';
+  const freqLabelCap = paymentFrequency === 'semanal' ? 'Semanal' : paymentFrequency === 'quincenal' ? 'Quincenal' : 'Mensual';
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
@@ -202,14 +202,15 @@ export default function PersonalYegoCreditForm() {
                 <label className="block text-xs font-semibold text-gray-500 mb-1">N° de cuotas</label>
                 <select value={form.installments} onChange={(e) => setForm({ ...form, installments: e.target.value })} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500">
                   {Array.from({ length: config.max_installments }, (_, i) => i + 1).map((n) => (
-                    <option key={n} value={n}>{n} {paymentFrequency === 'semanal' ? (n === 1 ? 'semana' : 'semanas') : (n === 1 ? 'mes' : 'meses')}</option>
+                    <option key={n} value={n}>{n} {paymentFrequency === 'semanal' ? (n === 1 ? 'semana' : 'semanas') : paymentFrequency === 'quincenal' ? (n === 1 ? 'quincena' : 'quincenas') : (n === 1 ? 'mes' : 'meses')}</option>
                   ))}
                 </select>
               </div>
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1">Frecuencia</label>
-                <select value={paymentFrequency} onChange={(e) => setPaymentFrequency(e.target.value as 'semanal' | 'mensual')} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500">
-                  <option value="semanal">Semanal ({rateMensual / 4}%)</option>
+                <select value={paymentFrequency} onChange={(e) => setPaymentFrequency(e.target.value as 'semanal' | 'quincenal' | 'mensual')} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500">
+                  <option value="semanal">Semanal ({(rateMensual / 4).toFixed(2)}%)</option>
+                  <option value="quincenal">Quincenal ({(rateMensual / 2).toFixed(2)}%)</option>
                   <option value="mensual">Mensual ({rateMensual}%)</option>
                 </select>
               </div>
@@ -322,7 +323,7 @@ export default function PersonalYegoCreditForm() {
                   </div>
                    <div className="flex justify-between py-2.5 border-b border-gray-100">
                     <span className="text-sm text-gray-500">Plazo</span>
-                    <span className="text-sm text-gray-700">{installments} {paymentFrequency === 'semanal' ? (installments === 1 ? 'semana' : 'semanas') : (installments === 1 ? 'mes' : 'meses')}</span>
+                    <span className="text-sm text-gray-700">{installments} {paymentFrequency === 'semanal' ? (installments === 1 ? 'semana' : 'semanas') : paymentFrequency === 'quincenal' ? (installments === 1 ? 'quincena' : 'quincenas') : (installments === 1 ? 'mes' : 'meses')}</span>
                   </div>
                   <div className="flex justify-between py-2.5 border-b border-gray-100">
                     <span className="text-sm text-gray-500">Primer cobro</span>

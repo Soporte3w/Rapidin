@@ -74,14 +74,31 @@ function currentMondayCuotaContext() {
  * Aplica para todos los conductores. Si no hay conductor working con esa placa → viajes = 0.
  * @returns {{ driver_id: string, park_id: string } | null}
  */
-async function resolveTripsFromPlacaDriver(placa) {
+async function resolveTripsFromPlacaDriver(placa, driverIdFleet = null) {
   if (!placa) return null;
   const placaNorm = String(placa).trim().toUpperCase().replace(/\s+/g, '');
+  const placaSql = `UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '\\\\s', '', 'g')) = \$2`;
+
+  if (driverIdFleet) {
+    const match = await query(
+      `SELECT d.driver_id, d.park_id FROM drivers d
+       WHERE TRIM(COALESCE(d.park_id::text, '')) = \$1
+         AND d.work_status = 'working'
+         AND d.driver_id = \$3
+         AND ${placaSql}
+       LIMIT 1`,
+      [MIAUTO_PARK_ID, placaNorm, driverIdFleet]
+    );
+    if (match.rows.length > 0) {
+      return { driver_id: match.rows[0].driver_id, park_id: match.rows[0].park_id || MIAUTO_PARK_ID };
+    }
+  }
+
   const res = await query(
     `SELECT d.driver_id, d.park_id FROM drivers d
      WHERE TRIM(COALESCE(d.park_id::text, '')) = \$1
        AND d.work_status = 'working'
-        AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '\\\\s', '', 'g')) = \$2
+       AND ${placaSql}
      LIMIT 1`,
     [MIAUTO_PARK_ID, placaNorm]
   );
@@ -123,7 +140,7 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
       logger.info(`Mi Auto: solicitud ${sol.solicitud_id} primera cuota semanal — sin consulta Yango (${driverLabel}${placaStr})`);
     }
   } else {
-    const placaTrips = await resolveTripsFromPlacaDriver(sol.placa_asignada);
+    const placaTrips = await resolveTripsFromPlacaDriver(sol.placa_asignada, sol.external_driver_id);
     // Viajes: del conductor working de la placa. Si no hay → 0.
     const viajesSource = placaTrips;
     const viajes = viajesSource

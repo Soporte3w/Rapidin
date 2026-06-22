@@ -283,6 +283,10 @@ export default function YegoMiAutoRentSaleDetail() {
     return cuotas.filter((c) => c.status === 'pending' && c.due_date?.slice(0, 10) === hoy);
   }, [cuotas]);
 
+  const cuotasPendientes = useMemo(() => cuotas.filter((c) =>
+    c.status !== 'paid' && c.status !== 'bonificada' && (Number(c.pending_total ?? 0) || 0) > 0.01
+  ), [cuotas]);
+
   /** Misma regla que en la vista conductor: si la fila no trae `moneda`, se usa la del vehículo en cronograma. */
   const monedaCuotaRow = (c: Pick<CuotaSemanal, 'moneda'>) =>
     monedaCuotasLabel(c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda);
@@ -336,9 +340,18 @@ export default function YegoMiAutoRentSaleDetail() {
       if (cobroDesdeSaldo > 0.01) { descuentos += `🔹 Cobro de saldo (Fleet): ${sym} ${cobroDesdeSaldo.toFixed(2)}\n`; hasDescuentos = true; }
       if (!hasDescuentos) descuentos += `🔹 Sin descuentos esta semana\n`;
 
+      const cascadaRef = cuotaReciente?.partner_fees_cascada_aplicado_a;
+      if (Array.isArray(cascadaRef) && cascadaRef.length > 0) {
+        descuentos += `\n📌 Cobro aplicado a otras semanas:\n`;
+        cascadaRef.forEach((ref: any) => {
+          const sem = miautoSemanaOrdinalPorVencimiento(cuotas, ref.week_start_date, ref.week_start_date);
+          descuentos += `   → Semana ${sem}: ${sym} ${Number(ref.monto).toFixed(2)}\n`;
+        });
+      }
+
       descuentos += `\n------------------------------------------------------------------------\nPENDIENTE:\n`;
 
-      const pendientes = overdueCuotas
+      const pendientes = cuotasPendientes
         .filter((c) => (Number(c.pending_total ?? 0) || 0) > 0.01)
         .slice(0, 10)
         .map((c) => {
@@ -347,7 +360,7 @@ export default function YegoMiAutoRentSaleDetail() {
           const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
           return { semana, sym: s, pendingTotal };
         });
-      const mas = overdueCuotas.length > 10 ? overdueCuotas.length - 10 : 0;
+      const mas = cuotasPendientes.length > 10 ? cuotasPendientes.length - 10 : 0;
 
       const lineasPendientes = pendientes.map((p) => `🔹 Semana ${p.semana}: ${p.sym} ${p.pendingTotal.toFixed(2)} 🚨`);
       descuentos += lineasPendientes.join('\n');
@@ -376,6 +389,15 @@ export default function YegoMiAutoRentSaleDetail() {
       if (cobroSaldoRegla > 0.01) { descuentos += `🔹 Cobro de saldo: ${sym} ${cobroSaldoRegla.toFixed(2)}\n`; hasDescuentos = true; }
       if (cobroDesdeSaldo > 0.01) { descuentos += `🔹 Cobro de saldo (Fleet): ${sym} ${cobroDesdeSaldo.toFixed(2)}\n`; hasDescuentos = true; }
       if (!hasDescuentos) descuentos += `🔹 Sin descuentos esta semana\n`;
+
+      const cascadaRefSingle = cuotaReciente?.partner_fees_cascada_aplicado_a;
+      if (Array.isArray(cascadaRefSingle) && cascadaRefSingle.length > 0) {
+        descuentos += `\n📌 Cobro aplicado a otras semanas:\n`;
+        cascadaRefSingle.forEach((ref: any) => {
+          const sem = miautoSemanaOrdinalPorVencimiento(cuotas, ref.week_start_date, ref.week_start_date);
+          descuentos += `   → Semana ${sem}: ${sym} ${Number(ref.monto).toFixed(2)}\n`;
+        });
+      }
 
       if (cubierto) {
         let pagadoText = `\n------------------------------------------------------------------------\nPAGADO:\n`;

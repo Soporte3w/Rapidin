@@ -204,22 +204,34 @@ async function ensureTiposFromRequisitos(solicitudId, tiposExistentes) {
     tipos.push({ tipo: 'inicial_parcial', g: { monto: montoInicial, moneda: 'PEN' }, cuotas: 26, dividir: false, diasOffsetPorCuota: (i) => 7 * (i-1) });
   }
 
-  for (const t of tipos) {
-    const moneda = t.g.moneda || 'PEN';
-    const monto = parseFloat(t.g.monto);
-    const numCuotas = t.cuotas;
+  // Batch INSERT: generate all rows in one query instead of individual inserts per tipo/cuota
+  if (tipos.length > 0) {
+    const values = [];
+    const placeholders = [];
+    let pi = 1;
 
-    for (let i = 1; i <= numCuotas; i++) {
-      const dueDate = new Date(fi);
-      dueDate.setDate(dueDate.getDate() + t.diasOffsetPorCuota(i));
-      const dueStr = dueDate.toISOString().slice(0, 10);
-      const amountDue = t.dividir ? Math.round(monto / numCuotas * 100) / 100 : Math.round(monto * 100) / 100;
+    for (const t of tipos) {
+      const moneda = t.g.moneda || 'PEN';
+      const monto = parseFloat(t.g.monto);
+      const numCuotas = t.cuotas;
 
+      for (let i = 1; i <= numCuotas; i++) {
+        const dueDate = new Date(fi);
+        dueDate.setDate(dueDate.getDate() + t.diasOffsetPorCuota(i));
+        const dueStr = dueDate.toISOString().slice(0, 10);
+        const amountDue = t.dividir ? Math.round(monto / numCuotas * 100) / 100 : Math.round(monto * 100) / 100;
+
+        placeholders.push(`($${pi++}::uuid, $${pi++}, $${pi++}::int, $${pi++}::date, $${pi++}::numeric, 'pending', $${pi++})`);
+        values.push(solicitudId, t.tipo, i, dueStr, amountDue, moneda);
+      }
+    }
+
+    if (values.length > 0) {
       await query(
         `INSERT INTO module_miauto_otros_gastos (solicitud_id, tipo, week_index, due_date, amount_due, status, moneda)
-         VALUES ($1, $2, $3, $4::date, $5, 'pending', $6)
+         VALUES ${placeholders.join(', ')}
          ON CONFLICT (solicitud_id, week_index, tipo) DO NOTHING`,
-        [solicitudId, t.tipo, i, dueStr, amountDue, moneda]
+        values
       );
     }
   }
@@ -240,8 +252,45 @@ export async function listBySolicitud(solicitudId) {
     if (numCuotas != null && numCuotas >= 1 && saldo != null && saldo > 0) {
       const currentWeek = getCurrentOtrosGastosWeekIndex(row.fecha_inicio_cobro_semanal);
       const upTo = Math.min(Math.max(2, currentWeek), 1 + numCuotas);
-      for (let k = 2; k <= upTo; k++) {
-        await ensureOtroGastoForWeek(solicitudId, k);
+      if (upTo >= 2) {
+        const monedaRes = await query(
+          `SELECT cv.inicial_moneda FROM module_miauto_solicitud s
+           LEFT JOIN module_miauto_cronograma_vehiculo cv ON cv.id = s.cronograma_vehiculo_id
+           WHERE s.id = $1`,
+          [solicitudId]
+        );
+        const moneda = monedaRes.rows[0]?.inicial_moneda === 'USD' ? 'USD' : 'PEN';
+
+        const fechaInicio = row.fecha_inicio_cobro_semanal;
+        const startLocal = parseLocalYmd(fechaInicio);
+        const anchorMonday = getFirstMonday(startLocal, 1);
+        const y0 = anchorMonday.getFullYear();
+        const m0 = anchorMonday.getMonth();
+        const d0 = anchorMonday.getDate();
+        const base = round2(saldo / numCuotas);
+        const remainder = round2(saldo - base * (numCuotas - 1));
+
+        const placeholders = [];
+        const values = [];
+        let pi = 1;
+
+        for (let k = 2; k <= upTo; k++) {
+          const dueDate = new Date(y0, m0, d0 + (k - 2) * 7, 12, 0, 0, 0);
+          const dueStr = toLocalYmd(dueDate);
+          const amountDue = k === 1 + numCuotas ? remainder : base;
+
+          placeholders.push(`($${pi++}::uuid, $${pi++}::int, $${pi++}::date, $${pi++}::numeric, $${pi++})`);
+          values.push(solicitudId, k, dueStr, amountDue, moneda);
+        }
+
+        if (values.length > 0) {
+          await query(
+            `INSERT INTO module_miauto_otros_gastos (solicitud_id, week_index, due_date, amount_due, status, moneda)
+             VALUES ${placeholders.join(', ')}
+             ON CONFLICT (solicitud_id, week_index) DO NOTHING`,
+            values
+          );
+        }
       }
     }
   }

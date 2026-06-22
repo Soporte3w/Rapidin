@@ -898,22 +898,22 @@ function amountDueAndLateForOpenSinglePhase(
   }
 
   const paid = round2(parseFloat(paidPhase) || 0);
-  const lateFeeDb = round2(parseFloat(r.late_fee) || 0);
-  const fechaPago = ymdFromDbDate(r.fecha_ultimo_abono);
-  const dueYmdStored = ymdFromDbDate(r.due_date) || r.due_date;
-  const pagoATiempo = fechaPago && dueYmdStored && fechaPago <= dueYmdStored;
 
-  if (paid > 0.005 && lateFeeDb > 0.005 && !pagoATiempo) {
-    const abonoMora = round2(Math.min(paid, lateFeeDb));
+  if (paid > 0.005) {
+    const lateFeeDb = round2(parseFloat(r.late_fee) || 0);
+    const moraExtraDb = round2(parseFloat(r.mora_extra) || 0);
+    const moraTotalDb = round2(lateFeeDb + moraExtraDb);
+    const abonoMora = round2(Math.min(paid, moraTotalDb));
     const abonoCuota = round2(Math.max(0, paid - abonoMora));
+    const amt = resolvedAmountDueSchedForOpenRow(r, cuota_semanal, bono_auto, pct_comision, cobro_saldo, isPrimeraCuotaSemanal);
     return {
-      amount_due_sched,
-      mora_sched: lateFeeDb,
+      amount_due_sched: amt,
+      amount_due_remaining: round2(Math.max(0, amt - abonoCuota)),
+      late_fee_remaining: round2(Math.max(0, moraTotalDb - abonoMora)),
       mora_full: lateFeeDb,
-      mora_saldo_capital_pendiente: 0,
-      late_fee_remaining: round2(Math.max(0, lateFeeDb - abonoMora)),
-      amount_due_remaining: round2(Math.max(0, amount_due_sched - abonoCuota)),
-      obligacion_total_open: round2(amount_due_sched + lateFeeDb),
+      mora_saldo_capital_pendiente: abonoMora >= moraTotalDb ? 0 : round2(Math.max(0, moraTotalDb - abonoMora)),
+      mora_sched_periodo: 0,
+      obligacion_total_open: 0,
     };
   }
 
@@ -941,14 +941,11 @@ function amountDueAndLateForOpenSinglePhase(
   let late_fee_remaining;
   let amount_due_remaining;
 
-  if (mora_full > 0.005 && !pagoATiempo) {
+  if (mora_full > 0.005) {
     const abonoMora = round2(Math.min(paid, mora_full));
     const abonoCuota = round2(Math.max(0, paid - abonoMora));
     late_fee_remaining = round2(Math.max(0, mora_full - abonoMora));
     amount_due_remaining = round2(Math.max(0, amount_due_sched - abonoCuota));
-  } else if (mora_full > 0.005 && pagoATiempo) {
-    late_fee_remaining = round2(mora_full);
-    amount_due_remaining = round2(Math.max(0, amount_due_sched - paid));
   } else {
     late_fee_remaining = round2(0);
     amount_due_remaining = round2(Math.max(0, amount_due_sched - paid));
@@ -1486,7 +1483,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     if (statusOut === 'overdue' && pendienteTotal > 0.005 && pagoHecho > 0.005) {
       // Detectar si hubo un NUEVO pago desde la última vez que se fijó mora_extra_desde
       const fechaUltimoAbono = ymdFromDbDate(row.fecha_ultimo_abono);
-      const huboNuevoPago = pagoHecho > 0.005 && fechaUltimoAbono && (!moraExtraDesde || fechaUltimoAbono > moraExtraDesde);
+      const huboNuevoPago = pagoHecho > 0.005 && fechaUltimoAbono && (!moraExtraDesde || fechaUltimoAbono >= moraExtraDesde);
       
       if (huboNuevoPago) {
         // Cristalizar mora_extra acumulada en late_fee y reiniciar desde la fecha del pago
@@ -1826,6 +1823,8 @@ function computeCuotaDerivedForRow(r, cronograma, vehId, options = {}) {
       );
   /** Tope de la deuda del periodo (cuota programada + mora generada + mora extra), sin descontar pagos — para cap de paid_amount / persist. */
   const moraExtraDb = round2(parseFloat(r.mora_extra) || 0);
+  /** Mora extra derivada: si el early return la cubrió, es 0; si no, usar BD. */
+  const moraExtraDerivada = mOpen ? round2(mOpen.mora_saldo_capital_pendiente || 0) : moraExtraDb;
   const obligacion_total = round2(
     (mOpen
       ? round2(
@@ -1833,14 +1832,14 @@ function computeCuotaDerivedForRow(r, cronograma, vehId, options = {}) {
             ? mOpen.obligacion_total_open
             : mOpen.amount_due_sched + mOpen.mora_full
         )
-      : round2(amount_due_remaining + late_fee)) + moraExtraDb
+      : round2(amount_due_remaining + late_fee)) + moraExtraDerivada
   );
   /**
-   * Saldo aún por cubrir del periodo: **mora pendiente + cuota pendiente + mora extra** (misma imputación que el pago: primero mora, luego capital).
+   * Saldo aún por cubrir del periodo: **mora pendiente + cuota pendiente + mora extra derivada** (misma imputación que el pago: primero mora, luego capital).
    * Si la mora queda cubierta, `late_fee` aquí es 0 y solo resta cuota.
    */
   const basePend = round2(amount_due_remaining + late_fee);
-  const cuota_final = basePend <= 0.005 ? 0 : round2(basePend + moraExtraDb);
+  const cuota_final = basePend <= 0.005 ? 0 : round2(basePend + moraExtraDerivada);
   return {
     cuota_semanal,
     /** Cuota del periodo: preferentemente columna `amount_due` de la fila (persistida al generar la semana). */

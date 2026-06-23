@@ -220,7 +220,9 @@ export const isMiautoDriver = async (driverId) => {
   const res = await query(
     `SELECT EXISTS (
       SELECT 1 FROM module_miauto_solicitud ms
-      JOIN module_rapidin_drivers rd ON rd.dni = ms.dni AND rd.country = ms.country
+      JOIN module_rapidin_drivers rd 
+        ON REGEXP_REPLACE(rd.dni, '^0+', '') = REGEXP_REPLACE(ms.dni, '^0+', '')
+       AND rd.country = ms.country
       WHERE rd.id = $1 AND ms.status = 'aprobado'
     ) AS es_miauto`,
     [driverId]

@@ -902,7 +902,7 @@ function amountDueAndLateForOpenSinglePhase(
   if (paid > 0.005) {
     const lateFeeDb = round2(parseFloat(r.late_fee) || 0);
     const moraExtraDb = round2(parseFloat(r.mora_extra) || 0);
-    const moraTotalDb = round2(lateFeeDb + moraExtraDb);
+    const moraTotalDb = lateFeeDb;
     const abonoMora = round2(Math.min(paid, moraTotalDb));
     const abonoCuota = round2(Math.max(0, paid - abonoMora));
     const amt = resolvedAmountDueSchedForOpenRow(r, cuota_semanal, bono_auto, pct_comision, cobro_saldo, isPrimeraCuotaSemanal);
@@ -911,7 +911,7 @@ function amountDueAndLateForOpenSinglePhase(
       amount_due_remaining: round2(Math.max(0, amt - abonoCuota)),
       late_fee_remaining: round2(Math.max(0, moraTotalDb - abonoMora)),
       mora_full: lateFeeDb,
-      mora_saldo_capital_pendiente: abonoMora >= moraTotalDb ? 0 : round2(Math.max(0, moraTotalDb - abonoMora)),
+      mora_saldo_capital_pendiente: moraExtraDb,
       mora_sched_periodo: 0,
       obligacion_total_open: 0,
     };

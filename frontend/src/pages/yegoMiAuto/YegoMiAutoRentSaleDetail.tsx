@@ -152,14 +152,11 @@ interface ComprobanteCuotaSemanal {
 
 /** Saldo pendiente numérico para conformidad admin (Yego): API primero, luego columnas − pagado. */
 function pendienteRestanteConformidadCuota(c: CuotaSemanal): number {
-  const saldoApi = c.pending_total ?? c.cuota_final;
-  if (saldoApi != null && Number.isFinite(Number(saldoApi))) {
-    return roundToTwoDecimals(Math.max(0, Number(saldoApi)));
-  }
   const ad = Number(c.amount_due) || 0;
-  const moraP = c.mora_pendiente != null ? Number(c.mora_pendiente) : Number(c.late_fee) || 0;
+  const moraP = Math.max(Number(c.mora_pendiente ?? 0), Number(c.mora_acumulada ?? c.late_fee ?? 0)) || 0;
+  const moraExtra = miautoNum(c.mora_extra);
   const pd = Number(c.paid_amount) || 0;
-  return roundToTwoDecimals(Math.max(0, ad + moraP - pd));
+  return roundToTwoDecimals(Math.max(0, ad + moraP + moraExtra - pd));
 }
 
 /** Monto pendiente sugerido para etiquetar el comprobante de conformidad (admin). */
@@ -356,7 +353,9 @@ export default function YegoMiAutoRentSaleDetail() {
         .slice(0, 10)
         .map((c) => {
           const s = symMoneda(monedaCuotaRow(c));
-          const pendingTotal = Number(c.pending_total ?? 0) || 0;
+          const pendingTotal = Number(c.amount_due || 0) - Number(c.paid_amount || 0)
+            + Math.max(Number(c.mora_pendiente ?? 0), Number(c.mora_acumulada ?? c.late_fee ?? 0))
+            + miautoNum(c.mora_extra);
           const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
           return { semana, sym: s, pendingTotal };
         });
@@ -376,8 +375,9 @@ export default function YegoMiAutoRentSaleDetail() {
       const cobroDesdeSaldo = Number(cuotaReciente.cobro_desde_saldo_conductor || 0);
       const saldoFavor = Number(cuotaReciente.saldo_favor_conductor || 0);
       const pagado = Number(cuotaReciente.paid_amount || 0);
-      const pendiente = Math.max(0, cuotaSemanal - pf83Real - cobroSaldoRegla - pagado - cobroDesdeSaldo);
-      const pendingTotalCuota = Number(cuotaReciente.pending_total ?? pendiente) || pendiente;
+      const pendingTotalCuota = Number(cuotaReciente.amount_due || 0) - Number(cuotaReciente.paid_amount || 0)
+        + Math.max(Number(cuotaReciente.mora_pendiente ?? 0), Number(cuotaReciente.mora_acumulada ?? cuotaReciente.late_fee ?? 0))
+        + miautoNum(cuotaReciente.mora_extra);
       const semana = miautoSemanaOrdinalPorVencimiento(cuotas, cuotaReciente.due_date, cuotaReciente.week_start_date);
       const cubierto = pendingTotalCuota <= 0.01;
 
@@ -2224,7 +2224,7 @@ export default function YegoMiAutoRentSaleDetail() {
                             const pagado = Number(c.paid_amount) || 0;
                             const moraPendiente = Math.max(Number(c.mora_pendiente) || 0, Number(c.mora_acumulada ?? c.late_fee) || 0);
                             const moraExtra = Number(c.mora_extra) || 0;
-                            const total = Number(c.pending_total ?? 0) || (Math.max(0, cuotaTotal - pagado) + moraPendiente + moraExtra);
+                            const total = Math.max(0, cuotaTotal - pagado) + moraPendiente + moraExtra;
                             const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
                             return (
                               <li key={c.id} className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
@@ -2237,9 +2237,15 @@ export default function YegoMiAutoRentSaleDetail() {
                                   {pagado > 0.01 && (
                                     <span><span className="text-gray-500">Pagado:</span> <span className="font-medium text-gray-900">{sym} {pagado.toFixed(2)}</span></span>
                                   )}
-                                  {moraPendiente > 0 && (
-                                    <span><span className="text-gray-500">Mora:</span> <span className="font-medium text-red-600">{sym} {moraPendiente.toFixed(2)}</span></span>
-                                  )}
+                                   {moraPendiente > 0 && (
+                                     <span>
+                                       <span className="text-gray-500">Mora:</span>
+                                       <span className={`font-medium ${pagado > 0.01 ? 'text-green-600' : 'text-red-600'}`}>
+                                         {sym} {moraPendiente.toFixed(2)}
+                                         {pagado > 0.01 ? <span className="text-[10px] ml-0.5">(pagada)</span> : null}
+                                       </span>
+                                     </span>
+                                   )}
                                   {moraExtra > 0.01 && (
                                     <span><span className="text-gray-500">Mora extra:</span> <span className="font-medium text-red-500">{sym} {moraExtra.toFixed(2)}</span></span>
                                   )}

@@ -457,6 +457,7 @@ export async function deleteComprobanteConformidadAdmin(solicitudId, comprobante
     comprobanteId,
     solicitudId,
   ]);
+  await refreshMoraTrasPagoValidado(solicitudId);
   return listBySolicitud(solicitudId);
 }
 
@@ -581,6 +582,19 @@ async function revertirPagoPorChunks(solicitudId, chunks) {
       [newPaid, newStatus, cuota_semanal_id]
     );
     await touchFechaUltimoAbonoCuota(cuota_semanal_id, paid, newPaid);
+    // Restaurar fecha_ultimo_abono al último comprobante validado que aún queda
+    if (newPaid > 0.005) {
+      const ult = await query(
+        `SELECT MAX(COALESCE(validated_at, created_at::date)) AS fecha
+         FROM module_miauto_comprobante_cuota_semanal
+         WHERE cuota_semanal_id = $1 AND estado = 'validado'`,
+        [cuota_semanal_id]
+      );
+      await query(
+        `UPDATE module_miauto_cuota_semanal SET fecha_ultimo_abono = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+        [ult.rows[0]?.fecha || null, cuota_semanal_id]
+      );
+    }
   }
   await clampCuotasBonificadasTrasRevertir(solicitudId);
   await refreshMoraTrasPagoValidado(solicitudId);

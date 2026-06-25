@@ -621,6 +621,10 @@ export default function YegoMiAutoRentSaleDetail() {
     moneda: 'PEN' | 'USD'
   ) => {
     if (!id) return;
+    if (!file || !(file instanceof File)) {
+      toast.error('Selecciona un archivo válido');
+      return;
+    }
     const fd = new FormData();
     fd.append('file', file);
     fd.append('monto', String(monto));
@@ -1525,8 +1529,8 @@ export default function YegoMiAutoRentSaleDetail() {
                                       className="hidden"
                                       onChange={(e) => {
                                         const f = e.target.files?.[0] ?? null;
-                                        e.target.value = '';
                                         setConformidadArchivoPendiente((prev) => ({ ...prev, [c.id]: f }));
+                                        e.target.value = '';
                                       }}
                                     />
                                     <div className="flex flex-wrap items-center gap-2">

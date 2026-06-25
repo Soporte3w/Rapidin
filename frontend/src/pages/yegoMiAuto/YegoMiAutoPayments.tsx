@@ -302,7 +302,8 @@ export default function YegoMiAutoPayments() {
         try {
           await api.post(
             `/miauto/solicitudes/${modalPagar.id}/cuotas-semanales/${cuotaSeleccionadaId}/comprobantes-conformidad-admin`,
-            fd
+            fd,
+            { headers: { 'Content-Type': undefined as any } }
           );
         } catch {
           toast.error('Pago registrado, pero falló la subida del comprobante');

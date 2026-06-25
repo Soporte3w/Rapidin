@@ -631,7 +631,9 @@ export default function YegoMiAutoRentSaleDetail() {
     fd.append('moneda', moneda);
     try {
       setSubiendoConformidadCuotaId(cuotaSemanalId);
-      await api.post(`/miauto/solicitudes/${id}/cuotas-semanales/${cuotaSemanalId}/comprobantes-conformidad-admin`, fd);
+      await api.post(`/miauto/solicitudes/${id}/cuotas-semanales/${cuotaSemanalId}/comprobantes-conformidad-admin`, fd, {
+        headers: { 'Content-Type': undefined as any },
+      });
       toast.success('Comprobante de pago (documento para el conductor) subido');
       setConformidadArchivoPendiente((prev) => ({ ...prev, [cuotaSemanalId]: null }));
       setConformidadMontoInput((prev) => {
@@ -693,7 +695,9 @@ export default function YegoMiAutoRentSaleDetail() {
       formData.append('files', files[i]);
     }
     try {
-      const resp = await api.post(`/miauto/solicitudes/${id}/evidencias-fleet`, formData);
+      const resp = await api.post(`/miauto/solicitudes/${id}/evidencias-fleet`, formData, {
+        headers: { 'Content-Type': undefined as any },
+      });
       toast.success(resp.data?.message || 'Evidencias subidas correctamente');
       await fetchDetail(undefined, { refresh: true });
     } catch (err: any) {

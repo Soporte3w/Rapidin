@@ -902,7 +902,7 @@ function amountDueAndLateForOpenSinglePhase(
   if (paid > 0.005) {
     const lateFeeDb = round2(parseFloat(r.late_fee) || 0);
     const moraExtraDb = round2(parseFloat(r.mora_extra) || 0);
-    const moraTotalDb = round2(lateFeeDb + moraExtraDb);
+    const moraTotalDb = lateFeeDb;
     const abonoMoraTotal = round2(Math.min(paid, moraTotalDb));
     const abonoMoraLateFee = round2(Math.min(abonoMoraTotal, lateFeeDb));
     const abonoMoraExtra = round2(Math.max(0, abonoMoraTotal - abonoMoraLateFee));

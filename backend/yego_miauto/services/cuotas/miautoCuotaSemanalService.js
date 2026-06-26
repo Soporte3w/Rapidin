@@ -1035,7 +1035,7 @@ function amountDueAndLateForOpen(
       amount_due_remaining: round2(Math.max(0, amt - abonoCuota)),
       late_fee_remaining: round2(Math.max(0, moraReal - abonoMora)),
       mora_full: moraReal,
-      mora_saldo_capital_pendiente: 0,
+      mora_saldo_capital_pendiente: round2(parseFloat(r.mora_extra) || 0),
       mora_sched_periodo: 0,
       obligacion_total_open: round2(round2(Math.max(0, amt - abonoCuota)) + round2(Math.max(0, moraReal - abonoMora)) + paid),
     };

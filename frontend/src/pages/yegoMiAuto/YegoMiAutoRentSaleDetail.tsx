@@ -92,6 +92,10 @@ interface CuotaSemanal {
   mora_acumulada?: number;
   /** Mora extra: generada sobre el pendiente cuando hay pagos parciales en cuotas vencidas. Empieza en 0. */
   mora_extra?: number;
+  /** Total histórico de mora_extra generada (incluye la ya pagada/cristalizada). */
+  mora_extra_total?: number;
+  /** Mora extra ya cobrada/pagada (total − actual). */
+  mora_extra_cobrada?: number;
   /** Saldo mora pendiente tras pagos (API); para neto Excel. */
   mora_pendiente?: number;
   status: string;
@@ -150,13 +154,9 @@ interface ComprobanteCuotaSemanal {
   origen?: string | null;
 }
 
-/** Saldo pendiente numérico para conformidad admin (Yego): API primero, luego columnas − pagado. */
+/** Saldo pendiente numérico para conformidad admin (Yego): usa cuota_final del API. */
 function pendienteRestanteConformidadCuota(c: CuotaSemanal): number {
-  const ad = Number(c.amount_due) || 0;
-  const moraP = Math.max(Number(c.mora_pendiente ?? 0), Number(c.mora_acumulada ?? c.late_fee ?? 0)) || 0;
-  const moraExtra = miautoNum(c.mora_extra);
-  const pd = Number(c.paid_amount) || 0;
-  return roundToTwoDecimals(Math.max(0, ad + moraP + moraExtra - pd));
+  return roundToTwoDecimals(Math.max(0, Number(c.cuota_final ?? c.pending_total ?? 0)));
 }
 
 /** Monto pendiente sugerido para etiquetar el comprobante de conformidad (admin). */
@@ -1136,18 +1136,22 @@ export default function YegoMiAutoRentSaleDetail() {
                   const filasCascadaCobro = miautoCascadaCobroIngresosFilasParaUi(cuotas, c);
                   // Cuota a pagar = amount_due (DB)
                   const cuotaOriginal = miautoNum(c.amount_due);
-                  // Mora = mora_acumulada (DB, total histórico)
+                  // Mora = mora_acumulada (DB, solo late_fee histórico)
                   const moraOriginal = miautoNum(c.mora_acumulada ?? c.late_fee);
-                  // Desglose del pago: mora primero, luego cuota
+                  const moraExtraCobrada = miautoNum(c.mora_extra_cobrada ?? 0);
+                  const moraExtraActual = miautoNum(c.mora_extra ?? 0);
+                  // Desglose del pago: 1° late_fee → 2° mora_extra_cobrada → 3° capital
                   const pagadoVal = miautoNum(c.paid_amount);
                   const moraPagada = Math.min(pagadoVal, moraOriginal);
-                  const cuotaPagada = Math.max(0, pagadoVal - moraPagada);
+                  const restante = pagadoVal - moraPagada;
+                  const moraExtraPagada = Math.min(restante, moraExtraCobrada);
+                  const cuotaPagada = Math.max(0, restante - moraExtraPagada);
                   // Lo que queda por pagar
                   const cuotaAPagarNeta = c.status === 'paid' || c.status === 'bonificada' ? 0 : (cuotaOriginal - cuotaPagada);
                   const moraPendiente = c.status === 'paid' || c.status === 'bonificada' ? 0 : (moraOriginal - moraPagada);
                   // Saldo a favor
                   const saldoFavor = miautoNum(c.saldo_favor_conductor);
-                  // Pendiente total
+                  // Pendiente total = capital + late_fee pendiente (mora_extra se muestra aparte)
                   const pendienteDisplay = cuotaAPagarNeta + moraPendiente;
                   // Mora extra
                   const moraExtra = miautoNum(c.mora_extra);

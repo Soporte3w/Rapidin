@@ -1134,25 +1134,15 @@ export default function YegoMiAutoRentSaleDetail() {
                   const tributoCobroIngresos = miautoCobroPorIngresosTributoDisplay(c);
                   const titleCobroIngresos = miautoTooltipCobroPorIngresos(symCuota, c, cuotas);
                   const filasCascadaCobro = miautoCascadaCobroIngresosFilasParaUi(cuotas, c);
-                  // Cuota a pagar = amount_due (DB)
+                  // Usar valores del API (backend ya calcula todo correctamente)
                   const cuotaOriginal = miautoNum(c.amount_due);
-                  // Mora = mora_acumulada (DB, solo late_fee histórico)
-                  const moraOriginal = miautoNum(c.mora_acumulada ?? c.late_fee);
-                  const moraExtraCobrada = miautoNum(c.mora_extra_cobrada ?? 0);
-                  // Desglose del pago: 1° late_fee → 2° mora_extra_cobrada → 3° capital
-                  const pagadoVal = miautoNum(c.paid_amount);
-                  const moraPagada = Math.min(pagadoVal, moraOriginal);
-                  const restante = pagadoVal - moraPagada;
-                  const moraExtraPagada = Math.min(restante, moraExtraCobrada);
-                  const cuotaPagada = Math.max(0, restante - moraExtraPagada);
-                  // Lo que queda por pagar
-                  const cuotaAPagarNeta = c.status === 'paid' || c.status === 'bonificada' ? 0 : (cuotaOriginal - cuotaPagada);
-                  const moraPendiente = c.status === 'paid' || c.status === 'bonificada' ? 0 : (moraOriginal - moraPagada);
-                  // Saldo a favor
+                  const cuotaAPagarNeta = c.status === 'paid' || c.status === 'bonificada' ? 0 : miautoNum(c.cuota_pendiente ?? 0);
+                  const cuotaPagada = roundToTwoDecimals(Math.max(0, cuotaOriginal - cuotaAPagarNeta));
+                  const moraPendiente = miautoNum(c.mora_pendiente ?? 0);
+                  const moraAcumulada = miautoNum(c.mora_acumulada ?? c.late_fee ?? 0);
+                  const moraPagada = roundToTwoDecimals(Math.max(0, moraAcumulada - moraPendiente));
                   const saldoFavor = miautoNum(c.saldo_favor_conductor);
-                  // Pendiente total = capital + late_fee pendiente (mora_extra se muestra aparte)
-                  const pendienteDisplay = cuotaAPagarNeta + moraPendiente;
-                  // Mora extra
+                  const pendienteDisplay = miautoNum(c.cuota_final ?? c.pending_total ?? 0);
                   const moraExtra = miautoNum(c.mora_extra);
                   return (
                   <Fragment key={c.id}>

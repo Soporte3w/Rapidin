@@ -902,16 +902,18 @@ function amountDueAndLateForOpenSinglePhase(
   if (paid > 0.005) {
     const lateFeeDb = round2(parseFloat(r.late_fee) || 0);
     const moraExtraDb = round2(parseFloat(r.mora_extra) || 0);
-    const moraTotalDb = lateFeeDb;
-    const abonoMora = round2(Math.min(paid, moraTotalDb));
-    const abonoCuota = round2(Math.max(0, paid - abonoMora));
+    const moraTotalDb = round2(lateFeeDb + moraExtraDb);
+    const abonoMoraTotal = round2(Math.min(paid, moraTotalDb));
+    const abonoMoraLateFee = round2(Math.min(abonoMoraTotal, lateFeeDb));
+    const abonoMoraExtra = round2(Math.max(0, abonoMoraTotal - abonoMoraLateFee));
+    const abonoCuota = round2(Math.max(0, paid - abonoMoraTotal));
     const amt = resolvedAmountDueSchedForOpenRow(r, cuota_semanal, bono_auto, pct_comision, cobro_saldo, isPrimeraCuotaSemanal);
     return {
       amount_due_sched: amt,
       amount_due_remaining: round2(Math.max(0, amt - abonoCuota)),
-      late_fee_remaining: round2(Math.max(0, moraTotalDb - abonoMora)),
+      late_fee_remaining: round2(Math.max(0, lateFeeDb - abonoMoraLateFee)),
       mora_full: lateFeeDb,
-      mora_saldo_capital_pendiente: moraExtraDb,
+      mora_saldo_capital_pendiente: round2(Math.max(0, moraExtraDb - abonoMoraExtra)),
       mora_sched_periodo: 0,
       obligacion_total_open: 0,
     };
@@ -1032,7 +1034,7 @@ function amountDueAndLateForOpen(
       mora_full: moraReal,
       mora_saldo_capital_pendiente: 0,
       mora_sched_periodo: 0,
-      obligacion_total_open: 0,
+      obligacion_total_open: round2(round2(Math.max(0, amt - abonoCuota)) + round2(Math.max(0, moraReal - abonoMora)) + paid),
     };
   }
 
@@ -1354,7 +1356,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
                c.num_viajes, c.bono_auto, c.cuota_semanal, c.partner_fees_raw, c.partner_fees_83,
                c.cobro_saldo, c.pct_comision, c.moneda, c.partner_fees_cascada_destino,
                c.fecha_ultimo_abono, c.fecha_primer_comprobante, c.montos_fuente, c.cobro_desde_saldo_conductor,
-               c.mora_desde, c.mora_extra, c.mora_extra_desde,
+            c.mora_desde, c.mora_extra, c.mora_extra_desde, c.mora_extra_total,
               s.fecha_inicio_cobro_semanal
        FROM module_miauto_cuota_semanal c
        INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
@@ -1498,7 +1500,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     const cascadeReceivedForRow = round2(cascRecv) > 0.005;
     if (!freezeMoraPorComprobante && stRow !== 'bonificada') {
       lateFeePersist = cascadeReceivedForRow
-        ? round2(lateFeeOut)
+        ? round2(Math.max(lateFeeOut, lateFeeDb))
         : pagoATiempoRow
           ? round2(Math.max(lateFeeDb, lateFeeOut))
           : round2(Math.max(lateFeeDb, lateFeeOut, moraFullD, moraSchedD));
@@ -1553,11 +1555,18 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       if (statusOut === 'overdue') statusOut = paidDb > 0.005 ? 'partial' : 'pending';
     }
 
+    // mora_extra_total = total generado histórico (cristalizado + actual)
+    const moraExtraDbOld = round2(parseFloat(row.mora_extra) || 0);
+    const moraExtraTotalDbOld = round2(parseFloat(row.mora_extra_total) || 0);
+    const moraExtraTotalPersist = round2(moraExtraTotalDbOld - moraExtraDbOld + moraExtraPersist);
+
     await query(
       patchDue
-        ? `UPDATE module_miauto_cuota_semanal SET late_fee = $1, mora_extra = $5, mora_extra_desde = $6::date, status = $4, due_date = $3::date, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
-        : `UPDATE module_miauto_cuota_semanal SET late_fee = $1, mora_extra = $4, mora_extra_desde = $5::date, status = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-      patchDue ? [lateFeePersist, row.id, canonicalDueYmd, statusOut, moraExtraPersist, moraExtraDesde] : [lateFeePersist, row.id, statusOut, moraExtraPersist, moraExtraDesde]
+        ? `UPDATE module_miauto_cuota_semanal SET late_fee = $1, mora_extra = $5, mora_extra_desde = $6::date, mora_extra_total = $7, status = $4, due_date = $3::date, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
+        : `UPDATE module_miauto_cuota_semanal SET late_fee = $1, mora_extra = $4, mora_extra_desde = $5::date, mora_extra_total = $6, status = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+      patchDue
+        ? [lateFeePersist, row.id, canonicalDueYmd, statusOut, moraExtraPersist, moraExtraDesde, moraExtraTotalPersist]
+        : [lateFeePersist, row.id, statusOut, moraExtraPersist, moraExtraDesde, moraExtraTotalPersist]
     );
     updated++;
   }
@@ -2264,6 +2273,10 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     mora_acumulada: round2(parseFloat(r.late_fee) || 0),
     /** Mora extra: acumulada sobre el pendiente cuando hay pagos parciales. Empieza en 0. */
     mora_extra: round2(parseFloat(r.mora_extra) || 0),
+    /** Total histórico de mora_extra generada (incluye la ya pagada/cristalizada). */
+    mora_extra_total: round2(parseFloat(r.mora_extra_total) || 0),
+    /** Mora extra que ya fue pagada/cristalizada (total − actual). */
+    mora_extra_cobrada: round2(Math.max(0, round2(parseFloat(r.mora_extra_total) || 0) - round2(parseFloat(r.mora_extra) || 0))),
     mora_extra_desde: ymdFromDbDate(r.mora_extra_desde),
     status: statusApi,
     moneda: d.moneda,
@@ -2476,7 +2489,7 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
     `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, moneda, pct_comision, cobro_saldo,
             partner_fees_raw, partner_fees_83, partner_fees_yango_raw, partner_fees_cascada_destino,
             fecha_ultimo_abono, fecha_primer_comprobante, montos_fuente, cobro_desde_saldo_conductor,
-            saldo_favor_conductor, mora_desde, mora_extra, mora_extra_desde, cobro_saldo_referencia, created_at, updated_at
+            saldo_favor_conductor, mora_desde, mora_extra, mora_extra_desde, mora_extra_total, cobro_saldo_referencia, created_at, updated_at
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1 AND deleted_at IS NULL
      ORDER BY week_start_date ASC NULLS LAST, due_date ASC NULLS LAST, id ASC`,

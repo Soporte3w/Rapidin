@@ -80,7 +80,7 @@ export const authenticate = async (req, res, next) => {
     } else if (decoded.userId) {
       // Es un admin - buscar en module_rapidin_users
       const result = await query(
-        'SELECT id, email, first_name, last_name, role, country, active FROM module_rapidin_users WHERE id = $1',
+        'SELECT id, email, first_name, last_name, role, country, active, allowed_modules FROM module_rapidin_users WHERE id = $1',
         [decoded.userId]
       );
 
@@ -91,6 +91,7 @@ export const authenticate = async (req, res, next) => {
       }
 
       req.user = result.rows[0];
+      req.user.allowed_modules = req.user.allowed_modules || decoded.allowedModules || ['rapidin'];
     } else {
       return res.status(401).json({
         error: 'Token inválido'

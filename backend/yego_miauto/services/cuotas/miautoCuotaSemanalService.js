@@ -909,14 +909,16 @@ function amountDueAndLateForOpenSinglePhase(
     const abonoMoraExtra = round2(Math.max(0, abonoMoraTotal - abonoMoraLateFee));
     const abonoCuota = round2(Math.max(0, paid - abonoMoraTotal));
     const amt = resolvedAmountDueSchedForOpenRow(r, cuota_semanal, bono_auto, pct_comision, cobro_saldo, isPrimeraCuotaSemanal);
+    const adRem = round2(Math.max(0, amt - abonoCuota));
+    const lfRem = round2(Math.max(0, lateFeeDb - abonoMoraLateFee));
     return {
       amount_due_sched: amt,
-      amount_due_remaining: round2(Math.max(0, amt - abonoCuota)),
-      late_fee_remaining: round2(Math.max(0, lateFeeDb - abonoMoraLateFee)),
+      amount_due_remaining: adRem,
+      late_fee_remaining: lfRem,
       mora_full: lateFeeDb,
       mora_saldo_capital_pendiente: round2(Math.max(0, moraExtraDb - abonoMoraExtra)),
       mora_sched_periodo: 0,
-      obligacion_total_open: 0,
+      obligacion_total_open: round2(adRem + lfRem + paid),
     };
   }
 

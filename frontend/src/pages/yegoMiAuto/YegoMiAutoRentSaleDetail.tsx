@@ -1139,7 +1139,6 @@ export default function YegoMiAutoRentSaleDetail() {
                   // Mora = mora_acumulada (DB, solo late_fee histórico)
                   const moraOriginal = miautoNum(c.mora_acumulada ?? c.late_fee);
                   const moraExtraCobrada = miautoNum(c.mora_extra_cobrada ?? 0);
-                  const moraExtraActual = miautoNum(c.mora_extra ?? 0);
                   // Desglose del pago: 1° late_fee → 2° mora_extra_cobrada → 3° capital
                   const pagadoVal = miautoNum(c.paid_amount);
                   const moraPagada = Math.min(pagadoVal, moraOriginal);

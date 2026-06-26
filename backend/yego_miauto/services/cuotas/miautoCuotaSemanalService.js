@@ -1006,12 +1006,21 @@ function amountDueAndLateForOpen(
   if (cascade > paid + 0.01) cascade = paid;
   const paidNonCascade = round2(Math.max(0, paid - cascade));
 
-  // Si todo el pago proviene de cascada (sin pagos directos), imputar contra el
-  // late_fee histórico de la BD. Evita recalcular mora con la fecha de hoy, que
-  // distorsiona el reparto mora/capital cuando la cascada ocurrió días atrás.
+  // Si todo el pago proviene de cascada (sin pagos directos), imputar contra la
+  // mora histórica real al momento de la cascada. La fecha de cascada se infiere
+  // de `mora_extra_desde` (día en que el cascadeo actualizó paid_amount). Se usa
+  // `computeLateFeeForDayCount` para evitar la distorsión del late_fee inflado actual.
   if (cascade > 0.005 && paidNonCascade <= 0.005) {
-    const lateFeeDb = round2(parseFloat(r.late_fee) || 0);
-    const abonoMora = round2(Math.min(paid, lateFeeDb));
+    const moraExtraDesdeYmd = ymdFromDbDate(r.mora_extra_desde);
+    const dueYmd = dueDateYmdForMoraDesdeSemana(r, fechaInicioCobroSemanal)
+      || ymdFromDbDate(r.due_date) || r.due_date;
+    const diasReales = moraExtraDesdeYmd && dueYmd
+      ? Math.max(0, diffDaysYmdUtc(dueYmd, moraExtraDesdeYmd))
+      : 0;
+    const moraReal = diasReales > 0
+      ? computeLateFeeForDayCount(cronograma, round2(cuota_semanal), diasReales)
+      : round2(parseFloat(r.late_fee) || 0);
+    const abonoMora = round2(Math.min(paid, moraReal));
     const abonoCuota = round2(Math.max(0, paid - abonoMora));
     const amt = resolvedAmountDueSchedForOpenRow(
       r, cuota_semanal, bono_auto, pct_comision, cobro_saldo, isPrimeraCuotaSemanal
@@ -1019,8 +1028,8 @@ function amountDueAndLateForOpen(
     return {
       amount_due_sched: amt,
       amount_due_remaining: round2(Math.max(0, amt - abonoCuota)),
-      late_fee_remaining: round2(Math.max(0, lateFeeDb - abonoMora)),
-      mora_full: lateFeeDb,
+      late_fee_remaining: round2(Math.max(0, moraReal - abonoMora)),
+      mora_full: moraReal,
       mora_saldo_capital_pendiente: 0,
       mora_sched_periodo: 0,
       obligacion_total_open: 0,

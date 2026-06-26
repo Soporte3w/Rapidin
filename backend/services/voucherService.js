@@ -62,21 +62,29 @@ export async function uploadFileToMedia(file) {
   const blob = new Blob([file.buffer], { type: file.mimetype || 'application/octet-stream' });
   form.append('file', blob, file.originalname || 'voucher');
 
-  const response = await fetch(MEDIA_UPLOAD_URL, {
-    method: 'POST',
-    body: form,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Error al subir archivo a media: ${response.status} ${text}`);
-  }
+  try {
+    const response = await fetch(MEDIA_UPLOAD_URL, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
 
-  const data = await response.json();
-  if (!data.url) {
-    throw new Error('La respuesta del servicio de media no incluyó la URL');
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Error al subir archivo a media: ${response.status} ${text}`);
+    }
+
+    const data = await response.json();
+    if (!data.url) {
+      throw new Error('La respuesta del servicio de media no incluyó la URL');
+    }
+    return data.url;
+  } finally {
+    clearTimeout(timeout);
   }
-  return data.url;
 }
 
 // Subir constancia de préstamo (PDF/imagen) dentro del bucket existente, carpeta constancias/
@@ -87,21 +95,29 @@ export async function uploadConstanciaToMedia(file) {
   const blob = new Blob([file.buffer], { type: file.mimetype || 'application/octet-stream' });
   form.append('file', blob, prefixedName);
 
-  const response = await fetch(MEDIA_UPLOAD_URL, {
-    method: 'POST',
-    body: form,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Error al subir constancia a media: ${response.status} ${text}`);
-  }
+  try {
+    const response = await fetch(MEDIA_UPLOAD_URL, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
 
-  const data = await response.json();
-  if (!data.url) {
-    throw new Error('La respuesta del servicio de media no incluyó la URL');
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Error al subir constancia a media: ${response.status} ${text}`);
+    }
+
+    const data = await response.json();
+    if (!data.url) {
+      throw new Error('La respuesta del servicio de media no incluyó la URL');
+    }
+    return data.url;
+  } finally {
+    clearTimeout(timeout);
   }
-  return data.url;
 }
 
 // Subir voucher de pago

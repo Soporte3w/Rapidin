@@ -1250,7 +1250,7 @@ export default function YegoMiAutoRentSaleDetail() {
                     {/* Mora */}
                     <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-[12px] text-red-600">
                       <div className="flex flex-col items-end gap-0.5">
-                        <span className="text-[10px] text-gray-400">Total: {miautoFmtMonto(symCuota, moraOriginal)}</span>
+                        <span className="text-[10px] text-gray-400">Total: {miautoFmtMonto(symCuota, moraAcumulada)}</span>
                         <span className="block font-semibold">{miautoFmtMonto(symCuota, moraPendiente)}</span>
                         {moraPagada > 0.005 && (
                           <span className="text-[10px] font-normal leading-snug text-green-700">

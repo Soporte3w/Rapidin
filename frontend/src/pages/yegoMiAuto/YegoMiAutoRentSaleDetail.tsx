@@ -154,9 +154,13 @@ interface ComprobanteCuotaSemanal {
   origen?: string | null;
 }
 
-/** Saldo pendiente numérico para conformidad admin (Yego): cuota_pendiente + mora_extra. */
+/** Saldo pendiente numérico para conformidad admin (Yego): cuota + mora_extra + late_fee (si no hay pago). */
 function pendienteRestanteConformidadCuota(c: CuotaSemanal): number {
-  return roundToTwoDecimals(Math.max(0, miautoNum(c.cuota_pendiente ?? 0) + miautoNum(c.mora_extra ?? 0)));
+  const base = miautoNum(c.cuota_pendiente ?? 0) + miautoNum(c.mora_extra ?? 0);
+  const lateFee = miautoNum(c.paid_amount) <= 0.005 
+    ? miautoNum(c.mora_acumulada ?? c.late_fee ?? 0) 
+    : 0;
+  return roundToTwoDecimals(Math.max(0, base + lateFee));
 }
 
 /** Monto pendiente sugerido para etiquetar el comprobante de conformidad (admin). */

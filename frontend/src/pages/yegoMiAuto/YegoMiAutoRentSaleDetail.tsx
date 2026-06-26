@@ -1142,7 +1142,11 @@ export default function YegoMiAutoRentSaleDetail() {
                   const moraAcumulada = miautoNum(c.mora_acumulada ?? c.late_fee ?? 0);
                   const moraPagada = roundToTwoDecimals(Math.max(0, moraAcumulada - moraPendiente));
                   const saldoFavor = miautoNum(c.saldo_favor_conductor);
-                  const pendienteDisplay = roundToTwoDecimals(cuotaAPagarNeta + moraPendiente);
+                  // Pendiente: capital + late_fee pendiente. Si no hay pago, incluir mora_acumulada.
+                  const lateFeeSinPago = miautoNum(c.paid_amount) <= 0.005 && moraPendiente <= 0.005
+                    ? miautoNum(c.mora_acumulada ?? c.late_fee ?? 0)
+                    : 0;
+                  const pendienteDisplay = roundToTwoDecimals(cuotaAPagarNeta + moraPendiente + lateFeeSinPago);
                   const moraExtra = miautoNum(c.mora_extra);
                   return (
                   <Fragment key={c.id}>

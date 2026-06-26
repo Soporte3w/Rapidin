@@ -1458,15 +1458,20 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
      * la aritmética de columnas `amount_due + late_fee − paid_amount` coincida
      * con el pendiente real derivado. Aplica a pagadas (conservar devengo) y
      * a abiertas (cobro Fleet, `processCobroCuota`, etc.).
+     * Excepción: cuotas que reciben cascada — usar la mora remanente post-imputación
+     * para no inflar el pendiente con mora ya cubierta por partner_fees de otra semana.
      */
     let lateFeePersist = lateFeeOut;
     const fechaPagoRow = ymdFromDbDate(row.fecha_ultimo_abono);
     const dueYmdRow = ymdFromDbDate(row.due_date);
     const pagoATiempoRow = fechaPagoRow && dueYmdRow && fechaPagoRow <= dueYmdRow && paidDb > 0.005;
+    const cascadeReceivedForRow = round2(cascRecv) > 0.005;
     if (!freezeMoraPorComprobante && stRow !== 'bonificada') {
-      lateFeePersist = pagoATiempoRow
-        ? round2(Math.max(lateFeeDb, lateFeeOut))
-        : round2(Math.max(lateFeeDb, lateFeeOut, moraFullD, moraSchedD));
+      lateFeePersist = cascadeReceivedForRow
+        ? round2(lateFeeOut)
+        : pagoATiempoRow
+          ? round2(Math.max(lateFeeDb, lateFeeOut))
+          : round2(Math.max(lateFeeDb, lateFeeOut, moraFullD, moraSchedD));
     }
     if (freezeMoraPorComprobante) {
       lateFeePersist = lateFeeDb;
@@ -1478,7 +1483,9 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     let moraExtraDesde = ymdFromDbDate(row.mora_extra_desde);
     const pagoHecho = round2(paidDb);
     const pagoAnterior = round2(parseFloat(row.paid_amount) || 0) - (paidDb - pagoHecho); // aprox del pago anterior
-    const pendienteTotal = round2(round2(parseFloat(row.amount_due) || 0) + round2(parseFloat(row.late_fee) || 0) - pagoHecho);
+    const pendienteTotal = cascadeReceivedForRow
+      ? round2(d.cuota_final)
+      : round2(round2(parseFloat(row.amount_due) || 0) + round2(parseFloat(row.late_fee) || 0) - pagoHecho);
     
     if (statusOut === 'overdue' && pendienteTotal > 0.005 && pagoHecho > 0.005) {
       // Detectar si hubo un NUEVO pago desde la última vez que se fijó mora_extra_desde

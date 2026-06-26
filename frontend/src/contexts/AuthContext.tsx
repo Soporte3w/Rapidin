@@ -32,6 +32,8 @@ interface User {
   car_id?: string | null;
   /** UUID en module_rapidin_drivers si el número ya está registrado; se guarda en localStorage para las peticiones */
   rapidin_driver_id?: string | null;
+  /** Módulos a los que tiene acceso el usuario admin */
+  allowed_modules?: string[];
 }
 
 interface AuthContextType {

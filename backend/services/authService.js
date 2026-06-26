@@ -9,7 +9,7 @@ import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helper
 
 export const login = async (email, password) => {
     const result = await query(
-        'SELECT id, email, password_hash, first_name, last_name, role, country, active FROM module_rapidin_users WHERE email = $1',
+        'SELECT id, email, password_hash, first_name, last_name, role, country, active, allowed_modules FROM module_rapidin_users WHERE email = $1',
         [email]
     );
 
@@ -34,7 +34,7 @@ export const login = async (email, password) => {
         [user.id]
     );
 
-    const token = generateToken(user.id, user.email, user.role);
+    const token = generateToken(user.id, user.email, user.role, user.allowed_modules);
 
     return {
         token,
@@ -44,7 +44,8 @@ export const login = async (email, password) => {
             first_name: user.first_name,
             last_name: user.last_name,
             role: user.role,
-            country: user.country
+            country: user.country,
+            allowed_modules: user.allowed_modules || ['rapidin']
         }
     };
 };

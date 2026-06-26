@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react';
 import { createPortal } from 'react-dom';
+import BottomSheet from '../../components/BottomSheet';
+import MobilePagination from '../../components/MobilePagination';
 import api from '../../services/api';
-import { Car, FileText, Check, ShieldCheck, Phone, Mail, ChevronDown, ChevronRight, Upload, X, AlertCircle, ExternalLink, CheckCircle2, AlertTriangle, Wallet, Calendar, Sparkles, Clock, MessageSquare, CalendarCheck, Zap, Eye } from 'lucide-react';
+import { Car, FileText, Check, ShieldCheck, Phone, Mail, ChevronDown, ChevronRight, Upload, X, AlertCircle, ExternalLink, CheckCircle2, Calendar, Sparkles, Clock, MessageSquare, CalendarCheck, Zap, Eye } from 'lucide-react';
 import { TablePaginationBar } from '../../components/TablePaginationBar';
 import { useTablePagination } from '../../hooks/useTablePagination';
 import { type ComprobanteOtrosGastos, type MiautoOtrosGastoRow } from '../../utils/miautoOtrosGastos';
@@ -146,7 +148,7 @@ interface Solicitud {
   total_validado?: number | null;
   fecha_inicio_cobro_semanal?: string | null;
   placa_asignada?: string | null;
-  otros_gastos?: { id: string; week_index: number; due_date: string; amount_due: number; paid_amount: number; status: string }[];
+  otros_gastos?: { id: string; tipo?: string; week_index: number; due_date: string; amount_due: number; paid_amount: number; status: string }[];
 }
 
 type CuotasCacheEntry = {
@@ -237,7 +239,18 @@ function AprobadoBlock({
   cuotasLoading?: boolean;
   onInvalidateCuotas?: (solicitudId: string) => void;
 }) {
+  const OG_TIPO_LABELS: Record<string, string> = {
+    gps: 'GPS',
+    src: 'SRC',
+    soat: 'SOAT',
+    impuesto_vehicular: 'Imp. Vehicular',
+    todo_riesgo_mas_gps_agrupado: 'Todo Riesgo + GPS',
+    inicial_parcial: 'Inicial Parcial',
+    generico: 'Otro',
+  };
+
   const [comprobantePreview, setComprobantePreview] = useState<{ url: string; fileName: string; isImage: boolean } | null>(null);
+  const [cuotaSheet, setCuotaSheet] = useState<CuotaSemanal | null>(null);
   const [comprobantesInicialAbierto, setComprobantesInicialAbierto] = useState(false);
   const [subTabCronogramaDriver, setSubTabCronogramaDriver] = useState<'semanales' | 'otros_gastos'>('semanales');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -251,6 +264,8 @@ function AprobadoBlock({
   const [uploadCuotaLoading, setUploadCuotaLoading] = useState<string | null>(null);
   const [fileCuotaPreview, setFileCuotaPreview] = useState<{ cuotaId: string; file: File } | null>(null);
   const fileCuotaRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const [ogSheet, setOgSheet] = useState<MiautoOtrosGastoRow | null>(null);
+  const [ogTipoFilter, setOgTipoFilter] = useState<string | null>(null);
   const [uploadOgLoading, setUploadOgLoading] = useState<string | null>(null);
   const [fileOgPreview, setFileOgPreview] = useState<{ otrosGastosId: string; file: File } | null>(null);
   const [comprobantesOgAbierta, setComprobantesOgAbierta] = useState<Record<string, boolean>>({});
@@ -426,10 +441,14 @@ function AprobadoBlock({
     () => (Array.isArray(cuotasData?.otrosGastos) ? cuotasData.otrosGastos : Array.isArray(solicitud.otros_gastos) ? solicitud.otros_gastos : []),
     [cuotasData?.otrosGastos, solicitud.otros_gastos]
   );
-  const otrosPg = useTablePagination(otrosGastosRows);
+  const filteredOgRows = useMemo(
+    () => !ogTipoFilter ? otrosGastosRows : otrosGastosRows.filter((og) => (og.tipo || 'generico') === ogTipoFilter),
+    [otrosGastosRows, ogTipoFilter]
+  );
+  const otrosPg = useTablePagination(filteredOgRows);
 
   return (
-    <div className="mt-4 bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+    <div className="mt-3 bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
       <button type="button" onClick={onToggle} className="w-full bg-white px-5 py-3.5 border-b border-gray-200 flex items-center justify-between text-left hover:bg-gray-50/60 transition-colors">
         <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2.5">
           <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-br from-[#8B1A1A] to-[#6B1515] text-white shadow-sm">
@@ -443,9 +462,9 @@ function AprobadoBlock({
         {expanded ? <ChevronDown className="w-5 h-5 text-gray-500" /> : <ChevronRight className="w-5 h-5 text-gray-500" />}
       </button>
       {expanded && (
-        <div className="p-4">
-          <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)] items-start">
-            <aside className="space-y-4">
+        <div className="p-3">
+          <div className="grid gap-3 lg:grid-cols-[300px_minmax(0,1fr)] items-start">
+            <aside className="space-y-3 order-2 lg:order-1">
               {(() => {
                 const statusLow = (solicitud.status || '').toLowerCase();
                 const steps: Array<{ id: string; label: string; sub?: string; state: 'done' | 'active' | 'pending' }> = [];
@@ -474,12 +493,12 @@ function AprobadoBlock({
                   state: solicitud.fecha_inicio_cobro_semanal ? 'done' : pagoInicialCompleto ? 'active' : 'pending',
                 });
                 return (
-                  <div className="rounded-2xl border border-gray-200 bg-white shadow-sm p-4">
-                    <div className="flex items-start justify-between mb-4">
+                  <div className="rounded-2xl border border-gray-200 bg-white shadow-sm p-3">
+                    <div className="flex items-start justify-between mb-3">
                       <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">Progreso de gestión</p>
                       <FileText className="w-4 h-4 text-gray-400" />
                     </div>
-                    <ol className="relative space-y-3.5">
+                    <ol className="relative space-y-3">
                       {steps.map((s, idx) => {
                         const isLast = idx === steps.length - 1;
                         const dot = s.state === 'done'
@@ -522,12 +541,12 @@ function AprobadoBlock({
               })()}
 
               <div className="rounded-2xl bg-gradient-to-br from-gray-900 via-gray-900 to-black text-white shadow-lg overflow-hidden">
-                <div className="flex items-center justify-between px-4 pt-3.5 pb-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-400">Unidad asignada</p>
-                  <Car className="w-4 h-4 text-gray-500" />
+                <div className="h-1 bg-[#8B1A1A]" />
+                <div className="px-4 pt-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Unidad asignada</p>
                 </div>
-                <div className="px-4 pb-3">
-                  <div className="relative w-full h-32 rounded-lg bg-gray-800/60 overflow-hidden flex items-center justify-center">
+                <div className="px-4 pt-3">
+                  <div className="relative w-full h-44 rounded-xl bg-gray-800/60 overflow-hidden flex items-center justify-center">
                     {vehiculo?.image ? (
                       <img
                         src={vehiculo.image.startsWith('data:') || vehiculo.image.startsWith('http') ? vehiculo.image : getComprobanteUrl(vehiculo.image)}
@@ -539,38 +558,32 @@ function AprobadoBlock({
                     )}
                   </div>
                 </div>
-                <div className="px-4 pb-4">
-                  <h4 className="text-base font-bold text-white leading-tight">
+                <div className="px-4 pt-3 pb-4 border-t border-white/10 mt-3">
+                  <h4 className="text-sm font-bold text-white leading-tight">
                     {vehiculo?.name ?? 'Sin asignar'}
                   </h4>
-                  <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
-                    <span className="font-mono uppercase tracking-wider text-gray-300">
-                      <span className="text-gray-500">PLACA · </span>
-                      <span className="font-bold text-white">{solicitud.placa_asignada || '—'}</span>
-                    </span>
-                    {cronograma?.name && (
-                      <span className="font-mono uppercase tracking-wider text-gray-400 text-right">
-                        <span className="font-bold text-white">{cronograma.name}</span>
-                      </span>
-                    )}
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                    <div>
+                      <p className="text-gray-500 uppercase tracking-wider">Placa</p>
+                      <p className="font-bold text-white font-mono tracking-wider">{solicitud.placa_asignada || '—'}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-gray-500 uppercase tracking-wider">Plan</p>
+                      <p className="font-bold text-white">{cronograma?.name || (pagoTipoLabel || '—')}</p>
+                    </div>
                   </div>
-                  {!cronograma?.name && pagoTipoLabel && (
-                    <p className="mt-1.5 text-[10px] uppercase tracking-wider text-gray-500">
-                      {pagoTipoLabel}
-                    </p>
-                  )}
                 </div>
               </div>
             </aside>
 
-            <div className="space-y-4 min-w-0">
+            <div className="space-y-3 min-w-0 order-1 lg:order-2">
               {cuotaInicial > 0 && !pagoInicialCompleto && (
                 <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-                  <div className="px-4 sm:px-5 pt-4 pb-3">
+                  <div className="px-4 sm:px-5 pt-3 pb-3">
                     <div className="flex items-start justify-between gap-3 mb-2">
                       <div className="min-w-0">
                         <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">Control de cuota inicial</p>
-                        <p className="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 tabular-nums leading-none">
+                        <p className="mt-1 text-lg sm:text-xl font-bold text-gray-900 tabular-nums leading-none">
                           {monedaSimbolo}{totalValidado.toFixed(2)}
                           <span className="text-gray-300 font-normal"> / {monedaSimbolo}{cuotaInicial.toFixed(2)}</span>
                         </p>
@@ -582,11 +595,11 @@ function AprobadoBlock({
                         )}
                       </div>
                       <div className="text-right shrink-0">
-                        <p className="text-2xl sm:text-3xl font-bold text-[#8B1A1A] tabular-nums leading-none">{Math.round(progreso)}%</p>
+                        <p className="text-xl sm:text-2xl font-bold text-[#8B1A1A] tabular-nums leading-none">{Math.round(progreso)}%</p>
                         <p className="text-[10px] uppercase tracking-wider text-gray-500 mt-1">Completado</p>
                       </div>
                     </div>
-                    <div className="mt-3 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="mt-3 h-2.5 bg-gray-100 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-gradient-to-r from-[#8B1A1A] to-[#C53838] rounded-full transition-all duration-500"
                         style={{ width: `${progreso}%` }}
@@ -594,28 +607,25 @@ function AprobadoBlock({
                     </div>
                   </div>
                   {falta > 0 && (
-                    <div className="mx-4 sm:mx-5 mb-3 flex items-center justify-between gap-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                        <p className="text-sm text-amber-900">
-                          <span className="font-semibold">Te falta {monedaSimbolo}{falta.toFixed(2)}</span>
-                          {vehiculo?.inicial_moneda === 'USD' && tipoCambio?.valor_usd_a_local && (
-                            <span className="text-[11px] text-amber-700">
-                              {' · '}Equiv. {tipoCambio.moneda_local === 'COP' ? 'COP' : 'S/.'} {(falta * tipoCambio.valor_usd_a_local).toFixed(2)}
-                            </span>
-                          )}
-                        </p>
-                      </div>
+                    <div className="mx-4 sm:mx-5 mb-2 flex items-center justify-between gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+                      <p className="text-xs text-amber-900 min-w-0">
+                        <span className="font-semibold">Te falta {monedaSimbolo}{falta.toFixed(2)}</span>
+                        {vehiculo?.inicial_moneda === 'USD' && tipoCambio?.valor_usd_a_local && (
+                          <span className="text-[10px] text-amber-700">
+                            {' · '}Equiv. {tipoCambio.moneda_local === 'COP' ? 'COP' : 'S/.'} {(falta * tipoCambio.valor_usd_a_local).toFixed(2)}
+                          </span>
+                        )}
+                      </p>
                       <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
-                        className="text-[11px] font-bold uppercase tracking-wider text-[#8B1A1A] hover:text-[#6B1515] whitespace-nowrap"
+                        className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-[#8B1A1A] hover:text-[#6B1515] shrink-0"
                       >
                         Subir comprobante
                       </button>
                     </div>
                   )}
-                  <div className="px-4 sm:px-5 pb-4">
+                  <div className="px-4 sm:px-5 pb-3">
                     <div className="flex items-center justify-between mb-2">
                       <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">
                         Comprobantes subidos {comprobantes.length > 0 && <span className="text-gray-400">· {comprobantes.length}</span>}
@@ -697,7 +707,7 @@ function AprobadoBlock({
                     </button>
                   </div>
                   {comprobantesInicialAbierto && (
-                    <div className="p-4 border-t border-emerald-100">
+                    <div className="p-3 border-t border-emerald-100">
                       {comprobantes.length > 0 ? comprobantesSliderEl : (
                         <p className="text-sm text-gray-500">No hay comprobantes registrados.</p>
                       )}
@@ -707,7 +717,7 @@ function AprobadoBlock({
               )}
 
               <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-                <div className="px-4 sm:px-5 pt-4 pb-3 border-b border-gray-100">
+                <div className="px-4 sm:px-5 pt-3 pb-3 border-b border-gray-100">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">Movimientos del financiamiento</p>
@@ -725,7 +735,7 @@ function AprobadoBlock({
                     })()}
                   </div>
                   {solicitud.fecha_inicio_cobro_semanal && (
-                    <div className="mt-3 -mb-3 flex gap-1">
+                    <div className="mt-2 -mb-2 flex gap-1">
                       <button
                         type="button"
                         onClick={() => setSubTabCronogramaDriver('semanales')}
@@ -770,34 +780,23 @@ function AprobadoBlock({
               return n;
             })()) : null;
             return (
-              <div className="px-4 sm:px-5 py-3 border-b border-gray-100">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-2 items-end">
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500 flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      Pagadas
-                    </p>
-                    <p className="text-base font-bold text-gray-900 tabular-nums mt-1">
-                      {cuotasPagadas}
-                      <span className="text-gray-400 font-normal"> / {totalCuotasPlanVehiculoCronograma}</span>
-                    </p>
-                  </div>
-                  <div>
-                    <p className={`text-[10px] font-semibold uppercase tracking-[0.12em] flex items-center gap-1 ${vencidas > 0 ? 'text-[#8B1A1A]' : 'text-gray-500'}`}>
-                      <AlertTriangle className={`w-3 h-3 ${vencidas > 0 ? 'text-[#8B1A1A]' : 'text-gray-400'}`} />
-                      Vencidas
-                    </p>
-                    <p className={`text-base font-bold tabular-nums mt-1 ${vencidas > 0 ? 'text-[#8B1A1A]' : 'text-gray-700'}`}>
-                      {vencidas}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500 flex items-center gap-1">
-                      <Wallet className="w-3 h-3 text-emerald-600" />
-                      Total pagado
-                    </p>
-                    <p className="text-base font-bold text-emerald-700 tabular-nums mt-1">S/. {totalPagado.toFixed(2)}</p>
-                  </div>
+              <div className="px-4 sm:px-5 py-2 border-b border-gray-100">
+                <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-xs">
+                  <span>
+                    <span className="text-gray-400">Pagadas </span>
+                    <span className="font-bold text-gray-900">{cuotasPagadas}</span>
+                    <span className="text-gray-300"> / {totalCuotasPlanVehiculoCronograma}</span>
+                  </span>
+                  <span className="hidden sm:inline text-gray-200">|</span>
+                  <span>
+                    <span className={vencidas > 0 ? 'text-red-500' : 'text-gray-400'}>Vencidas </span>
+                    <span className={`font-bold ${vencidas > 0 ? 'text-red-600' : 'text-gray-700'}`}>{vencidas}</span>
+                  </span>
+                  <span className="hidden sm:inline text-gray-200">|</span>
+                  <span>
+                    <span className="text-gray-400">Total pagado </span>
+                    <span className="font-bold text-emerald-700 tabular-nums">{monedaSimbolo}{totalPagado.toFixed(2)}</span>
+                  </span>
                 </div>
                 {bonoTiempoActivo && (bonoAplicado >= 1 || racha === 3) && (
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -819,7 +818,7 @@ function AprobadoBlock({
             );
           })()}
           {solicitud.fecha_inicio_cobro_semanal && subTabCronogramaDriver === 'semanales' && (
-            <div className="px-4 sm:px-5 py-4">
+            <div className="px-4 sm:px-5 py-3">
               {loadingCuotas ? (
                 <div className="flex justify-center py-4">
                   <div className="animate-spin rounded-full h-6 w-6 border-2 border-[#8B1A1A] border-t-transparent" />
@@ -828,7 +827,65 @@ function AprobadoBlock({
                 <p className="text-sm text-gray-500">Aún no hay cuotas semanales generadas.</p>
               ) : (
                 <>
-                <div className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0 rounded-xl border border-gray-200 bg-white shadow-sm">
+                {/* Vista móvil de cuotas — cards clickeables */}
+                <div className="lg:hidden space-y-2">
+                  {cuotasPg.paginatedItems.map((c, index) => {
+                    const numeroSemana =
+                      miautoSemanaLista(cuotasSemanales, c.week_start_date) ??
+                      miautoSemanaOrdinalPorVencimiento(cuotasSemanales, c.due_date, c.week_start_date) ??
+                      (cuotasPg.page - 1) * cuotasPg.limit + index + 1;
+                    const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(c);
+                    const symCuota = symMoneda(c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda);
+
+                    const statusConfig: Record<string, { label: string; bg: string; text: string }> = {
+                      paid: { label: 'PAGADA', bg: 'bg-emerald-50', text: 'text-emerald-700' },
+                      bonificada: { label: 'BONIFICADA', bg: 'bg-violet-50', text: 'text-violet-700' },
+                      overdue: { label: 'VENCIDA', bg: 'bg-red-50', text: 'text-red-700' },
+                      partial: { label: 'PARCIAL', bg: 'bg-blue-50', text: 'text-blue-700' },
+                    };
+                    const lowerStatus = (c.status || '').toLowerCase();
+                    const sc = statusConfig[lowerStatus] ?? { label: 'PENDIENTE', bg: 'bg-amber-50', text: 'text-amber-700' };
+
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => setCuotaSheet(c)}
+                        className="w-full text-left bg-white rounded-xl border border-gray-200 p-3 active:scale-[0.99] transition-transform"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-bold text-sm text-gray-900">Semana {numeroSemana}</p>
+                            <p className="text-xs text-gray-500 mt-0.5">{formatDate(c.week_start_date, 'es-ES')}</p>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${sc.bg} ${sc.text}`}>
+                            {sc.label}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 mt-3">
+                          <div>
+                            <p className="text-[10px] text-gray-400 uppercase tracking-wider">Vence</p>
+                            <p className="text-xs font-medium text-gray-900">{formatDate(c.due_date, 'es-ES')}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] text-gray-400 uppercase tracking-wider">Cuota final</p>
+                            <p className="text-xs font-bold text-gray-900">{miautoFmtMonto(symCuota, cuotaFinalSemana)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] text-gray-400 uppercase tracking-wider">Pagado</p>
+                            <p className="text-xs font-bold text-emerald-700">{miautoFmtMonto(symCuota, c.paid_amount)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] text-gray-400 uppercase tracking-wider">Mora</p>
+                            <p className="text-xs font-bold text-red-600">{miautoFmtMonto(symCuota, c.mora_pendiente ?? c.late_fee)}</p>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="hidden lg:block overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0 rounded-xl border border-gray-200 bg-white shadow-sm">
                   <table className="w-full min-w-[1080px] text-sm border-collapse tabular-nums">
                     <thead>
                       <tr className="border-b-2 border-gray-200 bg-gradient-to-b from-gray-50 to-gray-100/60">
@@ -839,8 +896,8 @@ function AprobadoBlock({
                           Vence
                         </th>
                         <th
-                          className="py-3 px-3 text-right text-xs font-bold uppercase tracking-wide text-gray-900 whitespace-nowrap w-[7.25rem] align-bottom"
-                          title="Cuota del cronograma en la fila (cuota_semanal). El abono registrado está en la columna Pagado."
+                           className="py-3 px-3 text-right text-xs font-bold uppercase tracking-wide text-gray-900 whitespace-nowrap w-[7.25rem] align-bottom"
+                           title="Cuota del cronograma en la fila (cuota_semanal). El abono registrado está en la columna Pagado."
                         >
                           Cuota sem. (plan)
                         </th>
@@ -1359,15 +1416,22 @@ function AprobadoBlock({
                   </table>
                 </div>
                 {cuotasSemanales.length > 0 && (
-                  <TablePaginationBar
-                    page={cuotasPg.page}
-                    setPage={cuotasPg.setPage}
-                    totalPages={cuotasPg.totalPages}
-                    limit={cuotasPg.limit}
-                    setLimit={cuotasPg.setLimit}
-                    pageSizes={cuotasPg.pageSizes}
-                  />
+                  <div className="hidden lg:block">
+                    <TablePaginationBar
+                      page={cuotasPg.page}
+                      setPage={cuotasPg.setPage}
+                      totalPages={cuotasPg.totalPages}
+                      limit={cuotasPg.limit}
+                      setLimit={cuotasPg.setLimit}
+                      pageSizes={cuotasPg.pageSizes}
+                    />
+                  </div>
                 )}
+                <MobilePagination
+                  page={cuotasPg.page}
+                  setPage={cuotasPg.setPage}
+                  totalPages={cuotasPg.totalPages}
+                />
                 </>
               )}
               {solicitud.cronograma?.bono_tiempo_activo === true && (
@@ -1380,48 +1444,129 @@ function AprobadoBlock({
             </div>
           )}
           {solicitud.fecha_inicio_cobro_semanal && subTabCronogramaDriver === 'otros_gastos' && (() => {
-            const totalOg = otrosGastosRows.reduce((s: number, og: { amount_due: number }) => s + Number(og.amount_due ?? 0), 0);
-            const pagadoOg = otrosGastosRows.reduce((s: number, og: { paid_amount: number }) => s + Number(og.paid_amount ?? 0), 0);
-            const pendientesCount = otrosGastosRows.filter((og: { status: string }) => og.status !== 'paid').length;
-            const pagadasCount = otrosGastosRows.filter((og: { status: string }) => og.status === 'paid').length;
+            const totalOg = filteredOgRows.reduce((s: number, og) => s + Number(og.amount_due ?? 0), 0);
+            const pagadoOg = filteredOgRows.reduce((s: number, og) => s + Number(og.paid_amount ?? 0), 0);
+            const pendientesCount = filteredOgRows.filter((og) => og.status !== 'paid').length;
+            const pagadasCount = filteredOgRows.filter((og) => og.status === 'paid').length;
             const saldoOg = Math.max(0, totalOg - pagadoOg);
             return (
-            <div className="px-4 sm:px-5 py-4">
-              {otrosGastosRows.length > 0 ? (
+            <div className="px-4 sm:px-5 py-3">
+              {filteredOgRows.length > 0 ? (
                 <>
-                <div className="grid grid-cols-3 gap-x-6 gap-y-2 mb-4 px-1">
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500 flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      Pagadas
-                    </p>
-                    <p className="text-base font-bold text-gray-900 tabular-nums mt-1">
-                      {pagadasCount}
-                      <span className="text-gray-400 font-normal"> / {pagadasCount + pendientesCount}</span>
-                    </p>
-                  </div>
-                  <div>
-                    <p className={`text-[10px] font-semibold uppercase tracking-[0.12em] flex items-center gap-1 ${saldoOg > 0 ? 'text-amber-700' : 'text-gray-500'}`}>
-                      <AlertTriangle className={`w-3 h-3 ${saldoOg > 0 ? 'text-amber-600' : 'text-gray-400'}`} />
-                      Saldo
-                    </p>
-                    <p className={`text-base font-bold tabular-nums mt-1 ${saldoOg > 0 ? 'text-amber-700' : 'text-gray-700'}`}>
-                      {monedaSimbolo}{saldoOg.toFixed(2)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500 flex items-center gap-1">
-                      <Wallet className="w-3 h-3 text-emerald-600" />
-                      Total pagado
-                    </p>
-                    <p className="text-base font-bold text-emerald-700 tabular-nums mt-1">{monedaSimbolo}{pagadoOg.toFixed(2)}</p>
-                  </div>
+                <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-xs mb-4 px-1">
+                  <span>
+                    <span className="text-gray-400">Pagadas </span>
+                    <span className="font-bold text-gray-900">{pagadasCount}</span>
+                    <span className="text-gray-300"> / {pagadasCount + pendientesCount}</span>
+                  </span>
+                  <span className="hidden sm:inline text-gray-200">|</span>
+                  <span>
+                    <span className={saldoOg > 0 ? 'text-amber-500' : 'text-gray-400'}>Saldo </span>
+                    <span className={`font-bold ${saldoOg > 0 ? 'text-amber-600' : 'text-gray-700'}`}>{monedaSimbolo}{saldoOg.toFixed(2)}</span>
+                  </span>
+                  <span className="hidden sm:inline text-gray-200">|</span>
+                  <span>
+                    <span className="text-gray-400">Total pagado </span>
+                    <span className="font-bold text-emerald-700 tabular-nums">{monedaSimbolo}{pagadoOg.toFixed(2)}</span>
+                  </span>
                 </div>
-                <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+                {/* Filtros por tipo */}
+                <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-hide">
+                  <button
+                    type="button"
+                    onClick={() => setOgTipoFilter(null)}
+                    className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${!ogTipoFilter ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
+                  >
+                    Todos ({otrosGastosRows.length})
+                  </button>
+                  {Array.from(new Set(otrosGastosRows.map((og) => og.tipo || 'generico'))).map((tipo) => {
+                    const count = otrosGastosRows.filter((og) => (og.tipo || 'generico') === tipo).length;
+                    return (
+                      <button
+                        key={tipo}
+                        type="button"
+                        onClick={() => setOgTipoFilter(ogTipoFilter === tipo ? null : tipo)}
+                        className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${ogTipoFilter === tipo ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
+                      >
+                        {OG_TIPO_LABELS[tipo] || tipo} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* Vista movil de otros gastos */}
+                <div className="lg:hidden space-y-2">
+                  {otrosPg.paginatedItems.map((og) => {
+                    const ogStatusLow = (og.status || '').toLowerCase();
+                    const badge = ogStatusLow === 'paid' ? { label: 'PAGADA', bg: 'bg-emerald-50', text: 'text-emerald-700' }
+                      : ogStatusLow === 'overdue' ? { label: 'VENCIDA', bg: 'bg-red-50', text: 'text-red-700' }
+                      : ogStatusLow === 'partial' ? { label: 'PARCIAL', bg: 'bg-blue-50', text: 'text-blue-700' }
+                      : { label: 'PENDIENTE', bg: 'bg-amber-50', text: 'text-amber-700' };
+                    return (
+                      <button
+                        key={og.id}
+                        type="button"
+                        onClick={() => setOgSheet(og)}
+                        className="w-full text-left bg-white rounded-xl border border-gray-200 p-3 active:scale-[0.99] transition-transform"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-bold text-sm text-gray-900">Semana {og.week_index}</p>
+                            <p className="text-[11px] text-gray-500 mt-0.5">
+                              {OG_TIPO_LABELS[og.tipo || 'generico']} · {formatDate(og.due_date, 'es-ES')}
+                            </p>
+                          </div>
+                          <span className={"px-2 py-0.5 rounded text-[10px] font-bold tracking-wider " + badge.bg + " " + badge.text}>
+                            {badge.label}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 mt-3">
+                          <div>
+                            <p className="text-[10px] text-gray-400 uppercase tracking-wider">Monto</p>
+                            <p className="text-xs font-bold text-gray-900">{monedaSimbolo}{Number(og.amount_due).toFixed(2)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] text-gray-400 uppercase tracking-wider">Pagado</p>
+                            <p className="text-xs font-bold text-emerald-700">{monedaSimbolo}{Number(og.paid_amount).toFixed(2)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] text-gray-400 uppercase tracking-wider">Saldo</p>
+                            <p className="text-xs font-bold text-red-600">{monedaSimbolo}{Math.max(0, Number(og.amount_due) - Number(og.paid_amount)).toFixed(2)}</p>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Filtros por tipo - desktop */}
+                <div className="hidden lg:flex gap-2 pb-3 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setOgTipoFilter(null)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${!ogTipoFilter ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
+                  >
+                    Todos ({otrosGastosRows.length})
+                  </button>
+                  {Array.from(new Set(otrosGastosRows.map((og) => og.tipo || 'generico'))).map((tipo) => {
+                    const count = otrosGastosRows.filter((og) => (og.tipo || 'generico') === tipo).length;
+                    return (
+                      <button
+                        key={tipo}
+                        type="button"
+                        onClick={() => setOgTipoFilter(ogTipoFilter === tipo ? null : tipo)}
+                        className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${ogTipoFilter === tipo ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
+                      >
+                        {OG_TIPO_LABELS[tipo] || tipo} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="hidden lg:block overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
                   <table className="w-full text-sm border-collapse tabular-nums">
                     <thead>
                       <tr className="border-b-2 border-gray-200 bg-gradient-to-b from-gray-50 to-gray-100/60 text-gray-900">
                         <th className="px-3 py-3 text-left text-xs font-bold uppercase tracking-wide align-bottom">Semana</th>
+                        <th className="px-3 py-3 text-left text-xs font-bold uppercase tracking-wide align-bottom whitespace-nowrap">Tipo</th>
                         <th className="px-3 py-3 text-left text-xs font-bold uppercase tracking-wide align-bottom whitespace-nowrap">Vence</th>
                         <th className="px-3 py-3 text-right text-xs font-bold uppercase tracking-wide align-bottom">Monto</th>
                         <th className="px-3 py-3 text-right text-xs font-bold uppercase tracking-wide align-bottom">Pagado</th>
@@ -1430,7 +1575,7 @@ function AprobadoBlock({
                       </tr>
                     </thead>
                     <tbody>
-                      {otrosPg.paginatedItems.map((og: { id: string; week_index: number; due_date: string; amount_due: number; paid_amount: number; status: string }) => {
+                      {otrosPg.paginatedItems.map((og: MiautoOtrosGastoRow) => {
                         const pendienteOg = og.status !== 'paid';
                         const compsOg = comprobantesByOtrosGastosId[og.id] ?? [];
                         const mostrarPanelOg = compsOg.length > 0 || !pendienteOg;
@@ -1465,6 +1610,9 @@ function AprobadoBlock({
                                 ) : (
                                   <span className="font-semibold text-[#8B1A1A] leading-tight">Semana {og.week_index}</span>
                                 )}
+                              </td>
+                              <td className="px-3 py-3 align-top text-[13px] leading-tight font-medium text-gray-900">
+                                {OG_TIPO_LABELS[og.tipo || 'generico']}
                               </td>
                               <td className={`px-3 py-3 align-top text-[13px] leading-tight whitespace-nowrap ${ogStatusLow === 'overdue' ? 'text-[#8B1A1A] font-bold uppercase tracking-wide' : 'text-gray-800'}`}>{formatDate(og.due_date, 'es-ES')}</td>
                               <td className="px-3 py-3 align-top text-right tabular-nums font-medium text-gray-900 text-[13px] leading-tight">
@@ -1593,7 +1741,7 @@ function AprobadoBlock({
                             </tr>
                             {mostrarPanelOg && (
                               <tr className="border-b border-gray-50">
-                                <td colSpan={6} className="p-0 align-top">
+                                <td colSpan={7} className="p-0 align-top">
                                   <div
                                     className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
                                     style={{ maxHeight: abiertoOg ? 1200 : 0, opacity: abiertoOg ? 1 : 0 }}
@@ -1659,13 +1807,20 @@ function AprobadoBlock({
                     </tbody>
                   </table>
                 </div>
-                <TablePaginationBar
+                <div className="hidden lg:block">
+                  <TablePaginationBar
+                    page={otrosPg.page}
+                    setPage={otrosPg.setPage}
+                    totalPages={otrosPg.totalPages}
+                    limit={otrosPg.limit}
+                    setLimit={otrosPg.setLimit}
+                    pageSizes={otrosPg.pageSizes}
+                  />
+                </div>
+                <MobilePagination
                   page={otrosPg.page}
                   setPage={otrosPg.setPage}
                   totalPages={otrosPg.totalPages}
-                  limit={otrosPg.limit}
-                  setLimit={otrosPg.setLimit}
-                  pageSizes={otrosPg.pageSizes}
                 />
                 </>
               ) : (
@@ -1677,6 +1832,133 @@ function AprobadoBlock({
               </div>
             </div>
           </div>
+
+          {/* Bottom Sheet: Detalle de otro gasto */}
+          {ogSheet && (
+            <BottomSheet
+              isOpen={!!ogSheet}
+              onClose={() => setOgSheet(null)}
+              title={`${OG_TIPO_LABELS[ogSheet.tipo || 'generico']} · Semana ${ogSheet.week_index}`}
+            >
+              <div className="bg-gray-50 rounded-xl border border-gray-200 overflow-hidden">
+                <div className="grid grid-cols-2 gap-0 text-sm">
+                  {(() => {
+                    const rows = [
+                      ['Tipo', OG_TIPO_LABELS[ogSheet.tipo || 'generico']],
+                      ['Vencimiento', formatDate(ogSheet.due_date, 'es-ES')],
+                      ['Monto', `${monedaSimbolo}${Number(ogSheet.amount_due).toFixed(2)}`],
+                      ['Pagado', `${monedaSimbolo}${Number(ogSheet.paid_amount).toFixed(2)}`],
+                      ['Saldo', `${monedaSimbolo}${Math.max(0, Number(ogSheet.amount_due) - Number(ogSheet.paid_amount)).toFixed(2)}`],
+                      ['Estado', ogSheet.status === 'paid' ? 'Pagada' : ogSheet.status === 'overdue' ? 'Vencida' : ogSheet.status === 'partial' ? 'Parcial' : 'Pendiente'],
+                    ];
+                    return rows.map(([label, val], idx) => {
+                      const isRed = label === 'Saldo' && Number(ogSheet.amount_due) - Number(ogSheet.paid_amount) > 0;
+                      const isGreen = label === 'Pagado' || (label === 'Estado' && ogSheet.status === 'paid');
+                      const isBold = label === 'Saldo' || label === 'Monto';
+                      return (
+                        <Fragment key={idx}>
+                          <div className="px-4 py-3 border-b border-gray-100">
+                            <p className="text-gray-500 text-xs">{label}</p>
+                          </div>
+                          <div className={`px-4 py-3 border-b border-gray-100 text-right text-sm ${
+                            isRed ? 'text-red-600 font-bold' : isGreen ? 'text-emerald-700 font-bold' : isBold ? 'text-gray-900 font-bold' : 'text-gray-900 font-medium'
+                          }`}>
+                            <p>{val}</p>
+                          </div>
+                        </Fragment>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+              {(Number(ogSheet.amount_due) - Number(ogSheet.paid_amount)) > 0.005 && (
+                <button
+                  type="button"
+                  className="w-full mt-4 bg-[#8B1A1A] hover:bg-[#6B1515] text-white font-bold py-3 rounded-xl text-sm transition-colors"
+                  onClick={() => {
+                    setOgSheet(null);
+                    fileOgRefs.current[ogSheet.id]?.click();
+                  }}
+                >
+                  Pagar este gasto
+                </button>
+              )}
+            </BottomSheet>
+          )}
+
+
+          {/* Bottom Sheet: Detalle de cuota semanal */}
+          {cuotaSheet && (
+            <BottomSheet
+              isOpen={!!cuotaSheet}
+              onClose={() => setCuotaSheet(null)}
+              title={(() => {
+                const idxNum = cuotasSemanales.findIndex((x) => x.id === cuotaSheet.id);
+                const semana = idxNum >= 0
+                  ? (miautoSemanaLista(cuotasSemanales, cuotaSheet.week_start_date) ??
+                     miautoSemanaOrdinalPorVencimiento(cuotasSemanales, cuotaSheet.due_date, cuotaSheet.week_start_date) ??
+                     idxNum + 1)
+                  : 1;
+                return `Cuota N. ${semana} - Semana ${semana}`;
+              })()}
+            >
+              <div className="bg-gray-50 rounded-xl border border-gray-200 overflow-hidden">
+                <div className="grid grid-cols-2 gap-0 text-sm">
+                  {(() => {
+                    const symCuota = symMoneda(cuotaSheet.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda);
+                    const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(cuotaSheet);
+                    const cuotaCapitalPend = miautoCuotaCapitalPendienteColumna(cuotaSheet);
+                    const montoPagado = miautoMontoPagadoColumnaCronograma(cuotaSheet);
+                    const cobroSaldo = miautoCobroSaldoDisplay(cuotaSheet);
+                    const tributo = miautoCobroPorIngresosTributoDisplay(cuotaSheet);
+                    const mora = cuotaSheet.mora_pendiente ?? cuotaSheet.late_fee ?? 0;
+                    const statusText =
+                      cuotaSheet.status === 'paid' ? 'Pagada'
+                      : cuotaSheet.status === 'bonificada' ? 'Bonificada'
+                      : cuotaSheet.status === 'overdue' ? 'Vencida'
+                      : cuotaSheet.status === 'partial' ? 'Parcial'
+                      : 'Pendiente';
+                    const rows = [
+                      ['Vencimiento', formatDate(cuotaSheet.due_date, 'es-ES'), false, false],
+                      ['Estado', statusText, false, false],
+                      ['Cuota semanal', miautoFmtMonto(symCuota, cuotaSheet.cuota_semanal), false, false],
+                      ['Viajes', `${cuotaSheet.num_viajes ?? '-'} viajes`, false, false],
+                      ['Cobro ingresos', miautoFmtMonto(symCuota, tributo), false, false],
+                      ['Cobro saldo', miautoFmtMonto(symCuota, cobroSaldo), false, false],
+                      ['Cuota a pagar', miautoFmtMonto(symCuota, cuotaCapitalPend), true, false],
+                      ['Mora', miautoFmtMonto(symCuota, mora), true, true],
+                      ['Cuota final', miautoFmtMonto(symCuota, cuotaFinalSemana), false, false],
+                      ['Pagado', miautoFmtMonto(symCuota, montoPagado), true, false],
+                    ];
+                    return rows.map(([label, val, bold, red], idx) => (
+                      <Fragment key={idx}>
+                        <div className="px-4 py-3 border-b border-gray-100">
+                          <p className="text-gray-500 text-xs">{label}</p>
+                        </div>
+                        <div className={`px-4 py-3 border-b border-gray-100 text-right ${
+                          red ? 'text-red-600 font-bold' : bold ? 'text-gray-900 font-bold' : val === 'Pagada' || val === 'Bonificada' ? 'text-emerald-700 font-bold' : val === 'Vencida' ? 'text-red-600 font-bold' : 'text-gray-900 font-medium'
+                        }`}>
+                          <p className="text-sm">{val}</p>
+                        </div>
+                      </Fragment>
+                    ));
+                  })()}
+                </div>
+              </div>
+              {(cuotaSheet.pending_total ?? 0) > 0.005 && (
+                <button
+                  type="button"
+                  className="w-full mt-4 bg-[#8B1A1A] hover:bg-[#6B1515] text-white font-bold py-3 rounded-xl text-sm transition-colors"
+                  onClick={() => {
+                    setCuotaSheet(null);
+                    fileCuotaRefs.current[cuotaSheet.id]?.click();
+                  }}
+                >
+                  Pagar esta cuota
+                </button>
+              )}
+            </BottomSheet>
+          )}
 
           {comprobantePreview && createPortal(
             <div
@@ -1720,6 +2002,7 @@ function QuieroMiYegoAuto() {
   const [showForm, setShowForm] = useState(false);
   const [activeBlocking, setActiveBlocking] = useState<{ hasActive: boolean; sameFlota?: boolean; flota?: string; status?: string; statusLabel?: string } | null>(null);
   const [aprobadoExpandedId, setAprobadoExpandedId] = useState<string | null>(null);
+  const [solicitudesExpanded, setSolicitudesExpanded] = useState(true);
   const [uploadComprobanteLoading, setUploadComprobanteLoading] = useState<string | null>(null);
   const initialFetchInFlight = useRef(false);
   const [tipoCambioByCountry, setTipoCambioByCountry] = useState<Record<string, { valor_usd_a_local: number; moneda_local: string } | null>>({});
@@ -2254,8 +2537,12 @@ function QuieroMiYegoAuto() {
       ) : (
         <>
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="bg-white px-5 py-3.5 border-b border-gray-200 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-            <div className="flex items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => setSolicitudesExpanded((v) => !v)}
+            className="w-full bg-white px-5 py-3.5 border-b border-gray-200 flex items-center justify-between text-left hover:bg-gray-50/60 transition-colors"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
               <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-br from-[#8B1A1A] to-[#6B1515] text-white shadow-sm shrink-0">
                 <FileText className="w-4 h-4" />
               </div>
@@ -2264,19 +2551,21 @@ function QuieroMiYegoAuto() {
                 <p className="text-[11px] text-gray-500">{solicitudes.length} solicitud{solicitudes.length !== 1 ? 'es' : ''} registrada{solicitudes.length !== 1 ? 's' : ''}</p>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+            <div className="flex items-center gap-2 shrink-0">
               {canCreateNew && (
                 <button
                   type="button"
-                  onClick={() => setShowForm(true)}
+                  onClick={(e) => { e.stopPropagation(); setShowForm(true); }}
                   className="inline-flex items-center gap-1.5 text-sm font-medium text-white bg-gradient-to-r from-[#8B1A1A] to-[#6B1515] hover:from-[#7B1818] hover:to-[#5B1010] px-3 py-1.5 rounded-lg whitespace-nowrap shadow-sm transition-colors"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
                   Nueva solicitud
                 </button>
               )}
+              {solicitudesExpanded ? <ChevronDown className="w-5 h-5 text-gray-500" /> : <ChevronRight className="w-5 h-5 text-gray-500" />}
             </div>
-          </div>
+          </button>
+          {solicitudesExpanded && (
           <div className="p-4 sm:p-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {solicitudes.map((s) => {
               const statusKey = (s.status || '').toLowerCase();
@@ -2356,6 +2645,7 @@ function QuieroMiYegoAuto() {
               </div>
             )}
           </div>
+          )}
         </div>
 
         {solicitudesAprobadas.map((s) => (

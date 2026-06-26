@@ -1,11 +1,11 @@
 import jwt from 'jsonwebtoken';
 
-export const generateToken = (userId, identifier, role) => {
+export const generateToken = (userId, identifier, role, allowedModules) => {
   // Si es conductor (role = 'driver'), identifier es el phone
   // Si es admin, identifier es el email
   const payload = role === 'driver'
     ? { phone: identifier, role }
-    : { userId, email: identifier, role };
+    : { userId, email: identifier, role, allowedModules: allowedModules || ['rapidin'] };
 
   return jwt.sign(
     payload,

@@ -15,7 +15,7 @@ router.use(verifyRole('admin'));
 router.get('/', async (req, res) => {
   try {
     const result = await query(
-      'SELECT id, email, first_name, last_name, role, country, active, last_access, created_at FROM module_rapidin_users ORDER BY created_at DESC'
+      'SELECT id, email, first_name, last_name, role, country, active, allowed_modules, last_access, created_at FROM module_rapidin_users ORDER BY created_at DESC'
     );
     return successResponse(res, result.rows);
   } catch (error) {
@@ -26,7 +26,8 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { email, password, first_name, last_name, role, country } = req.body;
+    const { email, password, first_name, last_name, role, country, allowed_modules } = req.body;
+    const modules = Array.isArray(allowed_modules) && allowed_modules.length > 0 ? allowed_modules : ['rapidin'];
 
     if (!email || !password || !first_name || !last_name || !role || !country) {
       return errorResponse(res, 'Todos los campos son requeridos', 400);
@@ -35,10 +36,10 @@ router.post('/', async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 10);
 
     const result = await query(
-      `INSERT INTO module_rapidin_users (email, password_hash, first_name, last_name, role, country)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, email, first_name, last_name, role, country, active`,
-      [email, passwordHash, first_name, last_name, role, country]
+      `INSERT INTO module_rapidin_users (email, password_hash, first_name, last_name, role, country, allowed_modules)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, email, first_name, last_name, role, country, active, allowed_modules`,
+      [email, passwordHash, first_name, last_name, role, country, modules]
     );
 
     return successResponse(res, result.rows[0], 'Usuario creado exitosamente', 201);
@@ -54,7 +55,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', validateUUID, async (req, res) => {
   try {
     const { id } = req.params;
-    const { first_name, last_name, role, country, active, password } = req.body;
+    const { first_name, last_name, role, country, active, password, allowed_modules } = req.body;
 
     const updates = [];
     const values = [];
@@ -86,6 +87,11 @@ router.put('/:id', validateUUID, async (req, res) => {
       values.push(passwordHash);
     }
 
+    if (allowed_modules !== undefined) {
+      updates.push(`allowed_modules = $${paramCount++}`);
+      values.push(Array.isArray(allowed_modules) ? allowed_modules : ['rapidin']);
+    }
+
     if (updates.length === 0) {
       return errorResponse(res, 'No hay campos para actualizar', 400);
     }
@@ -93,7 +99,7 @@ router.put('/:id', validateUUID, async (req, res) => {
     updates.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
     const result = await query(
-      `UPDATE module_rapidin_users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING id, email, first_name, last_name, role, country, active`,
+      `UPDATE module_rapidin_users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING id, email, first_name, last_name, role, country, active, allowed_modules`,
       values
     );
 

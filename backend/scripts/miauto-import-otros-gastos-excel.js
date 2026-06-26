@@ -283,11 +283,11 @@ async function main() {
             const ecIdx = parseInt(ec.replace('__EMPTY', '').replace('_', '')) || 0;
             if (ecIdx > 0) {
               const hdrIdx = headers.indexOf(chkCol);
-              if (ecIdx === hdrIdx + 1 || ecIdx === hdrIdx + 2) return 13; // default amount
+              if (ecIdx === hdrIdx + 1 || ecIdx === hdrIdx + 2) return 13;
             }
           }
         }
-        return 13; // default per checkmark
+        return 13;
       },
       (rawVal) => {
         if (typeof rawVal === 'number' && rawVal > 0) return 'paid';

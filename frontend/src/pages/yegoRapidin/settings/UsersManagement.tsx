@@ -24,6 +24,7 @@ const UsersManagement = () => {
     last_name: '',
     role: '',
     country: 'PE',
+    allowed_modules: ['rapidin'] as string[],
   });
   const [editFormData, setEditFormData] = useState({
     first_name: '',
@@ -32,6 +33,7 @@ const UsersManagement = () => {
     country: 'PE',
     active: true,
     password: '',
+    allowed_modules: ['rapidin'] as string[],
   });
 
   const total = users.length;
@@ -73,6 +75,7 @@ const UsersManagement = () => {
         last_name: '',
         role: '',
         country: 'PE',
+        allowed_modules: ['rapidin'],
       });
     } catch (error: any) {
       console.error('Error creating user:', error);
@@ -91,6 +94,7 @@ const UsersManagement = () => {
       country: user.country || 'PE',
       active: user.active !== false,
       password: '',
+      allowed_modules: user.allowed_modules || ['rapidin'],
     });
     setEditOpen(true);
   };
@@ -105,6 +109,7 @@ const UsersManagement = () => {
         role: editFormData.role,
         country: editFormData.country,
         active: editFormData.active,
+        allowed_modules: editFormData.allowed_modules,
       };
       if (editFormData.password.trim()) payload.password = editFormData.password;
       await api.put(`/users/${editingUser.id}`, payload);
@@ -428,6 +433,33 @@ const UsersManagement = () => {
                   <option value="CO">Colombia</option>
                 </select>
               </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-900 mb-2">Módulos de acceso</label>
+                <div className="space-y-2">
+                  {(['rapidin', 'miauto', 'mimoto'] as const).map((m) => (
+                    <label key={m} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={(formData.allowed_modules ?? ['rapidin']).includes(m)}
+                        onChange={(e) => {
+                          const curr = formData.allowed_modules ?? ['rapidin'];
+                          setFormData({
+                            ...formData,
+                            allowed_modules: e.target.checked
+                              ? [...curr, m]
+                              : curr.filter((x) => x !== m),
+                          });
+                        }}
+                        className="w-4 h-4 text-red-600 border-gray-300 rounded focus:ring-red-500"
+                      />
+                      <span className="text-sm text-gray-700">
+                        {m === 'rapidin' ? 'Yego Rapidín' : m === 'miauto' ? 'Yego Mi Auto' : 'Yego Mi Moto'}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
             </div>
             <div className="flex justify-end gap-3 p-6 border-t border-gray-200">
               <button
@@ -528,6 +560,33 @@ const UsersManagement = () => {
                   <option value="PE">Perú</option>
                   <option value="CO">Colombia</option>
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-900 mb-2">Módulos de acceso</label>
+                <div className="space-y-2">
+                  {(['rapidin', 'miauto', 'mimoto'] as const).map((m) => (
+                    <label key={m} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={(editFormData.allowed_modules ?? ['rapidin']).includes(m)}
+                        onChange={(e) => {
+                          const curr = editFormData.allowed_modules ?? ['rapidin'];
+                          setEditFormData({
+                            ...editFormData,
+                            allowed_modules: e.target.checked
+                              ? [...curr, m]
+                              : curr.filter((x) => x !== m),
+                          });
+                        }}
+                        className="w-4 h-4 text-red-600 border-gray-300 rounded focus:ring-red-500"
+                      />
+                      <span className="text-sm text-gray-700">
+                        {m === 'rapidin' ? 'Yego Rapidín' : m === 'miauto' ? 'Yego Mi Auto' : 'Yego Mi Moto'}
+                      </span>
+                    </label>
+                  ))}
+                </div>
               </div>
 
               <div className="flex items-center gap-2">

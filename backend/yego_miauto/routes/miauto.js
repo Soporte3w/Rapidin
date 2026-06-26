@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/auth.js';
+import { verifyModule } from '../../middleware/permissions.js';
 import solicitudesRouter from './miauto/solicitudes.js';
 import cronogramasRouter from './miauto/cronogramas.js';
 import cuotasRouter from './miauto/cuotas.js';
@@ -9,6 +10,7 @@ import evidenciasRouter from './miauto/evidencias.js';
 
 const router = Router();
 router.use(authenticate);
+router.use(verifyModule('miauto'));
 
 router.use((req, res, next) => {
   if (req.user?.id && req.method !== 'GET' && req.body && typeof req.body === 'object') {

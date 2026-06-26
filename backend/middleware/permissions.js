@@ -42,6 +42,18 @@ export const filterByCountry = async (req, res, next) => {
   }
 };
 
+export const verifyModule = (...modules) => (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'No autenticado' });
+  }
+  if (req.user.role === 'driver') return next();
+  const userModules = req.user.allowed_modules || ['rapidin'];
+  if (!modules.some(m => userModules.includes(m))) {
+    return res.status(403).json({ message: 'No tienes acceso a este módulo' });
+  }
+  next();
+};
+
 export const verifyCountry = (req, res, next) => {
   const country = req.body.country || req.params.country || req.query.country;
 

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS module_rapidin_users (
     first_name VARCHAR(255) NOT NULL,
     last_name VARCHAR(255) NOT NULL,
     role VARCHAR(50) NOT NULL CHECK (role IN ('admin', 'analyst', 'approver', 'payer')),
+    allowed_modules TEXT[] NOT NULL DEFAULT '{rapidin}',
     country VARCHAR(10) NOT NULL CHECK (country IN ('PE', 'CO')),
     active BOOLEAN DEFAULT true,
     last_access TIMESTAMP,

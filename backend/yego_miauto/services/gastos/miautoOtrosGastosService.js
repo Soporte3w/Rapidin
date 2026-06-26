@@ -30,7 +30,7 @@ function toLocalYmd(date) {
 export async function listBySolicitudIds(solicitudIds) {
   if (!Array.isArray(solicitudIds) || solicitudIds.length === 0) return {};
   const res = await query(
-    `SELECT id, solicitud_id, week_index, due_date, amount_due, paid_amount, status, moneda, created_at, updated_at
+    `SELECT id, solicitud_id, tipo, week_index, due_date, amount_due, paid_amount, status, moneda, created_at, updated_at
      FROM module_miauto_otros_gastos
      WHERE solicitud_id = ANY($1::uuid[])
      ORDER BY solicitud_id, week_index ASC`,
@@ -42,6 +42,7 @@ export async function listBySolicitudIds(solicitudIds) {
     byId[r.solicitud_id].push({
       id: r.id,
       solicitud_id: r.solicitud_id,
+      tipo: r.tipo || 'generico',
       week_index: r.week_index,
       due_date: r.due_date,
       amount_due: parseFloat(r.amount_due) || 0,
@@ -93,7 +94,7 @@ export async function ensureOtroGastoForWeek(solicitudId, weekIndex) {
   }
 
   const existing = await query(
-    'SELECT id, solicitud_id, week_index, due_date, amount_due, paid_amount, status, moneda, created_at, updated_at FROM module_miauto_otros_gastos WHERE solicitud_id = $1 AND week_index = $2',
+    'SELECT id, solicitud_id, tipo, week_index, due_date, amount_due, paid_amount, status, moneda, created_at, updated_at FROM module_miauto_otros_gastos WHERE solicitud_id = $1 AND week_index = $2',
     [solicitudId, weekIndex]
   );
   if (existing.rows.length > 0) {
@@ -101,6 +102,7 @@ export async function ensureOtroGastoForWeek(solicitudId, weekIndex) {
     return {
       id: r.id,
       solicitud_id: r.solicitud_id,
+      tipo: r.tipo || 'generico',
       week_index: r.week_index,
       due_date: r.due_date,
       amount_due: parseFloat(r.amount_due) || 0,
@@ -139,7 +141,7 @@ export async function ensureOtroGastoForWeek(solicitudId, weekIndex) {
     [solicitudId, weekIndex, dueStr, amountDue, moneda]
   );
   const after = await query(
-    'SELECT id, solicitud_id, week_index, due_date, amount_due, paid_amount, status, moneda, created_at, updated_at FROM module_miauto_otros_gastos WHERE solicitud_id = $1 AND week_index = $2',
+    'SELECT id, solicitud_id, tipo, week_index, due_date, amount_due, paid_amount, status, moneda, created_at, updated_at FROM module_miauto_otros_gastos WHERE solicitud_id = $1 AND week_index = $2',
     [solicitudId, weekIndex]
   );
   if (after.rows.length === 0) return null;
@@ -147,6 +149,7 @@ export async function ensureOtroGastoForWeek(solicitudId, weekIndex) {
   return {
     id: r.id,
     solicitud_id: r.solicitud_id,
+    tipo: r.tipo || 'generico',
     week_index: r.week_index,
     due_date: r.due_date,
     amount_due: parseFloat(r.amount_due) || 0,
@@ -191,9 +194,9 @@ async function ensureTiposFromRequisitos(solicitudId, tiposExistentes) {
     if (!tiposExistentes.has('todo_riesgo_mas_gps_agrupado') && reqGastos.todo_riesgo_mas_gps_agrupado?.monto > 0)
       tipos.push({ tipo: 'todo_riesgo_mas_gps_agrupado', g: reqGastos.todo_riesgo_mas_gps_agrupado, cuotas: 26, dividir: false, diasOffsetPorCuota: (i) => 7 * (i-1) });
   } else {
-    // Seminuevos: SRC monto total ÷ cuotas, GPS monto por cuota fija
+    // Seminuevos: SRC monto por cuota fija, GPS monto por cuota fija
     if (!tiposExistentes.has('src') && reqGastos.src?.monto > 0)
-      tipos.push({ tipo: 'src', g: reqGastos.src, cuotas: 5, dividir: true, diasOffsetPorCuota: (i) => 90 * (i-1) });
+      tipos.push({ tipo: 'src', g: reqGastos.src, cuotas: 5, dividir: false, diasOffsetPorCuota: (i) => 90 * (i-1) });
     if (!tiposExistentes.has('gps') && reqGastos.gps?.monto > 0)
       tipos.push({ tipo: 'gps', g: reqGastos.gps, cuotas: 18, dividir: false, diasOffsetPorCuota: (i) => 30 * (i-1) });
   }

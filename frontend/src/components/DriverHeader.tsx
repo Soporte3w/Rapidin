@@ -44,11 +44,17 @@ export default function DriverHeader({ onMenuClick }: DriverHeaderProps) {
   }, []);
 
   return (
-    <header className="bg-white shadow-sm sticky top-0 z-30">
-      <div className="flex items-center justify-between px-4 py-4 lg:px-8">
+    <header className="bg-[#8B1A1A] lg:bg-white lg:shadow-sm sticky top-0 z-30">
+      <div className="flex items-center justify-between px-4 py-3 lg:px-8 lg:py-4">
+        {/* Logo / nombre de app */}
+        <div className="flex items-center gap-2 lg:hidden">
+          <span className="text-white font-bold text-lg">YEGO Rapidín</span>
+        </div>
+
+        {/* Botón hamburguesa - solo desktop */}
         <button
           onClick={onMenuClick}
-          className="lg:hidden min-w-[44px] min-h-[44px] flex items-center justify-center -ml-2 text-gray-700 hover:text-gray-900 active:bg-gray-100 rounded-lg touch-manipulation"
+          className="hidden lg:flex min-w-[44px] min-h-[44px] items-center justify-center -ml-2 text-gray-700 hover:text-gray-900 active:bg-gray-100 rounded-lg touch-manipulation"
           aria-label="Abrir menú"
         >
           <Menu className="w-6 h-6" />
@@ -57,17 +63,17 @@ export default function DriverHeader({ onMenuClick }: DriverHeaderProps) {
         <div className="flex-1 lg:flex-none" />
 
         <div className="flex items-center">
-          {/* User Account Info */}
-          <div className="hidden md:flex items-center space-x-3">
+          {/* User Account Info - siempre visible */}
+          <div className="flex items-center space-x-3">
             <div className="flex flex-col min-w-0 text-right">
-              <p className="text-xs font-semibold text-gray-900 leading-tight mt-0.5">
+              <p className="text-xs font-semibold text-white lg:text-gray-900 leading-tight mt-0.5">
                 {user?.first_name} {user?.last_name} 
               </p>
               {flotaName ? (
-                <p className="text-xs text-gray-500 font-medium leading-tight">{flotaName}</p>
+                <p className="text-xs text-white/70 lg:text-gray-500 font-medium leading-tight">{flotaName}</p>
               ) : null}
             </div>
-            <div className="w-10 h-10 bg-red-600 rounded-full flex items-center justify-center text-white font-semibold text-base flex-shrink-0 shadow-sm">
+            <div className="w-9 h-9 lg:w-10 lg:h-10 bg-white/20 lg:bg-red-600 rounded-full flex items-center justify-center text-white font-semibold text-sm lg:text-base flex-shrink-0">
               {user?.first_name?.charAt(0) || 'U'}
             </div>
           </div>

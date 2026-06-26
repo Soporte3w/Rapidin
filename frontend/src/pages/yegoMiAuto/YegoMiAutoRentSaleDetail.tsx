@@ -226,7 +226,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const [racha, setRacha] = useState<number | null>(null);
   const [bonoAplicado, setBonoAplicado] = useState<number>(0);
   const [tabCronograma, setTabCronograma] = useState<'semanales' | 'otros_gastos'>('semanales');
-  const [otrosGastosFilter, setOtrosGastosFilter] = useState<'todos' | 'pending' | 'paid' | 'overdue'>('todos');
+  const [ogTipoFilterAdmin, setOgTipoFilterAdmin] = useState<string | null>(null);
   const [subTabCuota, setSubTabCuota] = useState<Record<string, 'comprobantes' | 'evidencias'>>({});
   const [evidenciasFleet, setEvidenciasFleet] = useState<{ id: string; cuota_semanal_id: string; file_name: string; file_path: string; created_at: string }[]>([]);
   const [subiendoEvidenciaCuotaId, setSubiendoEvidenciaCuotaId] = useState<string | null>(null);
@@ -1928,28 +1928,25 @@ export default function YegoMiAutoRentSaleDetail() {
                   <span className="text-red-600">{otrosGastosRows.filter(og => og.status === 'overdue').length} vencidas</span>
                 </div>
 
-                {/* Filtros */}
-                <div className="flex flex-wrap gap-1.5 mb-4">
-                  {(['todos', 'pending', 'paid', 'overdue'] as const).map((f) => {
-                    const filterLabels: Record<string, string> = { todos: 'Todos', pending: 'Pendientes', paid: 'Pagados', overdue: 'Vencidos' };
-                    const filterCounts: Record<string, number> = {
-                      todos: otrosGastosRows.length,
-                      pending: otrosGastosRows.filter(og => og.status === 'pending').length,
-                      paid: otrosGastosRows.filter(og => og.status === 'paid').length,
-                      overdue: otrosGastosRows.filter(og => og.status === 'overdue').length,
-                    };
+                {/* Filtros por tipo de gasto */}
+                <div className="flex gap-2 overflow-x-auto pb-2 mb-4 scrollbar-hide">
+                  <button
+                    type="button"
+                    onClick={() => setOgTipoFilterAdmin(null)}
+                    className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${!ogTipoFilterAdmin ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
+                  >
+                    Todos ({otrosGastosRows.length})
+                  </button>
+                  {Array.from(new Set(otrosGastosRows.map((og) => og.tipo || 'generico'))).map((tipo) => {
+                    const count = otrosGastosRows.filter((og) => (og.tipo || 'generico') === tipo).length;
                     return (
                       <button
-                        key={f}
+                        key={tipo}
                         type="button"
-                        onClick={() => setOtrosGastosFilter(prev => prev === f ? 'todos' : f)}
-                        className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
-                          otrosGastosFilter === f
-                            ? 'bg-[#8B1A1A] text-white'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
+                        onClick={() => setOgTipoFilterAdmin(ogTipoFilterAdmin === tipo ? null : tipo)}
+                        className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${ogTipoFilterAdmin === tipo ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
                       >
-                        {filterLabels[f]} ({filterCounts[f]})
+                        {TIPO_OTROS_GASTOS_LABELS[tipo] || tipo} ({count})
                       </button>
                     );
                   })}
@@ -1965,9 +1962,8 @@ export default function YegoMiAutoRentSaleDetail() {
                       return acc;
                     }, {} as Record<string, MiautoOtrosGastoRow[]>)
                   ).map(([tipo, cuotas]) => {
-                    const filteredCuotas = otrosGastosFilter === 'todos'
-                      ? cuotas
-                      : cuotas.filter(c => c.status === otrosGastosFilter);
+                    if (ogTipoFilterAdmin && ogTipoFilterAdmin !== tipo) return null;
+                    const filteredCuotas = cuotas;
                     if (filteredCuotas.length === 0) return null;
 
                     const isOpen = otrosTiposAbiertos[tipo] !== false;

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -83,6 +83,16 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
     : location.pathname.startsWith('/admin/yego-mi-auto')
       ? 'yego-mi-auto'
       : 'rapidin';
+
+  // Si el usuario no tiene acceso al producto actual, redirigir al primero disponible
+  useEffect(() => {
+    const mods = user?.allowed_modules ?? ['rapidin'];
+    if (!mods.includes(currentProduct === 'yego-mi-auto' ? 'miauto' : currentProduct === 'yego-mi-moto' ? 'mimoto' : 'rapidin')) {
+      const first = mods[0];
+      const product = first === 'miauto' ? 'yego-mi-auto' as const : first === 'mimoto' ? 'yego-mi-moto' as const : 'rapidin' as const;
+      navigate(ADMIN_MENU[product].dashboardPath, { replace: true });
+    }
+  }, [currentProduct, user]);
 
   const { newRequest: newRequestItem, sections, subtitle: productSubtitle } = ADMIN_MENU[currentProduct];
 
@@ -201,6 +211,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
             </button>
 
             <div className="flex rounded-lg bg-gray-100 p-1 flex-wrap gap-1">
+              {(user?.allowed_modules ?? ['rapidin', 'miauto', 'mimoto']).includes('rapidin') && (
               <button
                 type="button"
                 onClick={() => handleProductSwitch('rapidin')}
@@ -211,6 +222,8 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
                 <FileText className="w-4 h-4" />
                 Yego Rapidín
               </button>
+              )}
+              {(user?.allowed_modules ?? ['rapidin', 'miauto', 'mimoto']).includes('miauto') && (
               <button
                 type="button"
                 onClick={() => handleProductSwitch('yego-mi-auto')}
@@ -221,6 +234,8 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
                 <Car className="w-4 h-4" />
                 Yego mi auto
               </button>
+              )}
+              {(user?.allowed_modules ?? ['rapidin', 'miauto', 'mimoto']).includes('mimoto') && (
               <button
                 type="button"
                 onClick={() => handleProductSwitch('yego-mi-moto')}
@@ -231,6 +246,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
                 <Bike className="w-4 h-4" />
                 Yego mi moto
               </button>
+              )}
             </div>
 
             <div className="flex-1 min-w-0" />

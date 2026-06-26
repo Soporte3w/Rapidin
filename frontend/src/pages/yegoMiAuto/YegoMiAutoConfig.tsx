@@ -1402,7 +1402,7 @@ export default function YegoMiAutoConfig() {
                             <div className="mb-2 min-h-0">
                               <label className="block text-[10px] font-medium text-gray-700 leading-tight">SOAT</label>
                               <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
-                                Mensual · desde 5 meses antes del vencimiento
+                                Monto total (se divide en cuotas) · desde 5 meses antes del vencimiento
                               </p>
                             </div>
                             <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">

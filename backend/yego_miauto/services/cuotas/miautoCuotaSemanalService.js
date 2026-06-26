@@ -1493,8 +1493,8 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
      * la aritmética de columnas `amount_due + late_fee − paid_amount` coincida
      * con el pendiente real derivado. Aplica a pagadas (conservar devengo) y
      * a abiertas (cobro Fleet, `processCobroCuota`, etc.).
-     * Excepción: cuotas que reciben cascada — usar la mora remanente post-imputación
-     * para no inflar el pendiente con mora ya cubierta por partner_fees de otra semana.
+     * Excepción: cuotas que reciben cascada — usar la mora total generada (moraFullD),
+     * calculada con días reales por Bug 2, no el remanente ni el valor inflado de BD.
      */
     let lateFeePersist = lateFeeOut;
     const fechaPagoRow = ymdFromDbDate(row.fecha_ultimo_abono);
@@ -1503,7 +1503,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     const cascadeReceivedForRow = round2(cascRecv) > 0.005;
     if (!freezeMoraPorComprobante && stRow !== 'bonificada') {
       lateFeePersist = cascadeReceivedForRow
-        ? round2(Math.max(lateFeeOut, lateFeeDb))
+        ? round2(moraFullD)
         : pagoATiempoRow
           ? round2(Math.max(lateFeeDb, lateFeeOut))
           : round2(Math.max(lateFeeDb, lateFeeOut, moraFullD, moraSchedD));

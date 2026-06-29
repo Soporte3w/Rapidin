@@ -39,7 +39,8 @@ function sqlYangoDriverCoalesceColumns() {
             fl.first_name, fl.last_name,
             fl.work_status AS yango_work_status,
             fw.first_name AS working_driver_first_name,
-            fw.last_name AS working_driver_last_name`;
+            fw.last_name AS working_driver_last_name,
+            s.recaudo_driver_id`;
 }
 
 /** LATERAL JOIN a `drivers` (Yango): prioridad driver_id_fleet → DNI → placa → teléfono. */
@@ -346,7 +347,7 @@ export async function processCobroCuota(
     return { success: true, partial: false, failed: false, reason: 'Sin saldo pendiente', dryRun };
   }
 
-  let externalDriverId = cuotaRow.external_driver_id;
+  let externalDriverId = cuotaRow.recaudo_driver_id || cuotaRow.external_driver_id;
   let parkId = parkIdOverride || cuotaRow.park_id;
 
   const extMissing = !externalDriverId || String(externalDriverId).trim() === '';

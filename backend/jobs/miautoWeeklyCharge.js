@@ -146,8 +146,9 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
     const viajes = viajesSource
       ? await getDriverIncomeWithRetries(dateFrom, dateTo, viajesSource.driver_id, viajesSource.park_id, incomeMaxAttempts)
       : { success: true, count_completed: 0, partner_fees: 0 };
-    // Recaudo: siempre del driver_id_fleet
-    const recaudo = await getDriverIncomeWithRetries(dateFrom, dateTo, sol.external_driver_id, sol.park_id, incomeMaxAttempts);
+    // Recaudo: del recaudo_driver_id si está seteado, sino del driver_id_fleet
+    const recaudoDriver = sol.recaudo_driver_id || sol.external_driver_id;
+    const recaudo = await getDriverIncomeWithRetries(dateFrom, dateTo, recaudoDriver, sol.park_id, incomeMaxAttempts);
 
     incomeResult = {
       success: (viajesSource ? viajes.success : true) || recaudo.success,

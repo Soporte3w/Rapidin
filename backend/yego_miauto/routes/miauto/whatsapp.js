@@ -4,7 +4,6 @@
  */
 import { Router } from 'express';
 import { sendBulkWhatsApp, getWhatsAppLog } from '../../services/miautoWhatsAppService.js';
-import { buildMiAutoMessage } from '../../services/miautoWhatsAppService.js';
 import { errorResponse, successResponse } from '../../../utils/responses.js';
 import { logger } from '../../../utils/logger.js';
 
@@ -12,8 +11,8 @@ const router = Router();
 
 /**
  * POST /api/miauto/admin/whatsapp/enviar
- * Envía mensajes WhatsApp a los conductores seleccionados.
- * Body: { solicitud_ids: string[] }
+ * Envía mensajes WhatsApp pre-armados por el frontend.
+ * Body: { items: [{ solicitud_id, phone, driver_name, message }] }
  */
 router.post('/admin/whatsapp/enviar', async (req, res) => {
   try {
@@ -21,13 +20,13 @@ router.post('/admin/whatsapp/enviar', async (req, res) => {
       return errorResponse(res, 'Sin permisos', 403);
     }
 
-    const { solicitud_ids } = req.body;
-    if (!Array.isArray(solicitud_ids) || solicitud_ids.length === 0) {
+    const { items } = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
       return errorResponse(res, 'Seleccioná al menos un conductor', 400);
     }
 
     const userId = req.user?.id || null;
-    const results = await sendBulkWhatsApp(solicitud_ids, userId);
+    const results = await sendBulkWhatsApp(items, userId);
 
     return successResponse(
       res,
@@ -36,39 +35,6 @@ router.post('/admin/whatsapp/enviar', async (req, res) => {
     );
   } catch (error) {
     logger.error('Error en envío masivo WhatsApp:', error);
-    return errorResponse(res, error.message, 500);
-  }
-});
-
-/**
- * POST /api/miauto/admin/whatsapp/preview
- * Vista previa del mensaje (no envía).
- * Body: { solicitud_ids: string[] }
- */
-router.post('/admin/whatsapp/preview', async (req, res) => {
-  try {
-    if (req.user?.role === 'driver') {
-      return errorResponse(res, 'Sin permisos', 403);
-    }
-
-    const { solicitud_ids } = req.body;
-    if (!Array.isArray(solicitud_ids) || solicitud_ids.length === 0) {
-      return errorResponse(res, 'Seleccioná al menos un conductor', 400);
-    }
-
-    const previews = [];
-    for (const sid of solicitud_ids) {
-      try {
-        const data = await buildMiAutoMessage(sid);
-        previews.push({ solicitud_id: sid, ...data });
-      } catch (e) {
-        previews.push({ solicitud_id: sid, error: e.message });
-      }
-    }
-
-    return successResponse(res, previews);
-  } catch (error) {
-    logger.error('Error en preview WhatsApp:', error);
     return errorResponse(res, error.message, 500);
   }
 });

@@ -16,6 +16,7 @@ import {
   X,
   Car,
   Bike,
+  MessageCircle,
 } from 'lucide-react';
 
 type AdminProduct = 'rapidin' | 'yego-mi-auto' | 'yego-mi-moto';
@@ -51,6 +52,7 @@ const ADMIN_MENU: Record<AdminProduct, { newRequest?: MenuItem; sections: MenuSe
         { text: 'Solicitudes', icon: FileText, path: '/admin/yego-mi-auto/requests' },
         { text: 'Alquiler / Venta', icon: Banknote, path: '/admin/yego-mi-auto/rent-sale' },
         { text: 'Pagos', icon: CreditCard, path: '/admin/yego-mi-auto/payments' },
+        { text: 'Mensajes', icon: MessageCircle, path: '/admin/yego-mi-auto/mensajes' },
       ]},
       { title: 'Reportes', items: [{ text: 'Análisis', icon: BarChart3, path: '/admin/yego-mi-auto/analysis' }] },
       { title: 'Sistema', items: [{ text: 'Configuración', icon: Settings, path: '/admin/yego-mi-auto/config' }] },

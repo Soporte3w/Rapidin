@@ -2,10 +2,11 @@ import { query } from '../../../config/database.js';
 import { getCronogramasByIds, getMonedaCuotaSemanalPorVehiculo } from '../cronograma/miautoCronogramaService.js';
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../../../utils/helpers.js';
 import { generateWeeklyCharge } from '../cobros/CobroEngine.js';
-import { getLimaYmd, mondayOfWeekContainingYmd } from '../../../utils/miautoLimaWeekRange.js';
+import { getLimaYmd, mondayOfWeekContainingYmd, addDaysYmd, limaWeekStartToMiAutoIncomeRange } from '../../../utils/miautoLimaWeekRange.js';
 import { getTotalValidado } from '../comprobantes/miautoComprobantePagoService.js';
 import { ensureOtroGastoForWeek, listBySolicitud as listOtrosGastosBySolicitud, listBySolicitudIds as listOtrosGastosBySolicitudIds } from '../gastos/miautoOtrosGastosService.js';
 import { logger } from '../../../utils/logger.js';
+import { getDriverIncome } from '../../../services/yangoService.js';
 import {
   MIAUTO_PARK_ID,
   getDriverInfoByPhones,
@@ -945,6 +946,72 @@ export const generarYegoMiAuto = async (id, options = {}) => {
     throw new Error(
       'No se pudo crear la primera cuota semanal. Revise que el vehículo asignado exista en el cronograma y que las reglas de viajes sean válidas.'
     );
+  }
+
+  // Semana 1 (depósito) → paid
+  await query(
+    `UPDATE module_miauto_cuota_semanal 
+     SET status = 'paid', paid_amount = amount_due, updated_at = CURRENT_TIMESTAMP 
+     WHERE id = $1`,
+    [primeraCuotaId]
+  );
+
+  // Generar cuotas para semanas entre depósito y el lunes de hoy
+  const todayMonday = mondayOfWeekContainingYmd(getLimaYmd(new Date()));
+  if (todayMonday > weekStartFirstCuota) {
+    // Buscar driver Yango por placa o driver_id_fleet
+    const solDrv = await query(
+      `SELECT s.driver_id_fleet, s.placa_asignada
+       FROM module_miauto_solicitud s WHERE s.id = $1`,
+      [id]
+    );
+    const solData = solDrv.rows[0];
+    let driverId = solData?.driver_id_fleet || null;
+    let parkId = MIAUTO_PARK_ID;
+
+    if (!driverId && solData?.placa_asignada) {
+      const placaNorm = String(solData.placa_asignada).trim().toUpperCase().replace(/\s+/g, '');
+      const drvRes = await query(
+        `SELECT d.driver_id, d.park_id FROM drivers d
+         WHERE TRIM(COALESCE(d.park_id::text, '')) = $1
+           AND d.work_status = 'working'
+           AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '\\\\s', '', 'g')) = $2
+         LIMIT 1`,
+        [MIAUTO_PARK_ID, placaNorm]
+      );
+      if (drvRes.rows.length > 0) {
+        driverId = drvRes.rows[0].driver_id;
+        parkId = drvRes.rows[0].park_id || MIAUTO_PARK_ID;
+      }
+    }
+
+    if (driverId) {
+      for (let monday = addDaysYmd(weekStartFirstCuota, 7); monday <= todayMonday; monday = addDaysYmd(monday, 7)) {
+        const { dateFrom, dateTo } = limaWeekStartToMiAutoIncomeRange(monday);
+        let incomeResult = { count_completed: 0, partner_fees: 0 };
+        try {
+          const income = await getDriverIncome(dateFrom, dateTo, driverId, parkId);
+          if (income.success) {
+            incomeResult = { count_completed: income.count_completed || 0, partner_fees: income.partner_fees || 0 };
+          }
+        } catch (e) {
+          logger.warn(`Mi Auto generarYegoMiAuto: income Yango falló para ${id} semana ${monday}: ${e.message}`);
+        }
+
+        try {
+          await generateWeeklyCharge({
+            solicitudId: id,
+            weekStartDate: monday,
+            incomeResult,
+            options: { generatedBy: 'generar_yego_miauto', forceUseYangoData: true },
+          });
+        } catch (e) {
+          logger.warn(`Mi Auto generarYegoMiAuto: falló cuota semana ${monday} para ${id}: ${e.message}`);
+        }
+      }
+    } else {
+      logger.warn(`Mi Auto generarYegoMiAuto: sin driver Yango para solicitud ${id}, no se generan cuotas intermedias`);
+    }
   }
 
   // Pago parcial: guardar saldo y N en solicitud; crear solo la fila de semana 2 (resto se crea lazy al listar).

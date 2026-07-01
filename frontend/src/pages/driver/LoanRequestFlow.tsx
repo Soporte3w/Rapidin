@@ -1357,17 +1357,14 @@ function Step4ContactPerson({ formData, setFormData, contactSignatureRef, clearS
     setGaranteStableFrames(0);
   };
 
-  const handleGaranteSave = () => {
+  const handleGaranteSave = async () => {
     if (!garanteCapturedImage) return;
-    const canvas = garanteCaptureCanvasRef.current;
-    if (!canvas) return;
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const file = new File([blob], 'dni-frontal-garante.jpg', { type: 'image/jpeg' });
-      setFormData({ ...formData, contactFrontPhoto: file });
-      closeGaranteCamera();
-      toast.success('Foto del DNI del garante guardada');
-    }, 'image/jpeg', 0.9);
+    const res = await fetch(garanteCapturedImage);
+    const blob = await res.blob();
+    const file = new File([blob], 'dni-frontal-garante.jpg', { type: 'image/jpeg' });
+    setFormData({ ...formData, contactFrontPhoto: file });
+    closeGaranteCamera();
+    toast.success('Foto del DNI del garante guardada');
   };
 
   const handleGaranteRetake = () => {
@@ -2175,17 +2172,14 @@ function Step7Signature({ formData, setFormData, signatureRef, clearSignature, h
     setStableFrames(0);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!capturedImage) return;
-    const canvas = captureCanvasRef.current;
-    if (!canvas) return;
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const file = new File([blob], 'dni-frontal.jpg', { type: 'image/jpeg' });
-      setFormData({ ...formData, idDocument: file });
-      closeCamera();
-      toast.success('Foto del DNI guardada correctamente');
-    }, 'image/jpeg', 0.9);
+    const res = await fetch(capturedImage);
+    const blob = await res.blob();
+    const file = new File([blob], 'dni-frontal.jpg', { type: 'image/jpeg' });
+    setFormData({ ...formData, idDocument: file });
+    closeCamera();
+    toast.success('Foto del DNI guardada correctamente');
   };
 
   const handleRetake = () => {

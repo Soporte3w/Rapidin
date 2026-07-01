@@ -1247,10 +1247,18 @@ function Step4ContactPerson({ formData, setFormData, contactSignatureRef, clearS
   const [contactDniLoading, setContactDniLoading] = useState(false);
   const [showGaranteCamera, setShowGaranteCamera] = useState(false);
   const [garanteCameraError, setGaranteCameraError] = useState<string | null>(null);
+  const [garanteCapturedImage, setGaranteCapturedImage] = useState<string | null>(null);
+  const [garanteShowPreview, setGaranteShowPreview] = useState(false);
+  const [garanteStableFrames, setGaranteStableFrames] = useState(0);
   const garanteVideoRef = useRef<HTMLVideoElement>(null);
   const garanteCaptureCanvasRef = useRef<HTMLCanvasElement>(null);
   const garanteStreamRef = useRef<MediaStream | null>(null);
   const garanteFileInputRef = useRef<HTMLInputElement>(null);
+  const garanteStabilityRef = useRef<{
+    lastPixels: number[] | null;
+    active: boolean;
+    intervalId: ReturnType<typeof setInterval> | null;
+  }>({ lastPixels: null, active: false, intervalId: null });
   const contactDniError = driverDocumentNumber && formData.contactDni.trim() !== '' && String(formData.contactDni).trim() === String(driverDocumentNumber).trim();
   const driverPhoneDigits = (driverPhone || '').replace(/\D/g, '');
   const contactPhoneDigits = (formData.contactPhone || '').replace(/\D/g, '');
@@ -1291,10 +1299,18 @@ function Step4ContactPerson({ formData, setFormData, contactSignatureRef, clearS
         video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
       });
       garanteStreamRef.current = stream;
+      garanteStabilityRef.current.lastPixels = null;
+      garanteStabilityRef.current.active = true;
       setShowGaranteCamera(true);
+      setGaranteCapturedImage(null);
+      setGaranteShowPreview(false);
+      setGaranteStableFrames(0);
       setTimeout(() => {
-        if (garanteVideoRef.current) garanteVideoRef.current.srcObject = stream;
-      }, 0);
+        if (garanteVideoRef.current) {
+          garanteVideoRef.current.srcObject = stream;
+          startGaranteStabilityDetection();
+        }
+      }, 600);
     } catch (err: any) {
       setGaranteCameraError(err?.message || 'No se pudo acceder a la cámara.');
       toast.error('No se pudo abrir la cámara');
@@ -1302,17 +1318,31 @@ function Step4ContactPerson({ formData, setFormData, contactSignatureRef, clearS
   };
 
   const closeGaranteCamera = () => {
+    const ref = garanteStabilityRef.current;
+    ref.active = false;
+    if (ref.intervalId) { clearInterval(ref.intervalId); ref.intervalId = null; }
     stopGaranteStream();
     setShowGaranteCamera(false);
+    setGaranteCapturedImage(null);
+    setGaranteShowPreview(false);
+    setGaranteStableFrames(0);
     if (garanteVideoRef.current) garanteVideoRef.current.srcObject = null;
   };
 
   useEffect(() => {
     if (!showGaranteCamera) return;
-    return () => { stopGaranteStream(); };
+    return () => {
+      const ref = garanteStabilityRef.current;
+      ref.active = false;
+      if (ref.intervalId) { clearInterval(ref.intervalId); ref.intervalId = null; }
+      stopGaranteStream();
+    };
   }, [showGaranteCamera]);
 
   const captureGarantePhoto = () => {
+    const ref = garanteStabilityRef.current;
+    ref.active = false;
+    if (ref.intervalId) { clearInterval(ref.intervalId); ref.intervalId = null; }
     const video = garanteVideoRef.current;
     const canvas = garanteCaptureCanvasRef.current;
     if (!video || !canvas || !garanteStreamRef.current) return;
@@ -1321,17 +1351,80 @@ function Step4ContactPerson({ formData, setFormData, contactSignatureRef, clearS
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0);
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) return;
-        const file = new File([blob], 'dni-frontal-garante.jpg', { type: 'image/jpeg' });
-        setFormData({ ...formData, contactFrontPhoto: file });
-        closeGaranteCamera();
-        toast.success('Foto del DNI del garante capturada');
-      },
-      'image/jpeg',
-      0.9
-    );
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    setGaranteCapturedImage(dataUrl);
+    setGaranteShowPreview(true);
+    setGaranteStableFrames(0);
+  };
+
+  const handleGaranteSave = () => {
+    if (!garanteCapturedImage) return;
+    const canvas = garanteCaptureCanvasRef.current;
+    if (!canvas) return;
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const file = new File([blob], 'dni-frontal-garante.jpg', { type: 'image/jpeg' });
+      setFormData({ ...formData, contactFrontPhoto: file });
+      closeGaranteCamera();
+      toast.success('Foto del DNI del garante guardada');
+    }, 'image/jpeg', 0.9);
+  };
+
+  const handleGaranteRetake = () => {
+    setGaranteCapturedImage(null);
+    setGaranteShowPreview(false);
+    setGaranteStableFrames(0);
+    garanteStabilityRef.current.lastPixels = null;
+    garanteStabilityRef.current.active = true;
+    setTimeout(() => startGaranteStabilityDetection(), 300);
+  };
+
+  const startGaranteStabilityDetection = () => {
+    const video = garanteVideoRef.current;
+    if (!video) return;
+    const offscreenCanvas = document.createElement('canvas');
+    const offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+    if (!offscreenCtx) return;
+    offscreenCanvas.width = 32;
+    offscreenCanvas.height = 24;
+    const STABLE_THRESHOLD = 4;
+    let localStable = 0;
+    const check = () => {
+      if (!garanteStabilityRef.current.active) return;
+      if (garanteShowPreview) return;
+      if (!video || video.readyState < 2) return;
+      try {
+        offscreenCtx.drawImage(video, 0, 0, 32, 24);
+        const imageData = offscreenCtx.getImageData(0, 0, 32, 24);
+        const samples: number[] = [];
+        for (let i = 0; i < imageData.data.length; i += 16) {
+          samples.push(imageData.data[i]);
+        }
+        const prev = garanteStabilityRef.current.lastPixels;
+        if (prev && prev.length === samples.length) {
+          let totalDiff = 0;
+          for (let i = 0; i < samples.length; i++) {
+            totalDiff += Math.abs(samples[i] - prev[i]);
+          }
+          const avgDiff = totalDiff / samples.length;
+          if (avgDiff < 5) {
+            localStable++;
+            setGaranteStableFrames(localStable);
+            if (localStable >= STABLE_THRESHOLD) {
+              captureGarantePhoto();
+              return;
+            }
+          } else {
+            localStable = Math.max(0, localStable - 1);
+            setGaranteStableFrames(localStable);
+          }
+        }
+        garanteStabilityRef.current.lastPixels = samples;
+      } catch (_) { /* ignora errores de frame */ }
+    };
+    const prev = garanteStabilityRef.current.intervalId;
+    if (prev) clearInterval(prev);
+    garanteStabilityRef.current.intervalId = setInterval(check, 400);
   };
 
   const onGaranteFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1528,45 +1621,79 @@ function Step4ContactPerson({ formData, setFormData, contactSignatureRef, clearS
             </div>
           </div>
 
-          {/* Modal cámara garante: solo cámara, marco para encajar DNI frontal */}
+          {/* Modal cámara garante */}
           {showGaranteCamera && (
-            <div className="fixed inset-0 z-50 flex flex-col bg-black">
-              <video
-                ref={garanteVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="absolute inset-0 w-full h-full object-cover"
-              />
-              <div className="absolute inset-0 flex flex-col items-center justify-center p-4 pointer-events-none">
-                <div
-                  className="w-full max-w-[280px] aspect-[1.58] border-4 border-dashed border-white rounded-lg bg-transparent"
-                  style={{ boxShadow: '0 0 0 9999px rgba(0,0,0,0.55)' }}
-                />
-                <p className="text-white text-center text-sm font-semibold drop-shadow-md mt-4 px-4">
-                  Encaja el DNI frontal del garante dentro del marco
-                </p>
+            garanteShowPreview && garanteCapturedImage ? (
+              <div className="fixed inset-0 z-50 flex flex-col bg-black">
+                <div className="absolute top-0 left-0 right-0 p-3 sm:p-4 flex justify-end">
+                  <button type="button" onClick={closeGaranteCamera} className="p-2 text-white/70 hover:text-white touch-manipulation" aria-label="Cerrar">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="flex-1 flex flex-col items-center justify-center px-5 sm:px-8 gap-4 sm:gap-5">
+                  <p className="text-white text-sm sm:text-base font-medium text-center">¿Se ve bien la foto del DNI?</p>
+                  <div className="w-full max-w-[260px] sm:max-w-[300px] aspect-[1.58] border-2 border-white/30 rounded-lg overflow-hidden bg-gray-900">
+                    <img src={garanteCapturedImage} alt="Vista previa DNI garante" className="w-full h-full object-contain" />
+                  </div>
+                  <div className="flex gap-3 w-full max-w-[320px] sm:max-w-[360px]">
+                    <button
+                      type="button"
+                      onClick={handleGaranteRetake}
+                      className="flex-1 flex items-center justify-center gap-1.5 min-h-[48px] px-3 py-2.5 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-500 active:bg-gray-400 transition-colors touch-manipulation"
+                    >
+                      <span className="text-base">⟲</span> Reintentar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGaranteSave}
+                      className="flex-1 flex items-center justify-center gap-1.5 min-h-[48px] px-3 py-2.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 active:bg-red-500 transition-colors touch-manipulation"
+                    >
+                      <CheckCircle className="w-4 h-4 flex-shrink-0" /> Guardar
+                    </button>
+                  </div>
+                </div>
               </div>
-              <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 flex gap-2 sm:gap-3 justify-center bg-gradient-to-t from-black/80 to-transparent">
+            ) : (
+              <div className="fixed inset-0 z-50 flex flex-col bg-black">
+                <video
+                  ref={garanteVideoRef}
+                  autoPlay playsInline muted
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 flex flex-col items-center justify-center p-4 pointer-events-none">
+                  <div
+                    className="w-full max-w-[280px] aspect-[1.58] border-4 border-dashed border-white rounded-lg bg-transparent"
+                    style={{ boxShadow: '0 0 0 9999px rgba(0,0,0,0.55)' }}
+                  />
+                  <p className="text-white text-center text-sm font-semibold drop-shadow-md mt-4 px-4">
+                    Encaja el DNI frontal del garante dentro del marco
+                  </p>
+                </div>
                 <button
                   type="button"
                   onClick={closeGaranteCamera}
-                  className="flex items-center justify-center gap-2 min-h-[44px] px-4 sm:px-5 py-2.5 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-500 pointer-events-auto touch-manipulation"
+                  className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 p-2.5 rounded-full bg-black/40 text-white/80 hover:bg-black/60 hover:text-white touch-manipulation"
+                  aria-label="Cerrar cámara"
                 >
-                  <X className="w-4 h-4 flex-shrink-0" />
-                  Cancelar
+                  <X className="w-5 h-5" />
                 </button>
-                <button
-                  type="button"
-                  onClick={captureGarantePhoto}
-                  className="flex items-center justify-center gap-2 min-h-[44px] px-4 sm:px-5 py-2.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 pointer-events-auto touch-manipulation"
-                >
-                  <Camera className="w-4 h-4 flex-shrink-0" />
-                  Capturar
-                </button>
+                <div className="absolute bottom-8 sm:bottom-10 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
+                  <div
+                    className="relative w-16 h-16 sm:w-18 sm:h-18 rounded-full flex items-center justify-center cursor-pointer active:scale-95 transition-transform touch-manipulation"
+                    onClick={captureGarantePhoto}
+                    style={{ padding: '3px', background: garanteStableFrames > 0 ? `conic-gradient(rgb(220,38,38) ${garanteStableFrames * 25}%, rgba(255,255,255,0.3) ${garanteStableFrames * 25}%)` : 'rgba(255,255,255,0.4)' }}
+                  >
+                    <div className="w-full h-full rounded-full bg-white/90 flex items-center justify-center">
+                      <Camera className="w-7 h-7 text-gray-800" />
+                    </div>
+                  </div>
+                  <p className="text-white text-xs opacity-70">
+                    {garanteStableFrames > 0 ? 'No te muevas...' : 'Toca para capturar'}
+                  </p>
+                </div>
+                <canvas ref={garanteCaptureCanvasRef} className="hidden" />
               </div>
-              <canvas ref={garanteCaptureCanvasRef} className="hidden" />
-            </div>
+            )
           )}
 
           {/* Columna derecha: Firma del garante */}
@@ -1946,10 +2073,18 @@ function Step6Terms({ formData, setFormData }: any) {
 function Step7Signature({ formData, setFormData, signatureRef, clearSignature, handleSignatureStart, handleSignatureMove, handleSignatureEnd }: any) {
   const [showCamera, setShowCamera] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
+  const [stableFrames, setStableFrames] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
   const captureCanvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const idDocumentFileInputRef = useRef<HTMLInputElement>(null);
+  const stabilityRef = useRef<{
+    lastPixels: number[] | null;
+    active: boolean;
+    intervalId: ReturnType<typeof setInterval> | null;
+  }>({ lastPixels: null, active: false, intervalId: null });
 
   // Restaurar la firma en el canvas si existe
   useEffect(() => {
@@ -1982,10 +2117,18 @@ function Step7Signature({ formData, setFormData, signatureRef, clearSignature, h
         video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
       });
       streamRef.current = stream;
+      stabilityRef.current.lastPixels = null;
+      stabilityRef.current.active = true;
       setShowCamera(true);
+      setCapturedImage(null);
+      setShowPreview(false);
+      setStableFrames(0);
       setTimeout(() => {
-        if (videoRef.current) videoRef.current.srcObject = stream;
-      }, 0);
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          startStabilityDetection();
+        }
+      }, 600);
     } catch (err: any) {
       setCameraError(err?.message || 'No se pudo acceder a la cámara. Revisa los permisos.');
       toast.error('No se pudo abrir la cámara');
@@ -1993,17 +2136,31 @@ function Step7Signature({ formData, setFormData, signatureRef, clearSignature, h
   };
 
   const closeCamera = () => {
+    const ref = stabilityRef.current;
+    ref.active = false;
+    if (ref.intervalId) { clearInterval(ref.intervalId); ref.intervalId = null; }
     stopStream();
     setShowCamera(false);
+    setCapturedImage(null);
+    setShowPreview(false);
+    setStableFrames(0);
     if (videoRef.current) videoRef.current.srcObject = null;
   };
 
   useEffect(() => {
     if (!showCamera) return;
-    return () => { stopStream(); };
+    return () => {
+      const ref = stabilityRef.current;
+      ref.active = false;
+      if (ref.intervalId) { clearInterval(ref.intervalId); ref.intervalId = null; }
+      stopStream();
+    };
   }, [showCamera]);
 
   const capturePhoto = () => {
+    const ref = stabilityRef.current;
+    ref.active = false;
+    if (ref.intervalId) { clearInterval(ref.intervalId); ref.intervalId = null; }
     const video = videoRef.current;
     const canvas = captureCanvasRef.current;
     if (!video || !canvas || !streamRef.current) return;
@@ -2012,17 +2169,80 @@ function Step7Signature({ formData, setFormData, signatureRef, clearSignature, h
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0);
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) return;
-        const file = new File([blob], 'dni-frontal.jpg', { type: 'image/jpeg' });
-        setFormData({ ...formData, idDocument: file });
-        closeCamera();
-        toast.success('Foto capturada correctamente');
-      },
-      'image/jpeg',
-      0.9
-    );
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    setCapturedImage(dataUrl);
+    setShowPreview(true);
+    setStableFrames(0);
+  };
+
+  const handleSave = () => {
+    if (!capturedImage) return;
+    const canvas = captureCanvasRef.current;
+    if (!canvas) return;
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const file = new File([blob], 'dni-frontal.jpg', { type: 'image/jpeg' });
+      setFormData({ ...formData, idDocument: file });
+      closeCamera();
+      toast.success('Foto del DNI guardada correctamente');
+    }, 'image/jpeg', 0.9);
+  };
+
+  const handleRetake = () => {
+    setCapturedImage(null);
+    setShowPreview(false);
+    setStableFrames(0);
+    stabilityRef.current.lastPixels = null;
+    stabilityRef.current.active = true;
+    setTimeout(() => startStabilityDetection(), 300);
+  };
+
+  const startStabilityDetection = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    const offscreenCanvas = document.createElement('canvas');
+    const offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+    if (!offscreenCtx) return;
+    offscreenCanvas.width = 32;
+    offscreenCanvas.height = 24;
+    const STABLE_THRESHOLD = 4;
+    let localStable = 0;
+    const check = () => {
+      if (!stabilityRef.current.active) return;
+      if (showPreview) return;
+      if (!video || video.readyState < 2) return;
+      try {
+        offscreenCtx.drawImage(video, 0, 0, 32, 24);
+        const imageData = offscreenCtx.getImageData(0, 0, 32, 24);
+        const samples: number[] = [];
+        for (let i = 0; i < imageData.data.length; i += 16) {
+          samples.push(imageData.data[i]);
+        }
+        const prev = stabilityRef.current.lastPixels;
+        if (prev && prev.length === samples.length) {
+          let totalDiff = 0;
+          for (let i = 0; i < samples.length; i++) {
+            totalDiff += Math.abs(samples[i] - prev[i]);
+          }
+          const avgDiff = totalDiff / samples.length;
+          if (avgDiff < 5) {
+            localStable++;
+            setStableFrames(localStable);
+            if (localStable >= STABLE_THRESHOLD) {
+              capturePhoto();
+              return;
+            }
+          } else {
+            localStable = Math.max(0, localStable - 1);
+            setStableFrames(localStable);
+          }
+        }
+        stabilityRef.current.lastPixels = samples;
+      } catch (_) { /* ignora errores de frame */ }
+    };
+    const prev = stabilityRef.current.intervalId;
+    if (prev) clearInterval(prev);
+    stabilityRef.current.intervalId = setInterval(check, 400);
   };
 
   const onIdDocumentFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2162,45 +2382,79 @@ function Step7Signature({ formData, setFormData, signatureRef, clearSignature, h
         </div>
       </div>
 
-      {/* Modal cámara: solo cámara, con marco para encajar el DNI */}
+      {/* Modal cámara */}
       {showCamera && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-black">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="absolute inset-0 w-full h-full object-cover"
-          />
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-3 sm:p-4 pointer-events-none">
-            <div
-              className="w-full max-w-[260px] sm:max-w-[280px] aspect-[1.58] border-4 border-dashed border-white rounded-lg bg-transparent"
-              style={{ boxShadow: '0 0 0 9999px rgba(0,0,0,0.55)' }}
-            />
-            <p className="text-white text-center text-xs sm:text-sm font-semibold drop-shadow-md mt-3 sm:mt-4 px-4">
-              Encaja el DNI dentro del marco
-            </p>
+        showPreview && capturedImage ? (
+          <div className="fixed inset-0 z-50 flex flex-col bg-black">
+            <div className="absolute top-0 left-0 right-0 p-3 sm:p-4 flex justify-end">
+              <button type="button" onClick={closeCamera} className="p-2 text-white/70 hover:text-white touch-manipulation" aria-label="Cerrar">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 flex flex-col items-center justify-center px-5 sm:px-8 gap-4 sm:gap-5">
+              <p className="text-white text-sm sm:text-base font-medium text-center">¿Se ve bien la foto del DNI?</p>
+              <div className="w-full max-w-[260px] sm:max-w-[300px] aspect-[1.58] border-2 border-white/30 rounded-lg overflow-hidden bg-gray-900">
+                <img src={capturedImage} alt="Vista previa DNI" className="w-full h-full object-contain" />
+              </div>
+              <div className="flex gap-3 w-full max-w-[320px] sm:max-w-[360px]">
+                <button
+                  type="button"
+                  onClick={handleRetake}
+                  className="flex-1 flex items-center justify-center gap-1.5 min-h-[48px] px-3 py-2.5 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-500 active:bg-gray-400 transition-colors touch-manipulation"
+                >
+                  <span className="text-base">⟲</span> Reintentar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  className="flex-1 flex items-center justify-center gap-1.5 min-h-[48px] px-3 py-2.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 active:bg-red-500 transition-colors touch-manipulation"
+                >
+                  <CheckCircle className="w-4 h-4 flex-shrink-0" /> Guardar
+                </button>
+              </div>
+            </div>
           </div>
-          <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 flex gap-2 sm:gap-3 justify-center bg-gradient-to-t from-black/80 to-transparent">
+        ) : (
+          <div className="fixed inset-0 z-50 flex flex-col bg-black">
+            <video
+              ref={videoRef}
+              autoPlay playsInline muted
+              className="absolute inset-0 w-full h-full object-cover"
+            />
+            <div className="absolute inset-0 flex flex-col items-center justify-center p-3 sm:p-4 pointer-events-none">
+              <div
+                className="w-full max-w-[260px] sm:max-w-[280px] aspect-[1.58] border-4 border-dashed border-white rounded-lg bg-transparent"
+                style={{ boxShadow: '0 0 0 9999px rgba(0,0,0,0.55)' }}
+              />
+              <p className="text-white text-center text-xs sm:text-sm font-semibold drop-shadow-md mt-3 sm:mt-4 px-4">
+                Encaja el DNI dentro del marco
+              </p>
+            </div>
             <button
               type="button"
               onClick={closeCamera}
-              className="flex items-center justify-center gap-2 min-h-[44px] px-4 sm:px-5 py-2.5 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-500 touch-manipulation"
+              className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 p-2.5 rounded-full bg-black/40 text-white/80 hover:bg-black/60 hover:text-white touch-manipulation"
+              aria-label="Cerrar cámara"
             >
-              <X className="w-4 h-4 flex-shrink-0" />
-              Cancelar
+              <X className="w-5 h-5" />
             </button>
-            <button
-              type="button"
-              onClick={capturePhoto}
-              className="flex items-center justify-center gap-2 min-h-[44px] px-4 sm:px-5 py-2.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 touch-manipulation"
-            >
-              <Camera className="w-4 h-4 flex-shrink-0" />
-              Capturar
-            </button>
+            <div className="absolute bottom-8 sm:bottom-10 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
+              <div
+                className="relative w-16 h-16 sm:w-18 sm:h-18 rounded-full flex items-center justify-center cursor-pointer active:scale-95 transition-transform touch-manipulation"
+                onClick={capturePhoto}
+                style={{ padding: '3px', background: stableFrames > 0 ? `conic-gradient(rgb(220,38,38) ${stableFrames * 25}%, rgba(255,255,255,0.3) ${stableFrames * 25}%)` : 'rgba(255,255,255,0.4)' }}
+              >
+                <div className="w-full h-full rounded-full bg-white/90 flex items-center justify-center">
+                  <Camera className="w-7 h-7 text-gray-800" />
+                </div>
+              </div>
+              <p className="text-white text-xs opacity-70">
+                {stableFrames > 0 ? 'No te muevas...' : 'Toca para capturar'}
+              </p>
+            </div>
+            <canvas ref={captureCanvasRef} className="hidden" />
           </div>
-          <canvas ref={captureCanvasRef} className="hidden" />
-        </div>
+        )
       )}
     </div>
   );

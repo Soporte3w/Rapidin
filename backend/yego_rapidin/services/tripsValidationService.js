@@ -57,6 +57,11 @@ export async function getCompletedTripsCount(conductorId, year, month) {
 /** Rapidín (flujo conductor): exige mínimo de 400 viajes en cada uno de los dos meses anteriores para ver la oferta / solicitar préstamo. */
 const TRIPS_REQUIREMENT_ENABLED = true;
 
+/** Drivers exentos de validación de viajes. */
+const SKIP_TRIPS_VALIDATION_DRIVERS = new Set([
+  '14c13250fc99436eb4da91625a49e307',
+]);
+
 /**
  * Comprueba si el conductor cumple el mínimo de viajes (400) en el mes anterior y en el mes pasado.
  * Ej: si hoy es febrero 2026, comprueba enero 2026 y diciembre 2025.
@@ -66,6 +71,10 @@ const TRIPS_REQUIREMENT_ENABLED = true;
 export async function checkMinimumTripsForLoanOffer(conductorId) {
   if (!TRIPS_REQUIREMENT_ENABLED) {
     return { allowed: true };
+  }
+
+  if (SKIP_TRIPS_VALIDATION_DRIVERS.has(String(conductorId).trim())) {
+    return { allowed: true, skipped: true };
   }
 
   const now = new Date();

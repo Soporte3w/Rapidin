@@ -65,6 +65,7 @@ const LoanRequests = () => {
   const [driverSearchInput, setDriverSearchInput] = useState(initialDriverInput);
   const debouncedDriver = useDebouncedValue(driverSearchInput, 400);
   const [partners, setPartners] = useState<{ id: string; name: string }[]>([]);
+  const [flotaOpciones, setFlotaOpciones] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(isReturnFromDetail && searchState?.page != null ? searchState.page : 1);
   const [pageSize, setPageSize] = useState(isReturnFromDetail && searchState?.limit != null ? searchState.limit : 10);
   const returnConsumedRef = useRef(false);
@@ -106,6 +107,13 @@ const LoanRequests = () => {
         if (Array.isArray(raw)) chunk = raw;
         else if (raw?.data && Array.isArray(raw.data)) chunk = raw.data;
         setRequests(chunk);
+        if (!filters.flota) {
+          setFlotaOpciones(prev => {
+            const next = new Set(prev);
+            for (const r of chunk) { if (r.park_id) next.add(r.park_id); }
+            return next;
+          });
+        }
       } catch (err: unknown) {
         if (isAxiosAbortError(err)) return;
         console.error('Error fetching requests:', err);
@@ -443,7 +451,7 @@ const LoanRequests = () => {
              </select></div>
            <div className="flex-1 min-w-[150px]"><label htmlFor="flota" className="block text-xs font-semibold text-gray-900 mb-1.5">Flota</label>
              <select id="flota" value={filters.flota} onChange={e => { setFilters({ ...filters, flota: e.target.value }); setPage(1); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm">
-               <option value="">Todas</option>{partners.filter(p => p.name).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+               <option value="">Todas</option>{[...flotaOpciones].map(parkId => <option key={parkId} value={parkId}>{partners.find(p => p.id === parkId)?.name || parkId}</option>)}
              </select></div>
           <div className="flex-1 min-w-[200px]"><DateRangePicker label="Fecha" value={{ date_from: filters.date_from, date_to: filters.date_to }} onChange={r => { setFilters(f => ({ ...f, date_from: r.date_from, date_to: r.date_to })); setPage(1); }} placeholder="Filtrar por fecha" /></div>
         </div>

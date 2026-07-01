@@ -21,6 +21,7 @@ interface LoanRequest {
   driver_cycle?: number | null;
   status: string;
   country: string;
+  park_id?: string | null;
   created_at: string;
   approved_at?: string | null;
   disbursed_at?: string | null;
@@ -33,6 +34,7 @@ export type LoanRequestsSearchState = {
   driverSearchInput?: string;
   status?: string;
   country?: string;
+  flota?: string;
   date_from?: string;
   date_to?: string;
   page?: number;
@@ -56,11 +58,13 @@ const LoanRequests = () => {
   const [filters, setFilters] = useState({
     status: isReturnFromDetail ? (searchState?.status ?? '') : '',
     country: isReturnFromDetail ? (searchState?.country ?? '') : '',
+    flota: isReturnFromDetail ? (searchState?.flota ?? '') : '',
     date_from: isReturnFromDetail ? (searchState?.date_from ?? '') : '',
     date_to: isReturnFromDetail ? (searchState?.date_to ?? '') : '',
   });
   const [driverSearchInput, setDriverSearchInput] = useState(initialDriverInput);
   const debouncedDriver = useDebouncedValue(driverSearchInput, 400);
+  const [partners, setPartners] = useState<{ id: string; name: string }[]>([]);
   const [page, setPage] = useState(isReturnFromDetail && searchState?.page != null ? searchState.page : 1);
   const [pageSize, setPageSize] = useState(isReturnFromDetail && searchState?.limit != null ? searchState.limit : 10);
   const returnConsumedRef = useRef(false);
@@ -88,6 +92,7 @@ const LoanRequests = () => {
         if (filters.country) params.append('country', filters.country);
         if (filters.date_from) params.append('date_from', filters.date_from);
         if (filters.date_to) params.append('date_to', filters.date_to);
+        if (filters.flota) params.append('park_id', filters.flota);
         const dq = debouncedDriver.trim();
         if (dq) params.append('driver', dq);
 
@@ -112,7 +117,7 @@ const LoanRequests = () => {
         setLoading(false);
       }
     },
-    [page, pageSize, filters.status, filters.country, filters.date_from, filters.date_to, debouncedDriver]
+    [page, pageSize, filters.status, filters.country, filters.flota, filters.date_from, filters.date_to, debouncedDriver]
   );
 
   useEffect(() => {
@@ -134,6 +139,12 @@ const LoanRequests = () => {
       setPage(1);
     }
   }, [debouncedDriver]);
+
+  useEffect(() => {
+    api.get('/admin/partners').then(r => {
+      if (Array.isArray(r.data?.data)) setPartners(r.data.data);
+    }).catch(() => {});
+  }, []);
 
   const goToPage = (p: number) => setPage(Math.max(1, Math.min(p, totalPages)));
   const handleLimitChange = (newLimit: number) => { setPageSize(newLimit); setPage(1); };
@@ -426,10 +437,14 @@ const LoanRequests = () => {
             <select id="status" value={filters.status} onChange={e => { setFilters({ ...filters, status: e.target.value }); setPage(1); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm">
               <option value="">Todos</option><option value="pending">Pendiente</option><option value="approved">Aprobado</option><option value="rejected">Rechazado</option><option value="disbursed">Desembolsado</option><option value="cancelled">Cancelado</option>
             </select></div>
-          <div className="flex-1 min-w-[150px]"><label htmlFor="country" className="block text-xs font-semibold text-gray-900 mb-1.5">País</label>
-            <select id="country" value={filters.country} onChange={e => { setFilters({ ...filters, country: e.target.value }); setPage(1); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm">
-              <option value="">Todos</option><option value="PE">Perú</option><option value="CO">Colombia</option>
-            </select></div>
+           <div className="flex-1 min-w-[150px]"><label htmlFor="country" className="block text-xs font-semibold text-gray-900 mb-1.5">País</label>
+             <select id="country" value={filters.country} onChange={e => { setFilters({ ...filters, country: e.target.value }); setPage(1); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm">
+               <option value="">Todos</option><option value="PE">Perú</option><option value="CO">Colombia</option>
+             </select></div>
+           <div className="flex-1 min-w-[150px]"><label htmlFor="flota" className="block text-xs font-semibold text-gray-900 mb-1.5">Flota</label>
+             <select id="flota" value={filters.flota} onChange={e => { setFilters({ ...filters, flota: e.target.value }); setPage(1); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm">
+               <option value="">Todas</option>{partners.filter(p => p.name).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+             </select></div>
           <div className="flex-1 min-w-[200px]"><DateRangePicker label="Fecha" value={{ date_from: filters.date_from, date_to: filters.date_to }} onChange={r => { setFilters(f => ({ ...f, date_from: r.date_from, date_to: r.date_to })); setPage(1); }} placeholder="Filtrar por fecha" /></div>
         </div>
       </div>
@@ -455,6 +470,7 @@ const LoanRequests = () => {
                   <tr>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Conductor</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">DNI</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Flota</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Monto</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">País</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Estado</th>
@@ -467,12 +483,13 @@ const LoanRequests = () => {
                     <tr key={request.id} className="hover:bg-gray-50 transition-colors">
                       <td className="px-4 py-4 whitespace-nowrap"><div className="text-sm font-medium text-gray-900">{request.driver_first_name || ''} {request.driver_last_name || ''}</div></td>
                       <td className="px-4 py-4 whitespace-nowrap"><div className="text-sm text-gray-900">{request.dni || 'N/A'}</div></td>
+                      <td className="px-4 py-4 whitespace-nowrap"><div className="text-sm text-gray-700">{request.park_id ? (partners.find(p => p.id === request.park_id)?.name || request.park_id) : '—'}</div></td>
                       <td className="px-4 py-4 whitespace-nowrap"><div className="text-sm font-semibold text-gray-900">{formatCurrency(request.disbursed_amount != null && Number(request.disbursed_amount) > 0 ? Number(request.disbursed_amount) : request.requested_amount ? Number(request.requested_amount) : 0, request.country || 'PE')}</div></td>
                       <td className="px-4 py-4 whitespace-nowrap"><div className="text-sm text-gray-900">{request.country || 'N/A'}</div></td>
                       <td className="px-4 py-4 whitespace-nowrap">{getStatusBadge(request.status || 'pending')}</td>
                       <td className="px-4 py-4 whitespace-nowrap"><div className="flex items-center space-x-2 text-sm text-gray-600"><Calendar className="w-4 h-4 text-gray-400" /><span>{(() => { if (request.status === 'disbursed' && (request.disbursed_at_display || request.disbursed_at)) return request.disbursed_at_display ? formatDateLocal(request.disbursed_at_display + 'T12:00:00', 'es-PE') : formatDateLocal(request.disbursed_at!, 'es-PE'); const date = (request.status === 'approved' || request.status === 'signed') && request.approved_at ? request.approved_at : request.created_at; return date ? formatDateLocal(date, 'es-PE') : 'N/A'; })()}</span></div></td>
                       <td className="px-4 py-4 whitespace-nowrap">
-                        <button onClick={() => navigate(`/admin/loan-requests/${request.id}`, { state: { fromLoanRequestsSearch: true, driverSearchInput, status: filters.status, country: filters.country, date_from: filters.date_from, date_to: filters.date_to, page: pageClamped, limit: pageSize } })} className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200" title="Ver detalles"><Eye className="w-5 h-5" /></button>
+                        <button onClick={() => navigate(`/admin/loan-requests/${request.id}`, { state: { fromLoanRequestsSearch: true, driverSearchInput, status: filters.status, country: filters.country, flota: filters.flota, date_from: filters.date_from, date_to: filters.date_to, page: pageClamped, limit: pageSize } })} className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200" title="Ver detalles"><Eye className="w-5 h-5" /></button>
                       </td>
                     </tr>
                   ))}

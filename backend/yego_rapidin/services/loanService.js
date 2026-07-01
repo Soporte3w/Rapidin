@@ -111,7 +111,7 @@ export const getLoanRequests = async (filters = {}) => {
                  WHEN l.disbursed_at IS NOT NULL AND r.country = 'CO' THEN (l.disbursed_at AT TIME ZONE 'America/Bogota')::date::text
                  WHEN l.disbursed_at IS NOT NULL THEN (l.disbursed_at AT TIME ZONE 'UTC')::date::text END) AS disbursed_at_display,
            d.dni, d.first_name as driver_first_name, d.last_name as driver_last_name,
-           d.cycle AS driver_cycle,
+           d.cycle AS driver_cycle, d.park_id,
            u.first_name as created_by_first_name,
            COUNT(*) OVER()::int AS _match_total
     FROM module_rapidin_loan_requests r
@@ -136,6 +136,11 @@ export const getLoanRequests = async (filters = {}) => {
   if (filters.driver_id) {
     sql += ` AND r.driver_id = $${paramCount++}`;
     params.push(filters.driver_id);
+  }
+
+  if (filters.park_id) {
+    sql += ` AND d.park_id = $${paramCount++}`;
+    params.push(filters.park_id);
   }
 
   if (filters.driver && filters.driver.trim()) {
@@ -425,7 +430,7 @@ export const getLoans = async (filters = {}) => {
   let sql = `
     SELECT l.*, 
            d.dni, d.first_name as driver_first_name, d.last_name as driver_last_name,
-           d.external_driver_id,
+           d.external_driver_id, d.park_id,
            r.observations AS request_observations,
            COALESCE(inst_lf.late_fee_sum, 0)::numeric AS total_late_fee,
            COUNT(*) OVER()::int AS _match_total
@@ -459,6 +464,11 @@ export const getLoans = async (filters = {}) => {
       params.push(...dSearch.params);
       paramCount = dSearch.nextParam;
     }
+  }
+
+  if (filters.park_id) {
+    sql += ` AND d.park_id = $${paramCount++}`;
+    params.push(filters.park_id);
   }
 
   if (filters.loan_id && filters.loan_id.trim()) {

@@ -40,6 +40,7 @@ interface Loan {
   total_amount: number;
   status: string;
   country: string;
+  park_id?: string | null;
   pending_balance: number;
   created_at: string;
   total_late_fee?: number;
@@ -54,6 +55,7 @@ export type LoansSearchState = {
   loanIdSearchInput?: string;
   status?: string;
   country?: string;
+  flota?: string;
   date_from?: string;
   date_to?: string;
   page?: number;
@@ -148,6 +150,7 @@ const Loans = () => {
   const [filters, setFilters] = useState({
     status: isReturnFromDetail ? (searchState?.status ?? '') : '',
     country: isReturnFromDetail ? (searchState?.country ?? '') : '',
+    flota: isReturnFromDetail ? (searchState?.flota ?? '') : '',
     date_from: isReturnFromDetail ? (searchState?.date_from ?? '') : '',
     date_to: isReturnFromDetail ? (searchState?.date_to ?? '') : '',
   });
@@ -155,6 +158,7 @@ const Loans = () => {
   const [loanIdSearchInput, setLoanIdSearchInput] = useState(initialLoanId);
   const debouncedDriver = useDebouncedValue(driverSearchInput, 400);
   const debouncedLoanId = useDebouncedValue(loanIdSearchInput, 400);
+  const [partners, setPartners] = useState<{ id: string; name: string }[]>([]);
   const [page, setPage] = useState(isReturnFromDetail && searchState?.page != null ? searchState.page : 1);
   const [pageSize, setPageSize] = useState(isReturnFromDetail && searchState?.limit != null ? searchState.limit : 10);
   const returnConsumedRef = useRef(false);
@@ -329,6 +333,7 @@ const Loans = () => {
         if (filters.country) params.append('country', filters.country);
         if (filters.date_from) params.append('date_from', filters.date_from);
         if (filters.date_to) params.append('date_to', filters.date_to);
+        if (filters.flota) params.append('park_id', filters.flota);
         const dq = debouncedDriver.trim();
         if (dq) params.append('driver', dq);
         const lq = debouncedLoanId.trim();
@@ -364,7 +369,7 @@ const Loans = () => {
         setLoading(false);
       }
     },
-    [page, pageSize, filters.status, filters.country, filters.date_from, filters.date_to, debouncedDriver, debouncedLoanId]
+    [page, pageSize, filters.status, filters.country, filters.flota, filters.date_from, filters.date_to, debouncedDriver, debouncedLoanId]
   );
 
   useEffect(() => {
@@ -385,6 +390,12 @@ const Loans = () => {
   useEffect(() => {
     fetchConstancias();
   }, [loans]);
+
+  useEffect(() => {
+    api.get('/admin/partners').then(r => {
+      if (Array.isArray(r.data?.data)) setPartners(r.data.data);
+    }).catch(() => {});
+  }, []);
 
   const fetchPersonalCredits = useCallback(async () => {
     setPersonalLoading(true);
@@ -1273,21 +1284,27 @@ const Loans = () => {
               <option value="defaulted">Vencido</option>
             </select>
           </div>
-          <div className="flex-1 min-w-[150px]">
-            <label htmlFor="country" className="block text-xs font-semibold text-gray-900 mb-1.5">
-              País
-            </label>
-            <select
-              id="country"
-              value={filters.country}
-              onChange={(e) => setFilters({ ...filters, country: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
-            >
-              <option value="">Todos</option>
-              <option value="PE">Perú</option>
-              <option value="CO">Colombia</option>
-            </select>
-          </div>
+           <div className="flex-1 min-w-[150px]">
+             <label htmlFor="country" className="block text-xs font-semibold text-gray-900 mb-1.5">
+               País
+             </label>
+             <select
+               id="country"
+               value={filters.country}
+               onChange={(e) => setFilters({ ...filters, country: e.target.value })}
+               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
+             >
+               <option value="">Todos</option>
+               <option value="PE">Perú</option>
+               <option value="CO">Colombia</option>
+             </select>
+           </div>
+           <div className="flex-1 min-w-[150px]">
+             <label htmlFor="flota" className="block text-xs font-semibold text-gray-900 mb-1.5">Flota</label>
+             <select id="flota" value={filters.flota} onChange={e => setFilters({ ...filters, flota: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm">
+               <option value="">Todas</option>{partners.filter(p => p.name).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+             </select>
+           </div>
           <div className="flex-1 min-w-[200px]">
             <DateRangePicker
               label="Fecha"
@@ -1332,12 +1349,15 @@ const Loans = () => {
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                     ID
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                    Conductor
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                    Monto Desembolsado
-                  </th>
+                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                     Conductor
+                   </th>
+                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                     Flota
+                   </th>
+                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                     Monto Desembolsado
+                   </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                     Monto Total
                   </th>
@@ -1381,6 +1401,11 @@ const Loans = () => {
                       </div>
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
+                      <div className="text-sm text-gray-700">
+                        {loan.park_id ? (partners.find(p => p.id === loan.park_id)?.name || loan.park_id) : '—'}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap">
                       <div className="text-sm font-semibold text-gray-900">
                         {loan.country === 'PE' ? 'S/.' : loan.country === 'CO' ? 'COP' : ''} {loan.disbursed_amount ? Number(loan.disbursed_amount).toFixed(2) : '0.00'}
                       </div>
@@ -1418,6 +1443,7 @@ const Loans = () => {
                               loanIdSearchInput,
                               status: filters.status,
                               country: filters.country,
+                              flota: filters.flota,
                               date_from: filters.date_from,
                               date_to: filters.date_to,
                               page: pageClamped,

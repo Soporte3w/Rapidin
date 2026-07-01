@@ -19,7 +19,7 @@ router.use(filterByCountry);
 
 router.get('/', async (req, res) => {
   try {
-    const { status, country, driver, date_from, date_to, date_field, page = 1, limit = 20 } = req.query;
+    const { status, country, driver, park_id, date_from, date_to, date_field, page = 1, limit = 20 } = req.query;
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
 
@@ -31,6 +31,7 @@ router.get('/', async (req, res) => {
       filters.country = req.allowedCountries[0];
     }
     if (driver && typeof driver === 'string') filters.driver = driver;
+    if (park_id && typeof park_id === 'string') filters.park_id = park_id;
     if (date_from && typeof date_from === 'string') filters.date_from = date_from;
     if (date_to && typeof date_to === 'string') filters.date_to = date_to;
     if (date_field === 'approved_at') filters.date_field = 'approved_at';

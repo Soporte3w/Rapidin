@@ -13,6 +13,7 @@ import { query } from '../../config/database.js';
 import { logger } from '../../utils/logger.js';
 import { simulateLoanOptions, isMiautoDriver } from '../services/calculationsService.js';
 import { getPartnerNameById } from '../../services/partnersService.js';
+import { fetchPartners } from '../../services/partnersService.js';
 import { getDniInfo } from '../../services/factilizaService.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -912,6 +913,18 @@ router.post('/loan-request', uploadLoanDocFields, async (req, res) => {
   } catch (error) {
     logger.error('Error creando solicitud desde admin:', error);
     return errorResponse(res, error.message || 'Error al crear la solicitud', 500);
+  }
+});
+
+// Lista de flotas (partners) para filtros admin
+router.get('/partners', async (req, res) => {
+  try {
+    const partners = await fetchPartners();
+    const list = (partners || []).map(p => ({ id: p.id, name: p.name }));
+    return successResponse(res, list);
+  } catch (e) {
+    logger.error('Error obteniendo partners:', e);
+    return errorResponse(res, 'Error obteniendo flotas', 500);
   }
 });
 

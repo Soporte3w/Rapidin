@@ -4,7 +4,7 @@ import { symMoneda } from '../../utils/miautoAlquilerVentaList';
 import { convertMontoPenUsd } from '../../utils/miautoPenUsdConversion';
 import { roundToTwoDecimals } from '../../utils/currency';
 
-type Moneda = 'PEN' | 'USD';
+type Moneda = 'PEN' | 'COP' | 'USD';
 
 export function MiautoComprobantePagoActions({
   comprobanteId,
@@ -79,6 +79,7 @@ export function MiautoComprobantePagoActions({
         className="px-1.5 py-0.5 border border-gray-300 rounded text-[11px]"
       >
         <option value="PEN">S/.</option>
+        <option value="COP">COP</option>
         <option value="USD">USD</option>
       </select>
       <button

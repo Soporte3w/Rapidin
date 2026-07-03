@@ -137,6 +137,8 @@ interface SolicitudSummary {
   otros_gastos?: MiautoOtrosGastoRow[];
 }
 
+type MiautoMoneda = 'PEN' | 'COP' | 'USD';
+
 interface ComprobanteCuotaSemanal {
   id: string;
   solicitud_id: string;
@@ -154,13 +156,9 @@ interface ComprobanteCuotaSemanal {
   origen?: string | null;
 }
 
-/** Saldo pendiente numérico para conformidad admin (Yego): cuota + mora_extra + late_fee (si no hay pago). */
+/** Saldo pendiente numérico para conformidad admin: usa el saldo final del API/helper único de cuota semanal. */
 function pendienteRestanteConformidadCuota(c: CuotaSemanal): number {
-  const base = miautoNum(c.cuota_pendiente ?? 0) + miautoNum(c.mora_extra ?? 0);
-  const lateFee = miautoNum(c.paid_amount) <= 0.005 
-    ? miautoNum(c.mora_acumulada ?? c.late_fee ?? 0) 
-    : 0;
-  return roundToTwoDecimals(Math.max(0, base + lateFee));
+  return roundToTwoDecimals(Math.max(0, miautoCuotaFinalCronogramaSemanal(c)));
 }
 
 /** Monto pendiente sugerido para etiquetar el comprobante de conformidad (admin). */
@@ -219,7 +217,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const [conformidadArchivoPendiente, setConformidadArchivoPendiente] = useState<Record<string, File | null>>({});
   /** Sobrescritura opcional de monto/moneda mostrados al subir conformidad (por defecto = pendiente de la cuota). */
   const [conformidadMontoInput, setConformidadMontoInput] = useState<Record<string, string>>({});
-  const [conformidadMonedaInput, setConformidadMonedaInput] = useState<Record<string, 'PEN' | 'USD'>>({});
+  const [conformidadMonedaInput, setConformidadMonedaInput] = useState<Record<string, MiautoMoneda>>({});
   const conformidadFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [conformidadEliminarModal, setConformidadEliminarModal] = useState<{ comprobanteId: string } | null>(null);
   const [eliminandoConformidadId, setEliminandoConformidadId] = useState<string | null>(null);
@@ -264,16 +262,8 @@ export default function YegoMiAutoRentSaleDetail() {
   const pendienteTotalCronogramaValidar = useMemo(() => {
     const sum = cuotas.reduce((acc, row) => {
       if (row.status === 'bonificada') return acc;
-      const saldoApi = row.pending_total ?? row.cuota_final;
-      if (saldoApi != null && Number.isFinite(Number(saldoApi))) {
-        const v = Math.max(0, roundToTwoDecimals(Number(saldoApi)));
-        if (v > 0.005) return acc + v;
-      }
-      if (row.status === 'paid') return acc;
-      const ad = Number(row.amount_due) || 0;
-      const moraP = row.mora_pendiente != null ? Number(row.mora_pendiente) : Number(row.late_fee) || 0;
-      const pd = Number(row.paid_amount) || 0;
-      return acc + Math.max(0, roundToTwoDecimals(ad + moraP - pd));
+      const v = miautoCuotaFinalCronogramaSemanal(row);
+      return v > 0.005 ? acc + v : acc;
     }, 0);
     return roundToTwoDecimals(sum);
   }, [cuotas]);
@@ -485,7 +475,7 @@ export default function YegoMiAutoRentSaleDetail() {
     [id, fetchDetail]
   );
 
-  const handleValidarComprobante = (comprobanteId: string, monto: number, moneda: 'PEN' | 'USD') =>
+  const handleValidarComprobante = (comprobanteId: string, monto: number, moneda: MiautoMoneda) =>
     runComprobantePatch({
       setBusy: setValidandoCompId,
       busyId: comprobanteId,
@@ -511,7 +501,7 @@ export default function YegoMiAutoRentSaleDetail() {
     cuotaSemanalId: string,
     file: File,
     monto: number,
-    moneda: 'PEN' | 'USD'
+    moneda: MiautoMoneda
   ) => {
     if (!id) return;
     if (!file || !(file instanceof File)) {
@@ -709,8 +699,6 @@ export default function YegoMiAutoRentSaleDetail() {
 
   const bonoTiempoActivo = solicitud.cronograma?.bono_tiempo_activo === true;
 
-
-  //hola
   return (
     <div className="space-y-6">
       <header className="bg-[#8B1A1A] rounded-lg p-4 lg:p-5">
@@ -1035,11 +1023,7 @@ export default function YegoMiAutoRentSaleDetail() {
                   const moraAcumulada = miautoNum(c.mora_acumulada ?? c.late_fee ?? 0);
                   const moraPagada = roundToTwoDecimals(Math.max(0, moraAcumulada - moraPendiente));
                   const saldoFavor = miautoNum(c.saldo_favor_conductor);
-                  // Pendiente: capital + late_fee pendiente. Si no hay pago, incluir mora_acumulada.
-                  const lateFeeSinPago = miautoNum(c.paid_amount) <= 0.005 && moraPendiente <= 0.005
-                    ? miautoNum(c.mora_acumulada ?? c.late_fee ?? 0)
-                    : 0;
-                  const pendienteDisplay = roundToTwoDecimals(cuotaAPagarNeta + moraPendiente + lateFeeSinPago);
+                  const pendienteDisplay = miautoCuotaFinalCronogramaSemanal(c);
                   const moraExtra = miautoNum(c.mora_extra);
                   return (
                   <Fragment key={c.id}>
@@ -1384,7 +1368,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                         <select
                                           value={conformidadMonedaInput[c.id] ?? monedaCuotaRow(c)}
                                           onChange={(e) => {
-                                            const newMon = e.target.value as 'PEN' | 'USD';
+                                            const newMon = e.target.value as MiautoMoneda;
                                             const prevMon = conformidadMonedaInput[c.id] ?? monedaCuotaRow(c);
                                             if (prevMon === newMon) return;
                                             const montoStr = conformidadMontoInput[c.id]?.trim();
@@ -1412,6 +1396,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                           className="px-2 py-1 border border-gray-300 rounded text-[11px] text-gray-900 disabled:bg-gray-100 disabled:text-gray-500"
                                         >
                                           <option value="PEN">PEN (S/.)</option>
+                                          <option value="COP">COP</option>
                                           <option value="USD">USD</option>
                                         </select>
                                       </div>
@@ -2112,9 +2097,9 @@ export default function YegoMiAutoRentSaleDetail() {
                             const sym = symMoneda(monedaCuotaRow(c));
                             const cuotaTotal = Number(c.amount_due || c.cuota_neta) || 0;
                             const pagado = Number(c.paid_amount) || 0;
-                            const moraPendiente = Math.max(Number(c.mora_pendiente) || 0, Number(c.mora_acumulada ?? c.late_fee) || 0);
+                            const moraPendiente = Number(c.mora_pendiente ?? c.late_fee) || 0;
                             const moraExtra = Number(c.mora_extra) || 0;
-                            const total = Math.max(0, cuotaTotal - pagado) + moraPendiente + moraExtra;
+                            const total = miautoCuotaFinalCronogramaSemanal(c);
                             const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
                             return (
                               <li key={c.id} className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
@@ -2167,7 +2152,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                 {pfYangoRaw > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Recaudo Yango:</span> <span className="font-medium">{sym} {pfYangoRaw.toFixed(2)}</span></div>}
                                 {pf83Real > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro ingresos (83%):</span> <span className="font-medium text-orange-600">-{sym} {pf83Real.toFixed(2)}</span></div>}
                                 {cobroSaldoRegla > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro de saldo:</span> <span className="font-medium text-orange-600">-{sym} {cobroSaldoRegla.toFixed(2)}</span></div>}
-                                {cobroDesdeSaldo > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro saldo (Fleet):</span> <span className="font-medium text-orange-600">-{sym} {cobroDesdeSaldo.toFixed(2)}</span></div>}
+                                {cobroDesdeSaldo > 0.01 && <div className="flex justify-between"><span className="text-gray-500">Cobro Fleet aplicado:</span> <span className="font-medium text-orange-600">-{sym} {cobroDesdeSaldo.toFixed(2)}</span></div>}
                               </>
                             );
                           })()}

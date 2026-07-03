@@ -1,6 +1,6 @@
 /**
- * Regenera la fila de cuota de la semana “actual” del job Mi Auto (mismo lunes que el cron lunes 1:10 Lima).
- * Consulta Yango, hace ensureCuotaSemanalForWeek (INSERT o UPDATE). Por defecto no cobra (dryRun).
+ * Regenera la fila de cuota de la semana “actual” del job Mi Auto (mismo lunes que el cron lunes 6:00 Lima).
+ * Consulta Yango, hace generateWeeklyCharge (INSERT o UPDATE). Por defecto no cobra (dryRun).
  *
  * Uso:
  *   node scripts/miauto-regenerar-cuota-semana-solicitud.js <solicitud_uuid>

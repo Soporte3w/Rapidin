@@ -37,6 +37,12 @@ function trimOrUndefined(x) {
   return s === '' ? undefined : s;
 }
 
+function normalizeMiautoMonedaReq(moneda) {
+  const m = String(moneda || '').trim().toUpperCase();
+  if (m === 'PEN' || m === 'COP' || m === 'USD') return m;
+  return 'USD';
+}
+
 async function ensureSolicitudOwnedByDriver(solicitudId, req, res) {
   if (req.user?.role !== 'driver') return true;
   const ownRes = await pool.query(
@@ -88,7 +94,7 @@ router.post(
           req.params.id,
           lastId,
           req.user?.id,
-          { monto, moneda: moneda.toUpperCase() === 'PEN' ? 'PEN' : 'USD' }
+          { monto, moneda: normalizeMiautoMonedaReq(moneda) }
         );
       }
       return successResponse(res, list, list.length && list[list.length - 1].estado === 'validado' ? 'Comprobante subido y validado' : 'Comprobante subido', 201);
@@ -108,11 +114,11 @@ router.post(
       const monto = req.body.monto != null ? parseFloat(req.body.monto) : null;
       const moneda = trimOrUndefined(req.body.moneda);
       if (monto == null || Number.isNaN(monto) || monto <= 0 || !moneda) {
-        return errorResponse(res, 'monto (número > 0) y moneda (PEN o USD) son requeridos', 400);
+        return errorResponse(res, 'monto (número > 0) y moneda (PEN, COP o USD) son requeridos', 400);
       }
       const list = await addPagoManual(req.params.id, req.user?.id, {
         monto,
-        moneda: moneda.toUpperCase() === 'PEN' ? 'PEN' : 'USD',
+        moneda: normalizeMiautoMonedaReq(moneda),
       });
       auditMiautoMutation('pago.manual_registered', 'pago', null, { solicitudId: req.params.id, monto, moneda });
       return successResponse(res, list, 'Pago manual registrado', 201);
@@ -135,7 +141,7 @@ router.patch(
         req.params.id,
         req.params.comprobanteId,
         req.user?.id,
-        (monto != null && !Number.isNaN(monto) && moneda) ? { monto, moneda: moneda.toUpperCase() === 'PEN' ? 'PEN' : 'USD' } : {}
+        (monto != null && !Number.isNaN(monto) && moneda) ? { monto, moneda: normalizeMiautoMonedaReq(moneda) } : {}
       );
       auditMiautoMutation('comprobante.validated', 'comprobante', req.params.comprobanteId, { solicitudId: req.params.id });
       return successResponse(res, list, 'Comprobante validado');
@@ -271,7 +277,7 @@ router.patch(
         req.params.id,
         req.params.comprobanteId,
         req.user?.id,
-        (monto != null && !Number.isNaN(monto) && moneda) ? { monto, moneda: moneda.toUpperCase() === 'PEN' ? 'PEN' : 'USD' } : {}
+        (monto != null && !Number.isNaN(monto) && moneda) ? { monto, moneda: normalizeMiautoMonedaReq(moneda) } : {}
       );
       auditMiautoMutation('comprobante_cuota.validated', 'comprobante_cuota_semanal', req.params.comprobanteId, { solicitudId: req.params.id });
       return successResponse(res, list, 'Comprobante validado');
@@ -313,13 +319,13 @@ router.post(
       const monto = req.body.monto != null ? parseFloat(req.body.monto) : null;
       const moneda = trimOrUndefined(req.body.moneda);
       if (monto == null || Number.isNaN(monto) || monto <= 0 || !moneda) {
-        return errorResponse(res, 'monto (número > 0) y moneda (PEN o USD) son requeridos', 400);
+        return errorResponse(res, 'monto (número > 0) y moneda (PEN, COP o USD) son requeridos', 400);
       }
       const list = await addPagoManualCuotaSemanal(
         req.params.id,
         req.params.cuotaSemanalId,
         req.user?.id,
-        { monto, moneda: moneda.toUpperCase() === 'PEN' ? 'PEN' : 'USD' }
+        { monto, moneda: normalizeMiautoMonedaReq(moneda) }
       );
       auditMiautoMutation('pago_cuota.manual_registered', 'cuota_semanal', req.params.cuotaSemanalId, { solicitudId: req.params.id, monto, moneda });
       return successResponse(res, list, 'Pago manual registrado', 201);
@@ -385,7 +391,7 @@ router.patch(
         req.params.id,
         req.params.comprobanteId,
         req.user?.id,
-        (monto != null && !Number.isNaN(monto) && moneda) ? { monto, moneda: moneda.toUpperCase() === 'PEN' ? 'PEN' : 'USD' } : {}
+        (monto != null && !Number.isNaN(monto) && moneda) ? { monto, moneda: normalizeMiautoMonedaReq(moneda) } : {}
       );
       return successResponse(res, list, 'Comprobante validado');
     } catch (error) {

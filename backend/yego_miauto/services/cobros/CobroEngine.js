@@ -24,7 +24,7 @@
  */
 
 import { query } from '../../../config/database.js';
-import { logger, auditLog } from '../../../utils/logger.js';
+import { logger } from '../../../utils/logger.js';
 import crypto from 'crypto';
 import {
   computeAmountDueSemanal,
@@ -34,21 +34,14 @@ import {
   debeAplicarMaxCuotaSinBonoPorMora,
   round2,
 } from './CuotaCalculator.js';
-import { computeLateFee, imputarPagoMoraPrimero } from './LateFeeCalculator.js';
+import { computeLateFee } from './LateFeeCalculator.js';
 import { applyWaterfallPool, snapshotOrigenTrasCascada, mergeCascadaAllocations } from './CascadaPoolManager.js';
-import {
-  getCronogramaById,
-  getMonedaCuotaSemanalPorVehiculo,
-  getRuleForTripCount,
-} from '../cronograma/miautoCronogramaService.js';
+import { getCronogramaById } from '../cronograma/miautoCronogramaService.js';
 import {
   buildCobroAuditContext,
   persistCobroAudit,
 } from './CobroAuditTrail.js';
-import {
-  isSemanaDepositoMiAuto,
-  ordenarCuotasSemanalesCronologico,
-} from '../cuotas/miautoCuotaSemanalService.js';
+import { isSemanaDepositoMiAuto } from '../cuotas/miautoCuotaSemanalService.js';
 import { computeDueDateForMiAutoCuota, isWeekYangoClosedForMiAutoCuotaMetrics } from '../../../utils/miautoLimaWeekRange.js';
 import { partnerFeesYangoAMonedaCuota } from '../utils/miautoMoneyUtils.js';
 
@@ -87,7 +80,7 @@ function ymdFromDb(v) {
  * @param {string} solicitudId
  * @returns {BillingContext}
  */
-export async function loadBillingContext(solicitudId) {
+async function loadBillingContext(solicitudId) {
   const solRes = await query(
     `SELECT s.id, s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal,
             s.status, s.placa_asignada, s.country
@@ -113,7 +106,7 @@ export async function loadBillingContext(solicitudId) {
 /**
  * Determina si hay cuota vencida con saldo pendiente (para forzar cuota máxima).
  */
-export async function hayCuotaVencidaConSaldo(solicitudId) {
+async function hayCuotaVencidaConSaldo(solicitudId) {
   const res = await query(
     `SELECT 1 FROM (
        SELECT LOWER(TRIM(COALESCE(c.status, ''))) AS st,
@@ -142,7 +135,7 @@ export async function hayCuotaVencidaConSaldo(solicitudId) {
 /**
  * Carga las cuotas pendientes de una solicitud para la cascada.
  */
-export async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
+async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
   let sql = `SELECT id, due_date, week_start_date, amount_due, late_fee, paid_amount, status
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1
@@ -189,7 +182,13 @@ export async function generateWeeklyCharge({
   const weekYmd = String(weekStartDate).trim().slice(0,10);
 
   // --- IDEMPOTENCIA: verificar si ya se ejecutó esta generación exacta ---
-  const rawExecutionKey = `${solicitudId}|${weekYmd}|${round2(Number(incomeResult?.partner_fees) || 0)}|${generatedBy}`;
+  const rawExecutionKey = [
+    solicitudId,
+    weekYmd,
+    Number(incomeResult?.count_completed) || 0,
+    round2(Number(incomeResult?.partner_fees) || 0),
+    generatedBy,
+  ].join('|');
   const executionHash = crypto.createHash('sha256').update(rawExecutionKey).digest('hex');
 
   const existingExec = await query(
@@ -201,7 +200,12 @@ export async function generateWeeklyCharge({
   );
 
   if (existingExec.rows.length > 0) {
-    logger.info(`CobroEngine: generación idempotente — ya ejecutado para ${solicitudId} semana ${weekYmd} (hash ${executionHash.slice(0,12)})`);
+    logger.debug('miauto.cuota.idempotent_skip', {
+      solicitudId,
+      weekStartDate: weekYmd,
+      executionHash: executionHash.slice(0, 12),
+      generatedBy,
+    });
     return {
       cuotaId: existingExec.rows[0].cuota_semanal_id,
       weekStartDate: weekYmd,
@@ -265,7 +269,11 @@ export async function generateWeeklyCharge({
       forzarMaxCuota = true;
       plan = resolveMaxCuotaPorVehiculo(cronograma, cronogramaVehiculoId);
       if (plan?.error) return { error: plan.error };
-      logger.info(`BillingEngine: solicitud ${solicitudId} mora abierta → cuota máxima sin bono`);
+      logger.info('miauto.cuota.maxima_por_mora', {
+        solicitudId,
+        weekStartDate: weekYmd,
+        cronogramaVehiculoId,
+      });
     }
   }
 
@@ -310,6 +318,14 @@ export async function generateWeeklyCharge({
 
   auditSteps.cuotaCalculation = cuotaCalc;
 
+  const existingForWeek = await query(
+    `SELECT id, paid_amount, late_fee, status
+     FROM module_miauto_cuota_semanal
+     WHERE solicitud_id = $1 AND week_start_date = $2 AND deleted_at IS NULL`,
+    [solicitudId, weekYmd]
+  );
+  const cuotaOrigenId = existingForWeek.rows[0]?.id || null;
+
   // --- 5. Aplicar cascada ---
   let cascadaResult = { applied: 0, remainingPool: poolCascada.pool, allocations: [] };
   let cascadeHash = null;
@@ -326,13 +342,18 @@ export async function generateWeeklyCharge({
     );
 
     if (existingCascade.rows.length > 0) {
-      logger.info(`CobroEngine: cascada idempotente — ya aplicada para ${solicitudId} semana ${weekYmd}`);
+      logger.debug('miauto.cascada.idempotent_skip', {
+        solicitudId,
+        weekStartDate: weekYmd,
+        poolTotal: poolCascada.pool,
+        executionHash: cascadeHash.slice(0, 12),
+      });
     } else {
-      const cuotasDebt = await loadCuotasParaCascada(solicitudId);
+      const cuotasDebt = await loadCuotasParaCascada(solicitudId, cuotaOrigenId);
       cascadaResult = applyWaterfallPool({
         poolAmount: poolCascada.pool,
         cuotas: cuotasDebt,
-        excludeCuotaId: null,
+        excludeCuotaId: cuotaOrigenId,
       });
 
       for (const alloc of cascadaResult.allocations) {
@@ -341,6 +362,15 @@ export async function generateWeeklyCharge({
           [alloc.paidDespues, alloc.statusDespues, alloc.cuotaId]
         );
       }
+      logger.info('miauto.cascada.applied', {
+        solicitudId,
+        weekStartDate: weekYmd,
+        poolTotal: poolCascada.pool,
+        poolAplicado: cascadaResult.applied,
+        remanente: cascadaResult.remainingPool,
+        cuotasAfectadas: cascadaResult.allocations.length,
+        cuotaOrigenId,
+      });
     }
   }
 
@@ -434,10 +464,7 @@ export async function generateWeeklyCharge({
 
   // --- 9. Persistir ---
   let cuotaId;
-  const existing = await query(
-    `SELECT id, paid_amount, late_fee, status FROM module_miauto_cuota_semanal WHERE solicitud_id = $1 AND week_start_date = $2 AND deleted_at IS NULL`,
-    [solicitudId, weekYmd]
-  );
+  const existing = existingForWeek;
 
   if (existing.rows.length > 0 && skipUpdateIfExists) {
     return { cuotaId: existing.rows[0].id, audited: false };
@@ -542,6 +569,26 @@ export async function generateWeeklyCharge({
     actorId,
     correlationId,
     executionHash,
+  });
+
+  logger.info('miauto.cuota.generated', {
+    solicitudId,
+    cuotaId,
+    weekStartDate: weekYmd,
+    dueDate,
+    generatedBy,
+    action: existing.rows.length > 0 ? 'updated' : 'created',
+    moneda,
+    numViajes,
+    partnerFeesRaw: partnerFeesRawStored,
+    amountDue: amountDueInsert,
+    lateFee: moraResult.moraTotal,
+    pendingTotal: auditSteps.resultado.pendingTotal,
+    status: statusInsert,
+    isPrimera,
+    forzarMaxCuota,
+    cascadaAplicada: cascadaResult.applied,
+    saldoFavorConductor: saldoFavorInsert,
   });
 
   // Si hubo cascada, registrar evento de cascada con su propio hash

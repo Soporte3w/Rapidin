@@ -76,7 +76,7 @@ export function computeLateFee({ tasaInteresMora, dueDateYmd, todayYmd, capitalM
     };
   }
 
-  const tasaDiaria = round2(tasa / 7);
+  const tasaDiaria = tasa / 7;
   const moraDiaria = round2(capital * tasaDiaria);
   const moraTotal = round2(moraDiaria * diasAtraso);
 

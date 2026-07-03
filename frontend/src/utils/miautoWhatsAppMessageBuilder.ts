@@ -4,7 +4,7 @@
  * Mismo código que openWhatsAppModal en YegoMiAutoRentSaleDetail.tsx.
  */
 import { symMoneda } from './miautoAlquilerVentaList';
-import { miautoSemanaOrdinalPorVencimiento, miautoNum } from './miautoRentSaleHelpers';
+import { miautoCuotaFinalCronogramaSemanal, miautoNum, miautoSemanaOrdinalPorVencimiento } from './miautoRentSaleHelpers';
 import { roundToTwoDecimals } from './currency';
 import { CUENTAS_BANCARIAS_WHATSAPP } from '../pages/yegoRapidin/LoanDetail';
 
@@ -16,8 +16,13 @@ interface CuotaRow {
   cuota_semanal?: number;
   amount_due?: number;
   paid_amount?: number;
+  amount_due_sched?: number;
+  cuota_pendiente?: number;
+  cuota_final?: number;
   late_fee?: number;
   mora_extra?: number;
+  mora_extra_total?: number;
+  mora_extra_cobrada?: number;
   mora_pendiente?: number;
   mora_acumulada?: number;
   moneda?: string;
@@ -46,7 +51,30 @@ export interface BuildMessageResult {
 
 // ── Helpers ──
 function monedaCuotaRow(c: Pick<CuotaRow, 'moneda'>) {
-  return String(c?.moneda || 'PEN').toUpperCase() === 'USD' ? 'USD' : 'PEN';
+  const u = String(c?.moneda || 'PEN').toUpperCase();
+  if (u === 'USD' || u === 'COP') return u;
+  return 'PEN';
+}
+
+function cuotaPendienteWhatsApp(c: CuotaRow): number {
+  return roundToTwoDecimals(Math.max(0, miautoCuotaFinalCronogramaSemanal(c)));
+}
+
+function moraPendienteWhatsApp(c: CuotaRow): number {
+  return roundToTwoDecimals(Math.max(0, miautoNum(c.mora_pendiente ?? c.late_fee ?? 0)));
+}
+
+function moraExtraWhatsApp(c: CuotaRow): number {
+  return roundToTwoDecimals(Math.max(0, miautoNum(c.mora_extra ?? 0)));
+}
+
+function lineSuffixMora(sym: string, c: CuotaRow): string {
+  const mora = moraPendienteWhatsApp(c);
+  const moraExtra = moraExtraWhatsApp(c);
+  const parts: string[] = [];
+  if (mora > 0.01) parts.push(`mora ${sym} ${mora.toFixed(2)}`);
+  if (moraExtra > 0.01) parts.push(`mora extra ${sym} ${moraExtra.toFixed(2)}`);
+  return parts.length ? ` (incluye ${parts.join(' + ')})` : '';
 }
 
 /**
@@ -85,7 +113,7 @@ export function buildMiAutoMessage(input: BuildMessageInput): BuildMessageResult
     let hasDescuentos = false;
     if (pf83Real > 0.01) { descuentos += `🔹 Cobro por ingresos (83.33%): ${sym} ${pf83Real.toFixed(2)}\n`; hasDescuentos = true; }
     if (cobroSaldoRegla > 0.01) { descuentos += `🔹 Cobro de saldo: ${sym} ${cobroSaldoRegla.toFixed(2)}\n`; hasDescuentos = true; }
-    if (cobroDesdeSaldo > 0.01) { descuentos += `🔹 Cobro de saldo (Fleet): ${sym} ${cobroDesdeSaldo.toFixed(2)}\n`; hasDescuentos = true; }
+    if (cobroDesdeSaldo > 0.01) { descuentos += `🔹 Cobro Fleet aplicado a esta cuota: ${sym} ${cobroDesdeSaldo.toFixed(2)}\n`; hasDescuentos = true; }
     if (!hasDescuentos) descuentos += '🔹 Sin descuentos esta semana\n';
 
     const cascadaRef = cuotaReciente?.partner_fees_cascada_aplicado_a;
@@ -99,25 +127,18 @@ export function buildMiAutoMessage(input: BuildMessageInput): BuildMessageResult
 
     descuentos += '\n------------------------------------------------------------------------\nPENDIENTE:\n';
 
-    const pendientes = cuotasPendientes
-      .filter((c) => {
-        const pt = Number(c.amount_due || 0) - Number(c.paid_amount || 0)
-          + Math.max(Number(c.mora_pendiente ?? 0), Number(c.mora_acumulada ?? c.late_fee ?? 0))
-          + miautoNum(c.mora_extra);
-        return pt > 0.01;
-      })
+    const cuotasPendientesConSaldo = cuotasPendientes.filter((c) => cuotaPendienteWhatsApp(c) > 0.01);
+    const pendientes = cuotasPendientesConSaldo
       .slice(0, 10)
       .map((c) => {
         const s = symMoneda(monedaCuotaRow(c));
-        const pendingTotal = Number(c.amount_due || 0) - Number(c.paid_amount || 0)
-          + Math.max(Number(c.mora_pendiente ?? 0), Number(c.mora_acumulada ?? c.late_fee ?? 0))
-          + miautoNum(c.mora_extra);
+        const pendingTotal = cuotaPendienteWhatsApp(c);
         const semana = miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date);
-        return { semana, sym: s, pendingTotal };
+        return { semana, sym: s, pendingTotal, moraDetalle: lineSuffixMora(s, c) };
       });
-    const mas = cuotasPendientes.length > 10 ? cuotasPendientes.length - 10 : 0;
+    const mas = cuotasPendientesConSaldo.length > 10 ? cuotasPendientesConSaldo.length - 10 : 0;
 
-    const lineasPendientes = pendientes.map((p) => `🔹 Semana ${p.semana}: ${p.sym} ${p.pendingTotal.toFixed(2)} 🚨`);
+    const lineasPendientes = pendientes.map((p) => `🔹 Semana ${p.semana}: ${p.sym} ${p.pendingTotal.toFixed(2)}${p.moraDetalle} 🚨`);
     descuentos += lineasPendientes.join('\n');
     if (mas > 0) descuentos += `\n🔹 Y ${mas} cuota(s) más... 🚨`;
     defaultText = `${header}${descuentos}\n\nCualquier consulta quedamos atentos 👍\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
@@ -131,9 +152,7 @@ export function buildMiAutoMessage(input: BuildMessageInput): BuildMessageResult
     const cobroDesdeSaldo = Number(cuotaReciente.cobro_desde_saldo_conductor || 0);
     const saldoFavor = Number(cuotaReciente.saldo_favor_conductor || 0);
     const pagado = Number(cuotaReciente.paid_amount || 0);
-    const pendingTotalCuota = Number(cuotaReciente.amount_due || 0) - Number(cuotaReciente.paid_amount || 0)
-      + Math.max(Number(cuotaReciente.mora_pendiente ?? 0), Number(cuotaReciente.mora_acumulada ?? cuotaReciente.late_fee ?? 0))
-      + miautoNum(cuotaReciente.mora_extra);
+    const pendingTotalCuota = cuotaPendienteWhatsApp(cuotaReciente);
     const semana = miautoSemanaOrdinalPorVencimiento(cuotas, cuotaReciente.due_date, cuotaReciente.week_start_date);
     const cubierto = pendingTotalCuota <= 0.01;
 
@@ -143,7 +162,7 @@ export function buildMiAutoMessage(input: BuildMessageInput): BuildMessageResult
     let hasDescuentos = false;
     if (pf83Real > 0.01) { descuentos += `🔹 Cobro por ingresos (83.33%): ${sym} ${pf83Real.toFixed(2)}\n`; hasDescuentos = true; }
     if (cobroSaldoRegla > 0.01) { descuentos += `🔹 Cobro de saldo: ${sym} ${cobroSaldoRegla.toFixed(2)}\n`; hasDescuentos = true; }
-    if (cobroDesdeSaldo > 0.01) { descuentos += `🔹 Cobro de saldo (Fleet): ${sym} ${cobroDesdeSaldo.toFixed(2)}\n`; hasDescuentos = true; }
+    if (cobroDesdeSaldo > 0.01) { descuentos += `🔹 Cobro Fleet aplicado a esta cuota: ${sym} ${cobroDesdeSaldo.toFixed(2)}\n`; hasDescuentos = true; }
     if (!hasDescuentos) descuentos += '🔹 Sin descuentos esta semana\n';
 
     const cascadaRefSingle = cuotaReciente?.partner_fees_cascada_aplicado_a;
@@ -162,7 +181,7 @@ export function buildMiAutoMessage(input: BuildMessageInput): BuildMessageResult
       if (saldoFavor > 0.01) pagadoText += `\nSaldo a tu favor: ${sym} ${saldoFavor.toFixed(2)} 🎉`;
       defaultText = `${header}${descuentos}${pagadoText}\n\nCualquier consulta quedamos atentos 👍`;
     } else {
-      defaultText = `${header}${descuentos}\n------------------------------------------------------------------------\nPENDIENTE:\n🔹 Semana ${semana}: ${sym} ${pendingTotalCuota.toFixed(2)} 🚨\n\nCualquier consulta quedamos atentos 👍\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
+      defaultText = `${header}${descuentos}\n------------------------------------------------------------------------\nPENDIENTE:\n🔹 Semana ${semana}: ${sym} ${pendingTotalCuota.toFixed(2)}${lineSuffixMora(sym, cuotaReciente)} 🚨\n\nCualquier consulta quedamos atentos 👍\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
     }
   } else {
     defaultText = `Hola ${name},\n\nTe contactamos respecto a tu contrato Yego Mi Auto. Cualquier duda estamos a tu disposición.\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;

@@ -9,7 +9,9 @@ export function round2(n) {
 }
 
 export function normalizePenUsd(moneda) {
-  return moneda && String(moneda).toUpperCase() === 'PEN' ? 'PEN' : 'USD';
+  const m = String(moneda || '').trim().toUpperCase();
+  if (m === 'PEN' || m === 'COP' || m === 'USD') return m;
+  return 'USD';
 }
 
 /**
@@ -27,7 +29,7 @@ export function convertirMontoEntreMonedas(monto, monedaOrigen, monedaDestino, v
     const rate = valorUsdALocal && valorUsdALocal > 0 ? valorUsdALocal : 1;
     return num / rate;
   }
-  return num;
+  return null;
 }
 
 /**
@@ -61,13 +63,18 @@ export async function montoEnPEN(solicitudId, monto, moneda) {
   const num = parseFloat(monto);
   if (Number.isNaN(num) || num <= 0) return null;
   const monedaIngreso = normalizePenUsd(moneda);
-  if (monedaIngreso === 'PEN') return round2(num);
   const sol = await query('SELECT country FROM module_miauto_solicitud WHERE id = $1', [solicitudId]);
   const country = sol.rows[0]?.country;
   if (!country) return round2(num);
-  const tc = await getTipoCambioByCountry(country);
-  const valor = tc?.valor_usd_a_local ?? 0;
-  return round2(num * valor);
+  const { valorUsdALocal, monedaLocal } = await tipoCambioUsdALocalEfectivo(country);
+  if (monedaIngreso === monedaLocal) return round2(num);
+  if (monedaIngreso === 'USD') {
+    return round2(num * valorUsdALocal);
+  }
+  logger.warn(
+    `Mi Auto: conversión local no soportada solicitud=${solicitudId} origen=${monedaIngreso} destino=${monedaLocal}`
+  );
+  return null;
 }
 
 /**
@@ -81,7 +88,13 @@ export async function montoEnUSD(solicitudId, monto, moneda) {
   const sol = await query('SELECT country FROM module_miauto_solicitud WHERE id = $1', [solicitudId]);
   const country = sol.rows[0]?.country;
   if (!country) return round2(num);
-  const { valorUsdALocal } = await tipoCambioUsdALocalEfectivo(country);
+  const { valorUsdALocal, monedaLocal } = await tipoCambioUsdALocalEfectivo(country);
+  if (monedaIngreso !== monedaLocal) {
+    logger.warn(
+      `Mi Auto: conversión a USD no soportada solicitud=${solicitudId} origen=${monedaIngreso} local=${monedaLocal}`
+    );
+    return null;
+  }
   return round2(num / valorUsdALocal);
 }
 

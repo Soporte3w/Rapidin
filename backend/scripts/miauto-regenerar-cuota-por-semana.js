@@ -1,5 +1,5 @@
 /**
- * Regenera una cuota Mi Auto para un lunes de cuota (`week_start_date`) concreto (Yango + ensureCuotaSemanalForWeek)
+ * Regenera una cuota Mi Auto para un lunes de cuota (`week_start_date`) concreto (Yango + generateWeeklyCharge)
  * y deja esa semana sin pago (`paid_amount = 0`, `late_fee = 0`, estado pending/overdue según vencimiento Lima).
  *
  * Uso:

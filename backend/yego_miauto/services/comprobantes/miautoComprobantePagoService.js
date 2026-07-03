@@ -1,7 +1,7 @@
 import { query } from '../../../config/database.js';
 import { uploadFileToMedia } from '../../../services/voucherService.js';
-import { getTipoCambioByCountry } from '../tipo-cambio/miautoTipoCambioService.js';
-import { round2, normalizePenUsd, convertirMontoEntreMonedas } from '../utils/miautoMoneyUtils.js';
+import { logger } from '../../../utils/logger.js';
+import { round2, normalizePenUsd, convertirMontoEntreMonedas, tipoCambioUsdALocalEfectivo } from '../utils/miautoMoneyUtils.js';
 
 /** Si la suma de comprobantes validados (cuota inicial + otros gastos) >= cuota inicial, marca pago_estado = completo. */
 export async function marcarPagoCompletoSiAplica(solicitudId) {
@@ -13,7 +13,7 @@ export async function marcarPagoCompletoSiAplica(solicitudId) {
   if (!cvId) {
     // Si la solicitud está aprobada pero no tiene vehículo asignado, es un problema de integridad
     if (sol.rows[0]?.status === 'aprobado') {
-      console.warn(`[marcarPagoCompleto] Solicitud ${solicitudId} aprobada pero sin cronograma_vehiculo_id — no se puede verificar cuota inicial`);
+      logger.warn('miauto.pago_inicial.sin_cronograma_vehiculo', { solicitudId });
     }
     return;
   }
@@ -82,21 +82,18 @@ async function loadMonedaContextForSolicitud(solicitudId) {
     [solicitudId]
   );
   if (sol.rows.length === 0) {
-    return { country: null, cronograma_vehiculo_id: null, inicialMoneda: 'USD', valorUsdALocal: null };
+    return { country: null, cronograma_vehiculo_id: null, inicialMoneda: 'USD', valorUsdALocal: null, monedaLocal: 'PEN' };
   }
   const country = sol.rows[0]?.country;
   const cvId = sol.rows[0]?.cronograma_vehiculo_id;
+  const tcEff = await tipoCambioUsdALocalEfectivo(country);
+  const monedaLocal = tcEff.monedaLocal;
   let inicialMoneda = 'USD';
   if (cvId) {
     const cv = await query('SELECT inicial_moneda FROM module_miauto_cronograma_vehiculo WHERE id = $1', [cvId]);
-    inicialMoneda = cv.rows[0]?.inicial_moneda || 'USD';
+    inicialMoneda = cv.rows[0]?.inicial_moneda === 'USD' ? 'USD' : monedaLocal;
   }
-  let valorUsdALocal = null;
-  if (country) {
-    const tc = await getTipoCambioByCountry(country);
-    valorUsdALocal = tc?.valor_usd_a_local ?? null;
-  }
-  return { country, cronograma_vehiculo_id: cvId, inicialMoneda, valorUsdALocal };
+  return { country, cronograma_vehiculo_id: cvId, inicialMoneda, valorUsdALocal: tcEff.valorUsdALocal, monedaLocal };
 }
 
 /** Valida un comprobante con monto y moneda; convierte a la moneda de la cuota inicial. Si suma validados >= cuota inicial, marca pago_estado = completo */

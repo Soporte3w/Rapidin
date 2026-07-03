@@ -32,7 +32,7 @@ export interface AlquilerVentaListItem {
   total_pagado_pen?: number;
   total_pagado_usd?: number;
   /** Moneda dominante de las cuotas reales (o cronograma si no hay cuotas). */
-  moneda?: 'USD' | 'PEN';
+  moneda?: 'USD' | 'PEN' | 'COP';
 }
 
 export function conductorDisplay(row: AlquilerVentaListItem): string {
@@ -43,17 +43,21 @@ export function conductorDisplay(row: AlquilerVentaListItem): string {
   return '—';
 }
 
-/** Normaliza moneda de cuota (BD / API) a PEN o USD. */
-export function monedaCuotasLabel(moneda?: string | null): 'USD' | 'PEN' {
+/** Normaliza moneda de cuota (BD / API) a moneda soportada por Mi Auto. */
+export function monedaCuotasLabel(moneda?: string | null): 'USD' | 'PEN' | 'COP' {
   const u = String(moneda ?? '')
     .trim()
     .toUpperCase();
-  return u === 'USD' ? 'USD' : 'PEN';
+  if (u === 'USD' || u === 'COP') return u;
+  return 'PEN';
 }
 
-/** Símbolo $ o S/. según moneda de la cuota (misma regla que `monedaCuotasLabel`). */
+/** Símbolo según moneda de la cuota (misma regla que `monedaCuotasLabel`). */
 export function symMoneda(moneda?: string | null): string {
-  return monedaCuotasLabel(moneda) === 'USD' ? '$' : 'S/.';
+  const m = monedaCuotasLabel(moneda);
+  if (m === 'USD') return '$';
+  if (m === 'COP') return 'COP';
+  return 'S/.';
 }
 
 /** Total pagado en cuotas semanales con prefijo de moneda dominante. */

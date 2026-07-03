@@ -26,6 +26,7 @@ import {
   symMoneda,
   type AlquilerVentaListItem,
 } from '../../utils/miautoAlquilerVentaList';
+import { miautoCuotaFinalCronogramaSemanal } from '../../utils/miautoRentSaleHelpers';
 
 interface CuotaSemanal {
   id: string;
@@ -35,6 +36,8 @@ interface CuotaSemanal {
   paid_amount: number;
   late_fee: number;
   mora_pendiente?: number;
+  cuota_pendiente?: number;
+  mora_extra?: number;
   status: string;
   /** Solo cuota pendiente (sin mora). */
   pending_total: number;
@@ -53,6 +56,7 @@ const PAGE_SIZES = [10, 20, 50];
 const PAGINATION_BTN =
   'w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors';
 const API_PAGE_CHUNK = 500;
+type MiautoMoneda = 'PEN' | 'COP' | 'USD';
 
 function getVisiblePageNumbers(page: number, totalPages: number): number[] {
   if (totalPages <= 5) return Array.from({ length: totalPages }, (_, i) => i + 1);
@@ -106,7 +110,7 @@ export default function YegoMiAutoPayments() {
   const [cuotas, setCuotas] = useState<CuotaSemanal[]>([]);
   const [loadingCuotas, setLoadingCuotas] = useState(false);
   const [pagoMonto, setPagoMonto] = useState('');
-  const [pagoMoneda, setPagoMoneda] = useState<'PEN' | 'USD'>('PEN');
+  const [pagoMoneda, setPagoMoneda] = useState<MiautoMoneda>('PEN');
   const [cuotaSeleccionadaId, setCuotaSeleccionadaId] = useState<string>('');
   const [enviando, setEnviando] = useState(false);
   const [comprobanteFile, setComprobanteFile] = useState<File | null>(null);
@@ -241,11 +245,7 @@ export default function YegoMiAutoPayments() {
       const lista = Array.isArray(payload) ? payload : (payload?.data ?? []);
       const conPendiente = lista.filter((c: CuotaSemanal) => {
         if (c.status !== 'pending' && c.status !== 'overdue') return false;
-        const moraPend = c.mora_pendiente != null ? Number(c.mora_pendiente) : Number(c.late_fee || 0);
-        const total =
-          c.cuota_final != null
-            ? Number(c.cuota_final)
-            : Math.max(0, Number(c.amount_due || 0) + moraPend - Number(c.paid_amount || 0));
+        const total = miautoCuotaFinalCronogramaSemanal(c);
         return total > 0;
       });
       setCuotas(conPendiente);
@@ -651,11 +651,7 @@ export default function YegoMiAutoPayments() {
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm mb-4"
                 >
                   {cuotas.map((c) => {
-                    const moraPendOpt = c.mora_pendiente != null ? Number(c.mora_pendiente) : Number(c.late_fee || 0);
-                    const saldoOpt =
-                      c.cuota_final != null
-                        ? Number(c.cuota_final)
-                        : Math.max(0, Number(c.amount_due || 0) + moraPendOpt - Number(c.paid_amount || 0));
+                    const saldoOpt = miautoCuotaFinalCronogramaSemanal(c);
                     return (
                     <option key={c.id} value={c.id}>
                       Vence {formatDate(c.due_date || c.week_start_date, 'es-ES')} — {symMoneda(c.moneda)}{' '}
@@ -680,10 +676,11 @@ export default function YegoMiAutoPayments() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Moneda</label>
                 <select
                   value={pagoMoneda}
-                  onChange={(e) => setPagoMoneda(e.target.value as 'PEN' | 'USD')}
+                  onChange={(e) => setPagoMoneda(e.target.value as MiautoMoneda)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm mb-4"
                 >
                   <option value="PEN">S/. Soles</option>
+                  <option value="COP">COP Pesos</option>
                   <option value="USD">USD Dólares</option>
                 </select>
 

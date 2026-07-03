@@ -1,7 +1,7 @@
 /** Comprobantes de cuota semanal Mi Auto: alta, validación, conformidad admin, pago manual, bono tiempo. */
 import { query } from '../../../config/database.js';
 import { uploadFileToMedia } from '../../../services/voucherService.js';
-import { montoComprobanteCuotaALaMonedaFila, normalizePenUsd, round2 } from '../utils/miautoMoneyUtils.js';
+import { montoComprobanteCuotaALaMonedaFila, normalizePenUsd, round2, tipoCambioUsdALocalEfectivo } from '../utils/miautoMoneyUtils.js';
 import {
   isSemanaDepositoMiAuto,
   loadMiautoComprobanteDerivacionContext,
@@ -25,6 +25,16 @@ function inferOrigenFromRow(r) {
   if (!r) return 'conductor';
   if (r.file_path === 'manual') return 'pago_manual';
   return 'conductor';
+}
+
+async function monedaPersistidaParaCuota(solicitudId, monedaCuota) {
+  if (String(monedaCuota || 'PEN').toUpperCase() === 'USD') return 'USD';
+  const sol = await query(
+    'SELECT country FROM module_miauto_solicitud WHERE id = $1 LIMIT 1',
+    [solicitudId]
+  );
+  const { monedaLocal } = await tipoCambioUsdALocalEfectivo(sol.rows?.[0]?.country || 'PE');
+  return monedaLocal;
 }
 
 const SELECT_CUOTA_COMP_BASE = `SELECT id, solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado,
@@ -379,8 +389,7 @@ export async function createComprobanteConformidadAdmin(solicitudId, cuotaSemana
         throw err;
       }
       await refreshMoraTrasPagoValidado(solicitudId);
-      const monedaComprobantePersist =
-        String(monedaCuotaFila || 'PEN').toUpperCase() === 'USD' ? 'USD' : 'PEN';
+      const monedaComprobantePersist = await monedaPersistidaParaCuota(solicitudId, monedaCuotaFila);
       try {
         await query(
           `UPDATE module_miauto_comprobante_cuota_semanal SET monto = $1, moneda = $2 WHERE id = $3`,
@@ -693,8 +702,7 @@ export async function validateComprobanteCuotaSemanal(solicitudId, comprobanteId
     c.moneda
   );
   if (montoAplicar <= 0.005) throw new Error('No se pudo convertir el monto');
-  const monedaComprobantePersist =
-    String(c.moneda || 'PEN').toUpperCase() === 'USD' ? 'USD' : 'PEN';
+  const monedaComprobantePersist = await monedaPersistidaParaCuota(solicitudId, c.moneda);
 
   await query(
     `UPDATE module_miauto_comprobante_cuota_semanal SET monto = $1, moneda = $2, estado = 'validado', validated_at = CURRENT_TIMESTAMP, validated_by = $3 WHERE id = $4`,
@@ -731,8 +739,7 @@ export async function addPagoManualCuotaSemanal(solicitudId, cuotaSemanalId, use
 
   const montoAplicar = await montoComprobanteCuotaALaMonedaFila(solicitudId, num, moneda, c.moneda);
   if (montoAplicar <= 0.005) throw new Error('No se pudo convertir el monto');
-  const monedaComprobantePersist =
-    String(c.moneda || 'PEN').toUpperCase() === 'USD' ? 'USD' : 'PEN';
+  const monedaComprobantePersist = await monedaPersistidaParaCuota(solicitudId, c.moneda);
 
   let manualId = null;
   try {

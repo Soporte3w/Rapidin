@@ -405,7 +405,11 @@ export async function processCobroCuota(
   }
 
   if (!externalDriverId) {
-    logger.warn(`Yego Mi Auto cobro: ${driverLabel} sin external_driver_id`);
+    logger.warn('miauto.fleet.sin_external_driver_id', {
+      solicitudId: cuotaRow.solicitud_id,
+      cuotaId: cuotaRow.id,
+      driverLabel,
+    });
     return { success: false, partial: false, failed: true, reason: 'Sin external_driver_id', dryRun, driverName: driverLabel };
   }
 
@@ -446,7 +450,13 @@ export async function processCobroCuota(
   ) {
     balance = round2(Math.max(0, sharedFleetCap.remaining));
     if (balance <= 0) {
-      logger.warn(`Yego Mi Auto cobro: ${driverLabel} sin saldo Fleet (tope de cola agotado, sin nueva consulta API)`);
+      logger.info('miauto.fleet.sin_saldo', {
+        solicitudId: cuotaRow.solicitud_id,
+        cuotaId: cuotaRow.id,
+        driverLabel,
+        source: 'shared_cap',
+        balance: 0,
+      });
       return {
         success: false,
         partial: false,
@@ -462,7 +472,14 @@ export async function processCobroCuota(
   } else {
     const balanceResult = await getContractorBalance(externalDriverId, parkId, cookieMiAuto);
     if (!balanceResult.success) {
-      logger.warn(`Yego Mi Auto cobro: sin saldo API ${driverLabel}: ${balanceResult.error}`);
+      logger.warn('miauto.fleet.balance_error', {
+        solicitudId: cuotaRow.solicitud_id,
+        cuotaId: cuotaRow.id,
+        driverLabel,
+        externalDriverId,
+        parkId,
+        error: balanceResult.error,
+      });
       return {
         success: false,
         partial: false,
@@ -477,7 +494,13 @@ export async function processCobroCuota(
 
     balance = round2(Math.max(0, Number(balanceResult.balance) || 0));
     if (balance <= 0) {
-      logger.warn(`Yego Mi Auto cobro: ${driverLabel} sin saldo Fleet (balance API=${balance})`);
+      logger.info('miauto.fleet.sin_saldo', {
+        solicitudId: cuotaRow.solicitud_id,
+        cuotaId: cuotaRow.id,
+        driverLabel,
+        source: 'fleet_api',
+        balance,
+      });
       return {
         success: false,
         partial: false,
@@ -492,11 +515,12 @@ export async function processCobroCuota(
     }
   }
 
-  const monedaCuota = normalizePenUsd(cuotaRow.moneda);
   const country = String(cuotaRow.country || 'PE').toUpperCase() === 'CO' ? 'CO' : 'PE';
   const tcEff = await tipoCambioUsdALocalEfectivo(country);
   const valorTc = tcEff.valorUsdALocal;
   const monedaFleetLocal = tcEff.monedaLocal;
+  const monedaPlan = normalizePenUsd(cuotaRow.moneda);
+  const monedaCuota = monedaPlan === 'USD' ? 'USD' : monedaFleetLocal;
 
   let pendingFleetLocal = pendingAmount;
   if (monedaCuota === 'USD') {
@@ -511,6 +535,23 @@ export async function processCobroCuota(
     const c = convertirMontoEntreMonedas(amountToChargeFleet, monedaFleetLocal, 'USD', valorTc);
     creditCuotaMoneda = c != null ? round2(c) : round2(amountToChargeFleet);
   }
+
+  logger.info('miauto.fleet.charge_attempt', {
+    solicitudId: cuotaRow.solicitud_id,
+    cuotaId: cuotaRow.id,
+    driverName,
+    dueDate: ymdFromDbDate(cuotaRow.due_date),
+    weekStartDate: ymdFromDbDate(cuotaRow.week_start_date),
+    monedaCuota,
+    monedaFleetLocal,
+    tipoCambioUsdLocal: valorTc,
+    pendienteCuota: pendingAmount,
+    pendienteFleetLocal: pendingFleetLocal,
+    balanceFleet: balance,
+    montoRetiroFleet: amountToChargeFleet,
+    montoAcreditadoCuota: creditCuotaMoneda,
+    dryRun,
+  });
 
   const totalDueCap = round2(paid + pendingAmount);
   let newPaid = round2(paid + creditCuotaMoneda);
@@ -582,7 +623,16 @@ export async function processCobroCuota(
   }
 
   if (!withdrawResult.success) {
-    logger.error(`Yego Mi Auto cobro: retiro ${driverName}: ${withdrawResult.message || withdrawResult.error}`);
+    logger.error('miauto.fleet.withdraw_error', {
+      solicitudId: cuotaRow.solicitud_id,
+      cuotaId: cuotaRow.id,
+      driverName,
+      externalDriverId,
+      parkId,
+      montoRetiroFleet: amountToChargeFleet,
+      monedaFleetLocal,
+      error: withdrawResult.message || withdrawResult.error,
+    });
     return { success: false, partial: false, failed: true, reason: withdrawResult.message || withdrawResult.error };
   }
 
@@ -600,38 +650,15 @@ export async function processCobroCuota(
   );
   await touchFechaUltimoAbonoCuota(cuotaRow.id, paid, newPaid);
 
-  // Guardar referencia del cobro Fleet en la cuota más reciente (solo si es otra cuota)
+  // Guardar el cobro Fleet en la cuota que realmente recibió el pago.
   if (!dryRun && creditCuotaMoneda > 0.005) {
-    const wsDest = ymdFromDbDate(cuotaRow.week_start_date);
-    const refDestino = { cuota_semanal_id: cuotaRow.id, week_start_date: wsDest, monto: creditCuotaMoneda };
-    const ultRes = await query(
-      `SELECT id FROM module_miauto_cuota_semanal
-       WHERE solicitud_id = $1::uuid AND deleted_at IS NULL
-       ORDER BY week_start_date DESC LIMIT 1`,
-      [cuotaRow.solicitud_id]
+    await query(
+      `UPDATE module_miauto_cuota_semanal SET
+         cobro_desde_saldo_conductor = ROUND((COALESCE(cobro_desde_saldo_conductor, 0) + $1::numeric)::numeric, 2),
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2::uuid`,
+      [creditCuotaMoneda, cuotaRow.id]
     );
-    const ultId = ultRes.rows?.[0]?.id;
-    if (ultId && String(ultId) !== String(cuotaRow.id)) {
-      await query(
-        `UPDATE module_miauto_cuota_semanal SET
-           cobro_desde_saldo_conductor = ROUND((COALESCE(cobro_desde_saldo_conductor, 0) + $1::numeric)::numeric, 2),
-           cobro_saldo_referencia = CASE
-             WHEN cobro_saldo_referencia IS NULL THEN $3::jsonb
-             ELSE cobro_saldo_referencia || $3::jsonb
-           END,
-           updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2::uuid`,
-        [creditCuotaMoneda, ultId, JSON.stringify([refDestino])]
-      );
-    } else {
-      await query(
-        `UPDATE module_miauto_cuota_semanal SET
-           cobro_desde_saldo_conductor = ROUND((COALESCE(cobro_desde_saldo_conductor, 0) + $1::numeric)::numeric, 2),
-           updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2::uuid`,
-        [creditCuotaMoneda, ultId]
-      );
-    }
   }
 
   await appendMiautoFleetCobroAuditLog({
@@ -648,9 +675,19 @@ export async function processCobroCuota(
   });
 
   if (creditCuotaMoneda >= pendingAmount - 0.005) {
-    logger.info(
-      `Yego Mi Auto cobro completo: ${driverName} Fleet ${amountToChargeFleet.toFixed(2)} ${monedaFleetLocal} → +${creditCuotaMoneda.toFixed(2)} ${monedaCuota} pagado`
-    );
+    logger.info('miauto.fleet.charge_success', {
+      solicitudId: cuotaRow.solicitud_id,
+      cuotaId: cuotaRow.id,
+      driverName,
+      result: 'complete',
+      montoRetiroFleet: amountToChargeFleet,
+      monedaFleetLocal,
+      montoAcreditadoCuota: creditCuotaMoneda,
+      monedaCuota,
+      paidAntes: paid,
+      paidDespues: newPaid,
+      statusDespues: newStatus,
+    });
     return {
       success: true,
       partial: false,
@@ -659,9 +696,21 @@ export async function processCobroCuota(
       amountCreditedCuota: creditCuotaMoneda,
     };
   }
-  logger.info(
-    `Yego Mi Auto cobro parcial: ${driverName} Fleet ${amountToChargeFleet.toFixed(2)} ${monedaFleetLocal} → +${creditCuotaMoneda.toFixed(2)} ${monedaCuota} (pendiente cuota ${pendingAmount.toFixed(2)} ${monedaCuota})`
-  );
+  logger.info('miauto.fleet.charge_success', {
+    solicitudId: cuotaRow.solicitud_id,
+    cuotaId: cuotaRow.id,
+    driverName,
+    result: 'partial',
+    montoRetiroFleet: amountToChargeFleet,
+    monedaFleetLocal,
+    montoAcreditadoCuota: creditCuotaMoneda,
+    monedaCuota,
+    paidAntes: paid,
+    paidDespues: newPaid,
+    pendingAntes: pendingAmount,
+    pendingDespues: pendAfter,
+    statusDespues: newStatus,
+  });
   return {
     success: true,
     partial: true,

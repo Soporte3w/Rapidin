@@ -4,6 +4,7 @@
 # Logs
 logs
 *.log
+*.bak
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -77,6 +78,7 @@ web_modules/
 
 # Respaldos locales Mi Auto (PII / datos operativos)
 backend/backups/
+backend/scripts/output/
 
 # dotenv environment variable files
 .env

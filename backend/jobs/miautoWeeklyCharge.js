@@ -1,9 +1,9 @@
 /**
- * Mi Auto — crons America/Lima: mora 1:00 diaria; lunes 1:10 generación+cascada; lunes 7:10 cobro Fleet.
+ * Mi Auto — crons America/Lima: mora 1:00 diaria; lunes 6:00 generación+cascada; lunes 7:10 cobro Fleet.
  * @see initializeJobs → startMiautoWeeklyChargeJob
  */
 import cron from 'node-cron';
-import { logger, businessLog, technicalLog } from '../utils/logger.js';
+import { logger, businessLog } from '../utils/logger.js';
 import { round2 } from '../yego_miauto/services/utils/miautoMoneyUtils.js';
 import { MIAUTO_PARK_ID } from '../yego_miauto/services/utils/miautoDriverLookup.js';
 import { query } from '../config/database.js';
@@ -106,7 +106,7 @@ async function resolveTripsFromPlacaDriver(placa, driverIdFleet = null) {
 }
 
 /**
- * Yango (o primera semana) + `ensureCuotaSemanalForWeek`.
+ * Yango (o primera semana) + `generateWeeklyCharge`.
  * @param {{ incomeMaxAttempts?: number, incomeFallbackZeroOnFailure?: boolean }} [options]
  *   incomeMaxAttempts: intentos a Yango por solicitud (default 1; regeneración manual 4–6).
  *   incomeFallbackZeroOnFailure: si Yango falla tras reintentos, igual generar cuota con 0 viajes y 0 PF (default true).
@@ -135,9 +135,18 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
   if (esPrimera || sinDriverYango) {
     incomeResult = { success: true, count_completed: 0, partner_fees: 0 };
     if (sinDriverYango && !esPrimera) {
-      logger.info(`Mi Auto: solicitud ${sol.solicitud_id} sin external_driver_id en Yango — se genera cuota con 0 viajes y 0 partner_fees (${driverLabel}${placaStr})`);
+      logger.debug('miauto.cuota.yango_sin_driver', {
+        solicitudId: sol.solicitud_id,
+        driverLabel,
+        placa: placaStr ? String(sol.placa_asignada).trim() : null,
+        action: 'generar_cuota_con_cero_viajes',
+      });
     } else {
-      logger.info(`Mi Auto: solicitud ${sol.solicitud_id} primera cuota semanal — sin consulta Yango (${driverLabel}${placaStr})`);
+      logger.debug('miauto.cuota.primera_sin_yango', {
+        solicitudId: sol.solicitud_id,
+        driverLabel,
+        placa: placaStr ? String(sol.placa_asignada).trim() : null,
+      });
     }
   } else {
     const placaTrips = await resolveTripsFromPlacaDriver(sol.placa_asignada, sol.external_driver_id);
@@ -189,7 +198,7 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
 }
 
 /**
- * Regenera la fila `week_start_date` = lunes de cuota indicado (consulta Yango Lun–Dom previo + ensureCuotaSemanalForWeek).
+ * Regenera la fila `week_start_date` = lunes de cuota indicado (consulta Yango Lun–Dom previo + generateWeeklyCharge).
  * No ejecuta cobro Fleet.
  * @param {string} solicitudId
  * @param {string} cuotaWeekYmd Fecha civil cualquiera de esa semana o el lunes exacto (YYYY-MM-DD).
@@ -285,28 +294,41 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
     if (!br.success) {
       for (const c of chunk) {
         failed += 1;
-        logger.warn(`Mi Auto cobro Fleet cuota ${c?.id}: falló — ${br.error}`);
       }
+      logger.warn('miauto.fleet_queue.balance_error', {
+        cuotasEnChunk: chunk.length,
+        driverName: [head.first_name, head.last_name].filter(Boolean).join(' ').trim() || 'Conductor',
+        externalDriverId: ext,
+        parkId,
+        error: br.error,
+      });
       processedGlobal += chunk.length;
       continue;
     }
 
     const snapshot = round2(Math.max(0, Number(br.balance) || 0));
     if (snapshot <= 0) {
-      logger.warn(
-        `Mi Auto cobro Fleet: ${[head.first_name, head.last_name].filter(Boolean).join(' ').trim() || 'Conductor'} saldo snapshot 0 (${chunk.length} cuota(s) en cola)`
-      );
       for (const c of chunk) {
         failed += 1;
-        logger.warn(`Mi Auto cobro Fleet cuota ${c?.id}: falló — Sin saldo disponible`);
       }
+      logger.info('miauto.fleet_queue.sin_saldo_snapshot', {
+        cuotasEnChunk: chunk.length,
+        driverName: [head.first_name, head.last_name].filter(Boolean).join(' ').trim() || 'Conductor',
+        externalDriverId: ext,
+        parkId,
+        balance: snapshot,
+      });
       processedGlobal += chunk.length;
       continue;
     }
 
-    logger.info(
-      `Mi Auto cobro Fleet: saldo único ${snapshot.toFixed(2)} (moneda local Yango) para ${chunk.length} cuota(s) mismo perfil`
-    );
+    logger.info('miauto.fleet_queue.balance_snapshot', {
+      cuotasEnChunk: chunk.length,
+      driverName: [head.first_name, head.last_name].filter(Boolean).join(' ').trim() || 'Conductor',
+      externalDriverId: ext,
+      parkId,
+      balance: snapshot,
+    });
 
     const sharedFleetBalancePEN = { remaining: snapshot };
 
@@ -319,7 +341,11 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
         failed += 1;
         const rid = chunk[j]?.id;
         const why = result.reason || result.error || '(sin motivo)';
-        logger.warn(`Mi Auto cobro Fleet cuota ${rid}: falló — ${why}`);
+        logger.warn('miauto.fleet_queue.cuota_failed', {
+          cuotaId: rid,
+          solicitudId: chunk[j]?.solicitud_id,
+          reason: why,
+        });
       } else if (result.partial) partial += 1;
       else success += 1;
       processedGlobal += 1;
@@ -342,20 +368,29 @@ export async function runWeeklyCuotaGenerationMonday(options = {}) {
   // CronLock: evitar doble ejecución
   const lock = await acquireCronLock('miauto_generacion_cuotas', 600);
   if (!lock.acquired) {
-    logger.warn(`Mi Auto: ${lock.reason}`);
+    logger.warn('miauto.weekly_generation.lock_skip', { reason: lock.reason });
     return { skipped: true, reason: lock.reason };
   }
 
-  logger.info(`Mi Auto: generación semanal (lunes 1:10 Lima) incomeMaxAttempts=${incomeMaxAttempts} execution=${lock.executionId}`);
+  logger.info('miauto.weekly_generation.start', {
+    schedule: 'lunes 6:00 Lima',
+    incomeMaxAttempts,
+    executionId: lock.executionId,
+  });
   try {
     const { incomeWeekMonday, sundayDate, dateFrom, dateTo, cuotaWeekMonday } = currentMondayCuotaContext();
-    logger.info(
-      `Mi Auto: ingresos Lun ${incomeWeekMonday}→Dom ${sundayDate} | week_start cuota=${cuotaWeekMonday} | Yango ${dateFrom}…${dateTo}`
-    );
+    logger.info('miauto.weekly_generation.range', {
+      incomeWeekMonday,
+      sundayDate,
+      cuotaWeekMonday,
+      yangoDateFrom: dateFrom,
+      yangoDateTo: dateTo,
+      executionId: lock.executionId,
+    });
 
     const solicitudes = await getSolicitudesParaCobroSemanal();
     if (solicitudes.length === 0) {
-      logger.info('Mi Auto: sin solicitudes para cobro semanal');
+      logger.info('miauto.weekly_generation.empty', { executionId: lock.executionId });
       return {
         solicitudes: 0,
         ok: 0,
@@ -394,9 +429,15 @@ export async function runWeeklyCuotaGenerationMonday(options = {}) {
     for (const sol of solicitudes) {
       await persistPaidAmountCapsForSolicitud(sol.solicitud_id);
     }
-    logger.info(
-      `Mi Auto: generación lista; cobro Fleet lunes 7:10 | solicitudes=${solicitudes.length} ok=${ok} antes_inicio=${skipped} income_fallido=${income_failed} ensure_null=${ensure_failed}`
-    );
+    logger.info('miauto.weekly_generation.finish', {
+      solicitudes: solicitudes.length,
+      ok,
+      antesInicio: skipped,
+      incomeFallido: income_failed,
+      ensureFailed: ensure_failed,
+      nextStep: 'cobro Fleet lunes 7:10 Lima',
+      executionId: lock.executionId,
+    });
     await releaseCronLock('miauto_generacion_cuotas', lock.executionId);
     return {
       solicitudes: solicitudes.length,
@@ -429,11 +470,14 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
 
   const lock = await acquireCronLock('miauto_cobro_fleet', 600);
   if (!lock.acquired) {
-    logger.warn(`Mi Auto Fleet: ${lock.reason}`);
+    logger.warn('miauto.fleet_job.lock_skip', { reason: lock.reason });
     return { ok: false, error: lock.reason, skipped: true };
   }
 
-  logger.info(`Mi Auto: cobro Fleet (lunes 7:10 Lima) execution=${lock.executionId}`);
+  logger.info('miauto.fleet_job.start', {
+    schedule: 'lunes 7:10 Lima',
+    executionId: lock.executionId,
+  });
   await appendMiautoFleetCobroJobAuditEvent({
     tipo: 'cobro_job_inicio',
     job: auditJob,
@@ -451,7 +495,13 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       partial,
       failed,
     });
-    logger.info(`Mi Auto cobro semanal: ${success} ok, ${partial} parcial, ${failed} fallidos`);
+    logger.info('miauto.fleet_job.finish', {
+      cuotasEnCola: cuotas.length,
+      success,
+      partial,
+      failed,
+      executionId: lock.executionId,
+    });
     await releaseCronLock('miauto_cobro_fleet', lock.executionId);
     return { ok: true, success, partial, failed, cuotas_en_cola: cuotas.length };
   } catch (err) {
@@ -482,14 +532,17 @@ export async function runFleetCobroSoloSolicitud(solicitudId) {
   if (!sid) {
     return { ok: false, error: 'solicitud_id vacío' };
   }
-  logger.info(`Mi Auto: runFleetCobroSoloSolicitud ${sid} (cola como job 7:10)`);
+  logger.info('miauto.fleet_solicitud.start', {
+    solicitudId: sid,
+    mode: 'solo_solicitud',
+  });
   try {
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_inicio',
       job: 'solo_solicitud',
       solicitud_id: sid,
     });
-    // Mora: cron 1:00 Lima + la que corre dentro de ensure en 1:10; mismo criterio que runWeeklyFleetChargeMonday (sin update extra).
+    // Mora: cron 1:00 Lima + generación/regeneración; mismo criterio que runWeeklyFleetChargeMonday (sin update extra).
     const { cuotas, pendingMap } = await getCuotasToChargeForSolicitud(sid);
     if (cuotas.length === 0) {
       await appendMiautoFleetCobroJobAuditEvent({
@@ -502,7 +555,7 @@ export async function runFleetCobroSoloSolicitud(solicitudId) {
         failed: 0,
         nota: 'sin_cuotas_en_cola',
       });
-      logger.info(`Mi Auto: ${sid} sin cuotas pending/overdue/partial con saldo > 0 en cola Fleet`);
+      logger.info('miauto.fleet_solicitud.empty', { solicitudId: sid });
       return {
         ok: true,
         solicitud_id: sid,
@@ -525,7 +578,13 @@ export async function runFleetCobroSoloSolicitud(solicitudId) {
       partial,
       failed,
     });
-    logger.info(`Mi Auto Fleet ${sid}: ${success} ok, ${partial} parcial, ${failed} fallidos`);
+    logger.info('miauto.fleet_solicitud.finish', {
+      solicitudId: sid,
+      cuotasEnCola: cuotas.length,
+      success,
+      partial,
+      failed,
+    });
     return {
       ok: failed === 0,
       solicitud_id: sid,
@@ -541,7 +600,11 @@ export async function runFleetCobroSoloSolicitud(solicitudId) {
       solicitud_id: sid,
       error: String(err?.message || err),
     });
-    logger.error(`Mi Auto runFleetCobroSoloSolicitud ${sid}:`, err);
+    logger.error('miauto.fleet_solicitud.error', {
+      solicitudId: sid,
+      error: String(err?.message || err),
+      stack: err?.stack,
+    });
     return { ok: false, error: String(err?.message || err), solicitud_id: sid };
   }
 }
@@ -552,21 +615,30 @@ export async function runFleetCobroSoloSolicitud(solicitudId) {
 export async function runWeeklyChargeForSolicitud(solicitudId, options = {}) {
   const dryRun = options.dryRun !== false;
   const sid = String(solicitudId || '').trim();
-  logger.info(`Mi Auto: runWeeklyChargeForSolicitud ${sid} dryRun=${dryRun}`);
+  logger.info('miauto.weekly_solicitud.start', { solicitudId: sid, dryRun });
 
   const sol = await loadMiAutoSolicitudConFlotaDrivers(sid);
   if (!sol) {
-    logger.error(`Mi Auto: solicitud no encontrada ${sid}`);
+    logger.error('miauto.weekly_solicitud.not_found', { solicitudId: sid });
     return { ok: false, error: 'not_found' };
   }
   if (sol.status !== 'aprobado') {
-    logger.warn(`Mi Auto: ${sid} status=${sol.status} (se requiere aprobado para generación/cobro semanal)`);
+    logger.warn('miauto.weekly_solicitud.status_invalido', {
+      solicitudId: sid,
+      status: sol.status,
+      required: 'aprobado',
+    });
   }
 
   const { incomeWeekMonday, sundayDate, dateFrom, dateTo, cuotaWeekMonday } = currentMondayCuotaContext();
-  logger.info(
-    `Mi Auto: ingresos Lun ${incomeWeekMonday}→Dom ${sundayDate} | week_start cuota=${cuotaWeekMonday} | Yango ${dateFrom}…${dateTo}`
-  );
+  logger.info('miauto.weekly_solicitud.range', {
+    solicitudId: sid,
+    incomeWeekMonday,
+    sundayDate,
+    cuotaWeekMonday,
+    yangoDateFrom: dateFrom,
+    yangoDateTo: dateTo,
+  });
 
   const ensured = await ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, {
     incomeMaxAttempts: Number(options.incomeMaxAttempts) || 1,
@@ -587,7 +659,7 @@ export async function runWeeklyChargeForSolicitud(solicitudId, options = {}) {
   }
 
   await persistPaidAmountCapsForSolicitud(sid);
-  // Sin updateMoraDiaria aquí: el cron 1:00 y ensureCuotaSemanalForWeek (1:10 / regeneración) ya recalculan mora cuando aplica.
+  // Sin updateMoraDiaria aquí: el cron 1:00 y generateWeeklyCharge/regeneración ya recalculan mora cuando aplica.
 
   const { cuotas, pendingMap } = await getCuotasToChargeForSolicitud(sid);
 
@@ -603,7 +675,6 @@ export async function runWeeklyChargeForSolicitud(solicitudId, options = {}) {
         fromMap != null && !Number.isNaN(Number(fromMap))
           ? round2(Number(fromMap))
           : round2(amountDue + lateFee - paid);
-      logger.info(`Mi Auto [dry-run] #${i + 1} id=${c.id} due=${c.due_date} pendiente=${pendiente}`);
       cola.push({
         orden: i + 1,
         cuota_id: c.id,
@@ -632,7 +703,13 @@ export async function runWeeklyChargeForSolicitud(solicitudId, options = {}) {
       partial,
       failed,
     });
-    logger.info(`Mi Auto cobro ${sid}: ${success} ok, ${partial} parcial, ${failed} fallidos`);
+    logger.info('miauto.weekly_solicitud.finish', {
+      solicitudId: sid,
+      cuotasEnCola: cuotas.length,
+      success,
+      partial,
+      failed,
+    });
     return {
       ok: true,
       dryRun: false,

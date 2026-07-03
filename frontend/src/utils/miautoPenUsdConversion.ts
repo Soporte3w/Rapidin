@@ -18,21 +18,21 @@ export function resolveTipoCambioUsdALocalFromRows(rows: MiautoRowConTcRef[], co
 
 export function convertMontoPenUsd(
   amount: number,
-  from: 'PEN' | 'USD',
-  to: 'PEN' | 'USD',
+  from: 'PEN' | 'COP' | 'USD',
+  to: 'PEN' | 'COP' | 'USD',
   valorUsdALocal: number
 ): number {
   if (!Number.isFinite(amount) || valorUsdALocal <= 0) return amount;
   if (from === to) return amount;
-  if (from === 'PEN' && to === 'USD') return amount / valorUsdALocal;
-  if (from === 'USD' && to === 'PEN') return amount * valorUsdALocal;
+  if (from !== 'USD' && to === 'USD') return amount / valorUsdALocal;
+  if (from === 'USD' && to !== 'USD') return amount * valorUsdALocal;
   return amount;
 }
 
 export function montoConvertidoPenUsdFormatted(
   amount: number,
-  from: 'PEN' | 'USD',
-  to: 'PEN' | 'USD',
+  from: 'PEN' | 'COP' | 'USD',
+  to: 'PEN' | 'COP' | 'USD',
   valorUsdALocal: number
 ): string {
   const c = convertMontoPenUsd(amount, from, to, valorUsdALocal);

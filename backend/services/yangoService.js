@@ -314,7 +314,7 @@ function extractTripCountFromIncomeRoot(root) {
 /**
  * Tributo Yango usado en Mi Auto para el 83,33% sobre `partner_fees_raw`.
  * En PE/CO el importe de `balances.partner_fees` viene en **moneda local** (PEN/COP); si la cuota del cronograma
- * está en USD, `ensureCuotaSemanalForWeek` lo pasa a USD con el tipo de cambio de la solicitud antes de restarlo.
+ * está en USD, la generación Mi Auto lo pasa a USD con el tipo de cambio de la solicitud antes de restarlo.
  * Por defecto: solo **`balances.partner_fees`** en magnitud positiva (`|…|`). Los viajes vienen de
  * **`orders.count_completed`** (u homólogos; ver `extractTripCountFromIncomeRoot`). `balances.platform_fees` es otra línea; opcionalmente se puede
  * sumar con modo `platform_plus_partner`.

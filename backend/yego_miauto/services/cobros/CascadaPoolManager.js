@@ -72,6 +72,8 @@ export function applyWaterfallPool({ poolAmount, cuotas, excludeCuotaId = null }
       cuotaId: String(cuota.id),
       weekStartDate: cuota.week_start_date || null,
       dueDate: cuota.due_date,
+      amountDue,
+      lateFee,
       pendingAntes: pending,
       montoAplicado: applyAmt,
       pendingDespues: newPending,

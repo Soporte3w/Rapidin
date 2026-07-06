@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, Copy, Check, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus } from 'lucide-react';
+import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, Copy, Check, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
@@ -132,6 +132,7 @@ interface SolicitudSummary {
   status: string;
   fecha_inicio_cobro_semanal?: string;
   placa_asignada?: string;
+  facturador_customer_id?: number | string | null;
   cronograma?: { id: string; name: string; tasa_interes_mora?: number; bono_tiempo_activo?: boolean } | null;
   cronograma_vehiculo?: { id: string; name: string; cuotas_semanales?: number; inicial_moneda?: string } | null;
   otros_gastos?: MiautoOtrosGastoRow[];
@@ -154,6 +155,18 @@ interface ComprobanteCuotaSemanal {
   created_at?: string;
   /** conductor: pago a validar; admin_confirmacion: documento oficial subido por admin (cuota ya pagada); pago_manual: registro interno */
   origen?: string | null;
+}
+
+interface NotaVentaMiAuto {
+  id: string;
+  facturador_sale_note_id: number;
+  number_full?: string | null;
+  print_a4?: string | null;
+  customer_id: number;
+  currency_type_id?: string | null;
+  total: number | string;
+  created_at?: string;
+  cuotas?: { cuota_semanal_id: string; amount: number | string }[];
 }
 
 /** Saldo pendiente numérico para conformidad admin: usa el saldo final del API/helper único de cuota semanal. */
@@ -232,6 +245,11 @@ export default function YegoMiAutoRentSaleDetail() {
   const evidenciaFleetFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const [showGenerarCuotaModal, setShowGenerarCuotaModal] = useState(false);
+  const [showNotasVentaModal, setShowNotasVentaModal] = useState(false);
+  const [notasVenta, setNotasVenta] = useState<NotaVentaMiAuto[]>([]);
+  const [notaVentaCuotasSeleccionadas, setNotaVentaCuotasSeleccionadas] = useState<Record<string, boolean>>({});
+  const [notaVentaCustomerId, setNotaVentaCustomerId] = useState('');
+  const [generandoNotaVenta, setGenerandoNotaVenta] = useState(false);
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
   const [whatsAppTab, setWhatsAppTab] = useState<'cuotas' | 'metricas'>('cuotas');
@@ -412,19 +430,22 @@ export default function YegoMiAutoRentSaleDetail() {
       else setLoading(true);
       setError('');
       const req = { signal, headers: MIAUTO_NO_CACHE_HEADERS };
-      const [resSol, resCuotas, resComp, resEvidencias] = await Promise.all([
+      const [resSol, resCuotas, resComp, resEvidencias, resNotasVenta] = await Promise.all([
         api.get(`/miauto/solicitudes/${id}`, req),
         api.get(`/miauto/solicitudes/${id}/cuotas-semanales`, req),
         api.get(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal`, req).catch(emptyListIfNotAbort),
         api.get(`/miauto/solicitudes/${id}/evidencias-fleet`, req).catch(emptyListIfNotAbort),
+        api.get(`/miauto/solicitudes/${id}/notas-venta`, req).catch(emptyListIfNotAbort),
       ]);
       const sol = resSol.data?.data ?? resSol.data;
       const { cuotas: rawCuotas, racha: rachaNum, cuotasSemanalesBonificadas: bonoNum } = parseCuotasSemanalesPayload(resCuotas);
       const comp = resComp.data?.data ?? resComp.data ?? [];
       const evFleet = resEvidencias.data?.data ?? resEvidencias.data ?? [];
+      const notas = resNotasVenta.data?.data ?? resNotasVenta.data ?? [];
       setSolicitud(sol || null);
       setCuotas(rawCuotas as CuotaSemanal[]);
       setComprobantesPagos(Array.isArray(comp) ? comp : []);
+      setNotasVenta(Array.isArray(notas) ? notas : []);
 
       setEvidenciasFleet(Array.isArray(evFleet) ? evFleet : []);
       setRacha(rachaNum);
@@ -439,6 +460,7 @@ export default function YegoMiAutoRentSaleDetail() {
         setSolicitud(null);
         setCuotas([]);
         setComprobantesPagos([]);
+        setNotasVenta([]);
   
         setEvidenciasFleet([]);
         setRacha(null);
@@ -450,6 +472,91 @@ export default function YegoMiAutoRentSaleDetail() {
       else setLoading(false);
     }
   }, [id]);
+
+  const notasVentaByCuotaId = useMemo(() => {
+    const by: Record<string, NotaVentaMiAuto> = {};
+    for (const nota of notasVenta) {
+      for (const c of nota.cuotas || []) {
+        if (c.cuota_semanal_id) by[c.cuota_semanal_id] = nota;
+      }
+    }
+    return by;
+  }, [notasVenta]);
+
+  const cuotasNotaVentaDisponibles = useMemo(() => {
+    return cuotas.filter((c) => {
+      const moneda = monedaCuotaRow(c);
+      return c.status === 'paid'
+        && miautoNum(c.paid_amount) > 0.005
+        && (moneda === 'PEN' || moneda === 'USD')
+        && !notasVentaByCuotaId[c.id];
+    });
+  }, [cuotas, notasVentaByCuotaId, solicitud?.cronograma_vehiculo?.inicial_moneda]);
+
+  const notaVentaCuotasIds = useMemo(
+    () => Object.entries(notaVentaCuotasSeleccionadas).filter(([, checked]) => checked).map(([cuotaId]) => cuotaId),
+    [notaVentaCuotasSeleccionadas]
+  );
+
+  const notaVentaTotalSeleccionado = useMemo(() => {
+    const selected = new Set(notaVentaCuotasIds);
+    return roundToTwoDecimals(cuotas.reduce((sum, c) => selected.has(c.id) ? sum + miautoNum(c.paid_amount) : sum, 0));
+  }, [cuotas, notaVentaCuotasIds]);
+
+  const notaVentaMonedasSeleccionadas = useMemo(() => {
+    const selected = new Set(notaVentaCuotasIds);
+    return [...new Set(cuotas.filter((c) => selected.has(c.id)).map((c) => monedaCuotaRow(c)))];
+  }, [cuotas, notaVentaCuotasIds, solicitud?.cronograma_vehiculo?.inicial_moneda]);
+  const notaVentaMonedaSeleccionada = notaVentaMonedasSeleccionadas[0] || 'PEN';
+  const notaVentaSeleccionMixta = notaVentaMonedasSeleccionadas.length > 1;
+
+  const openNotasVentaModal = useCallback(() => {
+    const preselected: Record<string, boolean> = {};
+    cuotasNotaVentaDisponibles.forEach((c) => { preselected[c.id] = true; });
+    setNotaVentaCuotasSeleccionadas(preselected);
+    if (solicitud?.facturador_customer_id) {
+      setNotaVentaCustomerId(String(solicitud.facturador_customer_id));
+    }
+    setShowNotasVentaModal(true);
+  }, [cuotasNotaVentaDisponibles, solicitud?.facturador_customer_id]);
+
+  const toggleNotaVentaCuota = useCallback((cuotaId: string) => {
+    setNotaVentaCuotasSeleccionadas((prev) => ({ ...prev, [cuotaId]: !prev[cuotaId] }));
+  }, []);
+
+  const handleGenerarNotaVenta = useCallback(async () => {
+    if (!id) return;
+    const customerId = Number(notaVentaCustomerId);
+    if (!Number.isInteger(customerId) || customerId <= 0) {
+      toast.error('Ingresa el customer_id del facturador');
+      return;
+    }
+    if (notaVentaCuotasIds.length === 0) {
+      toast.error('Selecciona al menos una cuota pagada');
+      return;
+    }
+    if (notaVentaSeleccionMixta) {
+      toast.error('No puedes mezclar cuotas en soles y dólares en una misma nota de venta');
+      return;
+    }
+    try {
+      setGenerandoNotaVenta(true);
+      const res = await api.post(`/miauto/solicitudes/${id}/notas-venta/generar`, {
+        customer_id: customerId,
+        cuota_ids: notaVentaCuotasIds,
+      });
+      const nota = res.data?.data;
+      toast.success(`Nota de venta generada${nota?.number_full ? `: ${nota.number_full}` : ''}`);
+      setShowNotasVentaModal(false);
+      setNotaVentaCuotasSeleccionadas({});
+      await fetchDetail(undefined, { refresh: true });
+      if (nota?.print_a4) window.open(nota.print_a4, '_blank', 'noopener,noreferrer');
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error al generar la nota de venta');
+    } finally {
+      setGenerandoNotaVenta(false);
+    }
+  }, [id, notaVentaCustomerId, notaVentaCuotasIds, notaVentaSeleccionMixta, fetchDetail]);
 
   const runComprobantePatch = useCallback(
     async (opts: {
@@ -729,6 +836,15 @@ export default function YegoMiAutoRentSaleDetail() {
                 >
                   <Plus className="w-4 h-4" />
                   Cuota
+                </button>
+                <button
+                  type="button"
+                  onClick={openNotasVentaModal}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium transition-colors"
+                  title="Generar nota de venta para cuotas pagadas"
+                >
+                  <ReceiptText className="w-4 h-4" />
+                  Generar boletas
                 </button>
                 <div className="w-px h-6 bg-white/20" />
               </>
@@ -2293,6 +2409,165 @@ export default function YegoMiAutoRentSaleDetail() {
               >
                 <FaWhatsapp className="w-5 h-5" />
                 {sendingWhatsApp ? 'Enviando...' : whatsAppPhone ? 'Enviar por WhatsApp' : 'Sin numero'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showNotasVentaModal && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => !generandoNotaVenta && setShowNotasVentaModal(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-[#8B1A1A]/10 flex items-center justify-center">
+                  <ReceiptText className="w-5 h-5 text-[#8B1A1A]" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-gray-900">Generar boletas</h3>
+                  <p className="text-xs text-gray-500">Selecciona cuotas pagadas en soles o dólares para emitir nota de venta.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowNotasVentaModal(false)}
+                disabled={generandoNotaVenta}
+                className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 disabled:opacity-50"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-4 overflow-y-auto max-h-[calc(90vh-150px)]">
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
+                <label className="block">
+                  <span className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Customer ID del facturador</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={notaVentaCustomerId}
+                    onChange={(e) => setNotaVentaCustomerId(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                    placeholder="Ej. 93"
+                  />
+                </label>
+                <div className="rounded-lg border border-gray-200 px-4 py-2 bg-gray-50 min-w-[150px]">
+                  <span className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">Total</span>
+                  <span className="text-lg font-bold text-gray-900">{symMoneda(notaVentaMonedaSeleccionada)} {notaVentaTotalSeleccionado.toFixed(2)}</span>
+                </div>
+              </div>
+
+              {notaVentaSeleccionMixta && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  Selecciona cuotas de una sola moneda para generar la nota de venta.
+                </div>
+              )}
+
+              {notasVenta.length > 0 && (
+                <div className="rounded-lg border border-green-100 bg-green-50 px-3 py-2 text-xs text-green-800">
+                  Ya existen {notasVenta.length} nota(s) generada(s) para este contrato. Las cuotas ya facturadas quedan bloqueadas.
+                </div>
+              )}
+
+              {cuotasNotaVentaDisponibles.length === 0 ? (
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-5 text-center">
+                  <p className="text-sm font-medium text-gray-800">No hay cuotas pagadas disponibles para facturar.</p>
+                  <p className="text-xs text-gray-500 mt-1">Solo aparecen cuotas con estado pagado, monto mayor a cero, moneda PEN o USD y sin nota previa.</p>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-gray-200 overflow-hidden">
+                  <div className="flex items-center justify-between gap-3 px-3 py-2 bg-gray-50 border-b border-gray-200">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-gray-600">
+                      {notaVentaCuotasIds.length} de {cuotasNotaVentaDisponibles.length} seleccionadas
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const allSelected = notaVentaCuotasIds.length === cuotasNotaVentaDisponibles.length;
+                        const next: Record<string, boolean> = {};
+                        cuotasNotaVentaDisponibles.forEach((c) => { next[c.id] = !allSelected; });
+                        setNotaVentaCuotasSeleccionadas(next);
+                      }}
+                      className="text-xs font-medium text-[#8B1A1A] hover:text-[#6B1515]"
+                    >
+                      {notaVentaCuotasIds.length === cuotasNotaVentaDisponibles.length ? 'Quitar selección' : 'Seleccionar todo'}
+                    </button>
+                  </div>
+                  <div className="divide-y divide-gray-100 max-h-[360px] overflow-y-auto">
+                    {cuotasNotaVentaDisponibles.map((c) => {
+                      const semana = miautoSemanaLista(cuotas, c.week_start_date) ?? miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date) ?? '—';
+                      const checked = notaVentaCuotasSeleccionadas[c.id] === true;
+                      const monedaCuota = monedaCuotaRow(c);
+                      return (
+                        <label key={c.id} className="flex items-center gap-3 px-3 py-3 hover:bg-gray-50 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleNotaVentaCuota(c.id)}
+                            className="h-4 w-4 rounded border-gray-300 text-[#8B1A1A] focus:ring-[#8B1A1A]"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                              <span className="text-sm font-semibold text-gray-900">Semana {semana}</span>
+                              <span className="text-xs text-gray-500">{c.due_date ? formatDate(c.due_date, 'es-ES') : 'Sin fecha'}</span>
+                            </div>
+                            <p className="text-xs text-gray-500 truncate">Cuota pagada lista para nota de venta</p>
+                          </div>
+                          <span className="text-sm font-bold tabular-nums text-green-700">{symMoneda(monedaCuota)} {miautoNum(c.paid_amount).toFixed(2)}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {notasVenta.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Notas generadas</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {notasVenta.slice(0, 6).map((nota) => (
+                      <div key={nota.id} className="rounded-lg border border-gray-200 px-3 py-2 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-gray-900">{nota.number_full || `ID ${nota.facturador_sale_note_id}`}</span>
+                          <span className="text-green-700 font-medium">{symMoneda(nota.currency_type_id || 'PEN')} {miautoNum(nota.total).toFixed(2)}</span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between gap-2 text-xs text-gray-500">
+                          <span>{nota.created_at ? formatDateTime(nota.created_at, 'es-ES') : '—'}</span>
+                          {nota.print_a4 && (
+                            <a href={nota.print_a4} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[#8B1A1A] hover:underline">
+                              PDF <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 px-5 py-4 border-t border-gray-200 bg-gray-50">
+              <button
+                type="button"
+                onClick={() => setShowNotasVentaModal(false)}
+                disabled={generandoNotaVenta}
+                className="flex-1 px-4 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cerrar
+              </button>
+              <button
+                type="button"
+                onClick={handleGenerarNotaVenta}
+                disabled={generandoNotaVenta || notaVentaCuotasIds.length === 0 || notaVentaTotalSeleccionado <= 0 || notaVentaSeleccionMixta}
+                className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium text-white ${
+                  !generandoNotaVenta && notaVentaCuotasIds.length > 0 && notaVentaTotalSeleccionado > 0 && !notaVentaSeleccionMixta
+                    ? 'bg-[#8B1A1A] hover:bg-[#6B1515]'
+                    : 'bg-gray-300 cursor-not-allowed'
+                }`}
+              >
+                <ReceiptText className="w-4 h-4" />
+                {generandoNotaVenta ? 'Generando...' : 'Generar nota de venta'}
               </button>
             </div>
           </div>

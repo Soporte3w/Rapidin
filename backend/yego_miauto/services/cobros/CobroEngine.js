@@ -136,10 +136,13 @@ async function hayCuotaVencidaConSaldo(solicitudId) {
  * Carga las cuotas pendientes de una solicitud para la cascada.
  */
 async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
+  const ctx = await loadBillingContext(solicitudId);
+  if (ctx.error) return [];
+
   let sql = `SELECT id, due_date, week_start_date, amount_due, late_fee, paid_amount, status
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1
-       AND status IN ('pending', 'overdue', 'partial')
+       AND status IN ('pending', 'overdue', 'partial', 'paid')
        AND deleted_at IS NULL`;
   const params = [solicitudId];
   if (excludeCuotaId) {
@@ -148,10 +151,69 @@ async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
   }
   sql += ` ORDER BY due_date ASC NULLS LAST, id ASC`;
   const res = await query(sql, params);
-  return (res.rows || []).map((r) => ({
-    ...r,
-    pending: round2(round2(Number(r.amount_due) || 0) + round2(Number(r.late_fee) || 0) - round2(Number(r.paid_amount) || 0)),
-  }));
+  const todayYmd = limaTodayYmd();
+  const out = [];
+
+  for (const r of res.rows || []) {
+    const weekYmd = ymdFromDb(r.week_start_date);
+    const storedDueYmd = ymdFromDb(r.due_date);
+    const isPrimera = weekYmd ? isSemanaDepositoMiAuto(weekYmd, ctx.fechaInicioCobroSemanal) : false;
+    const dueYmd = weekYmd
+      ? computeDueDateForMiAutoCuota(weekYmd, ymdFromDb(ctx.fechaInicioCobroSemanal), !!isPrimera)
+      : storedDueYmd;
+    const amountDue = round2(Number(r.amount_due) || 0);
+    const paid = round2(Number(r.paid_amount) || 0);
+    const lateFeeFresh = isPrimera
+      ? 0
+      : computeLateFee({
+          tasaInteresMora: ctx.cronograma?.tasa_interes_mora || 0,
+          dueDateYmd: dueYmd,
+          todayYmd,
+          capitalMoroso: amountDue,
+        }).moraTotal;
+    const pending = round2(Math.max(0, amountDue + lateFeeFresh - paid));
+    const statusFresh = pending <= 0.005
+      ? 'paid'
+      : paid > 0.005
+        ? 'partial'
+        : (dueYmd && dueYmd < todayYmd ? 'overdue' : 'pending');
+
+    if (
+      Math.abs(round2(Number(r.late_fee) || 0) - lateFeeFresh) > 0.005 ||
+      String(r.status || '').toLowerCase() !== statusFresh
+    ) {
+      await query(
+        `UPDATE module_miauto_cuota_semanal
+         SET late_fee = $1, status = $2, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3::uuid`,
+        [lateFeeFresh, statusFresh, r.id]
+      );
+      logger.info('miauto.cascada.pre_mora_refresh', {
+        solicitudId,
+        cuotaId: r.id,
+        dueDate: dueYmd,
+        amountDue,
+        paidAmount: paid,
+        lateFeeAntes: round2(Number(r.late_fee) || 0),
+        lateFeeDespues: lateFeeFresh,
+        statusAntes: r.status,
+        statusDespues: statusFresh,
+        pending,
+      });
+    }
+
+    if (pending > 0.005) {
+      out.push({
+        ...r,
+        due_date: dueYmd || r.due_date,
+        late_fee: lateFeeFresh,
+        status: statusFresh,
+        pending,
+      });
+    }
+  }
+
+  return out;
 }
 
 /**
@@ -358,8 +420,16 @@ export async function generateWeeklyCharge({
 
       for (const alloc of cascadaResult.allocations) {
         await query(
-          `UPDATE module_miauto_cuota_semanal SET paid_amount = $1, status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
-          [alloc.paidDespues, alloc.statusDespues, alloc.cuotaId]
+          `UPDATE module_miauto_cuota_semanal
+           SET paid_amount = $1,
+               status = $2,
+               fecha_ultimo_abono = CASE
+                 WHEN $1::numeric > COALESCE(paid_amount, 0)::numeric + 0.005 THEN $4::date
+                 ELSE fecha_ultimo_abono
+               END,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $3`,
+          [alloc.paidDespues, alloc.statusDespues, alloc.cuotaId, limaTodayYmd()]
         );
       }
       logger.info('miauto.cascada.applied', {

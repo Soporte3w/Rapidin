@@ -8,6 +8,7 @@ import comprobantesRouter from './miauto/comprobantes.js';
 import otrosRouter from './miauto/otros.js';
 import evidenciasRouter from './miauto/evidencias.js';
 import whatsappRouter from './miauto/whatsapp.js';
+import notasVentaRouter from './miauto/notasVenta.js';
 
 const router = Router();
 router.use(authenticate);
@@ -27,5 +28,6 @@ router.use(comprobantesRouter);
 router.use(otrosRouter);
 router.use(evidenciasRouter);
 router.use(whatsappRouter);
+router.use(notasVentaRouter);
 
 export default router;

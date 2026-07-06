@@ -515,6 +515,7 @@ export const getSolicitudById = async (id, options = {}) => {
             status, rejection_reason, cited_at, cited_by, appointment_date, reagendo_count,
             reviewed_at, reviewed_by, withdrawn_at, withdrawal_reason, observations, created_at, updated_at, driver_id_fleet,
             cronograma_id, cronograma_vehiculo_id, pago_tipo, pago_estado, fecha_inicio_cobro_semanal, placa_asignada,
+            facturador_customer_id,
             COALESCE(apps_trabajadas, '[]'::jsonb) AS apps_trabajadas
      FROM module_miauto_solicitud WHERE id = $1`,
     [id]

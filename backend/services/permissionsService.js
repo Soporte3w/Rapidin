@@ -1,4 +1,5 @@
 import { query } from '../config/database.js';
+import { SYSTEM_USERS_TABLE } from '../config/systemUsers.js';
 import { logger } from '../utils/logger.js';
 
 export const getAllowedCountries = async (userId, role) => {
@@ -25,7 +26,7 @@ export const getAllowedCountries = async (userId, role) => {
   }
 
   const user = await query(
-    'SELECT country FROM module_rapidin_users WHERE id = $1',
+    `SELECT country FROM ${SYSTEM_USERS_TABLE} WHERE id = $1`,
     [userId]
   );
 
@@ -45,7 +46,6 @@ export const removeCountryPermission = async (userId, country) => {
     [userId, country]
   );
 };
-
 
 
 

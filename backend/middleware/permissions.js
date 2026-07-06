@@ -7,7 +7,7 @@ export const filterByCountry = async (req, res, next) => {
       return next();
     }
 
-    if (req.user.role === 'admin') {
+    if (req.user.role === 'admin' || req.user.base_role === 'admin') {
       req.allowedCountries = ['PE', 'CO'];
       return next();
     }
@@ -69,7 +69,6 @@ export const verifyCountry = (req, res, next) => {
     error: 'No tienes permisos para este país'
   });
 };
-
 
 
 

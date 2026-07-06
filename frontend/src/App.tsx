@@ -38,10 +38,12 @@ import YegoMiAutoAnalysis from './pages/yegoMiAuto/YegoMiAutoAnalysis';
 import YegoMiAutoPayments from './pages/yegoMiAuto/YegoMiAutoPayments';
 import YegoMiAutoLoans from './pages/yegoMiAuto/YegoMiAutoLoans';
 import YegoMiAutoRentSaleDetail from './pages/yegoMiAuto/YegoMiAutoRentSaleDetail';
+import YegoMiAutoValidarComprobantes from './pages/yegoMiAuto/YegoMiAutoValidarComprobantes';
 import YegoMiAutoSolicitudes from './pages/yegoMiAuto/YegoMiAutoSolicitudes';
 import YegoMiAutoSolicitudDetail from './pages/yegoMiAuto/YegoMiAutoSolicitudDetail';
 import YegoMiAutoNuevaSolicitud from './pages/yegoMiAuto/YegoMiAutoNuevaSolicitud';
 import MiautoWhatsApp from './pages/admin/MiautoWhatsApp';
+import SystemUsersPage from './pages/admin/SystemUsersPage';
 import YegoMiMotoDashboard from './pages/yegoMiMoto/YegoMiMotoDashboard';
 import YegoMiMotoFlotas from './pages/yegoMiMoto/YegoMiMotoFlotas';
 import YegoMiMotoConfig from './pages/yegoMiMoto/YegoMiMotoConfig';
@@ -245,6 +247,16 @@ function App() {
               }
             />
             <Route
+              path="/admin/system-users"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <SystemUsersPage />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/admin/provisions"
               element={
                 <ProtectedRoute>
@@ -265,9 +277,11 @@ function App() {
             <Route path="/admin/yego-mi-auto/config" element={<ProtectedRoute><Layout><YegoMiAutoConfig /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/analysis" element={<ProtectedRoute><Layout><YegoMiAutoAnalysis /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/payments" element={<ProtectedRoute><Layout><YegoMiAutoPayments /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/validar-comprobantes" element={<ProtectedRoute><Layout><YegoMiAutoValidarComprobantes /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/rent-sale" element={<ProtectedRoute><Layout><YegoMiAutoLoans /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/rent-sale/:id" element={<ProtectedRoute><Layout><YegoMiAutoRentSaleDetail /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/loans" element={<Navigate to="/admin/yego-mi-auto/rent-sale" replace />} />
+            <Route path="/admin/yego-mi-auto/system-users" element={<ProtectedRoute><Layout><SystemUsersPage /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/mensajes" element={<ProtectedRoute><Layout><MiautoWhatsApp /></Layout></ProtectedRoute>} />
             {/* Yego mi moto */}
             <Route path="/admin/yego-mi-moto" element={<Navigate to="/admin/yego-mi-moto/dashboard" replace />} />
@@ -289,4 +303,3 @@ function App() {
 }
 
 export default App;
-

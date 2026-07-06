@@ -17,30 +17,40 @@ import {
   Car,
   Bike,
   MessageCircle,
+  ClipboardCheck,
+  ShieldCheck,
 } from 'lucide-react';
+import { hasGroupAccess, hasSectionAccess, type AdminPermissionGroupKey } from '../config/adminPermissions';
 
 type AdminProduct = 'rapidin' | 'yego-mi-auto' | 'yego-mi-moto';
-type MenuItem = { text: string; icon: typeof LayoutDashboard; path: string };
+type MenuItem = { text: string; icon: typeof LayoutDashboard; path: string; permission?: string };
 type MenuSection = { title: string; items: MenuItem[] };
+const PRODUCT_PERMISSION_KEY: Record<AdminProduct, AdminPermissionGroupKey> = {
+  rapidin: 'rapidin',
+  'yego-mi-auto': 'miauto',
+  'yego-mi-moto': 'mimoto',
+};
 
 const ADMIN_MENU: Record<AdminProduct, { newRequest?: MenuItem; sections: MenuSection[]; subtitle: string; dashboardPath: string }> = {
   rapidin: {
-    newRequest: { text: 'Nueva solicitud', icon: PlusCircle, path: '/admin/loan-requests/credit-type' },
+    newRequest: { text: 'Nueva solicitud', icon: PlusCircle, path: '/admin/loan-requests/credit-type', permission: 'rapidin.nueva_solicitud' },
     subtitle: 'Yego Rapidín',
     dashboardPath: '/admin/dashboard',
     sections: [
-      { title: 'Principal', items: [{ text: 'Dashboard', icon: LayoutDashboard, path: '/admin/dashboard' }] },
+      { title: 'Principal', items: [{ text: 'Dashboard', icon: LayoutDashboard, path: '/admin/dashboard', permission: 'rapidin.dashboard' }] },
       { title: 'Operación', items: [
-        { text: 'Solicitudes', icon: FileText, path: '/admin/loan-requests' },
-        { text: 'Préstamos', icon: Banknote, path: '/admin/loans' },
-        { text: 'Pagos', icon: CreditCard, path: '/admin/payments' },
-        { text: 'Cobros masivos YEGO', icon: Layers, path: '/admin/payments-bulk' },
+        { text: 'Solicitudes', icon: FileText, path: '/admin/loan-requests', permission: 'rapidin.solicitudes' },
+        { text: 'Préstamos', icon: Banknote, path: '/admin/loans', permission: 'rapidin.prestamos' },
+        { text: 'Pagos', icon: CreditCard, path: '/admin/payments', permission: 'rapidin.pagos' },
+        { text: 'Cobros masivos YEGO', icon: Layers, path: '/admin/payments-bulk', permission: 'rapidin.cobros_masivos' },
       ]},
       { title: 'Reportes', items: [
-        { text: 'Análisis', icon: BarChart3, path: '/admin/analysis' },
-        { text: 'Provisiones', icon: TrendingUp, path: '/admin/provisions' },
+        { text: 'Análisis', icon: BarChart3, path: '/admin/analysis', permission: 'rapidin.analisis' },
+        { text: 'Provisiones', icon: TrendingUp, path: '/admin/provisions', permission: 'rapidin.provisiones' },
       ]},
-      { title: 'Sistema', items: [{ text: 'Configuración', icon: Settings, path: '/admin/settings' }] },
+      { title: 'Sistema', items: [
+        { text: 'Configuración', icon: Settings, path: '/admin/settings', permission: 'rapidin.configuracion' },
+      ] },
     ],
   },
   'yego-mi-auto': {
@@ -48,28 +58,31 @@ const ADMIN_MENU: Record<AdminProduct, { newRequest?: MenuItem; sections: MenuSe
     dashboardPath: '/admin/yego-mi-auto/requests',
     sections: [
       { title: 'Operacion', items: [
-        { text: 'Nueva Solicitud', icon: PlusCircle, path: '/admin/yego-mi-auto/nueva-solicitud' },
-        { text: 'Solicitudes', icon: FileText, path: '/admin/yego-mi-auto/requests' },
-        { text: 'Alquiler / Venta', icon: Banknote, path: '/admin/yego-mi-auto/rent-sale' },
-        { text: 'Pagos', icon: CreditCard, path: '/admin/yego-mi-auto/payments' },
-        { text: 'Mensajes', icon: MessageCircle, path: '/admin/yego-mi-auto/mensajes' },
+        { text: 'Nueva Solicitud', icon: PlusCircle, path: '/admin/yego-mi-auto/nueva-solicitud', permission: 'miauto.nueva_solicitud' },
+        { text: 'Solicitudes', icon: FileText, path: '/admin/yego-mi-auto/requests', permission: 'miauto.solicitudes' },
+        { text: 'Alquiler / Venta', icon: Banknote, path: '/admin/yego-mi-auto/rent-sale', permission: 'miauto.alquiler_venta' },
+        { text: 'Pagos', icon: CreditCard, path: '/admin/yego-mi-auto/payments', permission: 'miauto.pagos' },
+        { text: 'Validar comprobantes', icon: ClipboardCheck, path: '/admin/yego-mi-auto/validar-comprobantes', permission: 'miauto.validar_comprobantes' },
+        { text: 'Mensajes', icon: MessageCircle, path: '/admin/yego-mi-auto/mensajes', permission: 'miauto.mensajes' },
       ]},
-      { title: 'Reportes', items: [{ text: 'Análisis', icon: BarChart3, path: '/admin/yego-mi-auto/analysis' }] },
-      { title: 'Sistema', items: [{ text: 'Configuración', icon: Settings, path: '/admin/yego-mi-auto/config' }] },
+      { title: 'Reportes', items: [{ text: 'Análisis', icon: BarChart3, path: '/admin/yego-mi-auto/analysis', permission: 'miauto.analisis' }] },
+      { title: 'Sistema', items: [
+        { text: 'Configuración', icon: Settings, path: '/admin/yego-mi-auto/config', permission: 'miauto.configuracion' },
+      ] },
     ],
   },
   'yego-mi-moto': {
-    newRequest: { text: 'Nueva solicitud Mi Moto', icon: PlusCircle, path: '/admin/yego-mi-moto/loan-requests/credit-type' },
+    newRequest: { text: 'Nueva solicitud Mi Moto', icon: PlusCircle, path: '/admin/yego-mi-moto/loan-requests/credit-type', permission: 'mimoto.nueva_solicitud' },
     subtitle: 'Yego mi moto',
     dashboardPath: '/admin/yego-mi-moto/dashboard',
     sections: [
-      { title: 'Principal', items: [{ text: 'Dashboard', icon: LayoutDashboard, path: '/admin/yego-mi-moto/dashboard' }] },
+      { title: 'Principal', items: [{ text: 'Dashboard', icon: LayoutDashboard, path: '/admin/yego-mi-moto/dashboard', permission: 'mimoto.dashboard' }] },
       { title: 'Operación', items: [
-        { text: 'Préstamos', icon: Banknote, path: '/admin/yego-mi-moto/loans' },
-        { text: 'Pagos', icon: CreditCard, path: '/admin/yego-mi-moto/payments' },
+        { text: 'Préstamos', icon: Banknote, path: '/admin/yego-mi-moto/loans', permission: 'mimoto.prestamos' },
+        { text: 'Pagos', icon: CreditCard, path: '/admin/yego-mi-moto/payments', permission: 'mimoto.pagos' },
       ]},
-      { title: 'Reportes', items: [{ text: 'Análisis', icon: BarChart3, path: '/admin/yego-mi-moto/analysis' }] },
-      { title: 'Sistema', items: [{ text: 'Configuración', icon: Settings, path: '/admin/yego-mi-moto/config' }] },
+      { title: 'Reportes', items: [{ text: 'Análisis', icon: BarChart3, path: '/admin/yego-mi-moto/analysis', permission: 'mimoto.analisis' }] },
+      { title: 'Sistema', items: [{ text: 'Configuración', icon: Settings, path: '/admin/yego-mi-moto/config', permission: 'mimoto.configuracion' }] },
     ],
   },
 };
@@ -86,17 +99,64 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
       ? 'yego-mi-auto'
       : 'rapidin';
 
-  // Si el usuario no tiene acceso al producto actual, redirigir al primero disponible
-  useEffect(() => {
-    const mods = user?.allowed_modules ?? ['rapidin'];
-    if (!mods.includes(currentProduct === 'yego-mi-auto' ? 'miauto' : currentProduct === 'yego-mi-moto' ? 'mimoto' : 'rapidin')) {
-      const first = mods[0];
-      const product = first === 'miauto' ? 'yego-mi-auto' as const : first === 'mimoto' ? 'yego-mi-moto' as const : 'rapidin' as const;
-      navigate(ADMIN_MENU[product].dashboardPath, { replace: true });
+  const userPermissions = user?.allowed_modules ?? ['rapidin'];
+  const canAccessProduct = (product: AdminProduct) =>
+    hasGroupAccess(userPermissions, PRODUCT_PERMISSION_KEY[product]);
+  const canAccessItem = (item: MenuItem, product = currentProduct) =>
+    hasSectionAccess(userPermissions, PRODUCT_PERMISSION_KEY[product], item.permission);
+  const canAccessSystemUsers =
+    hasSectionAccess(userPermissions, 'rapidin', 'rapidin.usuarios')
+    || hasSectionAccess(userPermissions, 'miauto', 'miauto.usuarios');
+  const systemUsersPath = hasSectionAccess(userPermissions, 'rapidin', 'rapidin.usuarios')
+    ? '/admin/system-users'
+    : '/admin/yego-mi-auto/system-users';
+
+  const firstAccessibleProduct = (): AdminProduct =>
+    (['rapidin', 'yego-mi-auto', 'yego-mi-moto'] as const).find((product) => canAccessProduct(product)) ?? 'rapidin';
+
+  const firstAccessiblePath = (product: AdminProduct) => {
+    const menu = ADMIN_MENU[product];
+    const directItem = menu.newRequest && canAccessItem(menu.newRequest, product) ? menu.newRequest : null;
+    const sectionItem = menu.sections.flatMap((section) => section.items).find((item) => canAccessItem(item, product));
+    return directItem?.path ?? sectionItem?.path ?? menu.dashboardPath;
+  };
+
+  const getCurrentRouteItem = (product: AdminProduct) => {
+    const menu = ADMIN_MENU[product];
+    if (
+      menu.newRequest
+      && (location.pathname === menu.newRequest.path
+        || location.pathname.startsWith(`${menu.newRequest.path}/`)
+        || location.pathname.endsWith('/loan-requests/new'))
+    ) {
+      return menu.newRequest;
     }
-  }, [currentProduct, user]);
+
+    return menu.sections
+      .flatMap((section) => section.items)
+      .sort((a, b) => b.path.length - a.path.length)
+      .find((item) => location.pathname === item.path || location.pathname.startsWith(`${item.path}/`));
+  };
+
+  // Si el usuario no tiene acceso al producto actual, redirigir al primero disponible.
+  useEffect(() => {
+    if (!canAccessProduct(currentProduct)) {
+      const product = firstAccessibleProduct();
+      navigate(firstAccessiblePath(product), { replace: true });
+      return;
+    }
+
+    const currentRouteItem = getCurrentRouteItem(currentProduct);
+    if (currentRouteItem && !canAccessItem(currentRouteItem)) {
+      navigate(firstAccessiblePath(currentProduct), { replace: true });
+    }
+  }, [currentProduct, location.pathname, user]);
 
   const { newRequest: newRequestItem, sections, subtitle: productSubtitle } = ADMIN_MENU[currentProduct];
+  const visibleNewRequestItem = newRequestItem && canAccessItem(newRequestItem) ? newRequestItem : undefined;
+  const visibleSections = sections
+    .map((section) => ({ ...section, items: section.items.filter((item) => canAccessItem(item)) }))
+    .filter((section) => section.items.length > 0);
 
   const handleDrawerToggle = () => setMobileOpen((o) => !o);
   const handleLogout = () => { logout(); navigate('/admin/login', { replace: true }); };
@@ -127,21 +187,21 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
       </div>
 
       <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-        {newRequestItem && (
+        {visibleNewRequestItem && (
         <Link
-          to={newRequestItem.path}
+          to={visibleNewRequestItem.path}
           onClick={() => setMobileOpen(false)}
           className={`flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${
-            location.pathname === newRequestItem.path
+            location.pathname === visibleNewRequestItem.path
               ? 'bg-red-600 text-white'
               : 'text-gray-700 hover:bg-gray-100'
           }`}
         >
           <PlusCircle className="w-5 h-5" />
-          <span className="font-medium">{newRequestItem.text}</span>
+          <span className="font-medium">{visibleNewRequestItem.text}</span>
         </Link>
         )}
-        {sections.map((section) => (
+        {visibleSections.map((section) => (
           <div key={section.title} className="pt-4">
             <p className="px-2 pb-2 text-xs font-semibold text-gray-400 uppercase tracking-wider text-left">
               {section.title}
@@ -174,6 +234,20 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
       </nav>
 
       <div className="p-4 border-t">
+        {canAccessSystemUsers && (
+          <Link
+            to={systemUsersPath}
+            onClick={() => setMobileOpen(false)}
+            className={`flex items-center space-x-3 px-4 py-3 w-full rounded-lg transition-colors mb-1 ${
+              location.pathname.endsWith('/system-users')
+                ? 'bg-red-600 text-white'
+                : 'text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            <ShieldCheck className="w-5 h-5" />
+            <span className="font-medium">Usuarios y permisos</span>
+          </Link>
+        )}
         <button
           onClick={handleLogout}
           className="flex items-center space-x-3 px-4 py-3 w-full text-gray-700 hover:bg-red-50 hover:text-red-600 rounded-lg transition-colors"
@@ -213,7 +287,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
             </button>
 
             <div className="flex rounded-lg bg-gray-100 p-1 flex-wrap gap-1">
-              {(user?.allowed_modules ?? ['rapidin', 'miauto', 'mimoto']).includes('rapidin') && (
+              {canAccessProduct('rapidin') && (
               <button
                 type="button"
                 onClick={() => handleProductSwitch('rapidin')}
@@ -225,7 +299,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
                 Yego Rapidín
               </button>
               )}
-              {(user?.allowed_modules ?? ['rapidin', 'miauto', 'mimoto']).includes('miauto') && (
+              {canAccessProduct('yego-mi-auto') && (
               <button
                 type="button"
                 onClick={() => handleProductSwitch('yego-mi-auto')}
@@ -237,7 +311,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
                 Yego mi auto
               </button>
               )}
-              {(user?.allowed_modules ?? ['rapidin', 'miauto', 'mimoto']).includes('mimoto') && (
+              {canAccessProduct('yego-mi-moto') && (
               <button
                 type="button"
                 onClick={() => handleProductSwitch('yego-mi-moto')}
@@ -278,4 +352,3 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
 };
 
 export default Layout;
-

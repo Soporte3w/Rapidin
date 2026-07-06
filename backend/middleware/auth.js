@@ -1,6 +1,14 @@
 import jwt from 'jsonwebtoken';
 import { query } from '../config/database.js';
+import { SYSTEM_ROLES_TABLE, SYSTEM_USERS_TABLE } from '../config/systemUsers.js';
 import { logger } from '../utils/logger.js';
+
+const ADMIN_USER_SELECT = `
+  u.id, u.email, u.first_name, u.last_name, u.role, u.country, u.active,
+  COALESCE(u.allowed_modules, r.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
+  COALESCE(r.base_role, u.role) AS base_role,
+  r.name AS role_name
+`;
 
 export const verifyToken = async (req, res, next) => {
   try {
@@ -15,7 +23,10 @@ export const verifyToken = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const result = await query(
-      'SELECT id, email, first_name, last_name, role, country, active, allowed_modules FROM module_rapidin_users WHERE id = $1',
+      `SELECT ${ADMIN_USER_SELECT}
+       FROM ${SYSTEM_USERS_TABLE} u
+       LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
+       WHERE u.id = $1`,
       [decoded.userId]
     );
 
@@ -78,9 +89,12 @@ export const authenticate = async (req, res, next) => {
       };
       logger.debug('Usuario conductor autenticado:', { phone: req.user.phone, country: req.user.country });
     } else if (decoded.userId) {
-      // Es un admin - buscar en module_rapidin_users
+      // Es un admin - buscar en la tabla nueva de usuarios del sistema
       const result = await query(
-        'SELECT id, email, first_name, last_name, role, country, active, allowed_modules FROM module_rapidin_users WHERE id = $1',
+        `SELECT ${ADMIN_USER_SELECT}
+         FROM ${SYSTEM_USERS_TABLE} u
+         LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
+         WHERE u.id = $1`,
         [decoded.userId]
       );
 
@@ -128,7 +142,7 @@ export const verifyRole = (...roles) => {
       });
     }
 
-    if (!roles.includes(req.user.role)) {
+    if (!roles.includes(req.user.role) && !roles.includes(req.user.base_role)) {
       return res.status(403).json({
         error: 'No tienes permisos para esta acción'
       });
@@ -137,8 +151,6 @@ export const verifyRole = (...roles) => {
     next();
   };
 };
-
-
 
 
 

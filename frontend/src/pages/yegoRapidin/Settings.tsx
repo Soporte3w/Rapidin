@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { Settings as SettingsIcon } from 'lucide-react';
 import LoanConditionsSettings from './settings/LoanConditionsSettings';
 import CycleConfigSettings from './settings/CycleConfigSettings';
-import UsersManagement from './settings/UsersManagement';
 import InterestRatesSettings from './settings/InterestRatesSettings';
 import CreditosPersonalSettings from './settings/CreditosPersonalSettings';
 
@@ -14,7 +13,6 @@ const Settings = () => {
     { label: 'Configuración de Ciclos', component: CycleConfigSettings },
     { label: 'Tasas de Interés', component: InterestRatesSettings },
     { label: 'Créditos Personal', component: CreditosPersonalSettings },
-    { label: 'Gestión de Usuarios', component: UsersManagement },
   ];
 
   return (
@@ -61,7 +59,6 @@ const Settings = () => {
           {tab === 1 && <CycleConfigSettings />}
           {tab === 2 && <InterestRatesSettings />}
           {tab === 3 && <CreditosPersonalSettings />}
-          {tab === 4 && <UsersManagement />}
         </div>
       </div>
     </div>
@@ -69,7 +66,6 @@ const Settings = () => {
 };
 
 export default Settings;
-
 
 
 

@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query } from '../config/database.js';
 import { generateToken } from '../config/jwt.js';
+import { SYSTEM_ROLES_TABLE, SYSTEM_USERS_TABLE } from '../config/systemUsers.js';
 import { logger } from '../utils/logger.js';
 import { sendSMS } from './notificationService.js';
 import { getPartnerNameById } from './partnersService.js';
@@ -9,7 +10,14 @@ import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helper
 
 export const login = async (email, password) => {
     const result = await query(
-        'SELECT id, email, password_hash, first_name, last_name, role, country, active, allowed_modules FROM module_rapidin_users WHERE email = $1',
+        `SELECT
+            u.id, u.email, u.password_hash, u.first_name, u.last_name, u.role, u.country, u.active,
+            COALESCE(u.allowed_modules, r.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
+            COALESCE(r.base_role, u.role) AS base_role,
+            r.name AS role_name
+         FROM ${SYSTEM_USERS_TABLE} u
+         LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
+         WHERE u.email = $1`,
         [email]
     );
 
@@ -30,7 +38,7 @@ export const login = async (email, password) => {
     }
 
     await query(
-        'UPDATE module_rapidin_users SET last_access = CURRENT_TIMESTAMP WHERE id = $1',
+        `UPDATE ${SYSTEM_USERS_TABLE} SET last_access = CURRENT_TIMESTAMP WHERE id = $1`,
         [user.id]
     );
 
@@ -44,6 +52,8 @@ export const login = async (email, password) => {
             first_name: user.first_name,
             last_name: user.last_name,
             role: user.role,
+            base_role: user.base_role,
+            role_name: user.role_name,
             country: user.country,
             allowed_modules: user.allowed_modules || ['rapidin']
         }
@@ -52,8 +62,13 @@ export const login = async (email, password) => {
 
 export const getCurrentUser = async (userId) => {
     const result = await query(
-        `SELECT id, email, first_name, last_name, role, country, active, last_access, created_at 
-     FROM module_rapidin_users WHERE id = $1`,
+        `SELECT
+            u.id, u.email, u.first_name, u.last_name, u.role, u.country, u.active, u.last_access, u.created_at,
+            COALESCE(r.base_role, u.role) AS base_role,
+            r.name AS role_name
+         FROM ${SYSTEM_USERS_TABLE} u
+         LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
+         WHERE u.id = $1`,
         [userId]
     );
 
@@ -434,8 +449,6 @@ export const verifyOTP = async (phone, code, country) => {
         rapidin_driver_id: rapidin_driver_id
     };
 };
-
-
 
 
 

@@ -879,6 +879,7 @@ export async function loadMiAutoSolicitudConFlotaDrivers(solicitudId) {
 export async function updateMoraDiaria(solicitudId = null, options = {}) {
   const singleCuotaId = options.singleCuotaId || null;
   const includePartial = options.includePartial === true;
+  const ignorePendingComprobanteFreeze = options.ignorePendingComprobanteFreeze === true;
 
   const scopeConds = [];
   const scopeParams = [];
@@ -971,7 +972,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
 
   /** Comprobante del conductor aún sin validar/rechazar → no subir mora en BD ni en estado hasta resolución. */
   let pendingComprobanteCuotaIds = new Set();
-  if (rows.length > 0) {
+  if (rows.length > 0 && !ignorePendingComprobanteFreeze) {
     const cuotaIdList = rows.map((r) => r.id);
     const pendRes = await query(
       `SELECT DISTINCT cuota_semanal_id::text AS id
@@ -1134,6 +1135,12 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     const abonoACapital = round2(Math.max(0, pagoHecho - moraNormalHastaAbono));
     const moraNormalPendiente = round2(Math.max(0, moraNormalHastaAbono - pagoHecho));
     const capitalPendienteTrasAbono = round2(Math.max(0, baseCapitalMoraNormal - abonoACapital));
+
+    if (!isPrimera && !freezeMoraPorComprobante && pagoHecho > 0.005) {
+      lateFeePersist = moraNormalPendiente;
+      const pendienteTrasImputacion = round2(moraNormalPendiente + capitalPendienteTrasAbono);
+      statusOut = miAutoOpenStatusSaldoVencimiento(dueEffYmd, pendienteTrasImputacion, paidDb);
+    }
     
     if (
       statusOut === 'overdue' &&

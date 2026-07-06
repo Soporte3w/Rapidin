@@ -69,8 +69,8 @@ function origenComprobanteCuota(cp: { origen?: string | null }): string {
   return (cp.origen || 'conductor').toLowerCase();
 }
 
-function esComprobanteAdminPago(cp: { origen?: string | null }): boolean {
-  return origenComprobanteCuota(cp) === 'admin_confirmacion';
+function esComprobanteAdminPago(cp: { origen?: string | null; estado?: string | null }): boolean {
+  return origenComprobanteCuota(cp) === 'admin_confirmacion' && parseEstadoComprobante(cp.estado) === 'validado';
 }
 
 function comprobanteArchivoEsImagen(fileName?: string | null, filePath?: string | null): boolean {

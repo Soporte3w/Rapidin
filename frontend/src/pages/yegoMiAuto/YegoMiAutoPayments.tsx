@@ -290,26 +290,23 @@ export default function YegoMiAutoPayments() {
     }
     try {
       setEnviando(true);
-      await api.post(
-        `/miauto/solicitudes/${modalPagar.id}/cuotas-semanales/${cuotaSeleccionadaId}/pago-manual`,
-        { monto, moneda: pagoMoneda }
-      );
       if (comprobanteFile) {
         const fd = new FormData();
         fd.append('file', comprobanteFile);
         fd.append('monto', String(monto));
         fd.append('moneda', pagoMoneda);
-        try {
-          await api.post(
-            `/miauto/solicitudes/${modalPagar.id}/cuotas-semanales/${cuotaSeleccionadaId}/comprobantes-conformidad-admin`,
-            fd,
-            { headers: { 'Content-Type': undefined as any } }
-          );
-        } catch {
-          toast.error('Pago registrado, pero falló la subida del comprobante');
-        }
+        await api.post(
+          `/miauto/solicitudes/${modalPagar.id}/cuotas-semanales/${cuotaSeleccionadaId}/comprobantes-conformidad-admin`,
+          fd,
+          { headers: { 'Content-Type': undefined as any } }
+        );
+      } else {
+        await api.post(
+          `/miauto/solicitudes/${modalPagar.id}/cuotas-semanales/${cuotaSeleccionadaId}/pago-manual`,
+          { monto, moneda: pagoMoneda }
+        );
       }
-      toast.success('Pago manual registrado');
+      toast.success('Pago enviado a validación');
       cerrarModal();
       await fetchAlquilerVentaAllPages(undefined, false);
     } catch (e: any) {
@@ -333,7 +330,7 @@ export default function YegoMiAutoPayments() {
           <div>
             <h1 className="text-lg lg:text-xl font-bold text-white leading-tight">Pagos</h1>
             <p className="text-xs lg:text-sm text-white/90 mt-0.5">
-              Registrar pago manual a los contratos de Alquiler / Venta — {countryLabel}
+              Enviar pagos manuales a validación — {countryLabel}
             </p>
           </div>
         </div>
@@ -585,7 +582,7 @@ export default function YegoMiAutoPayments() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-gray-900">Registrar pago manual</h2>
+              <h2 className="text-lg font-bold text-gray-900">Enviar pago a validación</h2>
               <button type="button" onClick={cerrarModal} className="p-1 text-gray-500 hover:text-gray-700 rounded">
                 <X className="w-5 h-5" />
               </button>
@@ -734,7 +731,7 @@ export default function YegoMiAutoPayments() {
                     onClick={registrarPago}
                     className="px-4 py-2 text-sm font-medium text-white bg-[#8B1A1A] rounded-lg hover:bg-[#6B1515] disabled:opacity-50"
                   >
-                    {enviando ? 'Registrando...' : 'Registrar pago'}
+                    {enviando ? 'Enviando...' : 'Enviar a validación'}
                   </button>
                 </div>
               </>

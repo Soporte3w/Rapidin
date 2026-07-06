@@ -12,6 +12,8 @@ import {
   validateComprobanteCuotaSemanal,
   rejectComprobanteCuotaSemanal,
   addPagoManualCuotaSemanal,
+  listForAdminValidation as listComprobantesCuotaSemanalForAdminValidation,
+  anularValidacionComprobanteCuotaSemanal,
 } from '../../services/comprobantes/miautoComprobanteCuotaSemanalService.js';
 import {
   listBySolicitud as listComprobantesOtrosGastos,
@@ -176,6 +178,24 @@ router.patch(
 
 // --- Cuotas semanales Mi Auto ---
 
+// GET /api/miauto/comprobantes-cuota-semanal
+router.get('/comprobantes-cuota-semanal', async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'No autorizado', 403);
+    }
+    const list = await listComprobantesCuotaSemanalForAdminValidation({
+      estado: req.query.estado,
+      country: req.query.country,
+      limit: req.query.limit,
+    });
+    return successResponse(res, list);
+  } catch (error) {
+    logger.error('Error listando comprobantes cuota semanal para validación Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al listar comprobantes', 500);
+  }
+});
+
 // GET /api/miauto/solicitudes/:id/comprobantes-cuota-semanal
 router.get('/solicitudes/:id/comprobantes-cuota-semanal', validateUUID, async (req, res) => {
   try {
@@ -206,8 +226,7 @@ router.post(
         req.params.cuotaSemanalId,
         req.file,
         monto,
-        moneda || 'PEN',
-        req.user?.id
+        moneda || 'PEN'
       );
       return successResponse(res, list, 'Comprobante subido', 201);
     } catch (error) {
@@ -235,7 +254,6 @@ router.post(
         req.params.id,
         req.params.cuotaSemanalId,
         req.file,
-        req.user?.id,
         { monto: req.body?.monto, moneda: req.body?.moneda }
       );
       return successResponse(res, list, 'Comprobante de conformidad subido', 201);
@@ -288,6 +306,25 @@ router.patch(
   }
 );
 
+// PATCH /api/miauto/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId/anular-validacion
+router.patch(
+  '/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId/anular-validacion',
+  validateUUID,
+  async (req, res) => {
+    try {
+      const list = await anularValidacionComprobanteCuotaSemanal(
+        req.params.id,
+        req.params.comprobanteId
+      );
+      auditMiautoMutation('comprobante_cuota.validation_reverted', 'comprobante_cuota_semanal', req.params.comprobanteId, { solicitudId: req.params.id });
+      return successResponse(res, list, 'Validación anulada');
+    } catch (error) {
+      logger.error('Error anulando validación comprobante cuota semanal Mi Auto:', error);
+      return errorResponse(res, error.message || 'Error al anular validación', 400);
+    }
+  }
+);
+
 // PATCH /api/miauto/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId/rechazar
 router.patch(
   '/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId/rechazar',
@@ -324,7 +361,6 @@ router.post(
       const list = await addPagoManualCuotaSemanal(
         req.params.id,
         req.params.cuotaSemanalId,
-        req.user?.id,
         { monto, moneda: normalizeMiautoMonedaReq(moneda) }
       );
       auditMiautoMutation('pago_cuota.manual_registered', 'cuota_semanal', req.params.cuotaSemanalId, { solicitudId: req.params.id, monto, moneda });

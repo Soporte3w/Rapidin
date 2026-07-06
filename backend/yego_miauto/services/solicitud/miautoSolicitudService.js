@@ -67,10 +67,10 @@ export const listSolicitudes = async (filters = {}) => {
   const { status, country, date_from, date_to, page = 1, limit = 20, driver_phone, driver_country, park_id, driver_id_fleet, forDriver, driver: driverNameFilter, q: qNameFilter } = filters;
   const params = [];
   let n = 1;
-  let fromJoin = ' FROM module_miauto_solicitud s LEFT JOIN module_rapidin_drivers rd ON rd.id::text = s.driver_id_fleet ';
-  if (forDriver) {
-    fromJoin += ' LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id ';
-  }
+  let fromJoin = ` FROM module_miauto_solicitud s
+    LEFT JOIN module_rapidin_drivers rd ON rd.id::text = s.driver_id_fleet
+    LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id
+    LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id `;
   let where = ' WHERE 1=1 ';
   if (status) {
     where += ` AND s.status = $${n}`;
@@ -141,11 +141,14 @@ export const listSolicitudes = async (filters = {}) => {
     ? `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.country, s.pago_tipo, s.pago_estado, s.fecha_inicio_cobro_semanal,
             s.placa_asignada, s.appointment_date, s.reagendo_count, s.observations, s.rejection_reason, s.withdrawn_at, s.withdrawal_reason,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
-            c.name AS cronograma_name, c.tasa_interes_mora AS cronograma_tasa_interes_mora, c.bono_tiempo_activo AS cronograma_bono_tiempo_activo,
+            c.id AS cronograma_id, c.name AS cronograma_name, c.tasa_interes_mora AS cronograma_tasa_interes_mora, c.bono_tiempo_activo AS cronograma_bono_tiempo_activo,
+            v.id AS vehiculo_id,
             v.name AS vehiculo_name, v.inicial AS vehiculo_inicial, v.inicial_moneda AS vehiculo_inicial_moneda, v.cuotas_semanales AS vehiculo_cuotas_semanales, v.image AS vehiculo_image`
     : `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.driver_id_fleet,
-            s.placa_asignada,
-            rd.first_name AS driver_first_name, rd.last_name AS driver_last_name`;
+            s.placa_asignada, s.cronograma_id, s.cronograma_vehiculo_id,
+            rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
+            c.name AS cronograma_name,
+            v.name AS vehiculo_name`;
   const dataResult = await query(
     `${selectFields}
      ${fromJoin}
@@ -257,6 +260,10 @@ export const listSolicitudes = async (filters = {}) => {
       working_driver_name: workingName || undefined,
       fired_driver_name: isFired ? driverName : undefined,
       yango_work_status: driverStatus || undefined,
+      cronograma_id: r.cronograma_id || undefined,
+      cronograma_name: r.cronograma_name || undefined,
+      cronograma_vehiculo_id: r.vehiculo_id || r.cronograma_vehiculo_id || undefined,
+      vehiculo_name: r.vehiculo_name || undefined,
     };
     if (forDriver) {
       out.country = r.country || undefined;
@@ -272,10 +279,10 @@ export const listSolicitudes = async (filters = {}) => {
       out.withdrawal_reason = r.withdrawal_reason != null ? String(r.withdrawal_reason).trim() || undefined : undefined;
       out.citas_historial = citasBySolicitud[r.id] || [];
       out.cronograma = r.cronograma_name != null
-        ? { name: r.cronograma_name, tasa_interes_mora: r.cronograma_tasa_interes_mora != null ? parseFloat(r.cronograma_tasa_interes_mora) : 0, bono_tiempo_activo: !!r.cronograma_bono_tiempo_activo }
+        ? { id: r.cronograma_id, name: r.cronograma_name, tasa_interes_mora: r.cronograma_tasa_interes_mora != null ? parseFloat(r.cronograma_tasa_interes_mora) : 0, bono_tiempo_activo: !!r.cronograma_bono_tiempo_activo }
         : undefined;
       out.cronograma_vehiculo = r.vehiculo_name != null || r.vehiculo_inicial != null
-        ? { name: r.vehiculo_name, inicial: r.vehiculo_inicial != null ? parseFloat(r.vehiculo_inicial) : 0, inicial_moneda: r.vehiculo_inicial_moneda || 'USD', cuotas_semanales: r.vehiculo_cuotas_semanales != null ? parseInt(r.vehiculo_cuotas_semanales, 10) || 0 : 0, image: r.vehiculo_image }
+        ? { id: r.vehiculo_id, name: r.vehiculo_name, inicial: r.vehiculo_inicial != null ? parseFloat(r.vehiculo_inicial) : 0, inicial_moneda: r.vehiculo_inicial_moneda || 'USD', cuotas_semanales: r.vehiculo_cuotas_semanales != null ? parseInt(r.vehiculo_cuotas_semanales, 10) || 0 : 0, image: r.vehiculo_image }
         : undefined;
       out.comprobantes_pago = comprobantesBySolicitud[r.id] || [];
       out.otros_gastos = otrosGastosBySolicitud[r.id] || [];

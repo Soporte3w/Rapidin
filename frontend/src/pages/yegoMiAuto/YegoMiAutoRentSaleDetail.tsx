@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, Copy, Check, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText } from 'lucide-react';
+import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
@@ -169,6 +169,22 @@ interface NotaVentaMiAuto {
   cuotas?: { cuota_semanal_id: string; amount: number | string }[];
 }
 
+interface ContratoDocumentoMiAuto {
+  id: string;
+  solicitud_id: string;
+  file_name: string;
+  file_path: string;
+  mime_type?: string | null;
+  file_size?: number | null;
+  created_by?: string | null;
+  created_by_name?: string | null;
+  created_at?: string | null;
+  deleted_by?: string | null;
+  deleted_by_name?: string | null;
+  deleted_at?: string | null;
+  activo?: boolean;
+}
+
 /** Saldo pendiente numérico para conformidad admin: usa el saldo final del API/helper único de cuota semanal. */
 function pendienteRestanteConformidadCuota(c: CuotaSemanal): number {
   return roundToTwoDecimals(Math.max(0, miautoCuotaFinalCronogramaSemanal(c)));
@@ -220,7 +236,6 @@ export default function YegoMiAutoRentSaleDetail() {
   /** Recarga tras validar/rechazar: solo overlay en cronograma (no pantalla entera). */
   const [refreshingDetail, setRefreshingDetail] = useState(false);
   const [error, setError] = useState('');
-  const [idCopied, setIdCopied] = useState(false);
   const [validandoCompId, setValidandoCompId] = useState<string | null>(null);
   const [rechazandoCompId, setRechazandoCompId] = useState<string | null>(null);
   const [comprobantesSemanaAbierta, setComprobantesSemanaAbierta] = useState<Record<string, boolean>>({});
@@ -247,6 +262,11 @@ export default function YegoMiAutoRentSaleDetail() {
   const [showGenerarCuotaModal, setShowGenerarCuotaModal] = useState(false);
   const [showNotasVentaModal, setShowNotasVentaModal] = useState(false);
   const [notasVenta, setNotasVenta] = useState<NotaVentaMiAuto[]>([]);
+  const [contratos, setContratos] = useState<ContratoDocumentoMiAuto[]>([]);
+  const [subiendoContrato, setSubiendoContrato] = useState(false);
+  const [eliminandoContratoId, setEliminandoContratoId] = useState<string | null>(null);
+  const [showContratoMenu, setShowContratoMenu] = useState(false);
+  const contratoFileRef = useRef<HTMLInputElement | null>(null);
   const [notaVentaCuotasSeleccionadas, setNotaVentaCuotasSeleccionadas] = useState<Record<string, boolean>>({});
   const [notaVentaCustomerId, setNotaVentaCustomerId] = useState('');
   const [generandoNotaVenta, setGenerandoNotaVenta] = useState(false);
@@ -413,15 +433,6 @@ export default function YegoMiAutoRentSaleDetail() {
     }
   }, [whatsAppTab, metricasMessages, whatsAppCuotasMsg]);
 
-  const handleCopyId = useCallback(() => {
-    if (!id) return;
-    navigator.clipboard.writeText(id).then(() => {
-      setIdCopied(true);
-      toast.success('ID copiado');
-      setTimeout(() => setIdCopied(false), 2000);
-    }).catch(() => toast.error('No se pudo copiar'));
-  }, [id]);
-
   const fetchDetail = useCallback(async (signal?: AbortSignal, opts?: { refresh?: boolean }) => {
     if (!id) return;
     const isRefresh = !!opts?.refresh;
@@ -430,22 +441,25 @@ export default function YegoMiAutoRentSaleDetail() {
       else setLoading(true);
       setError('');
       const req = { signal, headers: MIAUTO_NO_CACHE_HEADERS };
-      const [resSol, resCuotas, resComp, resEvidencias, resNotasVenta] = await Promise.all([
+      const [resSol, resCuotas, resComp, resEvidencias, resNotasVenta, resContratos] = await Promise.all([
         api.get(`/miauto/solicitudes/${id}`, req),
         api.get(`/miauto/solicitudes/${id}/cuotas-semanales`, req),
         api.get(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal`, req).catch(emptyListIfNotAbort),
         api.get(`/miauto/solicitudes/${id}/evidencias-fleet`, req).catch(emptyListIfNotAbort),
         api.get(`/miauto/solicitudes/${id}/notas-venta`, req).catch(emptyListIfNotAbort),
+        api.get(`/miauto/solicitudes/${id}/contratos`, req).catch(emptyListIfNotAbort),
       ]);
       const sol = resSol.data?.data ?? resSol.data;
       const { cuotas: rawCuotas, racha: rachaNum, cuotasSemanalesBonificadas: bonoNum } = parseCuotasSemanalesPayload(resCuotas);
       const comp = resComp.data?.data ?? resComp.data ?? [];
       const evFleet = resEvidencias.data?.data ?? resEvidencias.data ?? [];
       const notas = resNotasVenta.data?.data ?? resNotasVenta.data ?? [];
+      const contratosData = resContratos.data?.data ?? resContratos.data ?? [];
       setSolicitud(sol || null);
       setCuotas(rawCuotas as CuotaSemanal[]);
       setComprobantesPagos(Array.isArray(comp) ? comp : []);
       setNotasVenta(Array.isArray(notas) ? notas : []);
+      setContratos(Array.isArray(contratosData) ? contratosData : []);
 
       setEvidenciasFleet(Array.isArray(evFleet) ? evFleet : []);
       setRacha(rachaNum);
@@ -461,6 +475,7 @@ export default function YegoMiAutoRentSaleDetail() {
         setCuotas([]);
         setComprobantesPagos([]);
         setNotasVenta([]);
+        setContratos([]);
   
         setEvidenciasFleet([]);
         setRacha(null);
@@ -482,6 +497,44 @@ export default function YegoMiAutoRentSaleDetail() {
     }
     return by;
   }, [notasVenta]);
+
+  const contratoActivo = useMemo(
+    () => contratos.find((contrato) => !contrato.deleted_at) || null,
+    [contratos]
+  );
+
+  const handleContratoFileChange = useCallback(async (file?: File | null) => {
+    if (!id || !file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      setSubiendoContrato(true);
+      await api.post(`/miauto/solicitudes/${id}/contratos`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      toast.success('Contrato subido correctamente');
+      await fetchDetail(undefined, { refresh: true });
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Error al subir contrato');
+    } finally {
+      setSubiendoContrato(false);
+      if (contratoFileRef.current) contratoFileRef.current.value = '';
+    }
+  }, [id, fetchDetail]);
+
+  const handleEliminarContrato = useCallback(async (contratoId: string) => {
+    if (!id) return;
+    try {
+      setEliminandoContratoId(contratoId);
+      await api.delete(`/miauto/solicitudes/${id}/contratos/${contratoId}`);
+      toast.success('Contrato eliminado');
+      await fetchDetail(undefined, { refresh: true });
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Error al eliminar contrato');
+    } finally {
+      setEliminandoContratoId(null);
+    }
+  }, [id, fetchDetail]);
 
   const cuotasNotaVentaDisponibles = useMemo(() => {
     return cuotas.filter((c) => {
@@ -858,15 +911,80 @@ export default function YegoMiAutoRentSaleDetail() {
               <FaWhatsapp className="w-4 h-4" />
               WhatsApp
             </button>
-            <button
-              type="button"
-              onClick={handleCopyId}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium"
-              title="Copiar ID del contrato (alquiler/venta)"
-            >
-              {idCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-              {idCopied ? 'Copiado' : 'Copiar ID'}
-            </button>
+            <input
+              ref={contratoFileRef}
+              type="file"
+              accept="application/pdf,image/jpeg,image/png"
+              className="hidden"
+              onChange={(e) => handleContratoFileChange(e.target.files?.[0] || null)}
+            />
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowContratoMenu((prev) => !prev)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium transition-colors"
+                title="Opciones del contrato"
+              >
+                <FileText className="w-4 h-4" />
+                Contrato
+                <ChevronDown className={`w-4 h-4 transition-transform ${showContratoMenu ? 'rotate-180' : ''}`} />
+              </button>
+
+              {showContratoMenu && (
+                <div className="absolute right-0 top-full z-30 mt-2 w-64 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl">
+                  <div className="border-b border-gray-100 px-3 py-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Contrato</p>
+                    <p className="mt-0.5 truncate text-sm font-medium text-gray-900">
+                      {contratoActivo?.file_name || 'Sin contrato activo'}
+                    </p>
+                  </div>
+
+                  <div className="py-1">
+                    {contratoActivo?.file_path && (
+                      <a
+                        href={getMiautoAdjuntoUrl(contratoActivo.file_path)}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={() => setShowContratoMenu(false)}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                      >
+                        <ExternalLink className="h-4 w-4 text-gray-500" />
+                        Ver contrato
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowContratoMenu(false);
+                        contratoFileRef.current?.click();
+                      }}
+                      disabled={subiendoContrato}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Upload className="h-4 w-4 text-gray-500" />
+                      {subiendoContrato ? 'Subiendo...' : contratoActivo ? 'Volver a subir' : 'Subir contrato'}
+                    </button>
+                    {contratoActivo && (
+                      <>
+                        <div className="my-1 h-px bg-gray-100" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowContratoMenu(false);
+                            handleEliminarContrato(contratoActivo.id);
+                          }}
+                          disabled={eliminandoContratoId === contratoActivo.id}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          {eliminandoContratoId === contratoActivo.id ? 'Eliminando...' : 'Eliminar contrato'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
@@ -1587,11 +1705,19 @@ export default function YegoMiAutoRentSaleDetail() {
                                           <th className="py-2 pr-3 font-medium">Archivo</th>
                                           <th className="py-2 pr-3 font-medium whitespace-nowrap">Monto</th>
                                           <th className="py-2 pr-3 font-medium whitespace-nowrap">Fecha</th>
+                                          <th className="py-2 pr-3 font-medium whitespace-nowrap">Estado</th>
                                           <th className="py-2 text-right font-medium whitespace-nowrap">Acciones</th>
                                         </tr>
                                       </thead>
                                       <tbody>
                                         {conformidadesAdmin.map((comp) => {
+                                          const estado = (comp.estado || '').toLowerCase();
+                                          const labelClass =
+                                            estado === 'validado'
+                                              ? 'bg-green-100 text-green-800'
+                                              : estado === 'rechazado'
+                                                ? 'bg-red-100 text-red-800'
+                                                : 'bg-amber-100 text-amber-800';
                                           const compLabel = 'Conformidad de pago (Yego)';
                                           const puedeVerArchivo = !!comp.file_path && comp.file_path !== 'manual';
                                           const url = puedeVerArchivo
@@ -1617,6 +1743,15 @@ export default function YegoMiAutoRentSaleDetail() {
                                               </td>
                                               <td className="py-2 pr-3 align-middle text-gray-600 whitespace-nowrap">
                                                 {comp.created_at ? formatDateTime(comp.created_at, 'es-ES') : '—'}
+                                              </td>
+                                              <td className="py-2 pr-3 align-middle whitespace-nowrap">
+                                                <span className={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium ${labelClass}`}>
+                                                  {estado === 'validado'
+                                                    ? 'Validado'
+                                                    : estado === 'rechazado'
+                                                      ? 'Rechazado'
+                                                      : 'Pendiente'}
+                                                </span>
                                               </td>
                                               <td className="py-2 align-middle text-right whitespace-nowrap">
                                                 <div className="inline-flex flex-wrap items-center justify-end gap-1.5">

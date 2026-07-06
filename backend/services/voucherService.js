@@ -56,9 +56,9 @@ const MEDIA_UPLOAD_URL = process.env.MEDIA_UPLOAD_URL || 'http://178.156.204.129
 const MEDIA_BUCKET = process.env.MEDIA_BUCKET || 'rapidin-media';
 
 // Subir archivo al endpoint de media (bucket) y obtener URL. file = { buffer, mimetype?, originalname? }
-export async function uploadFileToMedia(file) {
+export async function uploadFileToMedia(file, options = {}) {
   const form = new FormData();
-  form.append('bucket', MEDIA_BUCKET);
+  form.append('bucket', options.bucket || MEDIA_BUCKET);
   const blob = new Blob([file.buffer], { type: file.mimetype || 'application/octet-stream' });
   form.append('file', blob, file.originalname || 'voucher');
 
@@ -521,7 +521,6 @@ export const reviewVoucher = async (voucherId, status, reviewedBy, rejectionReas
     throw error;
   }
 };
-
 
 
 

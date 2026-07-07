@@ -271,6 +271,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const [notaVentaCustomerId, setNotaVentaCustomerId] = useState('');
   const [generandoNotaVenta, setGenerandoNotaVenta] = useState(false);
   const [anulandoNotaVentaId, setAnulandoNotaVentaId] = useState<string | null>(null);
+  const [notaVentaAnularModal, setNotaVentaAnularModal] = useState<NotaVentaMiAuto | null>(null);
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
   const [whatsAppTab, setWhatsAppTab] = useState<'cuotas' | 'metricas'>('cuotas');
@@ -612,14 +613,13 @@ export default function YegoMiAutoRentSaleDetail() {
     }
   }, [id, notaVentaCustomerId, notaVentaCuotasIds, notaVentaSeleccionMixta, fetchDetail]);
 
-  const handleAnularNotaVenta = useCallback(async (nota: NotaVentaMiAuto) => {
-    if (!id || !nota?.id) return;
-    const label = nota.number_full || `ID ${nota.facturador_sale_note_id}`;
-    if (!window.confirm(`¿Anular la nota de venta ${label}? Las cuotas quedarán disponibles para generar una nueva nota.`)) return;
+  const handleConfirmarAnularNotaVenta = useCallback(async () => {
+    if (!id || !notaVentaAnularModal?.id) return;
     try {
-      setAnulandoNotaVentaId(nota.id);
-      await api.patch(`/miauto/solicitudes/${id}/notas-venta/${nota.id}/anular`);
-      toast.success(`Nota de venta anulada${nota.number_full ? `: ${nota.number_full}` : ''}`);
+      setAnulandoNotaVentaId(notaVentaAnularModal.id);
+      await api.patch(`/miauto/solicitudes/${id}/notas-venta/${notaVentaAnularModal.id}/anular`);
+      toast.success(`Nota de venta anulada${notaVentaAnularModal.number_full ? `: ${notaVentaAnularModal.number_full}` : ''}`);
+      setNotaVentaAnularModal(null);
       setNotaVentaCuotasSeleccionadas({});
       await fetchDetail(undefined, { refresh: true });
     } catch (e: any) {
@@ -627,7 +627,7 @@ export default function YegoMiAutoRentSaleDetail() {
     } finally {
       setAnulandoNotaVentaId(null);
     }
-  }, [id, fetchDetail]);
+  }, [id, notaVentaAnularModal, fetchDetail]);
 
   const runComprobantePatch = useCallback(
     async (opts: {
@@ -2695,7 +2695,7 @@ export default function YegoMiAutoRentSaleDetail() {
                             )}
                             <button
                               type="button"
-                              onClick={() => handleAnularNotaVenta(nota)}
+                              onClick={() => setNotaVentaAnularModal(nota)}
                               disabled={anulandoNotaVentaId === nota.id || generandoNotaVenta}
                               className="inline-flex items-center gap-1 text-red-600 hover:text-red-700 hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
                             >
@@ -2732,6 +2732,60 @@ export default function YegoMiAutoRentSaleDetail() {
               >
                 <ReceiptText className="w-4 h-4" />
                 {generandoNotaVenta ? 'Generando...' : 'Generar nota de venta'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {notaVentaAnularModal && createPortal(
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50"
+          onClick={() => !anulandoNotaVentaId && setNotaVentaAnularModal(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-200">
+              <div className="w-10 h-10 rounded-lg bg-red-50 text-red-700 flex items-center justify-center">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-gray-900">Anular nota de venta</h3>
+                <p className="text-xs text-gray-500 truncate">
+                  {notaVentaAnularModal.number_full || `ID ${notaVentaAnularModal.facturador_sale_note_id}`}
+                </p>
+              </div>
+            </div>
+
+            <div className="px-5 py-4 space-y-3">
+              <p className="text-sm text-gray-700">
+                Se anulará la nota en el facturador y las cuotas asociadas quedarán disponibles para generar una nueva nota.
+              </p>
+              <div className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800">
+                Esta acción no elimina la trazabilidad local; solo marca la nota como anulada.
+              </div>
+            </div>
+
+            <div className="flex gap-3 px-5 py-4 border-t border-gray-200 bg-gray-50">
+              <button
+                type="button"
+                onClick={() => setNotaVentaAnularModal(null)}
+                disabled={!!anulandoNotaVentaId}
+                className="flex-1 px-4 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmarAnularNotaVenta}
+                disabled={anulandoNotaVentaId === notaVentaAnularModal.id}
+                className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <Trash2 className="w-4 h-4" />
+                {anulandoNotaVentaId === notaVentaAnularModal.id ? 'Anulando...' : 'Sí, anular'}
               </button>
             </div>
           </div>

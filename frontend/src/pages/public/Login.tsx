@@ -5,6 +5,24 @@ import { getStoredSession } from '../../utils/authStorage';
 import toast from 'react-hot-toast';
 import { Lock, AlertCircle, ArrowRight, Shield, Zap, BarChart3, User, Eye, EyeOff } from 'lucide-react';
 
+const ADMIN_BASE_ROLES = new Set(['admin', 'analyst', 'approver', 'payer']);
+
+type LoginUser = {
+  role?: string;
+  base_role?: string;
+  phone?: string;
+  allowed_modules?: string[];
+};
+
+const isDriverUser = (user?: LoginUser | null) => Boolean(user && (user.role === 'driver' || user.phone));
+
+const isAdminUser = (user?: LoginUser | null) => {
+  if (!user || isDriverUser(user)) return false;
+  if (user.base_role && ADMIN_BASE_ROLES.has(user.base_role)) return true;
+  if (user.role && ADMIN_BASE_ROLES.has(user.role)) return true;
+  return Array.isArray(user.allowed_modules) && user.allowed_modules.some((module) => String(module).startsWith('rapidin'));
+};
+
 const Login = () => {
   const navigate = useNavigate();
   const { login, user } = useAuth();
@@ -17,11 +35,9 @@ const Login = () => {
   // Redirigir si ya está autenticado (solo si no hay error)
   useEffect(() => {
     if (user && !loading && !error) {
-      // Si es conductor (tiene phone o role=driver)
-      if (user.role === 'driver' || user.phone) {
+      if (isDriverUser(user)) {
         navigate('/driver/resumen', { replace: true });
-      } else if (user.role && ['admin', 'analyst', 'approver', 'payer'].includes(user.role)) {
-        // Si es admin u otro rol de administración
+      } else if (isAdminUser(user)) {
         navigate('/admin/dashboard', { replace: true });
       }
     }
@@ -40,11 +56,11 @@ const Login = () => {
         throw new Error('Error al obtener información del usuario');
       }
 
-      const role = (storedUser as { role?: string }).role;
-      if (role && ['admin', 'analyst', 'approver', 'payer'].includes(role)) {
+      const sessionUser = storedUser as LoginUser;
+      if (isAdminUser(sessionUser)) {
         toast.success('Inicio de sesión exitoso');
         navigate('/admin/dashboard', { replace: true });
-      } else if (role === 'driver' || (storedUser as { phone?: string }).phone) {
+      } else if (isDriverUser(sessionUser)) {
         toast.success('Inicio de sesión exitoso');
         navigate('/driver/resumen', { replace: true });
       } else {
@@ -236,7 +252,6 @@ const Login = () => {
 };
 
 export default Login;
-
 
 
 

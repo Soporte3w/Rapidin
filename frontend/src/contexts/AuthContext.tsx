@@ -14,6 +14,8 @@ interface User {
   first_name: string;
   last_name: string;
   role: string;
+  base_role?: string;
+  role_name?: string;
   country: string;
   document_number?: string;
   document_type?: string;
@@ -187,7 +189,6 @@ export const useAuth = () => {
   }
   return context;
 };
-
 
 
 

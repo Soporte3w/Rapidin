@@ -330,9 +330,10 @@ export async function listForAdminValidation({ estado = 'pendiente', country, li
       ORDER BY
         CASE LOWER(COALESCE(NULLIF(TRIM(cp.estado::text), ''), 'pendiente'))
           WHEN 'pendiente' THEN 0
-          WHEN 'rechazado' THEN 1
-          WHEN 'validado' THEN 2
-          ELSE 3
+          WHEN 'confirmado' THEN 1
+          WHEN 'rechazado' THEN 2
+          WHEN 'validado' THEN 3
+          ELSE 4
         END,
         cp.created_at DESC
       LIMIT $${params.length}`,
@@ -561,6 +562,57 @@ export async function rejectComprobanteCuotaSemanal(solicitudId, comprobanteId, 
      WHERE id = $3`,
     [motivo ? String(motivo).trim() : null, userId, comprobanteId]
   );
+  return listBySolicitud(solicitudId);
+}
+
+/**
+ * Confirma que el comprobante existe en banco, sin aplicar todavía el pago a la cuota.
+ * El monitor luego decidirá cuánto de ese comprobante afecta realmente a la cuota/cascada.
+ */
+export async function confirmComprobanteCuotaSemanal(solicitudId, comprobanteId, userId, { monto, moneda } = {}) {
+  let compRow;
+  try {
+    const comp = await query(
+      `SELECT id, estado, COALESCE(origen, 'conductor') AS origen
+       FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2`,
+      [solicitudId, comprobanteId]
+    );
+    compRow = comp.rows[0];
+  } catch (e) {
+    if (!isUndefinedColumnError(e)) throw e;
+    const comp = await query(
+      `SELECT id, estado, file_path FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2`,
+      [solicitudId, comprobanteId]
+    );
+    const r = comp.rows[0];
+    compRow = r ? { ...r, origen: inferOrigenFromRow(r) } : null;
+  }
+
+  if (!compRow) throw new Error('Comprobante no encontrado');
+  const estado = String(compRow.estado || 'pendiente').toLowerCase();
+  if (estado === 'validado') throw new Error('El comprobante ya fue aplicado a cuota');
+  if (estado === 'rechazado') throw new Error('No se puede confirmar un comprobante rechazado');
+  if (estado === 'confirmado') throw new Error('El comprobante ya está confirmado');
+
+  const montoConfirmado = round2(parseFloat(monto));
+  if (Number.isNaN(montoConfirmado) || montoConfirmado <= 0) {
+    throw new Error('Debe indicar el monto confirmado en banco');
+  }
+  const monedaConfirmada = normalizePenUsd(moneda || 'PEN');
+
+  await query(
+    `UPDATE module_miauto_comprobante_cuota_semanal
+     SET monto = $1,
+         moneda = $2,
+         estado = 'confirmado',
+         validated_by = $3,
+         rechazado_at = NULL,
+         rechazo_razon = NULL,
+         rechazado_by = NULL
+     WHERE solicitud_id = $4 AND id = $5`,
+    [montoConfirmado, monedaConfirmada, userId, solicitudId, comprobanteId]
+  );
+
   return listBySolicitud(solicitudId);
 }
 

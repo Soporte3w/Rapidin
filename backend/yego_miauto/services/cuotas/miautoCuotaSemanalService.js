@@ -979,7 +979,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
        FROM module_miauto_comprobante_cuota_semanal
        WHERE cuota_semanal_id = ANY($1::uuid[])
          AND validated_at IS NULL
-         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) NOT IN ('validado', 'rechazado')`,
+         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) IN ('pendiente', 'confirmado')`,
       [cuotaIdList]
     );
     pendingComprobanteCuotaIds = new Set((pendRes.rows || []).map((x) => String(x.id)));
@@ -2114,17 +2114,25 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
   /** Suma de montos declarados en comprobantes sin validar (moneda de la fila de cuota), para mostrar saldo pendiente. */
   const creditoComprobantePendientePorCuota = new Map();
   if (rows.length > 0) {
+    const freezeRes = await query(
+      `SELECT DISTINCT cuota_semanal_id::text AS cid
+       FROM module_miauto_comprobante_cuota_semanal
+       WHERE solicitud_id = $1::uuid
+         AND validated_at IS NULL
+         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) IN ('pendiente', 'confirmado')`,
+      [solicitudId]
+    );
+    pendingComprobanteCuotaIds = new Set((freezeRes.rows || []).map((x) => String(x.cid)));
     const pendRes = await query(
       `SELECT cuota_semanal_id::text AS cid, monto, moneda,
               COALESCE(origen, 'conductor') AS origen
        FROM module_miauto_comprobante_cuota_semanal
        WHERE solicitud_id = $1::uuid
          AND validated_at IS NULL
-         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) NOT IN ('validado', 'rechazado')`,
+         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) = 'pendiente'`,
       [solicitudId]
     );
     const pendRows = pendRes.rows || [];
-    pendingComprobanteCuotaIds = new Set(pendRows.map((x) => String(x.cid)));
     if (incluirAbonoPendiente) {
       const byCuota = new Map();
       for (const pr of pendRows) {

@@ -285,7 +285,7 @@ async function ensureNotaVentaTables(client) {
 
 async function loadSolicitudAndCuotas(client, solicitudId, cuotaIds) {
   const solRes = await client.query(
-    `SELECT s.id, s.dni, s.country, s.placa_asignada, s.facturador_customer_id,
+    `SELECT s.id, s.dni, s.country, s.placa_asignada, s.facturador_customer_id
      FROM module_miauto_solicitud s
      WHERE s.id = $1::uuid
      LIMIT 1`,

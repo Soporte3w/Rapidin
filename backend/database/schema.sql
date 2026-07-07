@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS module_rapidin_users (
     password_hash VARCHAR(255) NOT NULL,
     first_name VARCHAR(255) NOT NULL,
     last_name VARCHAR(255) NOT NULL,
-    role VARCHAR(50) NOT NULL CHECK (role IN ('admin', 'analyst', 'approver', 'payer')),
+    role VARCHAR(50) NOT NULL,
     allowed_modules TEXT[] NOT NULL DEFAULT '{rapidin}',
     country VARCHAR(10) NOT NULL CHECK (country IN ('PE', 'CO')),
     active BOOLEAN DEFAULT true,
@@ -441,4 +441,3 @@ CREATE TRIGGER update_creditos_personal_config_updated_at BEFORE UPDATE ON modul
 INSERT INTO module_rapidin_creditos_personal_config (interest_rate, max_installments)
 SELECT 7.00, 10
 WHERE NOT EXISTS (SELECT 1 FROM module_rapidin_creditos_personal_config WHERE active = true);
-

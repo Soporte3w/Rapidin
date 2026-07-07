@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS systems_users_financiator (
     password_hash VARCHAR(255) NOT NULL,
     first_name VARCHAR(255) NOT NULL,
     last_name VARCHAR(255) NOT NULL,
-    role VARCHAR(50) NOT NULL CHECK (role IN ('admin', 'analyst', 'approver', 'payer')),
+    role VARCHAR(50) NOT NULL,
     allowed_modules TEXT[] NOT NULL DEFAULT '{rapidin}',
     country VARCHAR(10) NOT NULL CHECK (country IN ('PE', 'CO')),
     active BOOLEAN DEFAULT true,

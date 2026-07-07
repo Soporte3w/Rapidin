@@ -3,7 +3,6 @@ import toast from 'react-hot-toast';
 import {
   AlertCircle,
   CheckCircle2,
-  ExternalLink,
   FileText,
   Loader2,
   RotateCcw,
@@ -113,6 +112,49 @@ function normalizeMoneda(value?: string | null): MiautoMoneda {
   return 'PEN';
 }
 
+function ComprobanteThumbnail({
+  row,
+  onPreview,
+}: {
+  row: ComprobanteValidacion;
+  onPreview: (row: ComprobanteValidacion) => void;
+}) {
+  const [imageError, setImageError] = useState(false);
+  const hasFile = !!row.file_path && row.file_path !== 'manual';
+  const fileUrl = hasFile ? getMiautoAdjuntoUrl(row.file_path || '') : '';
+
+  if (!hasFile) {
+    return (
+      <div className="flex h-16 w-16 flex-shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-gray-400">
+        <FileText className="h-5 w-5" />
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onPreview(row)}
+      className="group relative block h-16 w-16 flex-shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 text-left focus:outline-none focus:ring-2 focus:ring-[#8B1A1A] focus:ring-offset-2"
+      title="Ver comprobante"
+    >
+      {!imageError ? (
+        <img
+          src={fileUrl}
+          alt={row.file_name || 'Comprobante'}
+          className="h-full w-full object-cover transition-transform group-hover:scale-105"
+          loading="lazy"
+          onError={() => setImageError(true)}
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center text-gray-400">
+          <FileText className="h-5 w-5" />
+        </div>
+      )}
+    </button>
+  );
+}
+
 export default function YegoMiAutoValidarComprobantes() {
   const { user } = useAuth();
   const [estado, setEstado] = useState<EstadoFiltro>('pendiente');
@@ -126,6 +168,7 @@ export default function YegoMiAutoValidarComprobantes() {
   const [accionMoneda, setAccionMoneda] = useState<MiautoMoneda>('PEN');
   const [rechazoMotivo, setRechazoMotivo] = useState('');
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [previewRow, setPreviewRow] = useState<ComprobanteValidacion | null>(null);
 
   const fetchComprobantes = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -219,6 +262,8 @@ export default function YegoMiAutoValidarComprobantes() {
     setAccionMonto('');
     setRechazoMotivo('');
   };
+
+  const closePreview = () => setPreviewRow(null);
 
   const submitAccion = async () => {
     if (!accion) return;
@@ -385,23 +430,27 @@ export default function YegoMiAutoValidarComprobantes() {
                         </p>
                       </td>
                       <td className="px-4 py-3 align-top">
-                        <span className="inline-flex rounded-full border border-gray-200 px-2 py-0.5 text-xs font-medium text-gray-700">
-                          {origenLabel(row.origen)}
-                        </span>
-                        <p className="mt-1 max-w-xs truncate text-gray-900">{row.file_name || 'Pago manual'}</p>
-                        <p className="text-xs text-gray-500">
-                          {row.created_at ? formatDateTime(row.created_at, 'es-ES') : '—'}
-                        </p>
-                        {row.file_path && row.file_path !== 'manual' && (
-                          <a
-                            href={getMiautoAdjuntoUrl(row.file_path)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-[#8B1A1A] hover:underline"
-                          >
-                            Ver archivo <ExternalLink className="h-3 w-3" />
-                          </a>
-                        )}
+                        <div className="flex min-w-72 items-start gap-3">
+                          <ComprobanteThumbnail row={row} onPreview={setPreviewRow} />
+                          <div className="min-w-0">
+                            <span className="inline-flex rounded-full border border-gray-200 px-2 py-0.5 text-xs font-medium text-gray-700">
+                              {origenLabel(row.origen)}
+                            </span>
+                            <p className="mt-1 max-w-xs truncate text-gray-900">{row.file_name || 'Pago manual'}</p>
+                            <p className="text-xs text-gray-500">
+                              {row.created_at ? formatDateTime(row.created_at, 'es-ES') : '—'}
+                            </p>
+                            {row.file_path && row.file_path !== 'manual' && (
+                              <button
+                                type="button"
+                                onClick={() => setPreviewRow(row)}
+                                className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-[#8B1A1A] hover:underline"
+                              >
+                                Ver archivo
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       </td>
                       <td className="px-4 py-3 align-top">
                         <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${estadoClasses(row.estado)}`}>
@@ -473,6 +522,36 @@ export default function YegoMiAutoValidarComprobantes() {
           </div>
         )}
       </section>
+
+      {previewRow && previewRow.file_path && previewRow.file_path !== 'manual' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+              <div className="min-w-0">
+                <h2 className="truncate text-base font-semibold text-gray-900">Comprobante</h2>
+                <p className="truncate text-xs text-gray-500">
+                  {driverName(previewRow)} · {previewRow.file_name || 'Archivo'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closePreview}
+                className="ml-3 rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                aria-label="Cerrar vista previa"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-gray-100 p-4">
+              <img
+                src={getMiautoAdjuntoUrl(previewRow.file_path)}
+                alt={previewRow.file_name || 'Comprobante'}
+                className="max-h-[76vh] max-w-full rounded-lg object-contain shadow-sm"
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {accion && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">

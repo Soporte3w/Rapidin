@@ -242,7 +242,13 @@ function cuotaHermanaBloqueaPorDeudaMasAntigua(o, miDueYmd, todayYmd, options = 
     options.pendienteEconomico != null && Number.isFinite(Number(options.pendienteEconomico))
       ? round2(Math.max(0, Number(options.pendienteEconomico)))
       : round2(
-          Math.max(0, round2(parseFloat(o.amount_due) || 0) + round2(parseFloat(o.late_fee) || 0) - paid)
+          Math.max(
+            0,
+            round2(parseFloat(o.amount_due) || 0)
+              + round2(parseFloat(o.late_fee) || 0)
+              + round2(parseFloat(o.mora_extra) || 0)
+              - paid
+          )
         );
   if (pendCol <= 0.02) return false;
   const vencidaPorEstado = st === 'overdue';
@@ -571,7 +577,7 @@ async function cuotaRowWithPartnerFeesUsdNormalizedIfNeeded(solicitudId, r) {
 }
 
 /**
- * Cronograma abierto: abonos cubren primero la **mora** y el remanente reduce la **cuota** (`amount_due_sched`).
+ * Cronograma abierto: abonos cubren primero la **mora normal**, luego la **mora extra** y el remanente reduce la **cuota** (`amount_due_sched`).
  * La mora devengada del periodo se calcula sobre la **cuota bruta del plan** (`cuota_semanal`, p. ej. 520) cuando existe;
  * la cuota a pagar sigue siendo la **neta** (520 − PF83 + cobro saldo, etc.). Así el reparto 200 = mora(bruta) + abono cuota
  * coincide con la hoja (mora sobre 520, tasa/7 × días).
@@ -581,7 +587,7 @@ async function cuotaRowWithPartnerFeesUsdNormalizedIfNeeded(solicitudId, r) {
  * pendiente: sobre ese saldo se devenga **otra** mora (misma tasa/días) hasta pagar — coherente con “ya se cobró
  * la mora del tramo bruto y al capital que sigue impago le corre mora”.
  *
- * `paid_amount` incluye abonos Fleet y **cascada PF** de otras semanas. La imputación es **mora → cuota** en dos pasos:
+ * `paid_amount` incluye abonos Fleet y **cascada PF** de otras semanas. La imputación es **mora normal → mora extra → cuota** en dos pasos:
  * 1) Abonos distintos de cascada (`paid − cascade_received`) con la regla habitual (mora bruto → cuota → mora sobre saldo).
  * 2) La **cascada** se aplica después sobre el remanente (**mora pendiente** incl. mora sobre saldo, luego capital de cuota).
  * Así un ingreso en cascada cubre primero la mora “de pantalla” (~19) y el resto baja la cuota (~332,68), alineado a rent-sale.
@@ -623,10 +629,10 @@ function amountDueAndLateForOpenSinglePhase(
   if (paid > 0.005) {
     const lateFeeDb = round2(parseFloat(r.late_fee) || 0);
     const moraExtraDb = round2(parseFloat(r.mora_extra) || 0);
-    const moraTotalDb = lateFeeDb;
+    const moraTotalDb = round2(lateFeeDb + moraExtraDb);
     const abonoMoraTotal = round2(Math.min(paid, moraTotalDb));
     const abonoMoraLateFee = round2(Math.min(abonoMoraTotal, lateFeeDb));
-    const abonoMoraExtra = round2(Math.max(0, abonoMoraTotal - abonoMoraLateFee));
+    const abonoMoraExtra = round2(Math.min(moraExtraDb, Math.max(0, abonoMoraTotal - abonoMoraLateFee)));
     const abonoCuota = round2(Math.max(0, paid - abonoMoraTotal));
     const amt = resolvedAmountDueSchedForOpenRow(r, cuota_semanal, bono_auto, pct_comision, cobro_saldo, isPrimeraCuotaSemanal);
     const adRem = round2(Math.max(0, amt - abonoCuota));
@@ -745,8 +751,11 @@ function amountDueAndLateForOpen(
     const moraReal = diasReales > 0
       ? computeLateFeeForDayCount(cronograma, round2(cuota_semanal), diasReales)
       : round2(parseFloat(r.late_fee) || 0);
-    const abonoMora = round2(Math.min(paid, moraReal));
-    const abonoCuota = round2(Math.max(0, paid - abonoMora));
+    const moraExtraDb = round2(parseFloat(r.mora_extra) || 0);
+    const abonoMoraTotal = round2(Math.min(paid, round2(moraReal + moraExtraDb)));
+    const abonoMora = round2(Math.min(abonoMoraTotal, moraReal));
+    const abonoMoraExtra = round2(Math.min(moraExtraDb, Math.max(0, abonoMoraTotal - abonoMora)));
+    const abonoCuota = round2(Math.max(0, paid - abonoMoraTotal));
     const amt = resolvedAmountDueSchedForOpenRow(
       r, cuota_semanal, bono_auto, pct_comision, cobro_saldo, isPrimeraCuotaSemanal
     );
@@ -755,7 +764,7 @@ function amountDueAndLateForOpen(
       amount_due_remaining: round2(Math.max(0, amt - abonoCuota)),
       late_fee_remaining: round2(Math.max(0, moraReal - abonoMora)),
       mora_full: moraReal,
-      mora_saldo_capital_pendiente: round2(parseFloat(r.mora_extra) || 0),
+      mora_saldo_capital_pendiente: round2(Math.max(0, moraExtraDb - abonoMoraExtra)),
       mora_sched_periodo: 0,
       obligacion_total_open: round2(round2(Math.max(0, amt - abonoCuota)) + round2(Math.max(0, moraReal - abonoMora)) + paid),
     };
@@ -778,21 +787,21 @@ function amountDueAndLateForOpen(
   }
 
   let lf = p1.late_fee_remaining;
+  let moraExtra = round2(p1.mora_saldo_capital_pendiente || 0);
   let ad = p1.amount_due_remaining;
-  const toMora = round2(Math.min(cascade, lf));
-  const toCuota = round2(Math.max(0, cascade - toMora));
-  lf = round2(Math.max(0, lf - toMora));
+  const toMoraNormal = round2(Math.min(cascade, lf));
+  const remAfterMoraNormal = round2(Math.max(0, cascade - toMoraNormal));
+  const toMoraExtra = round2(Math.min(remAfterMoraNormal, moraExtra));
+  const toCuota = round2(Math.max(0, remAfterMoraNormal - toMoraExtra));
+  lf = round2(Math.max(0, lf - toMoraNormal));
+  moraExtra = round2(Math.max(0, moraExtra - toMoraExtra));
   ad = round2(Math.max(0, ad - toCuota));
-
-  const mfRemInLate = round2(Math.max(0, p1.late_fee_remaining - p1.mora_saldo_capital_pendiente));
-  const toMoraSaldo = round2(Math.max(0, toMora - mfRemInLate));
-  const moraSaldoAfter = round2(Math.max(0, p1.mora_saldo_capital_pendiente - toMoraSaldo));
 
   return {
     ...p1,
     late_fee_remaining: lf,
     amount_due_remaining: ad,
-    mora_saldo_capital_pendiente: moraSaldoAfter,
+    mora_saldo_capital_pendiente: moraExtra,
     obligacion_total_open: round2(ad + lf + paid),
   };
 }
@@ -1116,9 +1125,9 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       lateFeePersist = lateFeeDb;
     }
 
-    // Regla de imputación: el pago cubre primero mora normal y recién después capital.
-    // La mora_extra solo nace cuando el pago ya cubrió la mora normal acumulada hasta
-    // la fecha del abono y dejó un abono real a capital/cuota.
+    // Regla de imputación: el pago cubre primero mora normal, luego mora extra y recién después capital.
+    // La mora_extra solo crece cuando el pago ya cubrió toda la mora vigente hasta el abono
+    // y dejó un abono real a capital/cuota.
     let moraExtraPersist = round2(parseFloat(row.mora_extra) || 0);
     let moraExtraDesde = ymdFromDbDate(row.mora_extra_desde);
     const pagoHecho = round2(paidDb);
@@ -1132,8 +1141,13 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     const moraNormalHastaAbono = isPrimera
       ? 0
       : computeLateFeeForDayCount(cronograma, baseCapitalMoraNormal, diasMoraNormalHastaAbono);
-    const abonoACapital = round2(Math.max(0, pagoHecho - moraNormalHastaAbono));
-    const moraNormalPendiente = round2(Math.max(0, moraNormalHastaAbono - pagoHecho));
+    const moraExtraExistente = round2(parseFloat(row.mora_extra) || 0);
+    const abonoMoraNormal = round2(Math.min(pagoHecho, moraNormalHastaAbono));
+    const saldoPagoTrasMoraNormal = round2(Math.max(0, pagoHecho - abonoMoraNormal));
+    const abonoMoraExtraExistente = round2(Math.min(saldoPagoTrasMoraNormal, moraExtraExistente));
+    const abonoACapital = round2(Math.max(0, saldoPagoTrasMoraNormal - abonoMoraExtraExistente));
+    const moraNormalPendiente = round2(Math.max(0, moraNormalHastaAbono - abonoMoraNormal));
+    const moraExtraExistentePendiente = round2(Math.max(0, moraExtraExistente - abonoMoraExtraExistente));
     const capitalPendienteTrasAbono = round2(Math.max(0, baseCapitalMoraNormal - abonoACapital));
 
     if (!isPrimera && !freezeMoraPorComprobante && pagoHecho > 0.005) {
@@ -1145,24 +1159,27 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     if (
       statusOut === 'overdue' &&
       moraNormalPendiente <= 0.005 &&
-      abonoACapital > 0.005 &&
       capitalPendienteTrasAbono > 0.005
     ) {
-      if (!moraExtraDesde) {
+      if (abonoACapital > 0.005 && !moraExtraDesde) {
         moraExtraDesde = fechaUltimoAbono || limaTodayYmdSync();
       }
-      const dias = Math.max(0, calendarDaysLateLima(moraExtraDesde));
-      if (dias > 0) {
-        moraExtraPersist = computeLateFeeForDayCount(cronograma, capitalPendienteTrasAbono, dias);
+      const dias = moraExtraDesde ? Math.max(0, calendarDaysLateLima(moraExtraDesde)) : 0;
+      const moraExtraNueva = abonoACapital > 0.005 && dias > 0
+        ? computeLateFeeForDayCount(cronograma, capitalPendienteTrasAbono, dias)
+        : 0;
+      moraExtraPersist = round2(moraExtraExistentePendiente + moraExtraNueva);
+    } else {
+      if (moraExtraExistentePendiente > 0.005) {
+        moraExtraPersist = moraExtraExistentePendiente;
+      } else if (moraExtraPersist > 0.005 || moraExtraDesde) {
+        moraStats.moraExtraReiniciada++;
+        moraExtraPersist = 0;
+        moraExtraDesde = null;
       } else {
         moraExtraPersist = 0;
+        moraExtraDesde = null;
       }
-    } else {
-      if (moraExtraPersist > 0.005 || moraExtraDesde) {
-        moraStats.moraExtraReiniciada++;
-      }
-      moraExtraPersist = 0;
-      moraExtraDesde = null;
     }
 
     if (isPrimera) {
@@ -1175,7 +1192,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     // mora_extra_total = total generado histórico (cristalizado + actual)
     const moraExtraDbOld = round2(parseFloat(row.mora_extra) || 0);
     const moraExtraTotalDbOld = round2(parseFloat(row.mora_extra_total) || 0);
-    const moraExtraTotalPersist = round2(Math.max(0, moraExtraTotalDbOld - moraExtraDbOld + moraExtraPersist));
+    const moraExtraTotalPersist = round2(Math.max(moraExtraTotalDbOld, moraExtraTotalDbOld - moraExtraDbOld + moraExtraPersist));
 
     await query(
       patchDue
@@ -1529,6 +1546,19 @@ function parsePartnerFeesCascadaDestinoDb(v) {
   return [];
 }
 
+function parseMiautoJsonArray(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') {
+    try {
+      const p = JSON.parse(v);
+      return Array.isArray(p) ? p : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 /**
  * Mapa cuota_id → monto total recibido vía cascada PF desde otras cuotas (JSON en filas origen).
  * Útil para auditoría y para `amountDueAndLateForOpen`: primero `paid − cascada`, luego la cascada (mora→cuota).
@@ -1543,6 +1573,23 @@ function buildCascadeReceivedMap(cuotaRows) {
     }
   }
   return map;
+}
+
+function buildCascadeMoraHistoricaMap(cuotaRows) {
+  const normal = new Map();
+  const extra = new Map();
+  for (const r of cuotaRows) {
+    const entries = parsePartnerFeesCascadaDestinoDb(r.partner_fees_cascada_destino);
+    for (const e of entries) {
+      const id = String(e.cuota_semanal_id || '');
+      if (!id) continue;
+      const moraNormalBase = round2(Number(e.mora_normal_base) || 0);
+      const moraExtraBase = round2(Number(e.mora_extra_base) || 0);
+      if (moraNormalBase > 0.005) normal.set(id, round2(Math.max(normal.get(id) || 0, moraNormalBase)));
+      if (moraExtraBase > 0.005) extra.set(id, round2(Math.max(extra.get(id) || 0, moraExtraBase)));
+    }
+  }
+  return { normal, extra };
 }
 
 /**
@@ -1629,7 +1676,11 @@ function aplicarPisoColumnasPendienteCuota(cuotaRow, d, pendienteEconPrePiso, is
   }
   const obligacionColumnas = isPrimeraCuotaSemanal
     ? round2(adParaPiso)
-    : round2(adParaPiso + round2(parseFloat(cuotaRow.late_fee) || 0));
+    : round2(
+        adParaPiso
+        + round2(parseFloat(cuotaRow.late_fee) || 0)
+        + round2(parseFloat(cuotaRow.mora_extra) || 0)
+      );
   const pendientePorColumnas = round2(Math.max(0, obligacionColumnas - paidRaw));
   /**
    * Si `obligacion_total` del derivado queda por debajo de `amount_due`+`late_fee` (columnas), el pendiente no puede ser
@@ -1707,17 +1758,16 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   const capPagadoApi =
     d0.obligacion_total > 0.005
       ? d0.obligacion_total
-      : round2(parseFloat(r.amount_due) || 0) + round2(parseFloat(r.late_fee) || 0);
+      : round2(parseFloat(r.amount_due) || 0)
+        + round2(parseFloat(r.late_fee) || 0)
+        + round2(parseFloat(r.mora_extra) || 0);
   if (filaCerrada && capPagadoApi > 0.005) {
     paid_amount = round2(Math.min(paid_amount, capPagadoApi));
   }
-  /** Comprobante en revisión con monto: mismo efecto que al validar (tope de obligación), sin persistir aún en BD. */
+  /** Comprobante en revisión: solo congela mora y queda como evidencia; no descuenta cuota hasta validar/confirmar. */
   const creditoPend = round2(Math.max(0, Number(options.creditoComprobantePendienteMonedaCuota) || 0));
   const pendPreDerivado = round2(Math.max(0, d0.obligacion_total - paid_amount));
-  const extraAbonoRevision =
-    pendPreDerivado > 0.005 && creditoPend > 0.005
-      ? round2(Math.min(creditoPend, pendPreDerivado))
-      : 0;
+  const extraAbonoRevision = 0;
   const d =
     extraAbonoRevision > 0.005
       ? computeCuotaDerivedForRow(
@@ -1727,17 +1777,8 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
           derivedOpts
         )
       : d0;
-  /**
-   * Saldo pendiente: con comprobante en revisión (`extraAbonoRevision`) `d` ya usa `paid_amount` ficticio;
-   * la fuente coherente es `d.cuota_final`. Sin extra, obligación − pagado BD (evita desvíos históricos de `cuota_final`).
-   */
-  let pendienteEcon =
-    extraAbonoRevision > 0.005
-      ? round2(Math.max(0, d.cuota_final))
-      : round2(Math.max(0, d.obligacion_total - paid_amount));
-  if (extraAbonoRevision <= 0.005) {
-    pendienteEcon = aplicarPisoColumnasPendienteCuota(r, d, pendienteEcon, isPrimera);
-  }
+  let pendienteEcon = round2(Math.max(0, d.obligacion_total - paid_amount));
+  pendienteEcon = aplicarPisoColumnasPendienteCuota(r, d, pendienteEcon, isPrimera);
   const filaCerradaEfectiva = filaCerrada && pendienteEcon <= 0.005;
   const cobroSaldoRegla = round2(parseFloat(r.cobro_saldo) || 0);
   const cobroDesdeFleet = round2(parseFloat(r.cobro_desde_saldo_conductor) || 0);
@@ -1752,8 +1793,16 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     ? round2(parseFloat(r.amount_due) || 0)
     : round2(d.amount_due_sched);
   const lateFeeColDb = round2(parseFloat(r.late_fee) || 0);
+  const moraNormalHistoricaAplicada = round2(Math.max(0, Number(options.moraNormalHistoricaAplicada) || 0));
+  const moraExtraHistoricaAplicada = round2(Math.max(
+    Number(options.moraExtraHistoricaAplicada) || 0,
+    Number(r.mora_extra_total) || 0,
+    Number(r.mora_extra) || 0
+  ));
   const moraSchedDer = round2(parseFloat(d.mora_sched_periodo) || 0);
   const moraSaldoCapitalDer = round2(parseFloat(d.mora_saldo_capital_pendiente) || 0);
+  let moraExtraApiOut = round2(parseFloat(r.mora_extra) || 0);
+  let moraExtraTotalApiOut = round2(parseFloat(r.mora_extra_total) || 0);
   /** Fila pagada: mostrar la mora persistida ya corregida. `bonificada`: sin mora. */
   const lateFeeHistoricaPagada =
     filaCerradaEfectiva && st !== 'bonificada'
@@ -1787,6 +1836,24 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   if (saldoPendienteApi <= 0.005) {
     moraInteresPeriodoApi = round2(0);
   }
+  let moraPendienteApiOut = lateFeePendiente;
+  let cuotaPendienteApiOut = filaCerradaEfectiva ? round2(0) : round2(Math.max(0, d.amount_due_remaining));
+  if (!filaCerradaEfectiva && moraNormalHistoricaAplicada > lateFeeColDb + 0.005 && paid_amount > 0.005) {
+    const moraBase = moraNormalHistoricaAplicada;
+    const moraPendienteHist = round2(Math.max(0, moraBase - paid_amount));
+    const pagoTrasMoraNormalHist = round2(Math.max(0, paid_amount - moraBase));
+    const moraExtraPendienteHist = round2(Math.max(0, moraExtraHistoricaAplicada - pagoTrasMoraNormalHist));
+    const pagoTrasMorasHist = round2(Math.max(0, pagoTrasMoraNormalHist - moraExtraHistoricaAplicada));
+    const cuotaPendienteHist = round2(Math.max(0, d.amount_due_sched - pagoTrasMorasHist));
+    lateFeePendiente = moraPendienteHist;
+    lateFeeApi = moraPendienteHist;
+    moraPendienteApiOut = moraPendienteHist;
+    cuotaPendienteApiOut = cuotaPendienteHist;
+    moraInteresPeriodoApi = moraBase;
+    moraExtraApiOut = moraExtraPendienteHist;
+    moraExtraTotalApiOut = round2(Math.max(moraExtraTotalApiOut, moraExtraHistoricaAplicada));
+    saldoPendienteApi = round2(cuotaPendienteHist + moraPendienteHist + moraExtraPendienteHist);
+  }
   const moraDesdeOrDue = ymdFromDbDate(r.mora_desde) || r.due_date;
   const lateFeeCalendarDays =
     saldoPendienteApi <= 0.005 ? 0 : filaCerradaEfectiva ? 0 : calendarDaysLateLima(moraDesdeOrDue);
@@ -1794,14 +1861,12 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   const cuotaFinalApi = saldoPendienteApi;
   const pendingTotalApi = saldoPendienteApi;
   /** Si mora+cuota derivados no cierran con `pending_total`, re-imputar con mora_full + sched + paid (misma regla que cascada). */
-  let moraPendienteApiOut = lateFeePendiente;
-  let cuotaPendienteApiOut = filaCerradaEfectiva ? round2(0) : round2(Math.max(0, d.amount_due_remaining));
   if (!filaCerradaEfectiva && !options.congelaMoraComprobantePendiente && pendingTotalApi > 0.005) {
-    const sumParts = round2(moraPendienteApiOut + cuotaPendienteApiOut);
+    const sumParts = round2(moraPendienteApiOut + moraSaldoCapitalDer + cuotaPendienteApiOut);
     if (Math.abs(sumParts - pendingTotalApi) > 0.05) {
       const paidParaImputar = round2(paid_amount + extraAbonoRevision);
       const imp = imputacionMoraCuotaRemanenteFromPaid(paidParaImputar, d.mora_full, d.amount_due_sched);
-      const sImp = round2(imp.late_fee_remaining + imp.amount_due_remaining);
+      const sImp = round2(imp.late_fee_remaining + moraSaldoCapitalDer + imp.amount_due_remaining);
       if (Math.abs(sImp - pendingTotalApi) <= 0.12) {
         moraPendienteApiOut = imp.late_fee_remaining;
         cuotaPendienteApiOut = imp.amount_due_remaining;
@@ -1824,8 +1889,8 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     const paidEfectivoApi = round2(paid_amount + extraAbonoRevision);
     statusApi = miAutoOpenStatusSaldoVencimiento(dueYStat, pendStat, paidEfectivoApi);
   }
-  // Si el paid_amount cubre el amount_due almacenado, forzar status = 'paid' y usar valores almacenados
-  if (round2(paid_amount) >= round2(parseFloat(r.amount_due) || 0) + round2(parseFloat(r.late_fee) || 0) - 0.005 && round2(paid_amount) > 0.005) {
+  // Solo cerrar si el saldo derivado completo (mora normal + mora extra + cuota) quedó cubierto.
+  if (saldoPendienteApi <= 0.005 && round2(paid_amount) > 0.005) {
     statusApi = 'paid';
     amountDueApi = 0;
     lateFeeApi = 0;
@@ -1868,20 +1933,20 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     cuota_semanal: d.cuota_semanal,
     amount_due: amountDueApi,
     paid_amount,
-    /** Monto del comprobante en revisión ya descontado en `cuota_final` / `pending_total` (no está en `paid_amount` hasta validar). */
-    abono_comprobante_en_revision: extraAbonoRevision > 0.005 ? extraAbonoRevision : 0,
+    /** Monto declarado en comprobante pendiente; informativo, no descuenta cuota ni paid_amount. */
+    comprobante_en_revision_monto: creditoPend > 0.005 ? round2(Math.min(creditoPend, pendPreDerivado)) : 0,
     late_fee: lateFeeApi,
     mora_pendiente: moraPendienteApiOut,
     late_fee_calendar_days: lateFeeCalendarDays,
     mora_interes_periodo: moraInteresPeriodoApi,
     /** Mora total devengada en este periodo (valor BD). Aunque ya esté pagada, muestra cuánto se acumuló. */
-    mora_acumulada: round2(parseFloat(r.late_fee) || 0),
+    mora_acumulada: round2(Math.max(round2(parseFloat(r.late_fee) || 0), moraNormalHistoricaAplicada)),
     /** Mora extra: acumulada sobre el pendiente cuando hay pagos parciales. Empieza en 0. */
-    mora_extra: round2(parseFloat(r.mora_extra) || 0),
+    mora_extra: moraExtraApiOut,
     /** Total histórico de mora_extra generada (incluye la ya pagada/cristalizada). */
-    mora_extra_total: round2(parseFloat(r.mora_extra_total) || 0),
+    mora_extra_total: moraExtraTotalApiOut,
     /** Mora extra que ya fue pagada/cristalizada (total − actual). */
-    mora_extra_cobrada: round2(Math.max(0, round2(parseFloat(r.mora_extra_total) || 0) - round2(parseFloat(r.mora_extra) || 0))),
+    mora_extra_cobrada: round2(Math.max(0, moraExtraTotalApiOut - moraExtraApiOut)),
     mora_extra_desde: ymdFromDbDate(r.mora_extra_desde),
     status: statusApi,
     moneda: d.moneda,
@@ -1981,7 +2046,9 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
     const cap =
       rawOblig > 0.005
         ? rawOblig
-        : round2(parseFloat(r.amount_due) || 0) + round2(parseFloat(r.late_fee) || 0);
+        : round2(parseFloat(r.amount_due) || 0)
+          + round2(parseFloat(r.late_fee) || 0)
+          + round2(parseFloat(r.mora_extra) || 0);
     if (cap <= 0.005 && paidDb > 0.005) continue;
     if (paidDb <= cap + 0.005) continue;
 
@@ -2113,6 +2180,8 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
   let pendingComprobanteCuotaIds = new Set();
   /** Suma de montos declarados en comprobantes sin validar (moneda de la fila de cuota), para mostrar saldo pendiente. */
   const creditoComprobantePendientePorCuota = new Map();
+  const moraNormalHistoricaAplicadaPorCuota = new Map();
+  const moraExtraHistoricaAplicadaPorCuota = new Map();
   if (rows.length > 0) {
     const freezeRes = await query(
       `SELECT DISTINCT cuota_semanal_id::text AS cid
@@ -2155,9 +2224,36 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
         if (sum > 0.005) creditoComprobantePendientePorCuota.set(cid, sum);
       }
     }
+    const appliedRes = await query(
+      `SELECT cuota_semanal_id::text AS cid, aplicacion_chunks
+       FROM module_miauto_comprobante_cuota_semanal
+       WHERE solicitud_id = $1::uuid
+         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) = 'validado'
+         AND aplicacion_chunks IS NOT NULL`,
+      [solicitudId]
+    );
+    for (const ar of appliedRes.rows || []) {
+      const cid = String(ar.cid);
+      let moraBase = moraNormalHistoricaAplicadaPorCuota.get(cid) || 0;
+      for (const ch of parseMiautoJsonArray(ar.aplicacion_chunks)) {
+        if (String(ch?.cuota_semanal_id || '') !== cid) continue;
+        const beforeLate = round2(Number(ch?.before?.late_fee) || 0);
+        const beforeMoraExtra = round2(Number(ch?.before?.mora_extra) || 0);
+        const beforePaid = round2(Number(ch?.before?.paid_amount) || 0);
+        moraBase = Math.max(moraBase, round2(Math.max(0, beforeLate - beforePaid)));
+        if (beforeMoraExtra > 0.005) {
+          moraExtraHistoricaAplicadaPorCuota.set(
+            cid,
+            round2(Math.max(moraExtraHistoricaAplicadaPorCuota.get(cid) || 0, beforeMoraExtra))
+          );
+        }
+      }
+      if (moraBase > 0.005) moraNormalHistoricaAplicadaPorCuota.set(cid, round2(moraBase));
+    }
   }
   const todayYBlocking = limaTodayYmdSync();
   const cascRecvMap = buildCascadeReceivedMap(rows);
+  const cascMoraHistoricaMap = buildCascadeMoraHistoricaMap(rows);
   const cuotas = [];
   for (const r of rows) {
     const w = ymdFromDbDate(r.week_start_date);
@@ -2193,6 +2289,14 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
         cascadeReceived: cascRecvMap.get(String(rNorm.id)) || 0,
         congelaMoraComprobantePendiente: pendingComprobanteCuotaIds.has(String(rNorm.id)),
         creditoComprobantePendienteMonedaCuota: creditoComprobantePendientePorCuota.get(String(rNorm.id)) || 0,
+        moraNormalHistoricaAplicada: Math.max(
+          moraNormalHistoricaAplicadaPorCuota.get(String(rNorm.id)) || 0,
+          cascMoraHistoricaMap.normal.get(String(rNorm.id)) || 0
+        ),
+        moraExtraHistoricaAplicada: Math.max(
+          moraExtraHistoricaAplicadaPorCuota.get(String(rNorm.id)) || 0,
+          cascMoraHistoricaMap.extra.get(String(rNorm.id)) || 0
+        ),
         forzarMayorCuotaSinBono: forzarBonifPorCuotaOverdueGlobal,
       })
     );

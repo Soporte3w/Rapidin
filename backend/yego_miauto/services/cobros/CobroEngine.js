@@ -139,7 +139,7 @@ async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
   const ctx = await loadBillingContext(solicitudId);
   if (ctx.error) return [];
 
-  let sql = `SELECT id, due_date, week_start_date, amount_due, late_fee, paid_amount, status
+  let sql = `SELECT id, due_date, week_start_date, amount_due, late_fee, mora_extra, paid_amount, status
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1
        AND status IN ('pending', 'overdue', 'partial', 'paid')
@@ -163,6 +163,7 @@ async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
       : storedDueYmd;
     const amountDue = round2(Number(r.amount_due) || 0);
     const paid = round2(Number(r.paid_amount) || 0);
+    const moraExtra = round2(Number(r.mora_extra) || 0);
     const lateFeeFresh = isPrimera
       ? 0
       : computeLateFee({
@@ -171,7 +172,7 @@ async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
           todayYmd,
           capitalMoroso: amountDue,
         }).moraTotal;
-    const pending = round2(Math.max(0, amountDue + lateFeeFresh - paid));
+    const pending = round2(Math.max(0, amountDue + lateFeeFresh + moraExtra - paid));
     const statusFresh = pending <= 0.005
       ? 'paid'
       : paid > 0.005
@@ -207,6 +208,7 @@ async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
         ...r,
         due_date: dueYmd || r.due_date,
         late_fee: lateFeeFresh,
+        mora_extra: moraExtra,
         status: statusFresh,
         pending,
       });

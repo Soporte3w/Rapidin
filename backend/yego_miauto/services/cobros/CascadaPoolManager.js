@@ -20,7 +20,7 @@ import { round2 } from './CuotaCalculator.js';
  *
  * @param {object} params
  * @param {number} params.poolAmount - Monto total del pool a distribuir
- * @param {Array} params.cuotas - Array de cuotas con { id, due_date, amount_due, late_fee, paid_amount, status, pending }
+ * @param {Array} params.cuotas - Array de cuotas con { id, due_date, amount_due, late_fee, mora_extra, paid_amount, status, pending }
  * @param {string} [params.excludeCuotaId] - ID de la fila origen (no recibe pool)
  * @returns {{ applied: number, remainingPool: number, allocations: Array<{cuotaId, pendingAntes, montoAplicado, pendingDespues, statusDespues}> }}
  */
@@ -37,7 +37,10 @@ export function applyWaterfallPool({ poolAmount, cuotas, excludeCuotaId = null }
     .filter((c) => {
       if (excludeCuotaId && String(c.id) === String(excludeCuotaId)) return false;
       const pending = c.pending != null ? round2(c.pending) : round2(
-        round2(Number(c.amount_due) || 0) + round2(Number(c.late_fee) || 0) - round2(Number(c.paid_amount) || 0)
+        round2(Number(c.amount_due) || 0)
+          + round2(Number(c.late_fee) || 0)
+          + round2(Number(c.mora_extra) || 0)
+          - round2(Number(c.paid_amount) || 0)
       );
       return pending > 0.005;
     })
@@ -57,15 +60,16 @@ export function applyWaterfallPool({ poolAmount, cuotas, excludeCuotaId = null }
     const paid = round2(Number(cuota.paid_amount) || 0);
     const amountDue = round2(Number(cuota.amount_due) || 0);
     const lateFee = round2(Number(cuota.late_fee) || 0);
+    const moraExtra = round2(Number(cuota.mora_extra) || 0);
     let pending = cuota.pending != null
       ? round2(cuota.pending)
-      : round2(amountDue + lateFee - paid);
+      : round2(amountDue + lateFee + moraExtra - paid);
 
     if (pending <= 0.005) continue;
 
     const applyAmt = round2(Math.min(pool, pending));
     const newPaid = round2(paid + applyAmt);
-    const newPending = round2(Math.max(0, amountDue + lateFee - newPaid));
+    const newPending = round2(Math.max(0, amountDue + lateFee + moraExtra - newPaid));
     const newStatus = newPending <= 0.005 ? 'paid' : (newPaid > 0.005 ? 'partial' : cuota.status);
 
     allocations.push({
@@ -74,6 +78,9 @@ export function applyWaterfallPool({ poolAmount, cuotas, excludeCuotaId = null }
       dueDate: cuota.due_date,
       amountDue,
       lateFee,
+      moraExtra,
+      moraNormalBase: lateFee,
+      moraExtraBase: moraExtra,
       pendingAntes: pending,
       montoAplicado: applyAmt,
       pendingDespues: newPending,
@@ -150,6 +157,8 @@ export function mergeCascadaAllocations(allocLists) {
           cuota_semanal_id: a.cuotaId,
           week_start_date: a.weekStartDate || null,
           monto: a.montoAplicado || 0,
+          mora_normal_base: a.moraNormalBase || 0,
+          mora_extra_base: a.moraExtraBase || 0,
         });
       }
     }

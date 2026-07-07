@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
   AlertCircle,
@@ -115,7 +114,6 @@ function normalizeMoneda(value?: string | null): MiautoMoneda {
 }
 
 export default function YegoMiAutoValidarComprobantes() {
-  const navigate = useNavigate();
   const { user } = useAuth();
   const [estado, setEstado] = useState<EstadoFiltro>('pendiente');
   const [country, setCountry] = useState((user?.country as string) || '');
@@ -413,16 +411,9 @@ export default function YegoMiAutoValidarComprobantes() {
                           <p className="mt-1 max-w-xs text-xs text-red-600">{row.rechazo_razon}</p>
                         )}
                       </td>
-                      <td className="px-4 py-3 align-top">
-                        <div className="flex justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => navigate(`/admin/yego-mi-auto/rent-sale/${row.solicitud_id}`)}
-                            className="inline-flex h-9 items-center gap-1 rounded-lg border border-gray-300 px-3 text-xs font-medium text-gray-700 hover:bg-gray-50"
-                          >
-                            Detalle
-                          </button>
-                          {isPending && (
+	                      <td className="px-4 py-3 align-top">
+	                        <div className="flex justify-end gap-2">
+	                          {isPending && (
                             <>
                               <button
                                 type="button"
@@ -569,7 +560,7 @@ export default function YegoMiAutoValidarComprobantes() {
               <button
                 type="button"
                 onClick={submitAccion}
-                disabled={savingId === accion.comprobante.id}
+	                disabled={savingId === accion.comprobante.id || (accion.tipo === 'rechazar' && rechazoMotivo.trim().length < 3)}
                 className={`inline-flex h-10 items-center gap-2 rounded-lg px-4 text-sm font-medium text-white disabled:opacity-50 ${
                   accion.tipo === 'confirmar'
                     ? 'bg-blue-600 hover:bg-blue-700'

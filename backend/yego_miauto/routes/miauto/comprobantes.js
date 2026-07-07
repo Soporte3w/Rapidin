@@ -7,6 +7,7 @@ import { listBySolicitud as listComprobantesPago, createComprobantePago, validat
 import {
   listBySolicitud as listComprobantesCuotaSemanal,
   createComprobanteCuotaSemanal,
+  deleteComprobanteCuotaSemanalConductor,
   createComprobanteConformidadAdmin,
   deleteComprobanteConformidadAdmin,
   confirmComprobanteCuotaSemanal,
@@ -90,8 +91,11 @@ router.post(
       }
       const monto = req.body.monto != null ? parseFloat(req.body.monto) : null;
       const moneda = trimOrUndefined(req.body.moneda);
+      if (monto != null && (Number.isNaN(monto) || monto <= 0)) {
+        return errorResponse(res, 'Indica cuánto estás pagando con este comprobante', 400);
+      }
       let list = await createComprobantePago(req.params.id, req.file, monto, req.user?.id);
-      if (list.length > 0 && monto != null && !Number.isNaN(monto) && moneda) {
+      if (req.user?.role !== 'driver' && list.length > 0 && monto != null && !Number.isNaN(monto) && moneda) {
         const lastId = list[list.length - 1].id;
         list = await validateComprobante(
           req.params.id,
@@ -222,6 +226,9 @@ router.post(
       }
       const monto = req.body.monto != null ? parseFloat(req.body.monto) : null;
       const moneda = trimOrUndefined(req.body.moneda);
+      if (monto == null || Number.isNaN(monto) || monto <= 0) {
+        return errorResponse(res, 'Indica cuánto estás pagando con este comprobante', 400);
+      }
       const list = await createComprobanteCuotaSemanal(
         req.params.id,
         req.params.cuotaSemanalId,
@@ -233,6 +240,23 @@ router.post(
     } catch (error) {
       logger.error('Error subiendo comprobante cuota semanal Mi Auto:', error);
       return errorResponse(res, error.message || 'Error al subir comprobante', 400);
+    }
+  }
+);
+
+// DELETE /api/miauto/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId
+router.delete(
+  '/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId',
+  validateUUID,
+  async (req, res) => {
+    try {
+      if (!(await ensureSolicitudOwnedByDriver(req.params.id, req, res))) return;
+      const list = await deleteComprobanteCuotaSemanalConductor(req.params.id, req.params.comprobanteId);
+      auditMiautoMutation('comprobante_cuota.deleted_by_driver', 'comprobante_cuota_semanal', req.params.comprobanteId, { solicitudId: req.params.id });
+      return successResponse(res, list, 'Comprobante eliminado');
+    } catch (error) {
+      logger.error('Error eliminando comprobante cuota semanal Mi Auto:', error);
+      return errorResponse(res, error.message || 'Error al eliminar comprobante', 400);
     }
   }
 );

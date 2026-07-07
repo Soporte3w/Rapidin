@@ -22,6 +22,7 @@ import {
   miautoSemanaLista,
   miautoSemanaOrdinalPorVencimiento,
   miautoCuotaFinalCronogramaSemanal,
+  miautoCuotaCapitalPendienteColumna,
   miautoCuotaSemanalOAbonoDisplay,
   miautoTooltipCobroPorIngresos,
   miautoCobroPorIngresosTributoDisplay,
@@ -32,7 +33,6 @@ import {
   MIAUTO_CUOTA_STATUS_PILL,
   parseCuotasSemanalesPayload,
 } from '../../utils/miautoRentSaleHelpers';
-import { MiautoComprobantePagoActions } from '../../components/yegoMiAuto/MiautoComprobantePagoActions';
 import { MiautoComprobantesResumenSemana } from '../../components/yegoMiAuto/MiautoComprobantesResumenSemana';
 import { MiautoGenerarCuotaModal } from '../../components/yegoMiAuto/MiautoGenerarCuotaModal';
 import { useAuth } from '../../contexts/AuthContext';
@@ -81,8 +81,6 @@ interface CuotaSemanal {
   cuota_semanal?: number;
   amount_due: number;
   paid_amount: number;
-  /** Comprobante en revisión (staff): suma proyectada aún no persistida en `paid_amount`. */
-  abono_comprobante_en_revision?: number;
   late_fee: number;
   /** Días civiles tras el vencimiento (Lima); el día de vencimiento es 0. */
   late_fee_calendar_days?: number;
@@ -144,7 +142,10 @@ interface ComprobanteCuotaSemanal {
   id: string;
   solicitud_id: string;
   cuota_semanal_id: string;
-  monto?: number | null;
+  monto?: number | string | null;
+  monto_declarado?: number | string | null;
+  declared_amount?: number | string | null;
+  amount?: number | string | null;
   moneda?: string | null;
   file_name?: string | null;
   file_path?: string | null;
@@ -155,6 +156,13 @@ interface ComprobanteCuotaSemanal {
   created_at?: string;
   /** conductor: pago a validar; admin_confirmacion: documento oficial subido por admin (cuota ya pagada); pago_manual: registro interno */
   origen?: string | null;
+}
+
+function montoComprobanteCuotaNumber(comp: ComprobanteCuotaSemanal): number | null {
+  const raw = comp.monto ?? comp.monto_declarado ?? comp.declared_amount ?? comp.amount;
+  if (raw == null || raw === '') return null;
+  const n = Number(String(raw).replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
 }
 
 interface NotaVentaMiAuto {
@@ -236,8 +244,6 @@ export default function YegoMiAutoRentSaleDetail() {
   /** Recarga tras validar/rechazar: solo overlay en cronograma (no pantalla entera). */
   const [refreshingDetail, setRefreshingDetail] = useState(false);
   const [error, setError] = useState('');
-  const [validandoCompId, setValidandoCompId] = useState<string | null>(null);
-  const [rechazandoCompId, setRechazandoCompId] = useState<string | null>(null);
   const [comprobantesSemanaAbierta, setComprobantesSemanaAbierta] = useState<Record<string, boolean>>({});
   const [otrosTiposAbiertos, setOtrosTiposAbiertos] = useState<Record<string, boolean>>({});
   const [subiendoConformidadCuotaId, setSubiendoConformidadCuotaId] = useState<string | null>(null);
@@ -298,15 +304,6 @@ export default function YegoMiAutoRentSaleDetail() {
     () => resolveTipoCambioUsdALocalFromRows(cuotas, solicitud?.country),
     [cuotas, solicitud?.country]
   );
-
-  const pendienteTotalCronogramaValidar = useMemo(() => {
-    const sum = cuotas.reduce((acc, row) => {
-      if (row.status === 'bonificada') return acc;
-      const v = miautoCuotaFinalCronogramaSemanal(row);
-      return v > 0.005 ? acc + v : acc;
-    }, 0);
-    return roundToTwoDecimals(sum);
-  }, [cuotas]);
 
   const overdueCuotas = useMemo(() => cuotas.filter((c) => c.status === 'overdue'), [cuotas]);
   const pendingCuotasHoy = useMemo(() => {
@@ -629,52 +626,6 @@ export default function YegoMiAutoRentSaleDetail() {
     }
   }, [id, notaVentaAnularModal, fetchDetail]);
 
-  const runComprobantePatch = useCallback(
-    async (opts: {
-      setBusy: (v: string | null) => void;
-      busyId: string;
-      request: () => Promise<unknown>;
-      successMsg: string;
-      errorMsg: string;
-    }) => {
-      const { setBusy, busyId, request, successMsg, errorMsg } = opts;
-      if (!id) return;
-      try {
-        setBusy(busyId);
-        await request();
-        toast.success(successMsg);
-        await fetchDetail(undefined, { refresh: true });
-      } catch (e: any) {
-        toast.error(e.response?.data?.message || errorMsg);
-      } finally {
-        setBusy(null);
-      }
-    },
-    [id, fetchDetail]
-  );
-
-  const handleValidarComprobante = (comprobanteId: string, monto: number, moneda: MiautoMoneda) =>
-    runComprobantePatch({
-      setBusy: setValidandoCompId,
-      busyId: comprobanteId,
-      request: () =>
-        api.patch(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal/${comprobanteId}/validar`, { monto, moneda }),
-      successMsg: 'Comprobante validado',
-      errorMsg: 'Error al validar',
-    });
-
-  const handleRechazarComprobante = (comprobanteId: string, motivo: string) =>
-    runComprobantePatch({
-      setBusy: setRechazandoCompId,
-      busyId: comprobanteId,
-      request: () =>
-        api.patch(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal/${comprobanteId}/rechazar`, {
-          motivo: motivo.trim(),
-        }),
-      successMsg: 'Comprobante rechazado',
-      errorMsg: 'Error al rechazar',
-    });
-
   const handleSubirConformidadAdmin = async (
     cuotaSemanalId: string,
     file: File,
@@ -829,7 +780,7 @@ export default function YegoMiAutoRentSaleDetail() {
     let totalVencidoPEN = 0;
     let totalVencidoUSD = 0;
     for (const c of cuotas) {
-      const pagado = miautoMontoPagadoCuotaSemanal(c.paid_amount) + miautoNum(c.abono_comprobante_en_revision);
+      const pagado = miautoMontoPagadoCuotaSemanal(c.paid_amount);
       const pendienteMostrar = Math.max(0, miautoCuotaFinalCronogramaSemanal(c));
       const m = monedaCuotaRow(c);
       if (m === 'USD') {
@@ -1268,15 +1219,22 @@ export default function YegoMiAutoRentSaleDetail() {
                   const titleCobroIngresos = miautoTooltipCobroPorIngresos(symCuota, c, cuotas);
                   const filasCascadaCobro = miautoCascadaCobroIngresosFilasParaUi(cuotas, c);
                   // Usar valores del API (backend ya calcula todo correctamente)
-                  const cuotaOriginal = miautoNum(c.amount_due);
-                  const cuotaAPagarNeta = c.status === 'paid' || c.status === 'bonificada' ? 0 : miautoNum(c.cuota_pendiente ?? 0);
-                  const cuotaPagada = roundToTwoDecimals(Math.max(0, cuotaOriginal - cuotaAPagarNeta));
                   const moraPendiente = miautoNum(c.mora_pendiente ?? 0);
                   const moraAcumulada = miautoNum(c.mora_acumulada ?? c.late_fee ?? 0);
-                  const moraPagada = roundToTwoDecimals(Math.max(0, moraAcumulada - moraPendiente));
-                  const saldoFavor = miautoNum(c.saldo_favor_conductor);
-                  const pendienteDisplay = miautoCuotaFinalCronogramaSemanal(c);
                   const moraExtra = miautoNum(c.mora_extra);
+                  const moraExtraTotal = miautoNum(c.mora_extra_total ?? c.mora_extra);
+                  const paidReal = miautoNum(c.paid_amount);
+                  const moraPagada = roundToTwoDecimals(Math.min(paidReal, Math.max(0, moraAcumulada - moraPendiente)));
+                  const moraExtraPagada = roundToTwoDecimals(Math.min(Math.max(0, paidReal - moraPagada), Math.max(0, moraExtraTotal - moraExtra)));
+                  const cuotaOriginal = miautoNum(c.amount_due);
+                  const cuotaPagada = roundToTwoDecimals(Math.min(cuotaOriginal, Math.max(0, paidReal - moraPagada - moraExtraPagada)));
+                  const cuotaCapitalPendienteApi = c.status === 'paid' || c.status === 'bonificada' ? 0 : miautoCuotaCapitalPendienteColumna(c);
+                  const cuotaAPagarNeta = roundToTwoDecimals(Math.max(0, cuotaCapitalPendienteApi, cuotaOriginal - cuotaPagada));
+                  const saldoFavor = miautoNum(c.saldo_favor_conductor);
+                  const pendienteDisplay = roundToTwoDecimals(Math.max(
+                    miautoCuotaFinalCronogramaSemanal(c),
+                    cuotaAPagarNeta + moraPendiente + moraExtra
+                  ));
                   return (
                   <Fragment key={c.id}>
                   <tr className="group border-b border-gray-100 hover:bg-gray-50/60">
@@ -1473,7 +1431,6 @@ export default function YegoMiAutoRentSaleDetail() {
                               {compsConductor.length > 0 ? (
                             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
                               {compsConductor.map((comp, idxCond) => {
-                                const isPendiente = (comp.estado || '').toLowerCase() === 'pendiente';
                                 const compLabel = `Comprobante del conductor ${idxCond + 1}`;
                                 const estado = (comp.estado || '').toLowerCase();
                                 const cardBg =
@@ -1510,6 +1467,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                   puedeVerArchivo &&
                                   !/\.pdf$/i.test(comp.file_name || '') &&
                                   /\.(jpe?g|png|gif|webp)$/i.test(comp.file_name || '');
+                                const montoComp = montoComprobanteCuotaNumber(comp);
                                 const openPreview = () => url && setComprobantePreview({ url, fileName: compLabel, isImage: !!isImage });
                                 return (
                                   <div key={comp.id} className={`rounded-xl border-2 p-3 ${cardBg} hover:shadow-md transition-all flex flex-col gap-2`}>
@@ -1535,11 +1493,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                           <p className="text-xs text-gray-500 mt-0.5">{formatDateTime(comp.created_at, 'es-ES')}</p>
                                         )}
                                         <p className="text-xs text-gray-600">
-                                          {isPendiente
-                                            ? '—'
-                                            : comp.monto != null
-                                              ? `${symMoneda(comp.moneda)} ${Number(comp.monto).toFixed(2)}`
-                                              : '—'}
+                                          Monto enviado: {montoComp != null ? `${symMoneda(comp.moneda)} ${montoComp.toFixed(2)}` : 'no registrado'}
                                         </p>
                                         <span className={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium mt-1 ${labelClass}`}>
                                           {estado === 'validado'
@@ -1548,7 +1502,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                               ? 'Rechazado'
                                               : 'Pendiente'}
                                         </span>
-                                      </div>
+                                  </div>
                                     </div>
                                     {estado === 'rechazado' && (comp.rechazo_razon?.trim() ?? '') && (
                                       <p className="flex items-start gap-1.5 text-xs text-red-700 bg-red-50/90 rounded-lg px-2 py-1.5 border border-red-100">
@@ -1566,21 +1520,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                         Ver archivo
                                       </button>
                                     )}
-                                    {isPendiente && c.status !== 'paid' && c.status !== 'bonificada' && (
-                                      <div className="pt-2 border-t border-gray-200/80">
-                                        <MiautoComprobantePagoActions
-                                          comprobanteId={comp.id}
-                                          validando={validandoCompId === comp.id}
-                                          rechazando={rechazandoCompId === comp.id}
-                                          onValidar={handleValidarComprobante}
-                                          onRechazar={handleRechazarComprobante}
-                                          montoMaximo={pendienteTotalCronogramaValidar}
-                                          defaultMoneda={monedaCuotaRow(c)}
-                                          valorUsdALocal={tipoCambioUsdLocal}
-                                        />
-                                      </div>
-                                    )}
-                                  </div>
+                                    </div>
                                 );
                               })}
                             </div>
@@ -1909,10 +1849,10 @@ export default function YegoMiAutoRentSaleDetail() {
                               </div>
                             )}
 
-                            {compsConductor.length > 0 && (
-                              <MiautoComprobantesResumenSemana
-                                comps={comps}
-                                symCronograma={symCuota}
+                              {compsConductor.length > 0 && (
+                                <MiautoComprobantesResumenSemana
+                                  comps={comps.map((comp) => ({ ...comp, monto: montoComprobanteCuotaNumber(comp) }))}
+                                  symCronograma={symCuota}
                                 saldoPendienteSemanaCronograma={roundToTwoDecimals(
                                   Math.max(0, Number(cuotaFinalSemana))
                                 )}

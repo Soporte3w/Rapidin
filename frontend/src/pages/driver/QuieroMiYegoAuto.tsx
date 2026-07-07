@@ -3,14 +3,14 @@ import { createPortal } from 'react-dom';
 import BottomSheet from '../../components/BottomSheet';
 import MobilePagination from '../../components/MobilePagination';
 import api from '../../services/api';
-import { Car, FileText, Check, ShieldCheck, Phone, Mail, ChevronDown, ChevronRight, Upload, X, AlertCircle, ExternalLink, CheckCircle2, Calendar, Sparkles, Clock, MessageSquare, CalendarCheck, Zap, Eye } from 'lucide-react';
+import { Car, FileText, Check, ShieldCheck, Phone, Mail, ChevronDown, ChevronRight, Upload, X, AlertCircle, ExternalLink, Sparkles, Zap, Eye } from 'lucide-react';
 import { TablePaginationBar } from '../../components/TablePaginationBar';
 import { useTablePagination } from '../../hooks/useTablePagination';
 import { type ComprobanteOtrosGastos, type MiautoOtrosGastoRow } from '../../utils/miautoOtrosGastos';
 import { getStoredSession, getStoredRapidinDriverId, getStoredSelectedParkId } from '../../utils/authStorage';
 import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
-import { formatDate, formatDateFlex, formatDateTime } from '../../utils/date';
+import { formatDate, formatDateTime } from '../../utils/date';
 import { monedaCuotasLabel, symMoneda } from '../../utils/miautoAlquilerVentaList';
 import { roundToTwoDecimals } from '../../utils/currency';
 import {
@@ -40,18 +40,8 @@ const APPS_OPTIONS = [
   { code: 'otro', name: 'Otro(s)' },
 ];
 
-const STATUS_LABELS: Record<string, string> = {
-  pendiente: 'Pendiente',
-  citado: 'Citado',
-  rechazado: 'Rechazado',
-  desistido: 'Desistió',
-  aprobado: 'Aprobado',
-};
-
 const MAX_REAGENDOS = 2;
 const STATUS_LABEL_ACTIVE: Record<string, string> = { pendiente: 'Pendiente', citado: 'Cita agendada', aprobado: 'Aprobado' };
-
-const STATUS_WITH_REAGENDO_INFO = new Set(['citado', 'aprobado', 'rechazado']);
 
 function apiErrMessage(err: unknown): string | null {
   if (!err || typeof err !== 'object' || !('response' in err)) return null;
@@ -192,7 +182,10 @@ interface CuotaSemanal {
 interface ComprobanteCuotaSemanal {
   id: string;
   cuota_semanal_id: string;
-  monto?: number;
+  monto?: number | string | null;
+  amount?: number | string | null;
+  monto_declarado?: number | string | null;
+  declared_amount?: number | string | null;
   moneda?: string;
   file_name?: string;
   file_path?: string;
@@ -214,12 +207,24 @@ function trimStr(x: unknown): string {
   return String(x).trim();
 }
 
+type MiautoPagoMoneda = 'PEN' | 'USD';
+
+function normalizePagoMoneda(moneda?: string | null): MiautoPagoMoneda {
+  return String(moneda || '').toUpperCase() === 'USD' ? 'USD' : 'PEN';
+}
+
+function montoComprobanteNumber(cp: ComprobanteCuotaSemanal): number | null {
+  const raw = cp.monto ?? cp.monto_declarado ?? cp.declared_amount ?? cp.amount;
+  if (raw == null || raw === '') return null;
+  const n = Number(String(raw).replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
+}
+
 function AprobadoBlock({
   solicitud,
   expanded,
   onToggle,
   onUploadComprobante,
-  uploadLoading,
   getComprobanteUrl,
   onRefetchSolicitudes,
   tipoCambio: tipoCambioProp,
@@ -230,8 +235,7 @@ function AprobadoBlock({
   solicitud: Solicitud;
   expanded: boolean;
   onToggle: () => void;
-  onUploadComprobante: (solicitudId: string, file: File, monto?: string) => void;
-  uploadLoading: boolean;
+  onUploadComprobante: (solicitudId: string, file: File, monto?: string, moneda?: string) => Promise<void>;
   getComprobanteUrl: (path: string | undefined) => string;
   onRefetchSolicitudes?: () => void;
   tipoCambio?: { valor_usd_a_local: number; moneda_local: string } | null;
@@ -252,7 +256,11 @@ function AprobadoBlock({
   const [comprobantePreview, setComprobantePreview] = useState<{ url: string; fileName: string; isImage: boolean } | null>(null);
   const [cuotaSheet, setCuotaSheet] = useState<CuotaSemanal | null>(null);
   const [comprobantesInicialAbierto, setComprobantesInicialAbierto] = useState(false);
-  const [subTabCronogramaDriver, setSubTabCronogramaDriver] = useState<'semanales' | 'otros_gastos'>('semanales');
+  const [fileInicialPreview, setFileInicialPreview] = useState<File | null>(null);
+  const [montoInicialPago, setMontoInicialPago] = useState('');
+  const [uploadInicialLoading, setUploadInicialLoading] = useState(false);
+  const [cuotasDriverAbiertas, setCuotasDriverAbiertas] = useState(true);
+  const [otrosGastosDriverAbiertos, setOtrosGastosDriverAbiertos] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cuotasSemanales = cuotasData?.cuotas ?? [];
   const rachaFromBackend = cuotasData?.racha ?? null;
@@ -263,16 +271,21 @@ function AprobadoBlock({
   const [comprobantesSemanaAbierta, setComprobantesSemanaAbierta] = useState<Record<string, boolean>>({});
   const [uploadCuotaLoading, setUploadCuotaLoading] = useState<string | null>(null);
   const [fileCuotaPreview, setFileCuotaPreview] = useState<{ cuotaId: string; file: File } | null>(null);
+  const [montoCuotaPago, setMontoCuotaPago] = useState<Record<string, string>>({});
+  const [monedaCuotaPago, setMonedaCuotaPago] = useState<Record<string, MiautoPagoMoneda>>({});
+  const [deleteCuotaComprobanteLoading, setDeleteCuotaComprobanteLoading] = useState<string | null>(null);
   const fileCuotaRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [ogSheet, setOgSheet] = useState<MiautoOtrosGastoRow | null>(null);
   const [ogTipoFilter, setOgTipoFilter] = useState<string | null>(null);
   const [uploadOgLoading, setUploadOgLoading] = useState<string | null>(null);
   const [fileOgPreview, setFileOgPreview] = useState<{ otrosGastosId: string; file: File } | null>(null);
   const [comprobantesOgAbierta, setComprobantesOgAbierta] = useState<Record<string, boolean>>({});
+  const [montoOgPago, setMontoOgPago] = useState<Record<string, string>>({});
   const [monedaOgPorFila, setMonedaOgPorFila] = useState<Record<string, 'PEN' | 'USD'>>({});
   const fileOgRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const previewCuotaFile = useFilePreview(fileCuotaPreview?.file ?? null);
   const previewOgFile = useFilePreview(fileOgPreview?.file ?? null);
+  const previewInicialFile = useFilePreview(fileInicialPreview);
   const toggleComprobantesSemana = useCallback((cuotaId: string) => {
     setComprobantesSemanaAbierta((prev) => ({ ...prev, [cuotaId]: !prev[cuotaId] }));
   }, []);
@@ -303,7 +316,6 @@ function AprobadoBlock({
             .reduce((sum: number, cp: { monto?: number }) => sum + Number(cp.monto), 0)
         );
   const falta = Math.max(0, round2(cuotaInicial - totalValidado));
-  const progreso = cuotaInicial > 0 ? Math.min(100, (totalValidado / cuotaInicial) * 100) : 0;
   const pagoInicialCompleto =
     String(solicitud.pago_estado ?? '').toLowerCase() === 'completo' ||
     (cuotaInicial > 0 && totalValidado >= cuotaInicial);
@@ -350,10 +362,21 @@ function AprobadoBlock({
 
   const handleUploadComprobanteCuota = async (cuotaId: string, file: File) => {
     const cuota = cuotasSemanales.find((x) => x.id === cuotaId);
-    const monto = cuota ? String(miautoCuotaFinalCronogramaSemanal(cuota).toFixed(2)) : '';
-    const moneda = (cuota?.moneda === 'USD' ? 'USD' : 'PEN') as 'PEN' | 'USD';
-    if (!monto || Number.isNaN(parseFloat(monto)) || parseFloat(monto) <= 0) {
-      toast.error('No se pudo obtener el monto de la cuota');
+    const monto = (montoCuotaPago[cuotaId] || '').trim().replace(',', '.');
+    const monedaCuota = normalizePagoMoneda(cuota?.moneda);
+    const moneda = monedaCuotaPago[cuotaId] ?? monedaCuota;
+    const montoNum = Number(monto);
+    if (!cuota) {
+      toast.error('No se pudo obtener la cuota');
+      return;
+    }
+    if (!Number.isFinite(montoNum) || montoNum <= 0) {
+      toast.error('Indica cuánto estás pagando');
+      return;
+    }
+    const pendienteCuota = round2(Math.max(0, miautoCuotaFinalCronogramaSemanal(cuota)));
+    if (moneda === monedaCuota && montoNum > pendienteCuota + 0.01) {
+      toast.error(`El monto no puede superar ${symMoneda(moneda)}${pendienteCuota.toFixed(2)}`);
       return;
     }
     setUploadCuotaLoading(cuotaId);
@@ -369,6 +392,16 @@ function AprobadoBlock({
       onInvalidateCuotas?.(solicitud.id);
       onRefetchSolicitudes?.();
       setComprobantesSemanaAbierta((prev) => ({ ...prev, [cuotaId]: true }));
+      setMontoCuotaPago((prev) => {
+        const next = { ...prev };
+        delete next[cuotaId];
+        return next;
+      });
+      setMonedaCuotaPago((prev) => {
+        const next = { ...prev };
+        delete next[cuotaId];
+        return next;
+      });
     } catch (e: unknown) {
       toast.error(apiErrMessage(e) || 'Error al subir comprobante');
     } finally {
@@ -377,11 +410,51 @@ function AprobadoBlock({
     }
   };
 
+  const handleDeleteComprobanteCuota = async (comprobanteId: string) => {
+    setDeleteCuotaComprobanteLoading(comprobanteId);
+    try {
+      await api.delete(`/miauto/solicitudes/${solicitud.id}/comprobantes-cuota-semanal/${comprobanteId}`);
+      toast.success('Comprobante eliminado');
+      onInvalidateCuotas?.(solicitud.id);
+      onRefetchSolicitudes?.();
+    } catch (e: unknown) {
+      toast.error(apiErrMessage(e) || 'Error al eliminar comprobante');
+    } finally {
+      setDeleteCuotaComprobanteLoading(null);
+    }
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      onUploadComprobante(solicitud.id, file);
+      setFileInicialPreview(file);
       e.target.value = '';
+    }
+  };
+
+  const handleSubmitComprobanteInicial = async () => {
+    const monto = montoInicialPago.trim().replace(',', '.');
+    const montoNum = Number(monto);
+    if (!fileInicialPreview) {
+      toast.error('Selecciona el comprobante');
+      return;
+    }
+    if (!Number.isFinite(montoNum) || montoNum <= 0) {
+      toast.error('Indica cuánto estás pagando');
+      return;
+    }
+    if (falta > 0 && montoNum > falta + 0.01) {
+      toast.error(`El monto no puede superar ${monedaSimbolo}${falta.toFixed(2)}`);
+      return;
+    }
+    setUploadInicialLoading(true);
+    try {
+      await onUploadComprobante(solicitud.id, fileInicialPreview, monto, vehiculo?.inicial_moneda || 'PEN');
+      setFileInicialPreview(null);
+      setMontoInicialPago('');
+      setComprobantesInicialAbierto(true);
+    } finally {
+      setUploadInicialLoading(false);
     }
   };
 
@@ -409,10 +482,21 @@ function AprobadoBlock({
 
   const handleUploadComprobanteOtrosGastos = async (otrosGastosId: string, file: File) => {
     const og = otrosGastosRows.find((o: { id: string }) => o.id === otrosGastosId);
-    const monto = og ? String(Number((og as { amount_due: number }).amount_due).toFixed(2)) : '';
+    const monto = (montoOgPago[otrosGastosId] || '').trim().replace(',', '.');
     const moneda = monedaOgPorFila[otrosGastosId] ?? monedaOtrosGastos;
-    if (!monto || Number.isNaN(parseFloat(monto)) || parseFloat(monto) <= 0) {
-      toast.error('No se pudo obtener el monto de la cuota');
+    const montoNum = Number(monto);
+    if (!og) {
+      toast.error('No se pudo obtener el gasto');
+      return;
+    }
+    if (!Number.isFinite(montoNum) || montoNum <= 0) {
+      toast.error('Indica cuánto estás pagando');
+      return;
+    }
+    const ogMoneda = normalizePagoMoneda((og as { moneda?: string | null }).moneda || monedaOtrosGastos);
+    const saldoOg = round2(Math.max(0, Number((og as { amount_due: number }).amount_due) - Number((og as { paid_amount?: number }).paid_amount || 0)));
+    if (moneda === ogMoneda && montoNum > saldoOg + 0.01) {
+      toast.error(`El monto no puede superar ${symMoneda(moneda)}${saldoOg.toFixed(2)}`);
       return;
     }
     setUploadOgLoading(otrosGastosId);
@@ -428,6 +512,16 @@ function AprobadoBlock({
       onInvalidateCuotas?.(solicitud.id);
       onRefetchSolicitudes?.();
       setComprobantesOgAbierta((prev) => ({ ...prev, [otrosGastosId]: true }));
+      setMontoOgPago((prev) => {
+        const next = { ...prev };
+        delete next[otrosGastosId];
+        return next;
+      });
+      setMonedaOgPorFila((prev) => {
+        const next = { ...prev };
+        delete next[otrosGastosId];
+        return next;
+      });
     } catch (e: unknown) {
       toast.error(apiErrMessage(e) || 'Error al subir comprobante');
     } finally {
@@ -448,325 +542,279 @@ function AprobadoBlock({
   const otrosPg = useTablePagination(filteredOgRows);
 
   return (
+    <>
     <div className="mt-3 bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-      <button type="button" onClick={onToggle} className="w-full bg-white px-5 py-3.5 border-b border-gray-200 flex items-center justify-between text-left hover:bg-gray-50/60 transition-colors">
-        <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2.5">
-          <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-br from-[#8B1A1A] to-[#6B1515] text-white shadow-sm">
-            <Car className="w-4 h-4" />
-          </span>
-          <span className="flex flex-col">
-            <span className="leading-tight">Tu auto asignado</span>
-            {cronograma?.name && <span className="text-[11px] font-medium text-gray-500">{cronograma.name}</span>}
-          </span>
-        </h3>
+      <button type="button" onClick={onToggle} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50/70 transition-colors">
+        <span className="min-w-0">
+          <h3 className="text-lg font-bold text-gray-900">Tu auto asignado</h3>
+          {cronograma?.name && <span className="text-[11px] font-medium text-gray-500">{cronograma.name}</span>}
+        </span>
         {expanded ? <ChevronDown className="w-5 h-5 text-gray-500" /> : <ChevronRight className="w-5 h-5 text-gray-500" />}
       </button>
       {expanded && (
         <div className="p-3">
-          <div className="grid gap-3 lg:grid-cols-[300px_minmax(0,1fr)] items-start">
-            <aside className="space-y-3 order-2 lg:order-1">
-              {(() => {
-                const statusLow = (solicitud.status || '').toLowerCase();
-                const steps: Array<{ id: string; label: string; sub?: string; state: 'done' | 'active' | 'pending' }> = [];
-                steps.push({
-                  id: 'creada',
-                  label: 'Solicitud creada',
-                  sub: solicitud.created_at ? formatDate(solicitud.created_at, 'es-ES') : undefined,
-                  state: 'done',
-                });
-                steps.push({
-                  id: 'aprobacion',
-                  label: 'Aprobación técnica',
-                  sub: statusLow === 'aprobado' || statusLow === 'citado' ? formatDate(solicitud.created_at, 'es-ES') : statusLow === 'rechazado' ? 'Rechazada' : 'Pendiente',
-                  state: statusLow === 'aprobado' || statusLow === 'citado' ? 'done' : statusLow === 'rechazado' ? 'pending' : 'active',
-                });
-                steps.push({
-                  id: 'inicial',
-                  label: 'Cuota inicial',
-                  sub: pagoInicialCompleto ? 'Completada' : cuotaInicial > 0 ? 'En progreso' : '—',
-                  state: pagoInicialCompleto ? 'done' : (cuotaInicial > 0 && totalValidado > 0) ? 'active' : statusLow === 'aprobado' ? 'active' : 'pending',
-                });
-                steps.push({
-                  id: 'entrega',
-                  label: 'Entrega de unidad',
-                  sub: solicitud.appointment_date ? formatDateFlex(solicitud.appointment_date, 'es-ES') : 'Por agendar',
-                  state: solicitud.fecha_inicio_cobro_semanal ? 'done' : pagoInicialCompleto ? 'active' : 'pending',
-                });
-                return (
-                  <div className="rounded-2xl border border-gray-200 bg-white shadow-sm p-3">
-                    <div className="flex items-start justify-between mb-3">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">Progreso de gestión</p>
-                      <FileText className="w-4 h-4 text-gray-400" />
-                    </div>
-                    <ol className="relative space-y-3">
-                      {steps.map((s, idx) => {
-                        const isLast = idx === steps.length - 1;
-                        const dot = s.state === 'done'
-                          ? 'bg-[#8B1A1A] ring-4 ring-[#8B1A1A]/15'
-                          : s.state === 'active'
-                            ? 'bg-white ring-2 ring-[#8B1A1A]'
-                            : 'bg-white ring-2 ring-gray-300';
-                        const labelColor = s.state === 'pending' ? 'text-gray-400' : 'text-gray-900';
-                        const subColor = s.state === 'pending' ? 'text-gray-300' : 'text-gray-500';
-                        return (
-                          <li key={s.id} className="relative pl-7">
-                            <span className={`absolute left-0 top-1 w-3 h-3 rounded-full ${dot}`} />
-                            {!isLast && (
-                              <span className={`absolute left-[5px] top-4 bottom-[-12px] w-px ${s.state === 'done' ? 'bg-[#8B1A1A]/40' : 'bg-gray-200'}`} />
-                            )}
-                            <p className={`text-sm font-semibold leading-tight ${labelColor}`}>{s.label}</p>
-                            {s.sub && <p className={`text-[10px] uppercase tracking-wider mt-0.5 ${subColor}`}>{s.sub}</p>}
-                          </li>
-                        );
-                      })}
-                    </ol>
-                    {(solicitud.appointment_date || solicitud.reagendo_count != null) && (
-                      <div className="mt-4 pt-3 border-t border-gray-100 grid grid-cols-2 gap-2 text-center">
-                        <div>
-                          <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Cita</p>
-                          <p className="text-xs font-bold text-gray-900 mt-0.5">
-                            {solicitud.appointment_date ? formatDateFlex(solicitud.appointment_date, 'es-ES') : '—'}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Reagendos</p>
-                          <p className="text-xs font-bold text-gray-900 mt-0.5 tabular-nums">
-                            {solicitud.reagendo_count ?? 0} / {MAX_REAGENDOS}
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-
-              <div className="rounded-2xl bg-gradient-to-br from-gray-900 via-gray-900 to-black text-white shadow-lg overflow-hidden">
-                <div className="h-1 bg-[#8B1A1A]" />
+              <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white">
                 <div className="px-4 pt-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Unidad asignada</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Unidad asignada</p>
                 </div>
                 <div className="px-4 pt-3">
-                  <div className="relative w-full h-44 rounded-xl bg-gray-800/60 overflow-hidden flex items-center justify-center">
+                  <div className="rounded-xl border border-gray-200 bg-gray-50/70 p-3">
+                    <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">Trazabilidad</p>
+                    {(() => {
+                      const statusLow = (solicitud.status || '').toLowerCase();
+                      const steps: Array<{ id: string; label: string; sub?: string; state: 'done' | 'active' | 'pending' }> = [
+                        {
+                          id: 'solicitud',
+                          label: 'Solicitud creada',
+                          sub: solicitud.created_at ? formatDate(solicitud.created_at, 'es-ES') : undefined,
+                          state: 'done',
+                        },
+                        {
+                          id: 'aprobacion',
+                          label: 'Aprobación',
+                          sub: statusLow === 'aprobado' || statusLow === 'citado' ? 'Aprobada' : statusLow === 'rechazado' ? 'Rechazada' : 'Pendiente',
+                          state: statusLow === 'aprobado' || statusLow === 'citado' ? 'done' : statusLow === 'rechazado' ? 'pending' : 'active',
+                        },
+                        {
+                          id: 'inicial',
+                          label: 'Cuota inicial',
+                          sub: pagoInicialCompleto ? 'Completada' : cuotaInicial > 0 ? `${monedaSimbolo}${totalValidado.toFixed(2)} / ${monedaSimbolo}${cuotaInicial.toFixed(2)}` : 'Sin inicial',
+                          state: pagoInicialCompleto ? 'done' : totalValidado > 0 ? 'active' : 'pending',
+                        },
+                        {
+                          id: 'unidad',
+                          label: 'Unidad asignada',
+                          sub: solicitud.placa_asignada || vehiculo?.name || 'Pendiente',
+                          state: vehiculo || solicitud.placa_asignada ? 'done' : 'pending',
+                        },
+                        {
+                          id: 'entrega',
+                          label: 'Inicio de cobro',
+                          sub: solicitud.fecha_inicio_cobro_semanal ? 'Activo' : pagoInicialCompleto ? 'Por activar' : 'Pendiente',
+                          state: solicitud.fecha_inicio_cobro_semanal ? 'done' : pagoInicialCompleto ? 'active' : 'pending',
+                        },
+                      ];
+                      return (
+                        <ol className="relative space-y-3">
+                          {steps.map((step, idx) => {
+                            const isLast = idx === steps.length - 1;
+                            const dotClass =
+                              step.state === 'done'
+                                ? 'bg-[#8B1A1A] ring-4 ring-[#8B1A1A]/15'
+                                : step.state === 'active'
+                                  ? 'bg-white ring-2 ring-[#8B1A1A]'
+                                  : 'bg-white ring-2 ring-gray-300';
+                            const textClass = step.state === 'pending' ? 'text-gray-400' : 'text-gray-900';
+                            return (
+                              <li key={step.id} className="relative pl-7">
+                                <span className={`absolute left-0 top-1 h-3 w-3 rounded-full ${dotClass}`} />
+                                {!isLast && (
+                                  <span className={`absolute left-[5px] top-4 bottom-[-12px] w-px ${step.state === 'done' ? 'bg-[#8B1A1A]/35' : 'bg-gray-200'}`} />
+                                )}
+                                <p className={`text-sm font-semibold leading-tight ${textClass}`}>{step.label}</p>
+                                {step.sub && <p className="mt-0.5 text-[10px] uppercase tracking-wider text-gray-500">{step.sub}</p>}
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      );
+                    })()}
+                  </div>
+                </div>
+                <div className="px-4 pt-3">
+                  <div className="relative w-full h-44 rounded-xl bg-gray-100 overflow-hidden flex items-center justify-center">
                     {vehiculo?.image ? (
                       <img
                         src={vehiculo.image.startsWith('data:') || vehiculo.image.startsWith('http') ? vehiculo.image : getComprobanteUrl(vehiculo.image)}
                         alt={vehiculo.name || 'Auto asignado'}
-                        className="w-full h-full object-cover opacity-95"
+                        className="w-full h-full object-cover"
                       />
                     ) : (
-                      <Car className="w-14 h-14 text-gray-600" />
+                      <Car className="w-14 h-14 text-gray-400" />
                     )}
                   </div>
                 </div>
-                <div className="px-4 pt-3 pb-4 border-t border-white/10 mt-3">
-                  <h4 className="text-sm font-bold text-white leading-tight">
+                <div className="px-4 pt-3 pb-4 border-t border-gray-100 mt-3">
+                  <h4 className="text-sm font-bold text-gray-900 leading-tight">
                     {vehiculo?.name ?? 'Sin asignar'}
                   </h4>
                   <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
                     <div>
                       <p className="text-gray-500 uppercase tracking-wider">Placa</p>
-                      <p className="font-bold text-white font-mono tracking-wider">{solicitud.placa_asignada || '—'}</p>
+                      <p className="font-bold text-gray-900 font-mono tracking-wider">{solicitud.placa_asignada || '—'}</p>
                     </div>
                     <div className="text-right">
                       <p className="text-gray-500 uppercase tracking-wider">Plan</p>
-                      <p className="font-bold text-white">{cronograma?.name || (pagoTipoLabel || '—')}</p>
+                      <p className="font-bold text-gray-900">{cronograma?.name || (pagoTipoLabel || '—')}</p>
                     </div>
                   </div>
                 </div>
-              </div>
-            </aside>
-
-            <div className="space-y-3 min-w-0 order-1 lg:order-2">
-              {cuotaInicial > 0 && !pagoInicialCompleto && (
-                <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-                  <div className="px-4 sm:px-5 pt-3 pb-3">
-                    <div className="flex items-start justify-between gap-3 mb-2">
-                      <div className="min-w-0">
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">Control de cuota inicial</p>
-                        <p className="mt-1 text-lg sm:text-xl font-bold text-gray-900 tabular-nums leading-none">
-                          {monedaSimbolo}{totalValidado.toFixed(2)}
-                          <span className="text-gray-300 font-normal"> / {monedaSimbolo}{cuotaInicial.toFixed(2)}</span>
-                        </p>
-                        {vehiculo?.inicial_moneda === 'USD' && tipoCambio?.valor_usd_a_local && (
-                          <p className="text-[11px] text-gray-500 mt-1.5">
-                            {tipoCambio.moneda_local === 'COP' ? 'Equiv. en pesos:' : 'Equiv. en soles:'}{' '}
-                            {tipoCambio.moneda_local === 'COP' ? 'COP' : 'S/.'} {(totalValidado * tipoCambio.valor_usd_a_local).toFixed(2)} / {tipoCambio.moneda_local === 'COP' ? 'COP' : 'S/.'} {(cuotaInicial * tipoCambio.valor_usd_a_local).toFixed(2)}
+                {cuotaInicial > 0 && (
+                  <div className="px-4 pb-4">
+                    <div className="rounded-xl border border-gray-200 bg-gray-50/70 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Cuota inicial</p>
+                          <p className="mt-1 text-base font-bold text-gray-900 tabular-nums">
+                            {monedaSimbolo}{totalValidado.toFixed(2)}
+                            <span className="font-normal text-gray-500"> / {monedaSimbolo}{cuotaInicial.toFixed(2)}</span>
                           </p>
-                        )}
+                          {vehiculo?.inicial_moneda === 'USD' && tipoCambio?.valor_usd_a_local && (
+                            <p className="mt-1 text-[10px] text-gray-500">
+                              Equiv. {tipoCambio.moneda_local === 'COP' ? 'COP' : 'S/.'}{' '}
+                              {(totalValidado * tipoCambio.valor_usd_a_local).toFixed(2)} / {tipoCambio.moneda_local === 'COP' ? 'COP' : 'S/.'}{' '}
+                              {(cuotaInicial * tipoCambio.valor_usd_a_local).toFixed(2)}
+                            </p>
+                          )}
+                        </div>
+                        <span className={`rounded-md px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${
+                          pagoInicialCompleto ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {pagoInicialCompleto ? 'Completada' : 'Pendiente'}
+                        </span>
                       </div>
-                      <div className="text-right shrink-0">
-                        <p className="text-xl sm:text-2xl font-bold text-[#8B1A1A] tabular-nums leading-none">{Math.round(progreso)}%</p>
-                        <p className="text-[10px] uppercase tracking-wider text-gray-500 mt-1">Completado</p>
-                      </div>
-                    </div>
-                    <div className="mt-3 h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-[#8B1A1A] to-[#C53838] rounded-full transition-all duration-500"
-                        style={{ width: `${progreso}%` }}
+                      {!pagoInicialCompleto && falta > 0 && (
+                        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                          <div className="mb-3 flex items-center justify-between gap-2">
+                            <p className="min-w-0 text-xs font-semibold text-amber-900">
+                              Falta {monedaSimbolo}{falta.toFixed(2)}
+                            </p>
+                            <button
+                              type="button"
+                              disabled={uploadInicialLoading}
+                              onClick={() => fileInputRef.current?.click()}
+                              className="shrink-0 rounded-md bg-white px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-[#8B1A1A] shadow-sm ring-1 ring-amber-200 hover:text-[#6B1515] disabled:opacity-50"
+                            >
+                              {fileInicialPreview ? 'Cambiar archivo' : 'Subir comprobante'}
+                            </button>
+                          </div>
+                          {fileInicialPreview && (
+                            <div className="mb-3 flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-2">
+                              <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded border border-gray-200 bg-gray-50">
+                                {previewInicialFile ? (
+                                  <img src={previewInicialFile} alt="Vista previa" className="h-full w-full object-cover" />
+                                ) : (
+                                  <FileText className="h-5 w-5 text-gray-400" />
+                                )}
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-semibold text-gray-900">{fileInicialPreview.name}</p>
+                                <p className="text-[11px] text-gray-500">Comprobante seleccionado</p>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={uploadInicialLoading}
+                                onClick={() => setFileInicialPreview(null)}
+                                className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
+                                aria-label="Quitar comprobante"
+                              >
+                                <X className="h-4 w-4" />
+                              </button>
+                            </div>
+                          )}
+                          <label className="block">
+                            <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                              Cuánto envías ({monedaSimbolo})
+                            </span>
+                            <div className="flex items-center rounded-md border border-gray-200 bg-gray-50 focus-within:border-[#8B1A1A] focus-within:ring-1 focus-within:ring-[#8B1A1A]">
+                              <span className="px-2 text-xs font-bold text-gray-500">{monedaSimbolo}</span>
+                              <input
+                                type="number"
+                                inputMode="decimal"
+                                min="0.01"
+                                step="0.01"
+                                max={Math.max(0, falta).toFixed(2)}
+                                value={montoInicialPago}
+                                onChange={(e) => setMontoInicialPago(e.target.value)}
+                                placeholder={Math.max(0, falta).toFixed(2)}
+                                className="min-w-0 flex-1 bg-transparent py-1.5 pr-2 text-right text-xs font-semibold text-gray-900 outline-none placeholder:text-gray-400"
+                              />
+                            </div>
+                          </label>
+                          <button
+                            type="button"
+                            disabled={uploadInicialLoading || !fileInicialPreview || !montoInicialPago.trim()}
+                            onClick={handleSubmitComprobanteInicial}
+                            className="mt-3 inline-flex w-full items-center justify-center rounded-md bg-[#8B1A1A] px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-white hover:bg-[#6B1515] disabled:opacity-50"
+                          >
+                            {uploadInicialLoading ? 'Enviando...' : 'Enviar comprobante'}
+                          </button>
+                        </div>
+                      )}
+                      {pagoInicialCompleto && (
+                        <button
+                          type="button"
+                          onClick={() => setComprobantesInicialAbierto((v) => !v)}
+                          className="mt-3 inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider text-emerald-700 hover:text-emerald-900"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                          {comprobantesInicialAbierto ? 'Ocultar' : 'Ver'} comprobantes ({comprobantes.length})
+                        </button>
+                      )}
+                      {comprobantesInicialAbierto && (
+                        <div className="mt-3 rounded-lg border border-gray-200 bg-white p-3">
+                          {comprobantes.length > 0 ? comprobantesSliderEl : (
+                            <p className="text-sm text-gray-500">No hay comprobantes registrados.</p>
+                          )}
+                        </div>
+                      )}
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        accept=".pdf,image/*"
+                        onChange={handleFileChange}
+                        className="hidden"
                       />
                     </div>
                   </div>
-                  {falta > 0 && (
-                    <div className="mx-4 sm:mx-5 mb-2 flex items-center justify-between gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-                      <p className="text-xs text-amber-900 min-w-0">
-                        <span className="font-semibold">Te falta {monedaSimbolo}{falta.toFixed(2)}</span>
-                        {vehiculo?.inicial_moneda === 'USD' && tipoCambio?.valor_usd_a_local && (
-                          <span className="text-[10px] text-amber-700">
-                            {' · '}Equiv. {tipoCambio.moneda_local === 'COP' ? 'COP' : 'S/.'} {(falta * tipoCambio.valor_usd_a_local).toFixed(2)}
-                          </span>
-                        )}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-[#8B1A1A] hover:text-[#6B1515] shrink-0"
-                      >
-                        Subir comprobante
-                      </button>
-                    </div>
-                  )}
-                  <div className="px-4 sm:px-5 pb-3">
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">
-                        Comprobantes subidos {comprobantes.length > 0 && <span className="text-gray-400">· {comprobantes.length}</span>}
-                      </p>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      {comprobantes.length > 0 ? (
-                        comprobantes.map((cp, idx) => {
-                          const estado = getEstado(cp);
-                          const url = cp.file_path === 'manual' ? '' : getComprobanteUrl(cp.file_path);
-                          const isImage = cp.file_path !== 'manual' && /\.(jpe?g|png|gif|webp)$/i.test(cp.file_name || '');
-                          const openPreview = () => url && setComprobantePreview({ url, fileName: `Comprobante ${idx + 1}`, isImage });
-                          const labelEstado = estado === 'validado' ? 'VALIDADO' : estado === 'rechazado' ? 'RECHAZADO' : 'PENDIENTE';
-                          const cardCls = estado === 'validado'
-                            ? 'border-emerald-200 bg-emerald-50/40'
-                            : estado === 'rechazado'
-                              ? 'border-red-200 bg-red-50/40'
-                              : 'border-amber-200 bg-amber-50/40';
-                          const iconCls = estado === 'validado' ? 'text-emerald-600' : estado === 'rechazado' ? 'text-red-600' : 'text-amber-600';
-                          const badgeCls = estado === 'validado' ? 'bg-emerald-100 text-emerald-800' : estado === 'rechazado' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800';
-                          return (
-                            <button
-                              key={cp.id}
-                              type="button"
-                              onClick={openPreview}
-                              className={`flex items-center gap-3 rounded-xl border ${cardCls} px-3 py-2.5 text-left hover:shadow-md transition-all`}
-                            >
-                              <CheckCircle2 className={`w-5 h-5 shrink-0 ${iconCls}`} />
-                              <div className="min-w-0 flex-1">
-                                <p className="text-sm font-semibold text-gray-900 leading-tight truncate">Comprobante #{idx + 1}</p>
-                                <p className="text-[11px] text-gray-600 mt-0.5 tabular-nums">
-                                  {cp.monto != null ? `${monedaSimbolo}${Number(cp.monto).toFixed(2)}` : '—'} · {labelEstado.charAt(0) + labelEstado.slice(1).toLowerCase()}
-                                </p>
-                              </div>
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${badgeCls}`}>{labelEstado}</span>
-                            </button>
-                          );
-                        })
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={uploadLoading}
-                        className="flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gray-300 px-3 py-2.5 text-gray-500 hover:border-[#8B1A1A] hover:text-[#8B1A1A] hover:bg-red-50/30 transition-colors disabled:opacity-50"
-                      >
-                        <Upload className="w-4 h-4" />
-                        <span className="text-sm font-medium">{uploadLoading ? 'Subiendo...' : 'Subir nuevo comprobante'}</span>
-                      </button>
-                    </div>
-                    <input
-                      type="file"
-                      ref={fileInputRef}
-                      accept=".pdf,image/*"
-                      onChange={handleFileChange}
-                      className="hidden"
-                    />
-                  </div>
-                </div>
-              )}
-              {cuotaInicial > 0 && pagoInicialCompleto && (
-                <div className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50/40 to-white shadow-sm overflow-hidden">
-                  <div className="px-4 py-3 border-b border-emerald-100 flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-sm shrink-0">
-                        <CheckCircle2 className="w-5 h-5" />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-700">Cuota inicial · Pago completado</p>
-                        <p className="text-base font-bold text-emerald-900 leading-tight tabular-nums">{monedaSimbolo} {totalValidado.toFixed(2)}</p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setComprobantesInicialAbierto((v) => !v)}
-                      className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 hover:text-emerald-900 whitespace-nowrap inline-flex items-center gap-1"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      {comprobantesInicialAbierto ? 'Ocultar' : 'Ver'} comprobantes ({comprobantes.length})
-                    </button>
-                  </div>
-                  {comprobantesInicialAbierto && (
-                    <div className="p-3 border-t border-emerald-100">
-                      {comprobantes.length > 0 ? comprobantesSliderEl : (
-                        <p className="text-sm text-gray-500">No hay comprobantes registrados.</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+                )}
+              </div>
+        </div>
+      )}
+    </div>
 
+            <div className="mt-3 space-y-3 min-w-0">
               <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-                <div className="px-4 sm:px-5 pt-3 pb-3 border-b border-gray-100">
-                  <div className="flex items-start justify-between gap-3">
+                <div className="border-b border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => setCuotasDriverAbiertas((v) => !v)}
+                    className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50/70"
+                  >
                     <div className="min-w-0">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">Movimientos del financiamiento</p>
-                      <h4 className="mt-1 text-lg font-bold text-gray-900">
-                        {subTabCronogramaDriver === 'semanales' ? 'Mis cuotas · próximas' : 'Otros gastos'}
-                      </h4>
+                      <h4 className="text-lg font-bold text-gray-900">Cuotas</h4>
+                      <p className="text-[11px] text-gray-500">Cronograma semanal</p>
                     </div>
-                    {solicitud.fecha_inicio_cobro_semanal && cuotasSemanales.length > 0 && subTabCronogramaDriver === 'semanales' && (() => {
-                      const vencidas = cuotasSemanales.filter((c) => c.status === 'overdue').length;
+                    <div className="flex items-center gap-3 shrink-0">
+                      {solicitud.fecha_inicio_cobro_semanal && cuotasSemanales.length > 0 && (() => {
+                      const totalPagadoPorMoneda = cuotasSemanales.reduce<Record<string, number>>((acc, cuota) => {
+                        const monedaCuota = monedaCuotasLabel(cuota.moneda || 'PEN');
+                        acc[monedaCuota] = round2((acc[monedaCuota] || 0) + miautoMontoPagadoCuotaSemanal(cuota.paid_amount));
+                        return acc;
+                      }, {});
+                      const totalPagadoCronograma = Object.entries(totalPagadoPorMoneda)
+                        .filter(([, monto]) => monto > 0.005)
+                        .sort(([a], [b]) => (a === b ? 0 : a === 'PEN' ? -1 : 1))
+                        .map(([moneda, monto]) => `${symMoneda(moneda)}${round2(monto).toFixed(2)}`)
+                        .join(' · ') || `${symMoneda(monedaCuotasLabel(cuotasSemanales[0]?.moneda || 'PEN'))}0.00`;
                       return (
-                        <p className="text-xs text-gray-500 tabular-nums whitespace-nowrap shrink-0">
-                          <span className={vencidas > 0 ? 'text-[#8B1A1A] font-bold' : 'font-bold text-gray-700'}>{vencidas}</span> / {totalCuotasPlanVehiculoCronograma} vencidas
+                        <p className="text-right text-[11px] leading-tight text-gray-500 tabular-nums whitespace-nowrap shrink-0">
+                          Total pagado
+                          <span className="block text-sm font-bold text-emerald-700">{totalPagadoCronograma}</span>
                         </p>
                       );
-                    })()}
-                  </div>
-                  {solicitud.fecha_inicio_cobro_semanal && (
-                    <div className="mt-2 -mb-2 flex gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setSubTabCronogramaDriver('semanales')}
-                        className={`px-3 py-2 text-xs font-bold uppercase tracking-wider border-b-2 -mb-px transition-colors ${
-                          subTabCronogramaDriver === 'semanales'
-                            ? 'border-[#8B1A1A] text-[#8B1A1A]'
-                            : 'border-transparent text-gray-400 hover:text-gray-700'
-                        }`}
-                      >
-                        Cronograma
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSubTabCronogramaDriver('otros_gastos')}
-                        className={`px-3 py-2 text-xs font-bold uppercase tracking-wider border-b-2 -mb-px transition-colors ${
-                          subTabCronogramaDriver === 'otros_gastos'
-                            ? 'border-[#8B1A1A] text-[#8B1A1A]'
-                            : 'border-transparent text-gray-400 hover:text-gray-700'
-                        }`}
-                      >
-                        Otros gastos
-                      </button>
+                      })()}
+                      {cuotasDriverAbiertas ? (
+                        <ChevronDown className="h-5 w-5 text-gray-500" />
+                      ) : (
+                        <ChevronRight className="h-5 w-5 text-gray-500" />
+                      )}
                     </div>
-                  )}
+                  </button>
                 </div>
-          {solicitud.fecha_inicio_cobro_semanal && subTabCronogramaDriver === 'semanales' && !loadingCuotas && cuotasSemanales.length > 0 && (() => {
+          {solicitud.fecha_inicio_cobro_semanal && cuotasDriverAbiertas && !loadingCuotas && cuotasSemanales.length > 0 && (() => {
             const cuotasPagadas = cuotasSemanales.filter((c) => c.status === 'paid' || c.status === 'bonificada').length;
-            const vencidas = cuotasSemanales.filter((c) => c.status === 'overdue').length;
-            const totalPagado = round2(
-              cuotasSemanales.reduce((s, c) => s + miautoMontoPagadoCuotaSemanal(c.paid_amount), 0),
-            );
+            const cuotasVencidas = cuotasSemanales.filter((c) => c.status === 'overdue').length;
             const bonoTiempoActivo = solicitud.cronograma?.bono_tiempo_activo === true;
             const racha = bonoTiempoActivo ? (rachaFromBackend ?? (() => {
               const tieneVencida = cuotasSemanales.some((c) => (c.status || '').toLowerCase() === 'overdue');
@@ -785,17 +833,16 @@ function AprobadoBlock({
                   <span>
                     <span className="text-gray-400">Pagadas </span>
                     <span className="font-bold text-gray-900">{cuotasPagadas}</span>
-                    <span className="text-gray-300"> / {totalCuotasPlanVehiculoCronograma}</span>
                   </span>
                   <span className="hidden sm:inline text-gray-200">|</span>
                   <span>
-                    <span className={vencidas > 0 ? 'text-red-500' : 'text-gray-400'}>Vencidas </span>
-                    <span className={`font-bold ${vencidas > 0 ? 'text-red-600' : 'text-gray-700'}`}>{vencidas}</span>
+                    <span className={cuotasVencidas > 0 ? 'text-red-500' : 'text-gray-400'}>Vencidas </span>
+                    <span className={`font-bold ${cuotasVencidas > 0 ? 'text-red-600' : 'text-gray-900'}`}>{cuotasVencidas}</span>
                   </span>
                   <span className="hidden sm:inline text-gray-200">|</span>
                   <span>
-                    <span className="text-gray-400">Total pagado </span>
-                    <span className="font-bold text-emerald-700 tabular-nums">{monedaSimbolo}{totalPagado.toFixed(2)}</span>
+                    <span className="text-gray-400">Total </span>
+                    <span className="font-bold text-gray-900">{totalCuotasPlanVehiculoCronograma}</span>
                   </span>
                 </div>
                 {bonoTiempoActivo && (bonoAplicado >= 1 || racha === 3) && (
@@ -817,11 +864,12 @@ function AprobadoBlock({
               </div>
             );
           })()}
-          {solicitud.fecha_inicio_cobro_semanal && subTabCronogramaDriver === 'semanales' && (
+          {solicitud.fecha_inicio_cobro_semanal && cuotasDriverAbiertas && (
             <div className="px-4 sm:px-5 py-3">
               {loadingCuotas ? (
-                <div className="flex justify-center py-4">
+                <div className="flex flex-col items-center justify-center gap-2 py-6 text-sm text-gray-500">
                   <div className="animate-spin rounded-full h-6 w-6 border-2 border-[#8B1A1A] border-t-transparent" />
+                  <span>Cargando cuotas...</span>
                 </div>
               ) : cuotasSemanales.length === 0 ? (
                 <p className="text-sm text-gray-500">Aún no hay cuotas semanales generadas.</p>
@@ -964,6 +1012,9 @@ function AprobadoBlock({
                         const comps = comprobantesByCuotaId[c.id] ?? [];
                         const conformidadesAdmin = comps.filter(esComprobanteAdminPago);
                         const compsPanelConductor = comps.filter((cp) => !esComprobanteAdminPago(cp));
+                        const tieneComprobantePendienteConductor = compsPanelConductor.some(
+                          (cp) => origenComprobanteCuota(cp) === 'conductor' && parseEstadoComprobante(cp.estado) === 'pendiente'
+                        );
                         const cuotaCerrada = c.status === 'paid' || c.status === 'bonificada';
                         const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(c);
                         const montoPagadoDisplay = miautoMontoPagadoColumnaCronograma(c);
@@ -981,6 +1032,7 @@ function AprobadoBlock({
                         const pendiente = pendienteMonto > 0;
                         const mostrarPanelComprobantes = comps.length > 0 || cuotaCerrada;
                         const abierto = comprobantesSemanaAbierta[c.id] === true;
+                        const mostrarPanelUploadCuota = fileCuotaPreview?.cuotaId === c.id;
                         const symCuota = symMoneda(c.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda);
                         const tributoCobroIngresos = miautoCobroPorIngresosTributoDisplay(c);
                         const titleCobroIngresos = miautoTooltipCobroPorIngresos(symCuota, c, cuotasSemanales);
@@ -1155,8 +1207,9 @@ function AprobadoBlock({
                                       return (
                                         <button
                                           type="button"
-                                          disabled={uploadCuotaLoading === c.id || (fileCuotaPreview?.cuotaId === c.id)}
+                                          disabled={uploadCuotaLoading === c.id || (fileCuotaPreview?.cuotaId === c.id) || tieneComprobantePendienteConductor}
                                           onClick={() => fileCuotaRefs.current[c.id]?.click()}
+                                          title={tieneComprobantePendienteConductor ? 'Espera a que se apruebe o rechace tu comprobante' : undefined}
                                           className="inline-flex items-center px-2.5 py-1 bg-[#8B1A1A] hover:bg-[#6B1515] text-white rounded text-[10px] font-bold uppercase tracking-wider disabled:opacity-50 whitespace-nowrap"
                                         >
                                           Pagar ahora
@@ -1167,8 +1220,9 @@ function AprobadoBlock({
                                       return (
                                         <button
                                           type="button"
-                                          disabled={uploadCuotaLoading === c.id || (fileCuotaPreview?.cuotaId === c.id)}
+                                          disabled={uploadCuotaLoading === c.id || (fileCuotaPreview?.cuotaId === c.id) || tieneComprobantePendienteConductor}
                                           onClick={() => fileCuotaRefs.current[c.id]?.click()}
+                                          title={tieneComprobantePendienteConductor ? 'Espera a que se apruebe o rechace tu comprobante' : undefined}
                                           className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider text-gray-600 hover:text-[#8B1A1A] whitespace-nowrap disabled:opacity-50"
                                         >
                                           <Upload className="w-3 h-3" />
@@ -1194,36 +1248,6 @@ function AprobadoBlock({
                                       }}
                                     />
                                   )}
-                                  {fileCuotaPreview?.cuotaId === c.id && (
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="relative inline-block flex-shrink-0">
-                                        {previewCuotaFile ? (
-                                          <img src={previewCuotaFile} alt="Vista previa" className="w-8 h-8 object-cover rounded border border-gray-200" />
-                                        ) : (
-                                          <span className="w-8 h-8 rounded border border-gray-200 bg-gray-50 flex items-center justify-center">
-                                            <FileText className="w-4 h-4 text-gray-400" />
-                                          </span>
-                                        )}
-                                        <button
-                                          type="button"
-                                          disabled={uploadCuotaLoading === c.id}
-                                          onClick={() => setFileCuotaPreview((prev) => (prev?.cuotaId === c.id ? null : prev))}
-                                          className="absolute top-0 right-0 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 shadow -translate-y-1/2 translate-x-1/2 disabled:opacity-50"
-                                          aria-label="Quitar archivo"
-                                        >
-                                          <X className="w-2.5 h-2.5" />
-                                        </button>
-                                      </span>
-                                      <button
-                                        type="button"
-                                        disabled={uploadCuotaLoading === c.id}
-                                        onClick={() => handleUploadComprobanteCuota(c.id, fileCuotaPreview.file)}
-                                        className="inline-flex items-center px-2 py-1 bg-[#8B1A1A] text-white rounded text-[10px] font-bold uppercase tracking-wider disabled:opacity-50 whitespace-nowrap"
-                                      >
-                                        {uploadCuotaLoading === c.id ? 'Enviando...' : 'Pagar'}
-                                      </button>
-                                    </div>
-                                  )}
                                   {conformidadesAdmin.length > 1 && (
                                     <button
                                       type="button"
@@ -1236,6 +1260,93 @@ function AprobadoBlock({
                                 </div>
                               </td>
                             </tr>
+                            {mostrarPanelUploadCuota && fileCuotaPreview && (
+                              <tr className="border-b border-gray-100">
+                                <td colSpan={12} className="p-0 align-top">
+                                  <div className="px-4 py-3 bg-amber-50/80 border-t border-amber-100">
+                                    <div className="rounded-xl border border-amber-200 bg-white p-3 shadow-sm">
+                                      <div className="mb-3 flex items-center gap-3">
+                                        <span className="relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-gray-200 bg-gray-50">
+                                          {previewCuotaFile ? (
+                                            <img src={previewCuotaFile} alt="Vista previa" className="h-full w-full object-cover" />
+                                          ) : (
+                                            <FileText className="h-5 w-5 text-gray-400" />
+                                          )}
+                                        </span>
+                                        <div className="min-w-0 flex-1">
+                                          <p className="truncate text-sm font-semibold text-gray-900">{fileCuotaPreview.file.name}</p>
+                                          <p className="text-xs text-gray-500">Semana {numeroSemana} · Pendiente {symCuota}{Math.max(0, cuotaFinalSemana).toFixed(2)}</p>
+                                        </div>
+                                        {previewCuotaFile && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setComprobantePreview({
+                                              url: previewCuotaFile,
+                                              fileName: fileCuotaPreview.file.name,
+                                              isImage: true,
+                                            })}
+                                            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                                          >
+                                            Ver
+                                          </button>
+                                        )}
+                                        <button
+                                          type="button"
+                                          disabled={uploadCuotaLoading === c.id}
+                                          onClick={() => setFileCuotaPreview((prev) => (prev?.cuotaId === c.id ? null : prev))}
+                                          className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
+                                          aria-label="Quitar archivo"
+                                        >
+                                          <X className="h-4 w-4" />
+                                        </button>
+                                      </div>
+                                      {(() => {
+                                        const monedaPago = monedaCuotaPago[c.id] ?? normalizePagoMoneda(c.moneda);
+                                        const symPago = symMoneda(monedaPago);
+                                        return (
+                                      <label className="block">
+                                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                                          Cuánto pagas ({symPago})
+                                        </span>
+                                        <div className="grid grid-cols-[auto,1fr] rounded-md border border-gray-200 bg-gray-50 focus-within:border-[#8B1A1A] focus-within:ring-1 focus-within:ring-[#8B1A1A]">
+                                          <select
+                                            value={monedaPago}
+                                            onChange={(e) => setMonedaCuotaPago((prev) => ({ ...prev, [c.id]: e.target.value as MiautoPagoMoneda }))}
+                                            disabled={uploadCuotaLoading === c.id}
+                                            className="border-r border-gray-200 bg-white px-2 text-xs font-bold text-gray-600 outline-none disabled:opacity-50"
+                                            title="Moneda del comprobante"
+                                          >
+                                            <option value="PEN">S/.</option>
+                                            <option value="USD">USD</option>
+                                          </select>
+                                          <input
+                                            type="number"
+                                            inputMode="decimal"
+                                            min="0.01"
+                                            step="0.01"
+                                            max={monedaPago === normalizePagoMoneda(c.moneda) ? Math.max(0, cuotaFinalSemana).toFixed(2) : undefined}
+                                            value={montoCuotaPago[c.id] ?? ''}
+                                            onChange={(e) => setMontoCuotaPago((prev) => ({ ...prev, [c.id]: e.target.value }))}
+                                            placeholder={Math.max(0, cuotaFinalSemana).toFixed(2)}
+                                            className="min-w-0 flex-1 bg-transparent py-2 pr-2 text-right text-sm font-semibold text-gray-900 outline-none placeholder:text-gray-400"
+                                          />
+                                        </div>
+                                      </label>
+                                        );
+                                      })()}
+                                      <button
+                                        type="button"
+                                        disabled={uploadCuotaLoading === c.id || !(montoCuotaPago[c.id] || '').trim()}
+                                        onClick={() => handleUploadComprobanteCuota(c.id, fileCuotaPreview.file)}
+                                        className="mt-3 inline-flex w-full items-center justify-center rounded-md bg-[#8B1A1A] px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-white hover:bg-[#6B1515] disabled:opacity-50"
+                                      >
+                                        {uploadCuotaLoading === c.id ? 'Enviando...' : 'Enviar comprobante'}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
                             {mostrarPanelComprobantes && (
                               <tr className="border-b border-gray-100">
                                 <td colSpan={12} className="p-0 align-top">
@@ -1268,12 +1379,14 @@ function AprobadoBlock({
                                           const esPagoManual = origenComprobanteCuota(cp) === 'pago_manual';
                                           const estado = parseEstadoComprobante(cp.estado);
                                           const symMontoComp = symMoneda(cp.moneda);
-                                          const puedeVer = !!cp.file_path && cp.file_path !== 'manual';
-                                          const url = puedeVer ? getComprobanteUrl(cp.file_path) : '';
-                                          const isImage = puedeVer && comprobanteArchivoEsImagen(cp.file_name, cp.file_path);
-                                          const compLabel = esPagoManual
+                                            const puedeVer = !!cp.file_path && cp.file_path !== 'manual';
+                                            const url = puedeVer ? getComprobanteUrl(cp.file_path) : '';
+                                            const isImage = puedeVer && comprobanteArchivoEsImagen(cp.file_name, cp.file_path);
+                                            const montoComp = montoComprobanteNumber(cp);
+                                            const compLabel = esPagoManual
                                             ? 'Pago registrado por administración'
                                             : `Comprobante ${compIdx + 1}`;
+                                          const puedeEliminar = !esPagoManual && estado !== 'validado';
                                           const openPreview = () =>
                                             puedeVer && setComprobantePreview({ url, fileName: compLabel, isImage: !!isImage });
                                           const cardBg =
@@ -1332,14 +1445,10 @@ function AprobadoBlock({
                                                   <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
                                                     <span className={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium ${labelClass}`}>
                                                       {labelEstado}
-                                                    </span>
-                                                    <span className="text-xs font-semibold text-gray-800">
-                                                      {esPagoManual
-                                                        ? '—'
-                                                        : estado === 'pendiente'
-                                                          ? '—'
-                                                          : (cp.monto != null ? `${symMontoComp} ${Number(cp.monto).toFixed(2)}` : '—')}
-                                                    </span>
+                                                        </span>
+                                                        <span className="text-xs font-semibold text-gray-800">
+                                                          {montoComp != null ? `${symMontoComp} ${montoComp.toFixed(2)}` : 'Monto no registrado'}
+                                                        </span>
                                                   </div>
                                                 </div>
                                               </div>
@@ -1349,32 +1458,45 @@ function AprobadoBlock({
                                                   <span className="line-clamp-2">{(cp.rechazo_razon ?? '').trim()}</span>
                                                 </p>
                                               )}
-                                              {puedeVer && (
-                                                <button
-                                                  type="button"
-                                                  onClick={openPreview}
-                                                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-colors self-start ${verBtnClass}`}
-                                                >
-                                                  <ExternalLink className="w-3.5 h-3.5" />
-                                                  Ver archivo
-                                                </button>
-                                              )}
+                                              <div className="flex flex-wrap items-center gap-2">
+                                                {puedeVer && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={openPreview}
+                                                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-colors ${verBtnClass}`}
+                                                  >
+                                                    <ExternalLink className="w-3.5 h-3.5" />
+                                                    Ver archivo
+                                                  </button>
+                                                )}
+                                                {puedeEliminar && (
+                                                  <button
+                                                    type="button"
+                                                    disabled={deleteCuotaComprobanteLoading === cp.id}
+                                                    onClick={() => handleDeleteComprobanteCuota(cp.id)}
+                                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border-2 border-red-200 bg-white text-red-700 hover:bg-red-50 disabled:opacity-50"
+                                                  >
+                                                    <X className="w-3.5 h-3.5" />
+                                                    {deleteCuotaComprobanteLoading === cp.id ? 'Eliminando...' : 'Eliminar'}
+                                                  </button>
+                                                )}
+                                              </div>
                                             </div>
                                           );
                                         })}
                                       </div>
                                       {(() => {
-                                        const compsSinOficial = comps.filter((cp) => !esComprobanteAdminPago(cp));
-                                        const verificado = compsSinOficial
-                                          .filter((cp) => parseEstadoComprobante(cp.estado) === 'validado')
-                                          .reduce((s, cp) => s + (cp.monto != null ? Number(cp.monto) : 0), 0);
-                                        const totalEnv = compsSinOficial.reduce(
-                                          (s, cp) => s + (cp.monto != null ? Number(cp.monto) : 0),
-                                          0
-                                        );
-                                        const rechazado = compsSinOficial
-                                          .filter((cp) => parseEstadoComprobante(cp.estado) === 'rechazado')
-                                          .reduce((s, cp) => s + (cp.monto != null ? Number(cp.monto) : 0), 0);
+                                          const compsSinOficial = comps.filter((cp) => !esComprobanteAdminPago(cp));
+                                          const verificado = compsSinOficial
+                                            .filter((cp) => parseEstadoComprobante(cp.estado) === 'validado')
+                                            .reduce((s, cp) => s + (montoComprobanteNumber(cp) ?? 0), 0);
+                                          const totalEnv = compsSinOficial.reduce(
+                                            (s, cp) => s + (montoComprobanteNumber(cp) ?? 0),
+                                            0
+                                          );
+                                          const rechazado = compsSinOficial
+                                            .filter((cp) => parseEstadoComprobante(cp.estado) === 'rechazado')
+                                            .reduce((s, cp) => s + (montoComprobanteNumber(cp) ?? 0), 0);
                                         const monedasComp = [...new Set(compsSinOficial.map((cp) => monedaCuotasLabel(cp.moneda)))];
                                         const symMontosComp =
                                           monedasComp.length === 1 ? symMoneda(monedasComp[0]) : symCuota;
@@ -1443,7 +1565,29 @@ function AprobadoBlock({
               )}
             </div>
           )}
-          {solicitud.fecha_inicio_cobro_semanal && subTabCronogramaDriver === 'otros_gastos' && (() => {
+              </div>
+
+              <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+                {solicitud.fecha_inicio_cobro_semanal && (
+                  <div className="border-b border-gray-100">
+                    <button
+                      type="button"
+                      onClick={() => setOtrosGastosDriverAbiertos((v) => !v)}
+                      className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50/70"
+                    >
+                      <div className="min-w-0">
+                        <h4 className="text-lg font-bold text-gray-900">Otros gastos</h4>
+                        <p className="text-[11px] text-gray-500">GPS, SOAT, SRC y adicionales</p>
+                      </div>
+                      {otrosGastosDriverAbiertos ? (
+                        <ChevronDown className="h-5 w-5 text-gray-500" />
+                      ) : (
+                        <ChevronRight className="h-5 w-5 text-gray-500" />
+                      )}
+                    </button>
+                  </div>
+                )}
+          {solicitud.fecha_inicio_cobro_semanal && otrosGastosDriverAbiertos && (() => {
             const totalOg = filteredOgRows.reduce((s: number, og) => s + Number(og.amount_due ?? 0), 0);
             const pagadoOg = filteredOgRows.reduce((s: number, og) => s + Number(og.paid_amount ?? 0), 0);
             const pendientesCount = filteredOgRows.filter((og) => og.status !== 'paid').length;
@@ -1451,7 +1595,12 @@ function AprobadoBlock({
             const saldoOg = Math.max(0, totalOg - pagadoOg);
             return (
             <div className="px-4 sm:px-5 py-3">
-              {filteredOgRows.length > 0 ? (
+              {loadingCuotas ? (
+                <div className="flex flex-col items-center justify-center gap-2 py-6 text-sm text-gray-500">
+                  <div className="animate-spin rounded-full h-6 w-6 border-2 border-[#8B1A1A] border-t-transparent" />
+                  <span>Cargando otros gastos...</span>
+                </div>
+              ) : filteredOgRows.length > 0 ? (
                 <>
                 <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-xs mb-4 px-1">
                   <span>
@@ -1694,51 +1843,102 @@ function AprobadoBlock({
                                           e.target.value = '';
                                         }}
                                       />
-                                      <select
-                                        value={monedaOgPorFila[og.id] ?? monedaOtrosGastos}
-                                        onChange={(e) => setMonedaOgPorFila((prev) => ({ ...prev, [og.id]: e.target.value as 'PEN' | 'USD' }))}
-                                        disabled={tieneCompPendienteOg || !fileOgPreview || fileOgPreview.otrosGastosId !== og.id}
-                                        className={`px-1.5 py-0.5 border border-gray-200 rounded text-[10px] text-gray-700 ${tieneCompPendienteOg ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'} ${(!fileOgPreview || fileOgPreview.otrosGastosId !== og.id) ? 'hidden' : ''}`}
-                                        title="Moneda del pago"
-                                      >
-                                        <option value="PEN">S/.</option>
-                                        <option value="USD">USD</option>
-                                      </select>
                                     </>
                                   )}
-                                  {fileOgPreview?.otrosGastosId === og.id && (
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="relative inline-block flex-shrink-0">
-                                        {previewOgFile ? (
-                                          <img src={previewOgFile} alt="Vista previa" className="w-8 h-8 object-cover rounded border border-gray-200" />
-                                        ) : (
-                                          <span className="w-8 h-8 rounded border border-gray-200 bg-gray-50 flex items-center justify-center">
-                                            <FileText className="w-4 h-4 text-gray-400" />
-                                          </span>
+                                </div>
+                              </td>
+                            </tr>
+                            {fileOgPreview?.otrosGastosId === og.id && (
+                              <tr className="border-b border-gray-100">
+                                <td colSpan={7} className="p-0 align-top">
+                                  <div className="px-4 py-3 bg-amber-50/80 border-t border-amber-100">
+                                    <div className="rounded-xl border border-amber-200 bg-white p-3 shadow-sm">
+                                      <div className="mb-3 flex items-center gap-3">
+                                        <span className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-gray-200 bg-gray-50">
+                                          {previewOgFile ? (
+                                            <img src={previewOgFile} alt="Vista previa" className="h-full w-full object-cover" />
+                                          ) : (
+                                            <FileText className="h-5 w-5 text-gray-400" />
+                                          )}
+                                        </span>
+                                        <div className="min-w-0 flex-1">
+                                          <p className="truncate text-sm font-semibold text-gray-900">{fileOgPreview.file.name}</p>
+                                          <p className="text-xs text-gray-500">
+                                            Semana {og.week_index} · Pendiente {monedaSimbolo}{Math.max(0, Number(og.amount_due) - Number(og.paid_amount || 0)).toFixed(2)}
+                                          </p>
+                                        </div>
+                                        {previewOgFile && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setComprobantePreview({
+                                              url: previewOgFile,
+                                              fileName: fileOgPreview.file.name,
+                                              isImage: true,
+                                            })}
+                                            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                                          >
+                                            Ver
+                                          </button>
                                         )}
                                         <button
                                           type="button"
                                           disabled={uploadOgLoading === og.id}
                                           onClick={() => setFileOgPreview((prev) => (prev?.otrosGastosId === og.id ? null : prev))}
-                                          className="absolute top-0 right-0 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 shadow -translate-y-1/2 translate-x-1/2"
+                                          className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
                                           aria-label="Quitar archivo"
                                         >
-                                          <X className="w-2.5 h-2.5" />
+                                          <X className="h-4 w-4" />
                                         </button>
-                                      </span>
+                                      </div>
+                                      {(() => {
+                                        const monedaPago = monedaOgPorFila[og.id] ?? normalizePagoMoneda(og.moneda ?? monedaOtrosGastos);
+                                        const symPago = symMoneda(monedaPago);
+                                        const pendiente = Math.max(0, Number(og.amount_due) - Number(og.paid_amount || 0));
+                                        return (
+                                          <label className="block">
+                                            <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                                              Cuánto pagas ({symPago})
+                                            </span>
+                                            <div className="grid grid-cols-[auto,1fr] rounded-md border border-gray-200 bg-gray-50 focus-within:border-[#8B1A1A] focus-within:ring-1 focus-within:ring-[#8B1A1A]">
+                                              <select
+                                                value={monedaPago}
+                                                onChange={(e) => setMonedaOgPorFila((prev) => ({ ...prev, [og.id]: e.target.value as MiautoPagoMoneda }))}
+                                                disabled={uploadOgLoading === og.id}
+                                                className="border-r border-gray-200 bg-white px-2 text-xs font-bold text-gray-600 outline-none disabled:opacity-50"
+                                                title="Moneda del comprobante"
+                                              >
+                                                <option value="PEN">S/.</option>
+                                                <option value="USD">USD</option>
+                                              </select>
+                                              <input
+                                                type="number"
+                                                inputMode="decimal"
+                                                min="0.01"
+                                                step="0.01"
+                                                max={monedaPago === normalizePagoMoneda(og.moneda ?? monedaOtrosGastos) ? pendiente.toFixed(2) : undefined}
+                                                value={montoOgPago[og.id] ?? ''}
+                                                onChange={(e) => setMontoOgPago((prev) => ({ ...prev, [og.id]: e.target.value }))}
+                                                placeholder={pendiente.toFixed(2)}
+                                                disabled={uploadOgLoading === og.id}
+                                                className="min-w-0 flex-1 bg-transparent py-2 pr-2 text-right text-sm font-semibold text-gray-900 outline-none placeholder:text-gray-400 disabled:opacity-50"
+                                              />
+                                            </div>
+                                          </label>
+                                        );
+                                      })()}
                                       <button
                                         type="button"
-                                        disabled={uploadOgLoading === og.id}
-                                        onClick={() => handleUploadComprobanteOtrosGastos(og.id, fileOgPreview!.file)}
-                                        className="inline-flex items-center px-2 py-1 bg-[#8B1A1A] text-white rounded text-[10px] font-bold uppercase tracking-wider disabled:opacity-50 whitespace-nowrap"
+                                        disabled={uploadOgLoading === og.id || !(montoOgPago[og.id] || '').trim()}
+                                        onClick={() => handleUploadComprobanteOtrosGastos(og.id, fileOgPreview.file)}
+                                        className="mt-3 inline-flex w-full items-center justify-center rounded-md bg-[#8B1A1A] px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-white hover:bg-[#6B1515] disabled:opacity-50"
                                       >
-                                        {uploadOgLoading === og.id ? 'Enviando...' : 'Pagar'}
+                                        {uploadOgLoading === og.id ? 'Enviando...' : 'Enviar comprobante'}
                                       </button>
                                     </div>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
                             {mostrarPanelOg && (
                               <tr className="border-b border-gray-50">
                                 <td colSpan={7} className="p-0 align-top">
@@ -1831,7 +2031,6 @@ function AprobadoBlock({
           })()}
               </div>
             </div>
-          </div>
 
           {/* Bottom Sheet: Detalle de otro gasto */}
           {ogSheet && (
@@ -1871,18 +2070,130 @@ function AprobadoBlock({
                   })()}
                 </div>
               </div>
-              {(Number(ogSheet.amount_due) - Number(ogSheet.paid_amount)) > 0.005 && (
-                <button
-                  type="button"
-                  className="w-full mt-4 bg-[#8B1A1A] hover:bg-[#6B1515] text-white font-bold py-3 rounded-xl text-sm transition-colors"
-                  onClick={() => {
-                    setOgSheet(null);
-                    fileOgRefs.current[ogSheet.id]?.click();
-                  }}
-                >
-                  Pagar este gasto
-                </button>
-              )}
+              {(() => {
+                const pendiente = Math.max(0, Number(ogSheet.amount_due) - Number(ogSheet.paid_amount || 0));
+                const uploadActivo = fileOgPreview?.otrosGastosId === ogSheet.id ? fileOgPreview : null;
+                const tienePendienteConductor = (comprobantesByOtrosGastosId[ogSheet.id] ?? []).some(
+                  (cp) => parseEstadoComprobante(cp.estado) === 'pendiente'
+                );
+                if (pendiente <= 0.005 || tienePendienteConductor) return null;
+                return (
+                  <div className="mt-4">
+                    <input
+                      ref={(el) => { fileOgRefs.current[ogSheet.id] = el; }}
+                      type="file"
+                      accept=".pdf,image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) setFileOgPreview({ otrosGastosId: ogSheet.id, file: f });
+                        e.target.value = '';
+                      }}
+                    />
+                    {!uploadActivo ? (
+                      <button
+                        type="button"
+                        disabled={uploadOgLoading === ogSheet.id}
+                        className="w-full bg-[#8B1A1A] hover:bg-[#6B1515] text-white font-bold py-3 rounded-xl text-sm transition-colors disabled:opacity-50"
+                        onClick={() => fileOgRefs.current[ogSheet.id]?.click()}
+                      >
+                        Pagar este gasto
+                      </button>
+                    ) : (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                        <div className="mb-3 flex items-center gap-3">
+                          <span className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-gray-200 bg-white">
+                            {previewOgFile ? (
+                              <img src={previewOgFile} alt="Vista previa" className="h-full w-full object-cover" />
+                            ) : (
+                              <FileText className="h-5 w-5 text-gray-400" />
+                            )}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-semibold text-gray-900">{uploadActivo.file.name}</p>
+                            <p className="text-xs text-gray-500">Pendiente {monedaSimbolo}{pendiente.toFixed(2)}</p>
+                          </div>
+                          {previewOgFile && (
+                            <button
+                              type="button"
+                              onClick={() => setComprobantePreview({
+                                url: previewOgFile,
+                                fileName: uploadActivo.file.name,
+                                isImage: true,
+                              })}
+                              className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                            >
+                              Ver
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={uploadOgLoading === ogSheet.id}
+                            onClick={() => setFileOgPreview((prev) => (prev?.otrosGastosId === ogSheet.id ? null : prev))}
+                            className="rounded-lg p-1.5 text-gray-400 hover:bg-white hover:text-gray-700 disabled:opacity-50"
+                            aria-label="Quitar archivo"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                        {(() => {
+                          const monedaPago = monedaOgPorFila[ogSheet.id] ?? normalizePagoMoneda(ogSheet.moneda ?? monedaOtrosGastos);
+                          const symPago = symMoneda(monedaPago);
+                          return (
+                            <label className="block">
+                              <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                                Cuánto pagas ({symPago})
+                              </span>
+                              <div className="grid grid-cols-[auto,1fr] rounded-md border border-gray-200 bg-white focus-within:border-[#8B1A1A] focus-within:ring-1 focus-within:ring-[#8B1A1A]">
+                                <select
+                                  value={monedaPago}
+                                  onChange={(e) => setMonedaOgPorFila((prev) => ({ ...prev, [ogSheet.id]: e.target.value as MiautoPagoMoneda }))}
+                                  disabled={uploadOgLoading === ogSheet.id}
+                                  className="border-r border-gray-200 bg-white px-2 text-xs font-bold text-gray-600 outline-none disabled:opacity-50"
+                                  title="Moneda del comprobante"
+                                >
+                                  <option value="PEN">S/.</option>
+                                  <option value="USD">USD</option>
+                                </select>
+                                <input
+                                  type="number"
+                                  inputMode="decimal"
+                                  min="0.01"
+                                  step="0.01"
+                                  max={monedaPago === normalizePagoMoneda(ogSheet.moneda ?? monedaOtrosGastos) ? pendiente.toFixed(2) : undefined}
+                                  value={montoOgPago[ogSheet.id] ?? ''}
+                                  onChange={(e) => setMontoOgPago((prev) => ({ ...prev, [ogSheet.id]: e.target.value }))}
+                                  placeholder={pendiente.toFixed(2)}
+                                  disabled={uploadOgLoading === ogSheet.id}
+                                  className="min-w-0 flex-1 bg-transparent py-2 pr-2 text-right text-sm font-semibold text-gray-900 outline-none placeholder:text-gray-400 disabled:opacity-50"
+                                />
+                              </div>
+                            </label>
+                          );
+                        })()}
+                        <div className="mt-3 grid grid-cols-[auto,1fr] gap-2">
+                          <button
+                            type="button"
+                            disabled={uploadOgLoading === ogSheet.id}
+                            onClick={() => fileOgRefs.current[ogSheet.id]?.click()}
+                            className="rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            Cambiar
+                          </button>
+                          <button
+                            type="button"
+                            disabled={uploadOgLoading === ogSheet.id || !(montoOgPago[ogSheet.id] || '').trim()}
+                            onClick={() => handleUploadComprobanteOtrosGastos(ogSheet.id, uploadActivo.file)}
+                            className="inline-flex items-center justify-center rounded-md bg-[#8B1A1A] px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-white hover:bg-[#6B1515] disabled:opacity-50"
+                          >
+                            {uploadOgLoading === ogSheet.id ? 'Enviando...' : 'Enviar comprobante'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </BottomSheet>
           )}
 
@@ -1945,18 +2256,215 @@ function AprobadoBlock({
                   })()}
                 </div>
               </div>
-              {(cuotaSheet.pending_total ?? 0) > 0.005 && (
-                <button
-                  type="button"
-                  className="w-full mt-4 bg-[#8B1A1A] hover:bg-[#6B1515] text-white font-bold py-3 rounded-xl text-sm transition-colors"
-                  onClick={() => {
-                    setCuotaSheet(null);
-                    fileCuotaRefs.current[cuotaSheet.id]?.click();
-                  }}
-                >
-                  Pagar esta cuota
-                </button>
-              )}
+              {(() => {
+                const comps = comprobantesByCuotaId[cuotaSheet.id] ?? [];
+                const compsConductor = comps.filter((cp) => !esComprobanteAdminPago(cp));
+                if (compsConductor.length === 0) return null;
+                return (
+                  <div className="mt-4 rounded-xl border border-gray-200 bg-white p-3">
+                    <p className="mb-3 text-sm font-bold text-gray-900">Tus comprobantes enviados</p>
+                    <div className="space-y-2">
+                      {compsConductor.map((cp, idx) => {
+                        const estado = parseEstadoComprobante(cp.estado);
+                        const puedeVer = !!cp.file_path && cp.file_path !== 'manual';
+                          const url = puedeVer ? getComprobanteUrl(cp.file_path) : '';
+                          const isImage = puedeVer && comprobanteArchivoEsImagen(cp.file_name, cp.file_path);
+                          const symMonto = symMoneda(cp.moneda ?? cuotaSheet.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda);
+                          const montoComp = montoComprobanteNumber(cp);
+                          const labelEstado =
+                          estado === 'validado' ? 'Validado'
+                          : estado === 'rechazado' ? 'Rechazado'
+                          : 'Pendiente';
+                          const estadoClass =
+                            estado === 'validado' ? 'bg-emerald-100 text-emerald-800'
+                            : estado === 'rechazado' ? 'bg-red-100 text-red-800'
+                            : 'bg-amber-100 text-amber-800';
+                          const puedeEliminar = cp.file_path !== 'manual' && estado !== 'validado';
+                          return (
+                          <div key={cp.id ?? idx} className="rounded-lg border border-gray-200 bg-gray-50 p-2.5">
+                            <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                disabled={!puedeVer}
+                                onClick={() => puedeVer && setComprobantePreview({ url, fileName: cp.file_name || `Comprobante ${idx + 1}`, isImage: !!isImage })}
+                                className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-gray-200 bg-white disabled:cursor-default"
+                              >
+                                {puedeVer && isImage ? (
+                                  <img src={url} alt="" className="h-full w-full object-cover" />
+                                ) : (
+                                  <FileText className="h-5 w-5 text-gray-400" />
+                                )}
+                              </button>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${estadoClass}`}>
+                                    {labelEstado}
+                                      </span>
+                                      <span className="text-xs font-bold text-gray-900">
+                                        Monto enviado: {montoComp != null ? `${symMonto}${montoComp.toFixed(2)}` : 'no registrado'}
+                                      </span>
+                                </div>
+                                <p className="mt-1 truncate text-xs text-gray-500">
+                                  {cp.created_at ? formatDateTime(cp.created_at, 'es-ES') : (cp.file_name || `Comprobante ${idx + 1}`)}
+                                </p>
+                              </div>
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                  {puedeVer && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setComprobantePreview({ url, fileName: cp.file_name || `Comprobante ${idx + 1}`, isImage: !!isImage })}
+                                      className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                                    >
+                                      Ver
+                                    </button>
+                                  )}
+                                  {puedeEliminar && (
+                                    <button
+                                      type="button"
+                                      disabled={deleteCuotaComprobanteLoading === cp.id}
+                                      onClick={() => handleDeleteComprobanteCuota(cp.id)}
+                                      className="rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                                    >
+                                      {deleteCuotaComprobanteLoading === cp.id ? '...' : 'Eliminar'}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            {estado === 'rechazado' && cp.rechazo_razon && (
+                              <p className="mt-2 rounded-md bg-red-50 px-2 py-1.5 text-xs text-red-700">{cp.rechazo_razon}</p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+              {(() => {
+                  const cuotaFinalSemana = miautoCuotaFinalCronogramaSemanal(cuotaSheet);
+                  const symCuota = symMoneda(cuotaSheet.moneda ?? solicitud?.cronograma_vehiculo?.inicial_moneda);
+                  const pendiente = Math.max(0, cuotaFinalSemana);
+                  const uploadActivo = fileCuotaPreview?.cuotaId === cuotaSheet.id ? fileCuotaPreview : null;
+                  const tienePendienteConductor = (comprobantesByCuotaId[cuotaSheet.id] ?? []).some(
+                    (cp) => !esComprobanteAdminPago(cp) && parseEstadoComprobante(cp.estado) === 'pendiente'
+                  );
+                  if (pendiente <= 0.005 || tienePendienteConductor) return null;
+                return (
+                  <div className="mt-4">
+                    <input
+                      ref={(el) => { fileCuotaRefs.current[cuotaSheet.id] = el; }}
+                      type="file"
+                      accept=".pdf,image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) setFileCuotaPreview({ cuotaId: cuotaSheet.id, file: f });
+                        e.target.value = '';
+                      }}
+                    />
+                    {!uploadActivo ? (
+                      <button
+                        type="button"
+                        disabled={uploadCuotaLoading === cuotaSheet.id}
+                        className="w-full bg-[#8B1A1A] hover:bg-[#6B1515] text-white font-bold py-3 rounded-xl text-sm transition-colors disabled:opacity-50"
+                        onClick={() => fileCuotaRefs.current[cuotaSheet.id]?.click()}
+                      >
+                        Pagar esta cuota
+                      </button>
+                    ) : (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                        <div className="mb-3 flex items-center gap-3">
+                          <span className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-gray-200 bg-white">
+                            {previewCuotaFile ? (
+                              <img src={previewCuotaFile} alt="Vista previa" className="h-full w-full object-cover" />
+                            ) : (
+                              <FileText className="h-5 w-5 text-gray-400" />
+                            )}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-semibold text-gray-900">{uploadActivo.file.name}</p>
+                            <p className="text-xs text-gray-500">Pendiente {symCuota}{pendiente.toFixed(2)}</p>
+                          </div>
+                          {previewCuotaFile && (
+                            <button
+                              type="button"
+                              onClick={() => setComprobantePreview({
+                                url: previewCuotaFile,
+                                fileName: uploadActivo.file.name,
+                                isImage: true,
+                              })}
+                              className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                            >
+                              Ver
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={uploadCuotaLoading === cuotaSheet.id}
+                            onClick={() => setFileCuotaPreview((prev) => (prev?.cuotaId === cuotaSheet.id ? null : prev))}
+                            className="rounded-lg p-1.5 text-gray-400 hover:bg-white hover:text-gray-700 disabled:opacity-50"
+                            aria-label="Quitar archivo"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                        {(() => {
+                          const monedaPago = monedaCuotaPago[cuotaSheet.id] ?? normalizePagoMoneda(cuotaSheet.moneda);
+                          const symPago = symMoneda(monedaPago);
+                          return (
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                            Cuánto pagas ({symPago})
+                          </span>
+                          <div className="grid grid-cols-[auto,1fr] rounded-md border border-gray-200 bg-white focus-within:border-[#8B1A1A] focus-within:ring-1 focus-within:ring-[#8B1A1A]">
+                            <select
+                              value={monedaPago}
+                              onChange={(e) => setMonedaCuotaPago((prev) => ({ ...prev, [cuotaSheet.id]: e.target.value as MiautoPagoMoneda }))}
+                              disabled={uploadCuotaLoading === cuotaSheet.id}
+                              className="border-r border-gray-200 bg-white px-2 text-xs font-bold text-gray-600 outline-none disabled:opacity-50"
+                              title="Moneda del comprobante"
+                            >
+                              <option value="PEN">S/.</option>
+                              <option value="USD">USD</option>
+                            </select>
+                            <input
+                              type="number"
+                              inputMode="decimal"
+                              min="0.01"
+                              step="0.01"
+                              max={monedaPago === normalizePagoMoneda(cuotaSheet.moneda) ? pendiente.toFixed(2) : undefined}
+                              value={montoCuotaPago[cuotaSheet.id] ?? ''}
+                              onChange={(e) => setMontoCuotaPago((prev) => ({ ...prev, [cuotaSheet.id]: e.target.value }))}
+                              placeholder={pendiente.toFixed(2)}
+                              className="min-w-0 flex-1 bg-transparent py-2 pr-2 text-right text-sm font-semibold text-gray-900 outline-none placeholder:text-gray-400"
+                            />
+                          </div>
+                        </label>
+                          );
+                        })()}
+                        <div className="mt-3 grid grid-cols-[auto,1fr] gap-2">
+                          <button
+                            type="button"
+                            disabled={uploadCuotaLoading === cuotaSheet.id}
+                            onClick={() => fileCuotaRefs.current[cuotaSheet.id]?.click()}
+                            className="rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            Cambiar
+                          </button>
+                          <button
+                            type="button"
+                            disabled={uploadCuotaLoading === cuotaSheet.id || !(montoCuotaPago[cuotaSheet.id] || '').trim()}
+                            onClick={() => handleUploadComprobanteCuota(cuotaSheet.id, uploadActivo.file)}
+                            className="inline-flex items-center justify-center rounded-md bg-[#8B1A1A] px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-white hover:bg-[#6B1515] disabled:opacity-50"
+                          >
+                            {uploadCuotaLoading === cuotaSheet.id ? 'Enviando...' : 'Enviar comprobante'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </BottomSheet>
           )}
 
@@ -1987,9 +2495,7 @@ function AprobadoBlock({
             </div>,
             document.body
           )}
-        </div>
-      )}
-    </div>
+        </>
   );
 }
 
@@ -2002,8 +2508,7 @@ function QuieroMiYegoAuto() {
   const [showForm, setShowForm] = useState(false);
   const [activeBlocking, setActiveBlocking] = useState<{ hasActive: boolean; sameFlota?: boolean; flota?: string; status?: string; statusLabel?: string } | null>(null);
   const [aprobadoExpandedId, setAprobadoExpandedId] = useState<string | null>(null);
-  const [solicitudesExpanded, setSolicitudesExpanded] = useState(true);
-  const [uploadComprobanteLoading, setUploadComprobanteLoading] = useState<string | null>(null);
+  const [, setUploadComprobanteLoading] = useState<string | null>(null);
   const initialFetchInFlight = useRef(false);
   const [tipoCambioByCountry, setTipoCambioByCountry] = useState<Record<string, { valor_usd_a_local: number; moneda_local: string } | null>>({});
   const [cuotasCache, setCuotasCache] = useState<Record<string, CuotasCacheEntry>>({});
@@ -2203,12 +2708,13 @@ function QuieroMiYegoAuto() {
       if (errorKeyToClear) setFieldErrors((prev) => ({ ...prev, [errorKeyToClear]: undefined }));
     };
 
-  const handleUploadComprobante = async (solicitudId: string, file: File, monto?: string) => {
+  const handleUploadComprobante = async (solicitudId: string, file: File, monto?: string, moneda?: string) => {
     try {
       setUploadComprobanteLoading(solicitudId);
       const fd = new FormData();
       fd.append('file', file);
       if (monto != null && monto.trim() !== '') fd.append('monto', monto.trim());
+      if (moneda != null && moneda.trim() !== '') fd.append('moneda', moneda.trim());
       await api.post(`/miauto/solicitudes/${solicitudId}/comprobantes-pago`, fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
@@ -2308,6 +2814,15 @@ function QuieroMiYegoAuto() {
     () => solicitudes.filter((s) => s.status === 'aprobado'),
     [solicitudes],
   );
+  useEffect(() => {
+    const pendientes = solicitudesAprobadas
+      .filter((s) => s.fecha_inicio_cobro_semanal && !cuotasCache[s.id])
+      .map((s) => s.id);
+    if (pendientes.length === 0) return;
+    pendientes.forEach((id) => {
+      void fetchCuotasForSolicitud(id);
+    });
+  }, [solicitudesAprobadas, cuotasCache, fetchCuotasForSolicitud]);
   const hasSolicitudActiva = solicitudes.some((s) =>
     ['pendiente', 'citado', 'aprobado'].includes(s.status)
   );
@@ -2334,7 +2849,7 @@ function QuieroMiYegoAuto() {
               ¡Quiero mi Yego Auto!
             </h1>
             <p className="text-xs lg:text-sm text-white/90 mt-0.5">
-              {hasSolicitudes ? 'Estado de tu solicitud' : 'Solicita tu auto para trabajar con Yego'}
+              {hasSolicitudes ? 'Gestiona tu auto' : 'Solicita tu auto para trabajar con Yego'}
             </p>
           </div>
         </div>
@@ -2513,7 +3028,7 @@ function QuieroMiYegoAuto() {
                 <div className="flex flex-col sm:flex-row gap-3 pt-2 mt-auto">
                   {hasSolicitudes && (
                     <button type="button" onClick={() => setShowForm(false)} className="px-4 py-2.5 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 font-medium">
-                      Ver estado
+                      Ver mi auto
                     </button>
                   )}
                   <button
@@ -2536,117 +3051,18 @@ function QuieroMiYegoAuto() {
         </div>
       ) : (
         <>
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setSolicitudesExpanded((v) => !v)}
-            className="w-full bg-white px-5 py-3.5 border-b border-gray-200 flex items-center justify-between text-left hover:bg-gray-50/60 transition-colors"
-          >
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-br from-[#8B1A1A] to-[#6B1515] text-white shadow-sm shrink-0">
-                <FileText className="w-4 h-4" />
-              </div>
-              <div className="min-w-0">
-                <h2 className="text-sm font-bold text-gray-900 leading-tight">Estado de tu solicitud</h2>
-                <p className="text-[11px] text-gray-500">{solicitudes.length} solicitud{solicitudes.length !== 1 ? 'es' : ''} registrada{solicitudes.length !== 1 ? 's' : ''}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {canCreateNew && (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); setShowForm(true); }}
-                  className="inline-flex items-center gap-1.5 text-sm font-medium text-white bg-gradient-to-r from-[#8B1A1A] to-[#6B1515] hover:from-[#7B1818] hover:to-[#5B1010] px-3 py-1.5 rounded-lg whitespace-nowrap shadow-sm transition-colors"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  Nueva solicitud
-                </button>
-              )}
-              {solicitudesExpanded ? <ChevronDown className="w-5 h-5 text-gray-500" /> : <ChevronRight className="w-5 h-5 text-gray-500" />}
-            </div>
-          </button>
-          {solicitudesExpanded && (
-          <div className="p-4 sm:p-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {solicitudes.map((s) => {
-              const statusKey = (s.status || '').toLowerCase();
-              const statusGradient =
-                statusKey === 'aprobado' ? 'from-emerald-500 to-emerald-600' :
-                statusKey === 'rechazado' ? 'from-red-500 to-red-600' :
-                statusKey === 'citado' ? 'from-blue-500 to-blue-600' :
-                statusKey === 'pendiente' ? 'from-amber-500 to-amber-600' :
-                'from-gray-500 to-gray-600';
-              const statusIcon =
-                statusKey === 'aprobado' ? <CheckCircle2 className="w-3.5 h-3.5" /> :
-                statusKey === 'rechazado' ? <X className="w-3.5 h-3.5" /> :
-                statusKey === 'citado' ? <CalendarCheck className="w-3.5 h-3.5" /> :
-                <Clock className="w-3.5 h-3.5" />;
-              const reagendoCount = s.reagendo_count ?? 0;
-              const reagendoCerca = reagendoCount >= MAX_REAGENDOS - 1;
-              return (
-                <div key={s.id} className="group relative overflow-hidden rounded-xl border border-gray-200 bg-gradient-to-br from-white to-gray-50/50 hover:shadow-lg hover:border-gray-300 transition-all">
-                  <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${statusGradient}`} />
-                  <div className="p-4 space-y-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Solicitud creada</p>
-                        <p className="text-sm font-bold text-gray-900 mt-0.5 flex items-center gap-1.5">
-                          <Calendar className="w-3.5 h-3.5 text-gray-400" />
-                          {formatDate(s.created_at)}
-                        </p>
-                      </div>
-                      <span className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold rounded-full text-white shadow-sm bg-gradient-to-r ${statusGradient}`}>
-                        {statusIcon}
-                        {STATUS_LABELS[s.status] || s.status}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-100">
-                      <div className="rounded-lg bg-blue-50/60 border border-blue-100 px-2.5 py-2">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-700/80 flex items-center gap-1">
-                          <CalendarCheck className="w-3 h-3" />
-                          Cita
-                        </p>
-                        <p className="text-xs font-medium text-gray-900 mt-0.5 truncate" title={s.appointment_date ? formatDateFlex(s.appointment_date, 'es-ES') : ''}>
-                          {s.appointment_date
-                            ? formatDateFlex(s.appointment_date, 'es-ES')
-                            : statusKey === 'rechazado' ? <span className="text-red-600">No hubo</span> : <span className="text-gray-400">—</span>}
-                        </p>
-                      </div>
-                      <div className={`rounded-lg border px-2.5 py-2 ${reagendoCerca && STATUS_WITH_REAGENDO_INFO.has(s.status) ? 'bg-amber-50/60 border-amber-200' : 'bg-gray-50 border-gray-100'}`}>
-                        <p className={`text-[10px] font-semibold uppercase tracking-wide flex items-center gap-1 ${reagendoCerca && STATUS_WITH_REAGENDO_INFO.has(s.status) ? 'text-amber-700/80' : 'text-gray-500'}`}>
-                          <Clock className="w-3 h-3" />
-                          Reagendos
-                        </p>
-                        <p className="text-xs font-medium text-gray-900 mt-0.5">
-                          {STATUS_WITH_REAGENDO_INFO.has(s.status) ? (
-                            <span className={reagendoCerca ? 'text-amber-700 font-semibold' : ''}>
-                              {reagendoCount} <span className="text-gray-400">/ {MAX_REAGENDOS}</span>
-                            </span>
-                          ) : <span className="text-gray-400">—</span>}
-                        </p>
-                      </div>
-                    </div>
-
-                    {(s.observations?.trim() || (statusKey === 'rechazado' && s.rejection_reason?.trim())) && (
-                      <div className={`flex items-start gap-2 rounded-lg px-2.5 py-2 text-xs leading-relaxed ${statusKey === 'rechazado' && s.rejection_reason?.trim() ? 'bg-red-50/60 border border-red-100 text-red-800' : 'bg-gray-50 border border-gray-100 text-gray-700'}`}>
-                        <MessageSquare className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${statusKey === 'rechazado' && s.rejection_reason?.trim() ? 'text-red-500' : 'text-gray-400'}`} />
-                        <span className="line-clamp-3">
-                          {s.observations?.trim() || (s.rejection_reason ?? '').trim()}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            {solicitudes.length === 0 && (
-              <div className="col-span-full text-center py-8 text-sm text-gray-500">
-                No hay solicitudes registradas.
-              </div>
-            )}
+        {canCreateNew && (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setShowForm(true)}
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-white bg-gradient-to-r from-[#8B1A1A] to-[#6B1515] hover:from-[#7B1818] hover:to-[#5B1010] px-3 py-2 rounded-lg whitespace-nowrap shadow-sm transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Nueva solicitud
+            </button>
           </div>
-          )}
-        </div>
+        )}
 
         {solicitudesAprobadas.map((s) => (
           <AprobadoBlock
@@ -2655,7 +3071,6 @@ function QuieroMiYegoAuto() {
             expanded={aprobadoExpandedId === s.id}
             onToggle={() => setAprobadoExpandedId((id) => (id === s.id ? null : s.id))}
             onUploadComprobante={handleUploadComprobante}
-            uploadLoading={uploadComprobanteLoading === s.id}
             getComprobanteUrl={getComprobanteUrl}
             onRefetchSolicitudes={fetchSolicitudes}
             tipoCambio={tipoCambioByCountry[s.country] ?? null}

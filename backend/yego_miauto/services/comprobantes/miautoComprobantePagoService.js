@@ -204,9 +204,12 @@ export async function addPagoManual(solicitudId, userId, { monto, moneda } = {})
 
 export async function createComprobantePago(solicitudId, file, monto = null, userId = null) {
   await assertPagoNoCompleto(solicitudId);
+  const montoVal = monto != null ? round2(parseFloat(monto)) : null;
+  if (monto != null && (!Number.isFinite(montoVal) || montoVal <= 0)) {
+    throw new Error('Monto inválido');
+  }
   const path = await uploadFileToMedia(file);
   const fileName = file.originalname || `comprobante_pago_${Date.now()}.pdf`;
-  const montoVal = monto != null ? parseFloat(monto) : null;
   await query(
     `INSERT INTO module_miauto_comprobante_pago (solicitud_id, file_name, file_path, monto, created_by)
      VALUES ($1, $2, $3, $4, $5)`,

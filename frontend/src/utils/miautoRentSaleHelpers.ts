@@ -286,13 +286,12 @@ export function miautoMontoPagadoCuotaSemanal(paidAmount: unknown): number {
 
 /**
  * Columna «Pagado» en la tabla del cronograma semanal.
- * Incluye `abono_comprobante_en_revision` (staff): monto declarado en comprobante aún no validado, ya reflejado en saldos API.
+ * Solo pagos confirmados (`paid_amount`). Un comprobante pendiente no afecta la cuota.
  */
 export function miautoMontoPagadoColumnaCronograma(c: {
   paid_amount?: unknown;
-  abono_comprobante_en_revision?: unknown;
 }): number {
-  return Math.round((miautoNum(c.paid_amount) + miautoNum(c.abono_comprobante_en_revision)) * 100) / 100;
+  return miautoNum(c.paid_amount);
 }
 
 /**
@@ -340,6 +339,7 @@ export function miautoCuotaFinalCronogramaSemanal(c: {
   late_fee?: unknown;
   mora_interes_periodo?: unknown;
   mora_pendiente?: unknown;
+  mora_extra?: unknown;
   cuota_pendiente?: unknown;
   paid_amount?: unknown;
   status?: string;
@@ -361,7 +361,7 @@ export function miautoCuotaFinalCronogramaSemanal(c: {
   ) {
     const sum = Math.max(
       0,
-      Math.round((miautoNum(c.mora_pendiente) + miautoNum(c.cuota_pendiente)) * 100) / 100
+      Math.round((miautoNum(c.mora_pendiente) + miautoNum(c.mora_extra) + miautoNum(c.cuota_pendiente)) * 100) / 100
     );
     if (sum > 0.005) return sum;
   }
@@ -374,11 +374,13 @@ export function miautoCuotaFinalCronogramaSemanal(c: {
     c.mora_pendiente != null && c.mora_pendiente !== ''
       ? miautoNum(c.mora_pendiente)
       : miautoNum(c.late_fee);
+  const moraExtra = miautoNum(c.mora_extra);
   const paid = miautoNum(c.paid_amount);
 
-  if (mora > 0.005) {
-    const moraRest = Math.max(0, mora - paid);
-    const aplicadoCuota = Math.max(0, paid - mora);
+  if (mora + moraExtra > 0.005) {
+    const moraTotal = mora + moraExtra;
+    const moraRest = Math.max(0, moraTotal - paid);
+    const aplicadoCuota = Math.max(0, paid - moraTotal);
     const cuotaRest = Math.max(0, cuotaNet - aplicadoCuota);
     return Math.round((moraRest + cuotaRest) * 100) / 100;
   }
@@ -395,6 +397,7 @@ export function miautoCuotaPendienteSinMora(c: {
   pending_total?: unknown;
   cuota_final?: unknown;
   mora_pendiente?: unknown;
+  mora_extra?: unknown;
   late_fee?: unknown;
   status?: string;
   cuota_semanal?: unknown;
@@ -413,7 +416,7 @@ export function miautoCuotaPendienteSinMora(c: {
         c.mora_pendiente != null && c.mora_pendiente !== ''
           ? miautoNum(c.mora_pendiente)
           : miautoNum(c.late_fee);
-      return Math.max(0, Math.round((total - mora) * 100) / 100);
+      return Math.max(0, Math.round((total - mora - miautoNum(c.mora_extra)) * 100) / 100);
     }
   }
   if (c.cuota_pendiente != null && c.cuota_pendiente !== '' && Number.isFinite(Number(c.cuota_pendiente))) {
@@ -431,7 +434,7 @@ export function miautoCuotaPendienteSinMora(c: {
     total = Math.max(0, Math.round(miautoCuotaFinalCronogramaSemanal(c) * 100) / 100);
   }
   if (total > 0.005 || mora > 0.005) {
-    return Math.max(0, Math.round((total - mora) * 100) / 100);
+    return Math.max(0, Math.round((total - mora - miautoNum(c.mora_extra)) * 100) / 100);
   }
   const st = (c.status || '').toLowerCase();
   if (st === 'paid' || st === 'bonificada') {

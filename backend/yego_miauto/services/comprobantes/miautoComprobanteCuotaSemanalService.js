@@ -38,7 +38,7 @@ async function monedaPersistidaParaCuota(solicitudId, monedaCuota) {
   return monedaLocal;
 }
 
-const SELECT_CUOTA_COMP_BASE = `SELECT id, solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado,
+const SELECT_CUOTA_COMP_BASE = `SELECT id, solicitud_id, cuota_semanal_id, monto, monto AS monto_declarado, moneda, file_name, file_path, estado,
             validated_at, validated_by, rechazado_at, rechazo_razon, created_at`;
 
 async function refreshMoraTrasPagoValidado(solicitudId) {
@@ -342,13 +342,8 @@ export async function listForAdminValidation({ estado = 'pendiente', country, li
   return res.rows || [];
 }
 
-/** Conductor sube comprobante para una cuota semanal (monto y moneda opcionales; el admin puede fijarlos al validar). */
+/** Conductor sube comprobante para una cuota semanal. El monto declarado congela la mora mientras se valida. */
 export async function createComprobanteCuotaSemanal(solicitudId, cuotaSemanalId, file, monto, moneda) {
-  const path = await uploadFileToMedia(file);
-  const fileName = file.originalname || `comprobante_cuota_${Date.now()}.pdf`;
-  const montoVal = monto != null ? parseFloat(monto) : null;
-  const monedaVal = normalizePenUsd(moneda);
-
   const cuota = await query(`SELECT * FROM module_miauto_cuota_semanal WHERE id = $1 AND solicitud_id = $2`, [
     cuotaSemanalId,
     solicitudId,
@@ -366,6 +361,51 @@ export async function createComprobanteCuotaSemanal(solicitudId, cuotaSemanalId,
     throw new Error('Esta cuota ya está pagada o bonificada');
   }
 
+  let pendiente;
+  try {
+    pendiente = await query(
+      `SELECT id
+       FROM module_miauto_comprobante_cuota_semanal
+       WHERE solicitud_id = $1
+         AND cuota_semanal_id = $2
+         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) = 'pendiente'
+         AND COALESCE(origen, 'conductor') = 'conductor'
+       LIMIT 1`,
+      [solicitudId, cuotaSemanalId]
+    );
+  } catch (e) {
+    if (!isUndefinedColumnError(e)) throw e;
+    pendiente = await query(
+      `SELECT id
+       FROM module_miauto_comprobante_cuota_semanal
+       WHERE solicitud_id = $1
+         AND cuota_semanal_id = $2
+         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) = 'pendiente'
+       LIMIT 1`,
+      [solicitudId, cuotaSemanalId]
+    );
+  }
+  if (pendiente.rows.length > 0) {
+    throw new Error('Ya tienes un comprobante en revisión para esta cuota');
+  }
+
+  const montoVal = round2(parseFloat(String(monto ?? '').replace(',', '.')));
+  if (!Number.isFinite(montoVal) || montoVal <= 0) {
+    throw new Error('Indica cuánto estás pagando con este comprobante');
+  }
+  const monedaCuota = normalizePenUsd(c.moneda || 'PEN');
+  const monedaVal = moneda ? normalizePenUsd(moneda) : monedaCuota;
+  if (monedaVal !== monedaCuota) {
+    throw new Error(`La moneda del comprobante debe ser ${monedaCuota}`);
+  }
+  const pendienteCuota = round2(Math.max(0, miautoCuotaFinalDerivada(c, ctxCond)));
+  if (montoVal > pendienteCuota + 0.01) {
+    throw new Error(`El monto no puede superar el saldo pendiente de la cuota (${monedaCuota} ${pendienteCuota.toFixed(2)})`);
+  }
+
+  const path = await uploadFileToMedia(file);
+  const fileName = file.originalname || `comprobante_cuota_${Date.now()}.pdf`;
+
   try {
     await query(
       `INSERT INTO module_miauto_comprobante_cuota_semanal (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, origen)
@@ -381,6 +421,44 @@ export async function createComprobanteCuotaSemanal(solicitudId, cuotaSemanalId,
     );
   }
   await touchFechaPrimerComprobanteCuota(cuotaSemanalId);
+  return listBySolicitud(solicitudId);
+}
+
+/** El conductor puede retirar un comprobante propio mientras no haya sido validado. */
+export async function deleteComprobanteCuotaSemanalConductor(solicitudId, comprobanteId) {
+  let row;
+  try {
+    const res = await query(
+      `SELECT id, COALESCE(origen, 'conductor') AS origen, estado, file_path
+       FROM module_miauto_comprobante_cuota_semanal
+       WHERE solicitud_id = $1 AND id = $2`,
+      [solicitudId, comprobanteId]
+    );
+    row = res.rows[0];
+  } catch (e) {
+    if (!isUndefinedColumnError(e)) throw e;
+    const res = await query(
+      `SELECT id, estado, file_path
+       FROM module_miauto_comprobante_cuota_semanal
+       WHERE solicitud_id = $1 AND id = $2`,
+      [solicitudId, comprobanteId]
+    );
+    row = res.rows[0] ? { ...res.rows[0], origen: inferOrigenFromRow(res.rows[0]) } : null;
+  }
+
+  if (!row) throw new Error('Comprobante no encontrado');
+  if ((row.origen || '').toLowerCase() !== 'conductor') {
+    throw new Error('Solo puedes eliminar comprobantes enviados por el conductor');
+  }
+  if ((row.estado || 'pendiente').toLowerCase() === 'validado') {
+    throw new Error('No puedes eliminar un comprobante ya validado');
+  }
+
+  await query(`DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2`, [
+    comprobanteId,
+    solicitudId,
+  ]);
+  await refreshMoraTrasPagoValidado(solicitudId);
   return listBySolicitud(solicitudId);
 }
 

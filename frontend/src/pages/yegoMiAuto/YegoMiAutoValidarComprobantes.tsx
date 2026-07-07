@@ -370,12 +370,6 @@ export default function YegoMiAutoValidarComprobantes() {
                         <p className="font-medium text-gray-900">
                           {row.due_date ? formatDate(row.due_date, 'es-ES') : 'Sin vencimiento'}
                         </p>
-                        <p className="text-xs text-gray-500">
-                          Saldo base {miautoFmtMonto(symMoneda(row.cuota_moneda), miautoNum(row.amount_due))}
-                        </p>
-                        <p className="text-xs text-gray-500">
-                          Mora {miautoFmtMonto(symMoneda(row.cuota_moneda), miautoNum(row.late_fee))}
-                        </p>
                       </td>
                       <td className="px-4 py-3 align-top">
                         <span className="inline-flex rounded-full border border-gray-200 px-2 py-0.5 text-xs font-medium text-gray-700">

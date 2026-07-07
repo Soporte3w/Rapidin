@@ -12,7 +12,7 @@ export const login = async (email, password) => {
     const result = await query(
         `SELECT
             u.id, u.email, u.password_hash, u.first_name, u.last_name, u.role, u.country, u.active,
-            COALESCE(u.allowed_modules, r.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
+            COALESCE(r.allowed_modules, u.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
             COALESCE(r.base_role, u.role) AS base_role,
             r.name AS role_name
          FROM ${SYSTEM_USERS_TABLE} u
@@ -449,7 +449,6 @@ export const verifyOTP = async (phone, code, country) => {
         rapidin_driver_id: rapidin_driver_id
     };
 };
-
 
 
 

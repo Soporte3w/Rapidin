@@ -99,7 +99,20 @@ async function syncLegacyUser(user) {
 router.get('/', async (req, res) => {
   try {
     const result = await query(
-      `SELECT id, email, first_name, last_name, role, country, active, allowed_modules, last_access, created_at FROM ${SYSTEM_USERS_TABLE} ORDER BY created_at DESC`
+      `SELECT
+         u.id,
+         u.email,
+         u.first_name,
+         u.last_name,
+         u.role,
+         u.country,
+         u.active,
+         COALESCE(r.allowed_modules, u.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
+         u.last_access,
+         u.created_at
+       FROM ${SYSTEM_USERS_TABLE} u
+       LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
+       ORDER BY u.created_at DESC`
     );
     return successResponse(res, result.rows);
   } catch (error) {
@@ -261,7 +274,7 @@ router.delete('/roles/:id', validateUUID, async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { email, password, first_name, last_name, role, country, allowed_modules } = req.body;
+    const { email, password, first_name, last_name, role, country } = req.body;
 
     if (!email || !password || !first_name || !last_name || !role || !country) {
       return errorResponse(res, 'Todos los campos son requeridos', 400);
@@ -270,9 +283,7 @@ router.post('/', async (req, res) => {
     if (!roleRecord) {
       return errorResponse(res, 'Rol de usuario inválido', 400);
     }
-    const modules = Array.isArray(allowed_modules) && allowed_modules.length > 0
-      ? normalizeAllowedModules(allowed_modules)
-      : normalizeAllowedModules(roleRecord.allowed_modules);
+    const modules = normalizeAllowedModules(roleRecord.allowed_modules);
 
     const passwordHash = await bcrypt.hash(password, 10);
 
@@ -298,7 +309,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', validateUUID, async (req, res) => {
   try {
     const { id } = req.params;
-    const { first_name, last_name, role, country, active, password, allowed_modules } = req.body;
+    const { first_name, last_name, role, country, active, password } = req.body;
 
     const updates = [];
     const values = [];
@@ -319,6 +330,8 @@ router.put('/:id', validateUUID, async (req, res) => {
       }
       updates.push(`role = $${paramCount++}`);
       values.push(roleRecord.code);
+      updates.push(`allowed_modules = $${paramCount++}`);
+      values.push(normalizeAllowedModules(roleRecord.allowed_modules));
     }
     if (country) {
       updates.push(`country = $${paramCount++}`);
@@ -332,11 +345,6 @@ router.put('/:id', validateUUID, async (req, res) => {
       const passwordHash = await bcrypt.hash(String(password).trim(), 10);
       updates.push(`password_hash = $${paramCount++}`);
       values.push(passwordHash);
-    }
-
-    if (allowed_modules !== undefined) {
-      updates.push(`allowed_modules = $${paramCount++}`);
-      values.push(normalizeAllowedModules(allowed_modules));
     }
 
     if (updates.length === 0) {

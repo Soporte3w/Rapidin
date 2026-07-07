@@ -128,7 +128,6 @@ const createEmptyUserForm = () => ({
   last_name: '',
   role: '',
   country: 'PE',
-  allowed_modules: getInitialPermissions(),
 });
 
 const createEmptyEditUserForm = () => ({
@@ -138,7 +137,6 @@ const createEmptyEditUserForm = () => ({
   country: 'PE',
   active: true,
   password: '',
-  allowed_modules: getInitialPermissions(),
 });
 
 type ModalShellProps = {
@@ -327,14 +325,16 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
     }
   };
 
+  const refreshUsersAndRoles = async () => {
+    await Promise.all([fetchUsers(), fetchRoles()]);
+  };
+
   const applyRoleToForm = (roleCode: string, target: 'create' | 'edit') => {
-    const selectedRole = roles.find((role) => role.code === roleCode);
-    const allowed_modules = selectedRole?.allowed_modules?.length ? selectedRole.allowed_modules : getInitialPermissions();
     if (target === 'create') {
-      setFormData((prev) => ({ ...prev, role: roleCode, allowed_modules }));
+      setFormData((prev) => ({ ...prev, role: roleCode }));
       return;
     }
-    setEditFormData((prev) => ({ ...prev, role: roleCode, allowed_modules }));
+    setEditFormData((prev) => ({ ...prev, role: roleCode }));
   };
 
   const openCreateRole = () => {
@@ -371,7 +371,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
       setRoleOpen(false);
       setEditingRole(null);
       setRoleFormData(createEmptyRoleForm());
-      await fetchRoles();
+      await refreshUsersAndRoles();
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Error al guardar el rol');
     } finally {
@@ -387,7 +387,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
       toast.success('Rol eliminado correctamente');
       setRoleDeleteOpen(false);
       setRoleToDelete(null);
-      await fetchRoles();
+      await refreshUsersAndRoles();
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Error al eliminar el rol');
     } finally {
@@ -402,7 +402,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
       toast.success('Usuario creado correctamente');
       setOpen(false);
       setPage(1);
-      fetchUsers();
+      await refreshUsersAndRoles();
       setFormData(createEmptyUserForm());
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Error al crear el usuario');
@@ -420,7 +420,6 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
       country: user.country || 'PE',
       active: user.active !== false,
       password: '',
-      allowed_modules: user.allowed_modules?.length ? user.allowed_modules : getInitialPermissions(),
     });
     setEditOpen(true);
   };
@@ -435,14 +434,13 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
         role: editFormData.role,
         country: editFormData.country,
         active: editFormData.active,
-        allowed_modules: editFormData.allowed_modules,
       };
       if (editFormData.password.trim()) payload.password = editFormData.password;
       await api.put(`/users/${editingUser.id}`, payload);
       toast.success('Usuario actualizado correctamente');
       setEditOpen(false);
       setEditingUser(null);
-      fetchUsers();
+      await refreshUsersAndRoles();
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Error al actualizar el usuario');
     } finally {
@@ -463,7 +461,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
       toast.success('Usuario desactivado correctamente');
       setDeleteOpen(false);
       setUserToDelete(null);
-      fetchUsers();
+      await refreshUsersAndRoles();
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Error al desactivar el usuario');
     } finally {
@@ -855,7 +853,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                 </div>
                 <div>
                   <h2 className="text-lg font-bold text-gray-950">Nuevo usuario</h2>
-                  <p className="text-xs text-gray-500">Crea una cuenta y asigna sus permisos iniciales.</p>
+                  <p className="text-xs text-gray-500">Crea una cuenta y asígnale un rol.</p>
                 </div>
               </div>
               <button
@@ -953,15 +951,6 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                   <option value="CO">Colombia</option>
                 </select>
               </div>
-              </div>
-
-              <div className="rounded-lg border border-gray-200 p-4">
-                <h3 className="text-sm font-bold text-gray-950 mb-1">Módulos y secciones</h3>
-                <p className="text-xs text-gray-500 mb-4">Puedes ajustar los permisos sugeridos por el rol.</p>
-                <PermissionsSelector
-                  value={formData.allowed_modules ?? getInitialPermissions()}
-                  onChange={(allowed_modules) => setFormData({ ...formData, allowed_modules })}
-                />
               </div>
             </div>
             <div className="flex justify-end gap-3 p-5 border-t border-gray-200 bg-gray-50">
@@ -1079,16 +1068,6 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                 </select>
               </div>
               </div>
-
-              <div className="rounded-lg border border-gray-200 p-4">
-                <h3 className="text-sm font-bold text-gray-950 mb-1">Módulos y secciones</h3>
-                <p className="text-xs text-gray-500 mb-4">Ajusta exactamente lo que este usuario puede ver.</p>
-                <PermissionsSelector
-                  value={editFormData.allowed_modules ?? getInitialPermissions()}
-                  onChange={(allowed_modules) => setEditFormData({ ...editFormData, allowed_modules })}
-                />
-              </div>
-
               <div className="rounded-lg border border-gray-200 p-4 flex items-center gap-3">
                 <input
                   type="checkbox"

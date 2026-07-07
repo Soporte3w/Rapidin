@@ -5,7 +5,7 @@ import { logger } from '../utils/logger.js';
 
 const ADMIN_USER_SELECT = `
   u.id, u.email, u.first_name, u.last_name, u.role, u.country, u.active,
-  COALESCE(u.allowed_modules, r.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
+  COALESCE(r.allowed_modules, u.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
   COALESCE(r.base_role, u.role) AS base_role,
   r.name AS role_name
 `;
@@ -151,7 +151,6 @@ export const verifyRole = (...roles) => {
     next();
   };
 };
-
 
 
 

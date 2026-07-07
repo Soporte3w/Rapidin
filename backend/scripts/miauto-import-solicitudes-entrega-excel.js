@@ -7,6 +7,7 @@
  *   node scripts/miauto-import-solicitudes-entrega-excel.js --dry-run
  *   node scripts/miauto-import-solicitudes-entrega-excel.js
  *   node scripts/miauto-import-solicitudes-entrega-excel.js /ruta/al.xlsx --dry-run
+ *   node scripts/miauto-import-solicitudes-entrega-excel.js /ruta/al.xlsx --include-inactivos
  *
  * Después (cuotas): npm run miauto:cargar-cuotas-excel-entrega -- --cutoff-date 2100-01-01
  *
@@ -50,6 +51,7 @@ function mapPagoTipoFromExcelTipo(raw) {
 
 function parseArgs(argv) {
   const dryRun = argv.includes('--dry-run');
+  const includeInactivos = argv.includes('--include-inactivos');
   const country = (() => {
     const i = argv.indexOf('--country');
     return i >= 0 && argv[i + 1] ? String(argv[i + 1]).trim().toUpperCase() : 'PE';
@@ -60,7 +62,7 @@ function parseArgs(argv) {
     if (/\.xlsx$/i.test(argv[i]) || fs.existsSync(argv[i])) xlsxPath = argv[i];
   }
   if (!xlsxPath) xlsxPath = DEFAULT_XLSX;
-  return { dryRun, country, xlsxPath };
+  return { dryRun, country, xlsxPath, includeInactivos };
 }
 
 function normalizePlacaAsignada(value) {
@@ -302,7 +304,7 @@ async function loadCronogramaVehiculos() {
 }
 
 async function main() {
-  const { dryRun, country, xlsxPath } = parseArgs(process.argv.slice(2));
+  const { dryRun, country, xlsxPath, includeInactivos } = parseArgs(process.argv.slice(2));
   if (!fs.existsSync(xlsxPath)) {
     console.error('No existe el archivo:', xlsxPath);
     process.exit(1);
@@ -351,7 +353,8 @@ async function main() {
     const dniDigits = normalizePhoneDigits(dniRaw);
     const phoneDigits = normalizePhoneDigits(phoneRaw);
 
-    if (String(statusExcel).trim().toUpperCase() === 'INACTIVO') {
+    const isInactivo = String(statusExcel).trim().toUpperCase() === 'INACTIVO';
+    if (isInactivo && !includeInactivos) {
       console.log(`[${row}] SKIP INACTIVO — ${placaRaw || 'sin placa'} ${nombre || 'sin nombre'} (dueño inactivo, no se crea solicitud)`);
       continue;
     }
@@ -404,7 +407,7 @@ async function main() {
 
     stats.rows++;
     const pagoTipo = mapPagoTipoFromExcelTipo(tipoPagoExcel);
-    const desc = `Import ENTREGA INMEDIATA (${statusExcel || '—'}) — ${nombre || 'sin nombre'}`.slice(0, 2000);
+    const desc = `Import ENTREGA INMEDIATA (${statusExcel || '—'})${isInactivo ? ' — FILA INACTIVA EN EXCEL' : ''} — ${nombre || 'sin nombre'}`.slice(0, 2000);
 
     const existing = await findSolicitud(placaNorm, dniDigits, phoneDigits);
 

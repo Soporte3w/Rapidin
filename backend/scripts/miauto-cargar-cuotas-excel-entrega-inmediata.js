@@ -11,7 +11,8 @@
  * Marca `montos_fuente = 'excel'` en BD para que la API no recalcule cuota con mora/máximo del cronograma.
  * Moneda se determina por el cronograma vinculado a la solicitud.
  *
- * Corte: solo celdas con due_date calculado desde Excel < --cutoff-date (ej. 2026-04-13 deja fuera la cuota del 13 abr).
+ * Corte: solo celdas con due_date calculado desde Excel < --cutoff-date.
+ * Por defecto usa 2100-01-01 para cargar el cronograma completo del Excel.
  *
  * --reset-solicitud-keep-week <uuid> <YYYY-MM-DD>: antes de importar, borra todas las cuotas de esa solicitud
  *   excepto la fila cuyo week_start_date (lunes) coincide con esa fecha (p. ej. regenerada en sistema).
@@ -39,7 +40,7 @@ const COL_DNI = 6;
 const COL_PHONE = 7;
 const COL_STATUS = 1;
 const FIRST_DATA_ROW = 3;
-const DEFAULT_CUTOFF = '2026-04-13';
+const DEFAULT_CUTOFF = '2100-01-01';
 const DEFAULT_XLSX = defaultEntregaInmediataXlsxPath();
 
 function normalizePlacaAsignada(value) {
@@ -57,6 +58,7 @@ const MAX_CUOTA_BLOCKS = 260;
 function parseArgs(argv) {
   const dryRun = argv.includes('--dry-run');
   const deleteFirst = argv.includes('--delete-first');
+  const includeInactivos = argv.includes('--include-inactivos');
   let cutoff = DEFAULT_CUTOFF;
   let xlsxPath = null;
   let onlySolicitudId = null;
@@ -90,7 +92,7 @@ function parseArgs(argv) {
   if (resetSolicitudKeepWeek && !/^\d{4}-\d{2}-\d{2}$/.test(resetSolicitudKeepWeek.weekYmd)) {
     throw new Error('--reset-solicitud-keep-week: fecha lunes invalida');
   }
-  return { dryRun, deleteFirst, cutoff, xlsxPath, onlySolicitudId, resetSolicitudKeepWeek };
+  return { dryRun, deleteFirst, cutoff, xlsxPath, onlySolicitudId, resetSolicitudKeepWeek, includeInactivos };
 }
 
 function excelSerialToYmd(n) {
@@ -291,7 +293,7 @@ function ymdFromFi(fi) {
 }
 
 async function main() {
-  const { dryRun, deleteFirst, cutoff, xlsxPath, onlySolicitudId, resetSolicitudKeepWeek } = parseArgs(
+  const { dryRun, deleteFirst, cutoff, xlsxPath, onlySolicitudId, resetSolicitudKeepWeek, includeInactivos } = parseArgs(
     process.argv.slice(2)
   );
   if (!fs.existsSync(xlsxPath)) {
@@ -380,21 +382,15 @@ async function main() {
 
   async function flushBatch() {
     if (cuotasBatch.length === 0) return;
-    const deduped = new Map();
-    for (const c of cuotasBatch) {
-      const key = c.solicitud_id + '|' + c.week_start_date;
-      if (!deduped.has(key)) deduped.set(key, c);
-    }
-    const dedupedArr = [...deduped.values()];
     const vals = [];
     const params = [];
     let n = 1;
-    for (const c of dedupedArr) {
+    for (const c of cuotasBatch) {
       vals.push(`($${n}::uuid, $${n+1}::date, $${n+2}::date, $${n+3}, $${n+4}, $${n+5}, $${n+6}, $${n+7}, $${n+8}, $${n+9}, $${n+10}, $${n+11}, $${n+12}, $${n+13}, $${n+14}, $${n+15}::date, 'excel')`);
       params.push(c.solicitud_id, c.week_start_date, c.due_date, c.num_viajes, c.partner_fees_raw, c.partner_fees_83, c.bono_auto, c.cuota_semanal, c.amount_due, c.paid_amount, c.status, c.moneda, c.pct_comision, c.cobro_saldo, c.late_fee, c.mora_desde);
       n += 16;
     }
-    await query(`INSERT INTO module_miauto_cuota_semanal (solicitud_id, week_start_date, due_date, num_viajes, partner_fees_raw, partner_fees_83, bono_auto, cuota_semanal, amount_due, paid_amount, status, moneda, pct_comision, cobro_saldo, late_fee, mora_desde, montos_fuente) VALUES ${vals.join(', ')} ON CONFLICT (solicitud_id, week_start_date) DO NOTHING`, params);
+    await query(`INSERT INTO module_miauto_cuota_semanal (solicitud_id, week_start_date, due_date, num_viajes, partner_fees_raw, partner_fees_83, bono_auto, cuota_semanal, amount_due, paid_amount, status, moneda, pct_comision, cobro_saldo, late_fee, mora_desde, montos_fuente) VALUES ${vals.join(', ')}`, params);
     stats.db_inserts += cuotasBatch.length;
     cuotasBatch.length = 0;
   }
@@ -433,7 +429,7 @@ async function main() {
     const isInactivo = String(statusExcel).trim().toUpperCase() === 'INACTIVO';
 
     let sol;
-    if (isInactivo) {
+    if (isInactivo && !includeInactivos) {
       sol = await findSolicitudByPlacaOnly(placaNorm);
       if (!sol) {
         stats.skipped_no_solicitud++;
@@ -445,7 +441,7 @@ async function main() {
       sol = await findSolicitud(placaNorm, dniDigits, phoneDigits);
       if (!sol) {
         stats.skipped_no_solicitud++;
-        stats.warnings.push({ row, msg: 'sin solicitud', placa: placaRaw, dni: dniRaw, phone: phoneRaw });
+        stats.warnings.push({ row, msg: isInactivo ? 'INACTIVO sin solicitud propia' : 'sin solicitud', placa: placaRaw, dni: dniRaw, phone: phoneRaw });
         continue;
       }
     }

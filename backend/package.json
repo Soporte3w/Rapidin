@@ -11,6 +11,7 @@
     "miauto:alinear-flota": "node scripts/miauto-alinear-rapidin-driver-mi-auto.js",
     "miauto:importar-solicitudes": "node scripts/miauto-import-solicitudes-entrega-excel.js",
     "miauto:importar-cuotas": "node scripts/miauto-cargar-cuotas-excel-entrega-inmediata.js",
+    "miauto:importar-entrega-excel-completo": "node scripts/miauto-import-entrega-excel-completo.js",
     "miauto:regenerar-cuota": "node scripts/miauto-regenerar-cuota-semana-solicitud.js",
     "miauto:regenerar-cuota-fecha": "node scripts/miauto-regenerar-cuota-por-semana.js",
     "miauto:repair-mora": "node scripts/miauto-repair-mora-caps-solicitud.js",

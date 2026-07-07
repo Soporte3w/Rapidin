@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { validateUUID } from '../../../middleware/validations.js';
 import { successResponse, errorResponse } from '../../../utils/responses.js';
 import { logger } from '../../../utils/logger.js';
-import { generarNotaVentaCuotasPagadas, listNotasVentaBySolicitud } from '../../services/facturacion/miautoNotaVentaService.js';
+import { anularNotaVentaBySolicitud, generarNotaVentaCuotasPagadas, listNotasVentaBySolicitud } from '../../services/facturacion/miautoNotaVentaService.js';
 
 const router = Router();
 
@@ -34,6 +34,20 @@ router.post('/solicitudes/:id/notas-venta/generar', validateUUID, async (req, re
     const status = error.status && error.status >= 400 && error.status < 600 ? error.status : 400;
     logger.error('Error generando nota de venta Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al generar nota de venta', status, error.data || null);
+  }
+});
+
+router.patch('/solicitudes/:id/notas-venta/:notaVentaId/anular', validateUUID, async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'Sin permisos para anular notas de venta', 403);
+    }
+    const data = await anularNotaVentaBySolicitud(req.params.id, req.params.notaVentaId, req.user?.id || null);
+    return successResponse(res, data, 'Nota de venta anulada correctamente');
+  } catch (error) {
+    const status = error.status && error.status >= 400 && error.status < 600 ? error.status : 400;
+    logger.error('Error anulando nota de venta Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al anular nota de venta', status, error.data || null);
   }
 });
 

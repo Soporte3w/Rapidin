@@ -270,6 +270,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const [notaVentaCuotasSeleccionadas, setNotaVentaCuotasSeleccionadas] = useState<Record<string, boolean>>({});
   const [notaVentaCustomerId, setNotaVentaCustomerId] = useState('');
   const [generandoNotaVenta, setGenerandoNotaVenta] = useState(false);
+  const [anulandoNotaVentaId, setAnulandoNotaVentaId] = useState<string | null>(null);
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
   const [whatsAppTab, setWhatsAppTab] = useState<'cuotas' | 'metricas'>('cuotas');
@@ -610,6 +611,23 @@ export default function YegoMiAutoRentSaleDetail() {
       setGenerandoNotaVenta(false);
     }
   }, [id, notaVentaCustomerId, notaVentaCuotasIds, notaVentaSeleccionMixta, fetchDetail]);
+
+  const handleAnularNotaVenta = useCallback(async (nota: NotaVentaMiAuto) => {
+    if (!id || !nota?.id) return;
+    const label = nota.number_full || `ID ${nota.facturador_sale_note_id}`;
+    if (!window.confirm(`¿Anular la nota de venta ${label}? Las cuotas quedarán disponibles para generar una nueva nota.`)) return;
+    try {
+      setAnulandoNotaVentaId(nota.id);
+      await api.patch(`/miauto/solicitudes/${id}/notas-venta/${nota.id}/anular`);
+      toast.success(`Nota de venta anulada${nota.number_full ? `: ${nota.number_full}` : ''}`);
+      setNotaVentaCuotasSeleccionadas({});
+      await fetchDetail(undefined, { refresh: true });
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error al anular la nota de venta');
+    } finally {
+      setAnulandoNotaVentaId(null);
+    }
+  }, [id, fetchDetail]);
 
   const runComprobantePatch = useCallback(
     async (opts: {
@@ -2669,11 +2687,22 @@ export default function YegoMiAutoRentSaleDetail() {
                         </div>
                         <div className="mt-1 flex items-center justify-between gap-2 text-xs text-gray-500">
                           <span>{nota.created_at ? formatDateTime(nota.created_at, 'es-ES') : '—'}</span>
-                          {nota.print_a4 && (
-                            <a href={nota.print_a4} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[#8B1A1A] hover:underline">
-                              PDF <ExternalLink className="w-3 h-3" />
-                            </a>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {nota.print_a4 && (
+                              <a href={nota.print_a4} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[#8B1A1A] hover:underline">
+                                PDF <ExternalLink className="w-3 h-3" />
+                              </a>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleAnularNotaVenta(nota)}
+                              disabled={anulandoNotaVentaId === nota.id || generandoNotaVenta}
+                              className="inline-flex items-center gap-1 text-red-600 hover:text-red-700 hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              {anulandoNotaVentaId === nota.id ? 'Anulando...' : 'Anular'}
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ))}

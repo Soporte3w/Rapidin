@@ -348,6 +348,97 @@ export async function listNotasVentaBySolicitud(solicitudId) {
   return res.rows || [];
 }
 
+export async function anularNotaVentaBySolicitud(solicitudId, notaVentaId, userId = null) {
+  await ensureNotaVentaTables({ query });
+  const notaRes = await query(
+    `SELECT id, solicitud_id, facturador_sale_note_id, number_full, response
+     FROM module_miauto_nota_venta
+     WHERE id = $1::uuid
+       AND solicitud_id = $2::uuid
+       AND deleted_at IS NULL
+     LIMIT 1`,
+    [notaVentaId, solicitudId]
+  );
+  const nota = notaRes.rows[0];
+  if (!nota) throw new Error('Nota de venta no encontrada o ya anulada');
+  if (!nota.facturador_sale_note_id) throw new Error('La nota no tiene ID del facturador');
+
+  const anulacionResponse = await facturadorRequest(`/sale-notes/anulate/${nota.facturador_sale_note_id}`, {
+    method: 'GET',
+  });
+  if (anulacionResponse?.success === false) {
+    const error = new Error(anulacionResponse?.message || 'El facturador rechazó la anulación');
+    error.status = 400;
+    error.data = anulacionResponse;
+    throw error;
+  }
+
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    const locked = await client.query(
+      `SELECT id
+       FROM module_miauto_nota_venta
+       WHERE id = $1::uuid
+         AND solicitud_id = $2::uuid
+         AND deleted_at IS NULL
+       FOR UPDATE`,
+      [notaVentaId, solicitudId]
+    );
+    if (locked.rows.length === 0) {
+      await client.query('ROLLBACK');
+      throw new Error('Nota de venta no encontrada o ya anulada');
+    }
+
+    await client.query('DELETE FROM module_miauto_nota_venta_cuota WHERE nota_venta_id = $1::uuid', [notaVentaId]);
+    const updateRes = await client.query(
+      `UPDATE module_miauto_nota_venta
+       SET deleted_at = CURRENT_TIMESTAMP,
+           response = COALESCE(response, '{}'::jsonb) || $1::jsonb
+       WHERE id = $2::uuid
+       RETURNING *`,
+      [
+        JSON.stringify({
+          anulacion: {
+            response: anulacionResponse,
+            by: userId || null,
+            at: new Date().toISOString(),
+          },
+        }),
+        notaVentaId,
+      ]
+    );
+    await client.query('COMMIT');
+
+    logger.info('Nota de venta Mi Auto anulada', {
+      solicitudId,
+      notaVentaId,
+      facturadorSaleNoteId: nota.facturador_sale_note_id,
+      numberFull: nota.number_full,
+    });
+
+    return {
+      ...updateRes.rows[0],
+      anulacion_response: anulacionResponse,
+    };
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    logger.error('Error anulando nota de venta Mi Auto', {
+      solicitudId,
+      notaVentaId,
+      facturadorSaleNoteId: nota.facturador_sale_note_id,
+      error: error.message,
+      status: error.status,
+      data: error.data,
+    });
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function generarNotaVentaCuotasPagadas(solicitudId, cuotaIds, opts = {}) {
   if (!Array.isArray(cuotaIds) || cuotaIds.length === 0) {
     throw new Error('Selecciona al menos una cuota pagada');

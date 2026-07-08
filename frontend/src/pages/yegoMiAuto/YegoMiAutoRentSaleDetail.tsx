@@ -276,7 +276,6 @@ export default function YegoMiAutoRentSaleDetail() {
   const [showContratoMenu, setShowContratoMenu] = useState(false);
   const contratoFileRef = useRef<HTMLInputElement | null>(null);
   const [notaVentaCuotasSeleccionadas, setNotaVentaCuotasSeleccionadas] = useState<Record<string, boolean>>({});
-  const [notaVentaCustomerId, setNotaVentaCustomerId] = useState('');
   const [generandoNotaVenta, setGenerandoNotaVenta] = useState(false);
   const [anulandoNotaVentaId, setAnulandoNotaVentaId] = useState<string | null>(null);
   const [notaVentaAnularModal, setNotaVentaAnularModal] = useState<NotaVentaMiAuto | null>(null);
@@ -581,16 +580,21 @@ export default function YegoMiAutoRentSaleDetail() {
   }, [cuotas, notaVentaCuotasIds, solicitud?.cronograma_vehiculo?.inicial_moneda]);
   const notaVentaMonedaSeleccionada = notaVentaMonedasSeleccionadas[0] || 'PEN';
   const notaVentaSeleccionMixta = notaVentaMonedasSeleccionadas.length > 1;
+  const facturadorCustomerId = useMemo(() => {
+    const n = Number(solicitud?.facturador_customer_id);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }, [solicitud?.facturador_customer_id]);
 
   const openNotasVentaModal = useCallback(() => {
+    if (!facturadorCustomerId) {
+      toast.error('Este conductor no tiene customer ID del facturador vinculado');
+      return;
+    }
     const preselected: Record<string, boolean> = {};
     cuotasNotaVentaDisponibles.forEach((c) => { preselected[c.id] = true; });
     setNotaVentaCuotasSeleccionadas(preselected);
-    if (solicitud?.facturador_customer_id) {
-      setNotaVentaCustomerId(String(solicitud.facturador_customer_id));
-    }
     setShowNotasVentaModal(true);
-  }, [cuotasNotaVentaDisponibles, solicitud?.facturador_customer_id]);
+  }, [cuotasNotaVentaDisponibles, facturadorCustomerId]);
 
   const toggleNotaVentaCuota = useCallback((cuotaId: string) => {
     setNotaVentaCuotasSeleccionadas((prev) => ({ ...prev, [cuotaId]: !prev[cuotaId] }));
@@ -598,9 +602,8 @@ export default function YegoMiAutoRentSaleDetail() {
 
   const handleGenerarNotaVenta = useCallback(async () => {
     if (!id) return;
-    const customerId = Number(notaVentaCustomerId);
-    if (!Number.isInteger(customerId) || customerId <= 0) {
-      toast.error('Ingresa el customer_id del facturador');
+    if (!facturadorCustomerId) {
+      toast.error('Este conductor no tiene customer ID del facturador vinculado');
       return;
     }
     if (notaVentaCuotasIds.length === 0) {
@@ -614,7 +617,7 @@ export default function YegoMiAutoRentSaleDetail() {
     try {
       setGenerandoNotaVenta(true);
       const res = await api.post(`/miauto/solicitudes/${id}/notas-venta/generar`, {
-        customer_id: customerId,
+        customer_id: facturadorCustomerId,
         cuota_ids: notaVentaCuotasIds,
       });
       const nota = res.data?.data;
@@ -628,7 +631,7 @@ export default function YegoMiAutoRentSaleDetail() {
     } finally {
       setGenerandoNotaVenta(false);
     }
-  }, [id, notaVentaCustomerId, notaVentaCuotasIds, notaVentaSeleccionMixta, fetchDetail]);
+  }, [facturadorCustomerId, id, notaVentaCuotasIds, notaVentaSeleccionMixta, fetchDetail]);
 
   const handleConfirmarAnularNotaVenta = useCallback(async () => {
     if (!id || !notaVentaAnularModal?.id) return;
@@ -879,15 +882,17 @@ export default function YegoMiAutoRentSaleDetail() {
                   <Plus className="w-4 h-4" />
                   Cuota
                 </button>
-                <button
-                  type="button"
-                  onClick={openNotasVentaModal}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium transition-colors"
-                  title="Generar nota de venta para cuotas pagadas"
-                >
-                  <ReceiptText className="w-4 h-4" />
-                  Generar boletas
-                </button>
+                {facturadorCustomerId && (
+                  <button
+                    type="button"
+                    onClick={openNotasVentaModal}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium transition-colors"
+                    title="Generar nota de venta para cuotas pagadas"
+                  >
+                    <ReceiptText className="w-4 h-4" />
+                    Generar boletas
+                  </button>
+                )}
                 <div className="w-px h-6 bg-white/20" />
               </>
             )}
@@ -2571,17 +2576,12 @@ export default function YegoMiAutoRentSaleDetail() {
 
             <div className="px-5 py-4 space-y-4 overflow-y-auto max-h-[calc(90vh-150px)]">
               <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
-                <label className="block">
-                  <span className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Customer ID del facturador</span>
-                  <input
-                    type="number"
-                    min={1}
-                    value={notaVentaCustomerId}
-                    onChange={(e) => setNotaVentaCustomerId(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                    placeholder="Ej. 93"
-                  />
-                </label>
+                <div className="rounded-lg border border-gray-200 px-4 py-2 bg-gray-50">
+                  <span className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">Cliente facturador</span>
+                  <span className="text-sm font-semibold text-gray-900">
+                    Vinculado - ID {facturadorCustomerId}
+                  </span>
+                </div>
                 <div className="rounded-lg border border-gray-200 px-4 py-2 bg-gray-50 min-w-[150px]">
                   <span className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">Total</span>
                   <span className="text-lg font-bold text-gray-900">{symMoneda(notaVentaMonedaSeleccionada)} {notaVentaTotalSeleccionado.toFixed(2)}</span>

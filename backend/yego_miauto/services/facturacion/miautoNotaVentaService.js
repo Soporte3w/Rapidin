@@ -452,7 +452,7 @@ export async function generarNotaVentaCuotasPagadas(solicitudId, cuotaIds, opts 
     const { solicitud, cuotas } = await loadSolicitudAndCuotas(client, solicitudId, uniqueCuotaIds);
     const customerId = Number(opts.customer_id || solicitud.facturador_customer_id);
     if (!Number.isInteger(customerId) || customerId <= 0) {
-      throw new Error('Indica el customer_id del facturador');
+      throw new Error('Este conductor no tiene customer ID del facturador vinculado');
     }
     const { data: cuotasApi } = await getCuotasSemanalesConRacha(solicitudId, { incluirAbonoComprobantePendiente: false });
     const apiById = new Map((cuotasApi || []).map((c) => [String(c.id), c]));

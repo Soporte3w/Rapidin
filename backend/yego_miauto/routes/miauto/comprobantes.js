@@ -11,11 +11,9 @@ import {
   createComprobanteConformidadAdmin,
   deleteComprobanteConformidadAdmin,
   confirmComprobanteCuotaSemanal,
-  validateComprobanteCuotaSemanal,
   rejectComprobanteCuotaSemanal,
   addPagoManualCuotaSemanal,
   listForAdminValidation as listComprobantesCuotaSemanalForAdminValidation,
-  anularValidacionComprobanteCuotaSemanal,
 } from '../../services/comprobantes/miautoComprobanteCuotaSemanalService.js';
 import {
   listBySolicitud as listComprobantesOtrosGastos,
@@ -308,67 +306,22 @@ router.delete(
   }
 );
 
-// PATCH /api/miauto/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId/validar
-router.patch(
-  '/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId/validar',
-  validateUUID,
-  async (req, res) => {
-    try {
-      const monto = req.body.monto != null ? parseFloat(req.body.monto) : undefined;
-      const moneda = trimOrUndefined(req.body.moneda);
-      const list = await validateComprobanteCuotaSemanal(
-        req.params.id,
-        req.params.comprobanteId,
-        req.user?.id,
-        (monto != null && !Number.isNaN(monto) && moneda) ? { monto, moneda: normalizeMiautoMonedaReq(moneda) } : {}
-      );
-      auditMiautoMutation('comprobante_cuota.validated', 'comprobante_cuota_semanal', req.params.comprobanteId, { solicitudId: req.params.id });
-      return successResponse(res, list, 'Comprobante validado');
-    } catch (error) {
-      logger.error('Error validando comprobante cuota semanal Mi Auto:', error);
-      return errorResponse(res, error.message || 'Error al validar comprobante', 400);
-    }
-  }
-);
-
 // PATCH /api/miauto/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId/confirmar
 router.patch(
   '/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId/confirmar',
   validateUUID,
   async (req, res) => {
     try {
-      const monto = req.body.monto != null ? parseFloat(req.body.monto) : undefined;
-      const moneda = trimOrUndefined(req.body.moneda);
       const list = await confirmComprobanteCuotaSemanal(
         req.params.id,
         req.params.comprobanteId,
-        req.user?.id,
-        (monto != null && !Number.isNaN(monto) && moneda) ? { monto, moneda: normalizeMiautoMonedaReq(moneda) } : {}
+        req.user?.id
       );
       auditMiautoMutation('comprobante_cuota.bank_confirmed', 'comprobante_cuota_semanal', req.params.comprobanteId, { solicitudId: req.params.id });
-      return successResponse(res, list, 'Comprobante confirmado');
+      return successResponse(res, list, 'Comprobante validado en banco');
     } catch (error) {
       logger.error('Error confirmando comprobante cuota semanal Mi Auto:', error);
       return errorResponse(res, error.message || 'Error al confirmar comprobante', 400);
-    }
-  }
-);
-
-// PATCH /api/miauto/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId/anular-validacion
-router.patch(
-  '/solicitudes/:id/comprobantes-cuota-semanal/:comprobanteId/anular-validacion',
-  validateUUID,
-  async (req, res) => {
-    try {
-      const list = await anularValidacionComprobanteCuotaSemanal(
-        req.params.id,
-        req.params.comprobanteId
-      );
-      auditMiautoMutation('comprobante_cuota.validation_reverted', 'comprobante_cuota_semanal', req.params.comprobanteId, { solicitudId: req.params.id });
-      return successResponse(res, list, 'Validación anulada');
-    } catch (error) {
-      logger.error('Error anulando validación comprobante cuota semanal Mi Auto:', error);
-      return errorResponse(res, error.message || 'Error al anular validación', 400);
     }
   }
 );

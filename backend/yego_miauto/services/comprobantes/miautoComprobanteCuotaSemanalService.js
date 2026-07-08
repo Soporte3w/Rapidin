@@ -103,6 +103,35 @@ async function persistAplicacionChunks(comprobanteId, solicitudId, chunks) {
   }
 }
 
+async function aplicarComprobanteInmediato(solicitudId, comprobanteId, cuotaSemanalId, montoIngreso, monedaIngreso) {
+  const cuota = await query(`SELECT * FROM module_miauto_cuota_semanal WHERE id = $1 AND solicitud_id = $2`, [
+    cuotaSemanalId,
+    solicitudId,
+  ]);
+  if (cuota.rows.length === 0) throw new Error('Cuota semanal no encontrada');
+  const c = cuota.rows[0];
+  const montoAplicar = await montoComprobanteCuotaALaMonedaFila(
+    solicitudId,
+    montoIngreso,
+    monedaIngreso,
+    c.moneda
+  );
+  if (montoAplicar <= 0.005) throw new Error('No se pudo convertir el monto');
+  const monedaComprobantePersist = await monedaPersistidaParaCuota(solicitudId, c.moneda);
+
+  const { chunks } = await aplicarPagoEnCuotasCascada(solicitudId, cuotaSemanalId, montoAplicar);
+  await persistAplicacionChunks(comprobanteId, solicitudId, chunks);
+  await query(
+    `UPDATE module_miauto_comprobante_cuota_semanal
+     SET monto = $1,
+         moneda = $2
+     WHERE id = $3 AND solicitud_id = $4`,
+    [montoAplicar, monedaComprobantePersist, comprobanteId, solicitudId]
+  );
+  await refreshMoraTrasPagoValidado(solicitudId);
+  return { montoAplicar, monedaComprobantePersist, chunks };
+}
+
 async function aplicarPagoACuota(solicitudId, cuotaSemanalId, montoMaxAplicar, ctx) {
   const cu = await query(`SELECT * FROM module_miauto_cuota_semanal WHERE id = $1 AND solicitud_id = $2`, [
     cuotaSemanalId,
@@ -330,9 +359,8 @@ export async function listForAdminValidation({ estado = 'pendiente', country, li
       ORDER BY
         CASE LOWER(COALESCE(NULLIF(TRIM(cp.estado::text), ''), 'pendiente'))
           WHEN 'pendiente' THEN 0
-          WHEN 'confirmado' THEN 1
+          WHEN 'validado' THEN 1
           WHEN 'rechazado' THEN 2
-          WHEN 'validado' THEN 3
           ELSE 4
         END,
         cp.created_at DESC
@@ -407,18 +435,34 @@ export async function createComprobanteCuotaSemanal(solicitudId, cuotaSemanalId,
   const fileName = file.originalname || `comprobante_cuota_${Date.now()}.pdf`;
 
   try {
-    await query(
+    const inserted = await query(
       `INSERT INTO module_miauto_comprobante_cuota_semanal (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, origen)
-       VALUES ($1, $2, $3, $4, $5, $6, 'conductor')`,
+       VALUES ($1, $2, $3, $4, $5, $6, 'conductor')
+       RETURNING id`,
       [solicitudId, cuotaSemanalId, montoVal, monedaVal, fileName, path]
     );
+    const comprobanteId = inserted.rows[0].id;
+    try {
+      await aplicarComprobanteInmediato(solicitudId, comprobanteId, cuotaSemanalId, montoVal, monedaVal);
+    } catch (applyError) {
+      await query('DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2', [comprobanteId, solicitudId]);
+      throw applyError;
+    }
   } catch (e) {
     if (!isUndefinedColumnError(e)) throw e;
-    await query(
+    const inserted = await query(
       `INSERT INTO module_miauto_comprobante_cuota_semanal (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id`,
       [solicitudId, cuotaSemanalId, montoVal, monedaVal, fileName, path]
     );
+    const comprobanteId = inserted.rows[0].id;
+    try {
+      await aplicarComprobanteInmediato(solicitudId, comprobanteId, cuotaSemanalId, montoVal, monedaVal);
+    } catch (applyError) {
+      await query('DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2', [comprobanteId, solicitudId]);
+      throw applyError;
+    }
   }
   await touchFechaPrimerComprobanteCuota(cuotaSemanalId);
   return listBySolicitud(solicitudId);
@@ -429,7 +473,7 @@ export async function deleteComprobanteCuotaSemanalConductor(solicitudId, compro
   let row;
   try {
     const res = await query(
-      `SELECT id, COALESCE(origen, 'conductor') AS origen, estado, file_path
+      `SELECT id, COALESCE(origen, 'conductor') AS origen, estado, file_path, aplicacion_chunks
        FROM module_miauto_comprobante_cuota_semanal
        WHERE solicitud_id = $1 AND id = $2`,
       [solicitudId, comprobanteId]
@@ -443,7 +487,7 @@ export async function deleteComprobanteCuotaSemanalConductor(solicitudId, compro
        WHERE solicitud_id = $1 AND id = $2`,
       [solicitudId, comprobanteId]
     );
-    row = res.rows[0] ? { ...res.rows[0], origen: inferOrigenFromRow(res.rows[0]) } : null;
+    row = res.rows[0] ? { ...res.rows[0], origen: inferOrigenFromRow(res.rows[0]), aplicacion_chunks: null } : null;
   }
 
   if (!row) throw new Error('Comprobante no encontrado');
@@ -452,6 +496,9 @@ export async function deleteComprobanteCuotaSemanalConductor(solicitudId, compro
   }
   if ((row.estado || 'pendiente').toLowerCase() === 'validado') {
     throw new Error('No puedes eliminar un comprobante ya validado');
+  }
+  if (normalizeChunksFromRow(row.aplicacion_chunks).length > 0) {
+    throw new Error('Este comprobante ya fue aplicado a la cuota. Recházalo desde validación si no llegó al banco.');
   }
 
   await query(`DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2`, [
@@ -631,12 +678,15 @@ export async function rejectComprobanteCuotaSemanal(solicitudId, comprobanteId, 
     throw new Error('Comprobante no encontrado');
   }
   const estado = (row.estado || '').toLowerCase();
-  if (estado === 'validado') throw new Error('No se puede rechazar un comprobante ya validado');
   if (estado === 'rechazado') throw new Error('El comprobante ya está rechazado');
 
   await query(
     `UPDATE module_miauto_comprobante_cuota_semanal
-     SET estado = 'rechazado', rechazado_at = CURRENT_TIMESTAMP, rechazo_razon = $1, rechazado_by = $2
+     SET estado = 'rechazado',
+         rechazado_at = CURRENT_TIMESTAMP,
+         rechazo_razon = $1,
+         rechazado_by = $2,
+         validated_at = NULL
      WHERE id = $3`,
     [motivo ? String(motivo).trim() : null, userId, comprobanteId]
   );
@@ -644,10 +694,9 @@ export async function rejectComprobanteCuotaSemanal(solicitudId, comprobanteId, 
 }
 
 /**
- * Confirma que el comprobante existe en banco, sin aplicar todavía el pago a la cuota.
- * El monitor luego decidirá cuánto de ese comprobante afecta realmente a la cuota/cascada.
+ * Confirma que el comprobante existe en banco. La cuota ya fue afectada al registrar el comprobante.
  */
-export async function confirmComprobanteCuotaSemanal(solicitudId, comprobanteId, userId, { monto, moneda } = {}) {
+export async function confirmComprobanteCuotaSemanal(solicitudId, comprobanteId, userId) {
   let compRow;
   try {
     const comp = await query(
@@ -668,27 +717,19 @@ export async function confirmComprobanteCuotaSemanal(solicitudId, comprobanteId,
 
   if (!compRow) throw new Error('Comprobante no encontrado');
   const estado = String(compRow.estado || 'pendiente').toLowerCase();
-  if (estado === 'validado') throw new Error('El comprobante ya fue aplicado a cuota');
+  if (estado === 'validado') throw new Error('El comprobante ya fue validado en banco');
   if (estado === 'rechazado') throw new Error('No se puede confirmar un comprobante rechazado');
-  if (estado === 'confirmado') throw new Error('El comprobante ya está confirmado');
-
-  const montoConfirmado = round2(parseFloat(monto));
-  if (Number.isNaN(montoConfirmado) || montoConfirmado <= 0) {
-    throw new Error('Debe indicar el monto confirmado en banco');
-  }
-  const monedaConfirmada = normalizePenUsd(moneda || 'PEN');
 
   await query(
     `UPDATE module_miauto_comprobante_cuota_semanal
-     SET monto = $1,
-         moneda = $2,
-         estado = 'confirmado',
-         validated_by = $3,
+     SET estado = 'validado',
+         validated_at = CURRENT_TIMESTAMP,
+         validated_by = $1,
          rechazado_at = NULL,
          rechazo_razon = NULL,
          rechazado_by = NULL
-     WHERE solicitud_id = $4 AND id = $5`,
-    [montoConfirmado, monedaConfirmada, userId, solicitudId, comprobanteId]
+     WHERE solicitud_id = $2 AND id = $3`,
+    [userId, solicitudId, comprobanteId]
   );
 
   return listBySolicitud(solicitudId);
@@ -886,120 +927,7 @@ async function tryGrantBenefit4Consecutive(solicitudId) {
 }
 
 /**
- * Valida comprobante: aplica monto a la cuota en la **moneda de la fila** (PEN/COP o USD), actualiza paid_amount y status.
- * Si con este pago la cuota queda pagada y sin mora, evalúa beneficio 4 seguidas.
- */
-export async function validateComprobanteCuotaSemanal(solicitudId, comprobanteId, userId, { monto, moneda } = {}) {
-  let compRow;
-  try {
-    const comp = await query(
-      `SELECT id, cuota_semanal_id, monto, moneda, estado, COALESCE(origen, 'conductor') AS origen
-       FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2`,
-      [solicitudId, comprobanteId]
-    );
-    compRow = comp.rows[0];
-  } catch (e) {
-    if (!isUndefinedColumnError(e)) throw e;
-    const comp = await query(
-      `SELECT id, cuota_semanal_id, monto, moneda, estado, file_path
-       FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2`,
-      [solicitudId, comprobanteId]
-    );
-    const r = comp.rows[0];
-    compRow = r ? { ...r, origen: inferOrigenFromRow(r) } : null;
-  }
-  if (!compRow) throw new Error('Comprobante no encontrado');
-  if ((compRow.estado || '').toLowerCase() === 'validado') throw new Error('El comprobante ya está validado');
-  if ((compRow.estado || '').toLowerCase() === 'rechazado') throw new Error('No se puede validar un comprobante rechazado');
-
-  const cuota = await query(`SELECT * FROM module_miauto_cuota_semanal WHERE id = $1 AND solicitud_id = $2`, [
-    compRow.cuota_semanal_id,
-    solicitudId,
-  ]);
-  if (cuota.rows.length === 0) throw new Error('Cuota semanal no encontrada');
-  const c = cuota.rows[0];
-  const stV = (c.status || '').toLowerCase();
-  if (stV === 'bonificada') throw new Error('Esta cuota ya está pagada o bonificada');
-  const ctxVal = await loadMiautoComprobanteDerivacionContext(solicitudId);
-  if (stV === 'paid' && miautoCuotaFinalDerivada(c, ctxVal) <= 0.005) {
-    throw new Error('Esta cuota ya está pagada o bonificada');
-  }
-
-  const montoIngreso = monto != null && moneda ? parseFloat(monto) : parseFloat(compRow.monto);
-  if (Number.isNaN(montoIngreso) || montoIngreso <= 0) {
-    throw new Error('Debe indicar monto y moneda para validar');
-  }
-  const monedaIngreso = normalizePenUsd(moneda || compRow.moneda || 'PEN');
-  const montoAplicar = await montoComprobanteCuotaALaMonedaFila(
-    solicitudId,
-    montoIngreso,
-    monedaIngreso,
-    c.moneda
-  );
-  if (montoAplicar <= 0.005) throw new Error('No se pudo convertir el monto');
-  const monedaComprobantePersist = await monedaPersistidaParaCuota(solicitudId, c.moneda);
-
-  await query(
-    `UPDATE module_miauto_comprobante_cuota_semanal SET monto = $1, moneda = $2, estado = 'validado', validated_at = CURRENT_TIMESTAMP, validated_by = $3 WHERE id = $4`,
-    [montoAplicar, monedaComprobantePersist, userId, comprobanteId]
-  );
-
-  const { chunks } = await aplicarPagoEnCuotasCascada(solicitudId, compRow.cuota_semanal_id, montoAplicar);
-  await persistAplicacionChunks(comprobanteId, solicitudId, chunks);
-  await refreshMoraTrasPagoValidado(solicitudId);
-
-  return listBySolicitud(solicitudId);
-}
-
-/** Anula una validación hecha por error: revierte el pago aplicado y vuelve el comprobante a pendiente. */
-export async function anularValidacionComprobanteCuotaSemanal(solicitudId, comprobanteId) {
-  let row;
-  try {
-    const comp = await query(
-      `SELECT id, estado, aplicacion_chunks
-       FROM module_miauto_comprobante_cuota_semanal
-       WHERE solicitud_id = $1 AND id = $2`,
-      [solicitudId, comprobanteId]
-    );
-    row = comp.rows[0];
-  } catch (e) {
-    if (!isUndefinedColumnError(e)) throw e;
-    throw new Error('No se puede anular esta validación porque falta la trazabilidad aplicacion_chunks');
-  }
-
-  if (!row) throw new Error('Comprobante no encontrado');
-  if ((row.estado || '').toLowerCase() !== 'validado') {
-    throw new Error('Solo se puede anular un comprobante validado');
-  }
-
-  const chunks = normalizeChunksFromRow(row.aplicacion_chunks);
-  if (chunks.length === 0) {
-    throw new Error('No se puede anular esta validación porque no tiene desglose de aplicación guardado');
-  }
-
-  await revertirPagoPorChunks(solicitudId, chunks, {
-    excludeComprobanteId: comprobanteId,
-    refresh: false,
-  });
-
-  await query(
-    `UPDATE module_miauto_comprobante_cuota_semanal
-     SET estado = 'pendiente',
-         validated_at = NULL,
-         validated_by = NULL,
-         rechazado_at = NULL,
-         rechazo_razon = NULL,
-         rechazado_by = NULL,
-         aplicacion_chunks = NULL
-    WHERE solicitud_id = $1 AND id = $2`,
-    [solicitudId, comprobanteId]
-  );
-  return listBySolicitud(solicitudId);
-}
-
-/**
- * Pago manual por admin: registra un comprobante interno pendiente.
- * La cuota se afecta recién cuando se aprueba en Validar comprobantes.
+ * Pago manual por admin: registra un comprobante interno pendiente de validación bancaria y aplica la cuota de inmediato.
  */
 export async function addPagoManualCuotaSemanal(solicitudId, cuotaSemanalId, { monto, moneda } = {}) {
   const num = monto != null ? parseFloat(monto) : NaN;
@@ -1021,18 +949,34 @@ export async function addPagoManualCuotaSemanal(solicitudId, cuotaSemanalId, { m
   const monedaRegistro = normalizePenUsd(moneda || c.moneda || 'PEN');
 
   try {
-    await query(
+    const inserted = await query(
       `INSERT INTO module_miauto_comprobante_cuota_semanal (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado, validated_at, validated_by, origen)
-       VALUES ($1, $2, $3, $4, 'Pago manual', 'manual', 'pendiente', NULL, NULL, 'pago_manual')`,
+       VALUES ($1, $2, $3, $4, 'Pago manual', 'manual', 'pendiente', NULL, NULL, 'pago_manual')
+       RETURNING id`,
       [solicitudId, cuotaSemanalId, round2(num), monedaRegistro]
     );
+    const comprobanteId = inserted.rows[0].id;
+    try {
+      await aplicarComprobanteInmediato(solicitudId, comprobanteId, cuotaSemanalId, round2(num), monedaRegistro);
+    } catch (applyError) {
+      await query('DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2', [comprobanteId, solicitudId]);
+      throw applyError;
+    }
   } catch (e) {
     if (!isUndefinedColumnError(e)) throw e;
-    await query(
+    const inserted = await query(
       `INSERT INTO module_miauto_comprobante_cuota_semanal (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado, validated_at, validated_by)
-       VALUES ($1, $2, $3, $4, 'Pago manual', 'manual', 'pendiente', NULL, NULL)`,
+       VALUES ($1, $2, $3, $4, 'Pago manual', 'manual', 'pendiente', NULL, NULL)
+       RETURNING id`,
       [solicitudId, cuotaSemanalId, round2(num), monedaRegistro]
     );
+    const comprobanteId = inserted.rows[0].id;
+    try {
+      await aplicarComprobanteInmediato(solicitudId, comprobanteId, cuotaSemanalId, round2(num), monedaRegistro);
+    } catch (applyError) {
+      await query('DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2', [comprobanteId, solicitudId]);
+      throw applyError;
+    }
   }
 
   return listBySolicitud(solicitudId);

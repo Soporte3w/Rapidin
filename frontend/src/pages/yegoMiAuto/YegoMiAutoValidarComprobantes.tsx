@@ -5,7 +5,6 @@ import {
   CheckCircle2,
   FileText,
   Loader2,
-  RotateCcw,
   Search,
   X,
   XCircle,
@@ -15,15 +14,12 @@ import { useAuth } from '../../contexts/AuthContext';
 import { formatDate, formatDateTime } from '../../utils/date';
 import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError, unwrapApiData } from '../../utils/miautoApiUtils';
 import { getMiautoAdjuntoUrl } from '../../utils/miautoRentSaleHelpers';
-import { roundToTwoDecimals } from '../../utils/currency';
 
-type EstadoFiltro = 'pendiente' | 'confirmado' | 'validado' | 'rechazado' | 'todos';
+type EstadoFiltro = 'pendiente' | 'validado' | 'rechazado' | 'todos';
 type MiautoMoneda = 'PEN' | 'COP' | 'USD';
 type AccionModal =
   | { tipo: 'confirmar'; comprobante: ComprobanteValidacion }
-  | { tipo: 'aplicar'; comprobante: ComprobanteValidacion }
   | { tipo: 'rechazar'; comprobante: ComprobanteValidacion }
-  | { tipo: 'anular'; comprobante: ComprobanteValidacion }
   | null;
 
 interface ComprobanteValidacion {
@@ -61,8 +57,7 @@ interface ComprobanteValidacion {
 
 const ESTADOS: { value: EstadoFiltro; label: string }[] = [
   { value: 'pendiente', label: 'Pendientes' },
-  { value: 'confirmado', label: 'Por aplicar' },
-  { value: 'validado', label: 'Aplicados' },
+  { value: 'validado', label: 'Validados' },
   { value: 'rechazado', label: 'Rechazados' },
   { value: 'todos', label: 'Todos' },
 ];
@@ -93,23 +88,15 @@ function origenLabel(origen?: string | null): string {
 function estadoClasses(estado?: string | null): string {
   const e = String(estado || 'pendiente').toLowerCase();
   if (e === 'validado') return 'bg-green-50 text-green-700 border-green-200';
-  if (e === 'confirmado') return 'bg-blue-50 text-blue-700 border-blue-200';
   if (e === 'rechazado') return 'bg-red-50 text-red-700 border-red-200';
   return 'bg-amber-50 text-amber-700 border-amber-200';
 }
 
 function estadoLabel(estado?: string | null): string {
   const e = String(estado || 'pendiente').toLowerCase();
-  if (e === 'validado') return 'Aplicado';
-  if (e === 'confirmado') return 'Confirmado';
+  if (e === 'validado') return 'Validado banco';
   if (e === 'rechazado') return 'Rechazado';
   return 'Pendiente';
-}
-
-function normalizeMoneda(value?: string | null): MiautoMoneda {
-  const m = String(value || '').toUpperCase();
-  if (m === 'USD' || m === 'COP' || m === 'PEN') return m;
-  return 'PEN';
 }
 
 function ComprobanteThumbnail({
@@ -164,8 +151,6 @@ export default function YegoMiAutoValidarComprobantes() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [accion, setAccion] = useState<AccionModal>(null);
-  const [accionMonto, setAccionMonto] = useState('');
-  const [accionMoneda, setAccionMoneda] = useState<MiautoMoneda>('PEN');
   const [rechazoMotivo, setRechazoMotivo] = useState('');
   const [savingId, setSavingId] = useState<string | null>(null);
   const [previewRow, setPreviewRow] = useState<ComprobanteValidacion | null>(null);
@@ -219,47 +204,27 @@ export default function YegoMiAutoValidarComprobantes() {
       (acc, row) => {
         const e = String(row.estado || 'pendiente').toLowerCase();
         if (e === 'validado') acc.validado += 1;
-        else if (e === 'confirmado') acc.confirmado += 1;
         else if (e === 'rechazado') acc.rechazado += 1;
         else acc.pendiente += 1;
         return acc;
       },
-      { pendiente: 0, confirmado: 0, validado: 0, rechazado: 0 }
+      { pendiente: 0, validado: 0, rechazado: 0 }
     );
   }, [rows]);
 
   const openConfirmar = (row: ComprobanteValidacion) => {
     setAccion({ tipo: 'confirmar', comprobante: row });
-    setAccionMonto(row.monto != null ? String(row.monto) : '');
-    setAccionMoneda(normalizeMoneda(row.moneda || row.cuota_moneda));
-    setRechazoMotivo('');
-  };
-
-  const openAplicar = (row: ComprobanteValidacion) => {
-    setAccion({ tipo: 'aplicar', comprobante: row });
-    setAccionMonto(row.monto != null ? String(row.monto) : '');
-    setAccionMoneda(normalizeMoneda(row.moneda || row.cuota_moneda));
     setRechazoMotivo('');
   };
 
   const openRechazar = (row: ComprobanteValidacion) => {
     setAccion({ tipo: 'rechazar', comprobante: row });
-    setAccionMonto('');
-    setAccionMoneda(normalizeMoneda(row.moneda || row.cuota_moneda));
-    setRechazoMotivo('');
-  };
-
-  const openAnular = (row: ComprobanteValidacion) => {
-    setAccion({ tipo: 'anular', comprobante: row });
-    setAccionMonto('');
-    setAccionMoneda(normalizeMoneda(row.moneda || row.cuota_moneda));
     setRechazoMotivo('');
   };
 
   const closeModal = () => {
     if (savingId) return;
     setAccion(null);
-    setAccionMonto('');
     setRechazoMotivo('');
   };
 
@@ -270,18 +235,9 @@ export default function YegoMiAutoValidarComprobantes() {
     const row = accion.comprobante;
     try {
       setSavingId(row.id);
-      if (accion.tipo === 'confirmar' || accion.tipo === 'aplicar') {
-        const monto = roundToTwoDecimals(parseFloat(accionMonto));
-        if (Number.isNaN(monto) || monto <= 0) {
-          toast.error('Indica un monto válido');
-          return;
-        }
-        const endpoint = accion.tipo === 'confirmar' ? 'confirmar' : 'validar';
-        await api.patch(`/miauto/solicitudes/${row.solicitud_id}/comprobantes-cuota-semanal/${row.id}/${endpoint}`, {
-          monto,
-          moneda: accionMoneda,
-        });
-        toast.success(accion.tipo === 'confirmar' ? 'Comprobante confirmado en banco' : 'Comprobante aplicado a cuota');
+      if (accion.tipo === 'confirmar') {
+        await api.patch(`/miauto/solicitudes/${row.solicitud_id}/comprobantes-cuota-semanal/${row.id}/confirmar`);
+        toast.success('Comprobante validado en banco');
       } else if (accion.tipo === 'rechazar') {
         const motivo = rechazoMotivo.trim();
         if (motivo.length < 3) {
@@ -292,9 +248,6 @@ export default function YegoMiAutoValidarComprobantes() {
           motivo,
         });
         toast.success('Comprobante rechazado');
-      } else {
-        await api.patch(`/miauto/solicitudes/${row.solicitud_id}/comprobantes-cuota-semanal/${row.id}/anular-validacion`);
-        toast.success('Validación anulada');
       }
       setAccion(null);
       await fetchComprobantes();
@@ -324,16 +277,16 @@ export default function YegoMiAutoValidarComprobantes() {
               <p>Pendientes</p>
             </div>
             <div className="rounded-lg bg-white/15 px-3 py-2">
-              <p className="font-bold text-base">{totals.confirmado}</p>
-              <p>Por aplicar</p>
-            </div>
-            <div className="rounded-lg bg-white/15 px-3 py-2">
               <p className="font-bold text-base">{totals.validado}</p>
-              <p>Aplicados</p>
+              <p>Validados</p>
             </div>
             <div className="rounded-lg bg-white/15 px-3 py-2">
               <p className="font-bold text-base">{totals.rechazado}</p>
               <p>Rechazados</p>
+            </div>
+            <div className="rounded-lg bg-white/15 px-3 py-2">
+              <p className="font-bold text-base">{rows.length}</p>
+              <p>Total</p>
             </div>
           </div>
         </div>
@@ -411,8 +364,6 @@ export default function YegoMiAutoValidarComprobantes() {
                 {filteredRows.map((row) => {
                   const estadoRow = String(row.estado || 'pendiente').toLowerCase();
                   const isPending = estadoRow === 'pendiente';
-                  const isConfirmed = estadoRow === 'confirmado';
-                  const isValidated = estadoRow === 'validado';
                   return (
                     <tr key={row.id} className="hover:bg-gray-50">
                       <td className="px-4 py-3 align-top">
@@ -470,7 +421,7 @@ export default function YegoMiAutoValidarComprobantes() {
                                 className="inline-flex h-9 items-center gap-1 rounded-lg bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700"
                               >
                                 <CheckCircle2 className="h-4 w-4" />
-                                Confirmar banco
+                                Validar banco
                               </button>
                               <button
                                 type="button"
@@ -482,35 +433,8 @@ export default function YegoMiAutoValidarComprobantes() {
                               </button>
                             </>
                           )}
-                          {isConfirmed && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => openAplicar(row)}
-                                className="inline-flex h-9 items-center gap-1 rounded-lg bg-green-600 px-3 text-xs font-medium text-white hover:bg-green-700"
-                              >
-                                <CheckCircle2 className="h-4 w-4" />
-                                Aplicar a cuota
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openRechazar(row)}
-                                className="inline-flex h-9 items-center gap-1 rounded-lg bg-red-600 px-3 text-xs font-medium text-white hover:bg-red-700"
-                              >
-                                <XCircle className="h-4 w-4" />
-                                Rechazar
-                              </button>
-                            </>
-                          )}
-                          {isValidated && (
-                            <button
-                              type="button"
-                              onClick={() => openAnular(row)}
-                              className="inline-flex h-9 items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-3 text-xs font-medium text-amber-800 hover:bg-amber-100"
-                            >
-                              <RotateCcw className="h-4 w-4" />
-                              Anular
-                            </button>
+                          {!isPending && (
+                            <span className="text-xs text-gray-400">Sin acciones</span>
                           )}
                         </div>
                       </td>
@@ -560,12 +484,10 @@ export default function YegoMiAutoValidarComprobantes() {
               <div>
                 <h2 className="text-base font-semibold text-gray-900">
                   {accion.tipo === 'confirmar'
-                    ? 'Confirmar comprobante en banco'
-                    : accion.tipo === 'aplicar'
-                      ? 'Aplicar comprobante a cuota'
+                    ? 'Validar comprobante en banco'
                     : accion.tipo === 'rechazar'
                       ? 'Rechazar comprobante'
-                      : 'Anular aprobación'}
+                      : ''}
                 </h2>
                 <p className="text-xs text-gray-500">{driverName(accion.comprobante)}</p>
               </div>
@@ -575,40 +497,10 @@ export default function YegoMiAutoValidarComprobantes() {
             </div>
 
             <div className="space-y-3 px-4 py-4">
-              {accion.tipo === 'confirmar' || accion.tipo === 'aplicar' ? (
-                <>
-                  <div className={`rounded-lg border px-3 py-2 text-xs ${
-                    accion.tipo === 'confirmar'
-                      ? 'border-blue-200 bg-blue-50 text-blue-900'
-                      : 'border-green-200 bg-green-50 text-green-900'
-                  }`}>
-                    {accion.tipo === 'confirmar'
-                      ? 'Este paso solo confirma que el dinero ingresó a la cuenta bancaria. No mueve la cuota.'
-                      : 'Este paso sí aplicará el monto a la cuota y a la cascada de pagos.'}
-                  </div>
-                  <label className="block text-sm font-medium text-gray-700">
-                    {accion.tipo === 'confirmar' ? 'Monto encontrado en banco' : 'Monto a aplicar a la cuota'}
-                  </label>
-                  <div className="grid grid-cols-[1fr_110px] gap-2">
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={accionMonto}
-                      onChange={(e) => setAccionMonto(e.target.value)}
-                      className="h-10 rounded-lg border border-gray-300 px-3 text-sm"
-                    />
-                    <select
-                      value={accionMoneda}
-                      onChange={(e) => setAccionMoneda(e.target.value as MiautoMoneda)}
-                      className="h-10 rounded-lg border border-gray-300 px-3 text-sm"
-                    >
-                      <option value="PEN">PEN</option>
-                      <option value="COP">COP</option>
-                      <option value="USD">USD</option>
-                    </select>
-                  </div>
-                </>
+              {accion.tipo === 'confirmar' ? (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-3 text-sm text-blue-900">
+                  El comprobante ya afectó la cuota al registrarse. Esta acción solo marca que el dinero sí llegó al banco.
+                </div>
               ) : accion.tipo === 'rechazar' ? (
                 <>
                   <label className="block text-sm font-medium text-gray-700">Motivo del rechazo</label>
@@ -620,11 +512,7 @@ export default function YegoMiAutoValidarComprobantes() {
                     placeholder="Ej. imagen borrosa, monto no coincide"
                   />
                 </>
-              ) : (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
-                  Se revertirá el pago aplicado a la cuota/cascada y el comprobante volverá a quedar pendiente.
-                </div>
-              )}
+              ) : null}
             </div>
 
             <div className="flex justify-end gap-2 border-t border-gray-200 px-4 py-3">
@@ -643,21 +531,17 @@ export default function YegoMiAutoValidarComprobantes() {
                 className={`inline-flex h-10 items-center gap-2 rounded-lg px-4 text-sm font-medium text-white disabled:opacity-50 ${
                   accion.tipo === 'confirmar'
                     ? 'bg-blue-600 hover:bg-blue-700'
-                    : accion.tipo === 'aplicar'
-                    ? 'bg-green-600 hover:bg-green-700'
                     : accion.tipo === 'rechazar'
                       ? 'bg-red-600 hover:bg-red-700'
-                      : 'bg-amber-600 hover:bg-amber-700'
+                      : 'bg-gray-600 hover:bg-gray-700'
                 }`}
               >
                 {savingId === accion.comprobante.id && <Loader2 className="h-4 w-4 animate-spin" />}
                 {accion.tipo === 'confirmar'
-                  ? 'Confirmar banco'
-                  : accion.tipo === 'aplicar'
-                    ? 'Aplicar a cuota'
+                  ? 'Validar banco'
                     : accion.tipo === 'rechazar'
                       ? 'Rechazar'
-                      : 'Anular aprobación'}
+                      : ''}
               </button>
             </div>
           </div>

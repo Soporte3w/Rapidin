@@ -1018,7 +1018,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
        FROM module_miauto_comprobante_cuota_semanal
        WHERE cuota_semanal_id = ANY($1::uuid[])
          AND validated_at IS NULL
-         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) IN ('pendiente', 'confirmado')`,
+         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) = 'pendiente'`,
       [cuotaIdList]
     );
     pendingComprobanteCuotaIds = new Set((pendRes.rows || []).map((x) => String(x.id)));
@@ -2282,7 +2282,7 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
        FROM module_miauto_comprobante_cuota_semanal
        WHERE solicitud_id = $1::uuid
          AND validated_at IS NULL
-         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) IN ('pendiente', 'confirmado')`,
+         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) = 'pendiente'`,
       [solicitudId]
     );
     pendingComprobanteCuotaIds = new Set((freezeRes.rows || []).map((x) => String(x.cid)));

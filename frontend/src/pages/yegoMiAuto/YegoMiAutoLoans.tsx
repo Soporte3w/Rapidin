@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { Banknote, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { Banknote, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatDate } from '../../utils/date';
 import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError } from '../../utils/miautoApiUtils';
@@ -10,6 +10,7 @@ import { RapidinSearchField } from '../../components/RapidinSearchField';
 import {
   ALQUILER_VENTA_CUOTA_ESTADO_OPTIONS,
   conductorDisplay,
+  formatInicialList,
   formatTotalPagadoList,
   type AlquilerVentaListItem,
 } from '../../utils/miautoAlquilerVentaList';
@@ -214,6 +215,21 @@ export default function YegoMiAutoLoans() {
     setPage(1);
   }, []);
 
+  const openRentSaleDetail = useCallback((row: AlquilerVentaListItem) => {
+    navigate(`/admin/yego-mi-auto/rent-sale/${row.id}`, {
+      state: {
+        fromList: true,
+        driver_name: row.driver_name,
+        country,
+        driverSearchInput,
+        cronogramaId,
+        cuotaEstado,
+        page: pageClamped,
+        pageSize,
+      },
+    });
+  }, [country, cronogramaId, cuotaEstado, driverSearchInput, navigate, pageClamped, pageSize]);
+
   const countryLabel = COUNTRY_OPTIONS.find((o) => o.value === country)?.label ?? 'Todos';
   const searchActive = debouncedSearch.trim().length > 0;
   const hasServerFilters = Boolean(country || cronogramaId || cuotaEstado);
@@ -353,13 +369,26 @@ export default function YegoMiAutoLoans() {
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Inicio cobro</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Cuotas</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Vencidas</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Total pagado</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Acciones</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Cuotas pagadas</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Inicial</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {displayItems.map((row) => (
-                  <tr key={row.id} className="hover:bg-gray-50">
+                  <tr
+                    key={row.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openRentSaleDetail(row)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        openRentSaleDetail(row);
+                      }
+                    }}
+                    className="cursor-pointer hover:bg-red-50/40 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-red-200"
+                    title="Abrir detalle"
+                  >
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">
                       {conductorDisplay(row)}
                       {row.yango_work_status === 'fired' && row.fired_driver_name && (
@@ -389,15 +418,8 @@ export default function YegoMiAutoLoans() {
                     <td className="px-4 py-3 text-sm font-medium text-green-700 tabular-nums">
                       {formatTotalPagadoList(row)}
                     </td>
-                    <td className="px-4 py-3">
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/admin/yego-mi-auto/rent-sale/${row.id}`, { state: { fromList: true, driver_name: row.driver_name, country, driverSearchInput, cronogramaId, cuotaEstado, page: pageClamped, pageSize } })}
-                        className="inline-flex items-center gap-1 px-2 py-1.5 text-sm font-medium text-[#8B1A1A] hover:bg-red-50 rounded-lg"
-                      >
-                        <Eye className="w-4 h-4" />
-                        Ver detalle
-                      </button>
+                    <td className="px-4 py-3 text-sm font-semibold text-gray-800 tabular-nums">
+                      {formatInicialList(row)}
                     </td>
                   </tr>
                 ))}

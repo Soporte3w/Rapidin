@@ -380,7 +380,7 @@ export const listAlquilerVenta = async (filters = {}) => {
 
   const listSql = `SELECT s.id, s.cronograma_id, s.cronograma_vehiculo_id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.fecha_inicio_cobro_semanal, s.placa_asignada, s.driver_id_fleet,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
-            c.name AS cronograma_name, v.name AS vehiculo_name, v.cuotas_semanales AS vehiculo_cuotas_semanales
+            c.name AS cronograma_name, v.name AS vehiculo_name, v.inicial AS vehiculo_inicial, v.inicial_moneda AS vehiculo_inicial_moneda, v.cuotas_semanales AS vehiculo_cuotas_semanales
      ${fromBase}
      ${where}
      ORDER BY s.fecha_inicio_cobro_semanal DESC NULLS LAST, s.created_at DESC
@@ -519,6 +519,8 @@ export const listAlquilerVenta = async (filters = {}) => {
       yango_work_status: driverStatus || undefined,
       cronograma_name: r.cronograma_name || undefined,
       vehiculo_name: r.vehiculo_name || undefined,
+      vehiculo_inicial: r.vehiculo_inicial != null ? parseFloat(r.vehiculo_inicial) || 0 : undefined,
+      vehiculo_inicial_moneda: r.vehiculo_inicial_moneda || undefined,
       cuotas_semanales_plan: cuotasPlan,
       total_cuotas: summary.total_cuotas,
       cuotas_pagadas: summary.cuotas_pagadas,

@@ -22,6 +22,8 @@ export interface AlquilerVentaListItem {
   email?: string;
   cronograma_name?: string;
   vehiculo_name?: string;
+  vehiculo_inicial?: number;
+  vehiculo_inicial_moneda?: 'USD' | 'PEN' | 'COP' | string;
   placa_asignada?: string;
   license_number?: string;
   cuotas_semanales_plan?: number;
@@ -69,4 +71,10 @@ export function formatTotalPagadoList(row: AlquilerVentaListItem): string {
   if (moneda === 'PEN' && pen > 0) return `S/. ${pen.toFixed(2)}`;
   if (usd > 0) return `$ ${usd.toFixed(2)}`;
   return `S/. ${pen.toFixed(2)}`;
+}
+
+export function formatInicialList(row: AlquilerVentaListItem): string {
+  const inicial = Number(row.vehiculo_inicial ?? 0);
+  if (!Number.isFinite(inicial) || inicial <= 0) return '—';
+  return `${symMoneda(row.vehiculo_inicial_moneda)} ${inicial.toFixed(2)}`;
 }

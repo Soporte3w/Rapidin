@@ -534,6 +534,29 @@ export async function touchFechaPrimerComprobanteCuota(cuotaSemanalId) {
   }
 }
 
+export async function updatePagoPuntualCuotaSemanal(solicitudId, cuotaSemanalId, pagoPuntual) {
+  const res = await query(
+    `UPDATE module_miauto_cuota_semanal
+     SET pago_puntual = $1,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE solicitud_id = $2::uuid
+       AND id = $3::uuid
+       AND deleted_at IS NULL
+     RETURNING id, solicitud_id, pago_puntual`,
+    [pagoPuntual === true, solicitudId, cuotaSemanalId]
+  );
+  if (!res.rows[0]) {
+    const err = new Error('Cuota semanal no encontrada');
+    err.statusCode = 404;
+    throw err;
+  }
+  return {
+    id: res.rows[0].id,
+    solicitud_id: res.rows[0].solicitud_id,
+    pago_puntual: res.rows[0].pago_puntual === true,
+  };
+}
+
 /**
  * Cuota programada a cobrar (`amount_due_sched`): **cuota semanal − cobro por ingresos (PF83)** + **cobro saldo** de regla
  * (y comisión % si aplica vía `computeAmountDueSemanal`).
@@ -1798,6 +1821,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
       cuota_semanal: round2(parseFloat(r.cuota_semanal) || amountDueExcel),
       amount_due: amountDueExcel,
       paid_amount: paidAmountExcel,
+      pago_puntual: r.pago_puntual === true,
       comprobante_en_revision_monto: creditoPend > 0.005 ? round2(Math.min(creditoPend, pendingExcel)) : 0,
       late_fee: 0,
       mora_pendiente: 0,
@@ -2027,6 +2051,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     cuota_semanal: d.cuota_semanal,
     amount_due: amountDueApi,
     paid_amount,
+    pago_puntual: r.pago_puntual === true,
     /** Monto declarado en comprobante pendiente; informativo, no descuenta cuota ni paid_amount. */
     comprobante_en_revision_monto: creditoPend > 0.005 ? round2(Math.min(creditoPend, pendPreDerivado)) : 0,
     late_fee: lateFeeApi,
@@ -2099,7 +2124,7 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
   const vehId = solRow.cronograma_vehiculo_id;
 
   const res = await query(
-    `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, moneda, pct_comision, cobro_saldo,
+    `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, pago_puntual, late_fee, status, moneda, pct_comision, cobro_saldo,
             partner_fees_raw, partner_fees_83, partner_fees_cascada_destino,
             fecha_ultimo_abono, fecha_primer_comprobante, montos_fuente, cobro_desde_saldo_conductor,
             mora_extra, mora_extra_desde, created_at, updated_at
@@ -2256,7 +2281,7 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
   const tipoCambioUsd = await tipoCambioUsdALocalEfectivo(countrySol);
 
   const res = await query(
-    `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, late_fee, status, moneda, pct_comision, cobro_saldo,
+    `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, pago_puntual, late_fee, status, moneda, pct_comision, cobro_saldo,
             partner_fees_raw, partner_fees_83, partner_fees_yango_raw, partner_fees_cascada_destino,
             fecha_ultimo_abono, fecha_primer_comprobante, montos_fuente, cobro_desde_saldo_conductor,
             saldo_favor_conductor, mora_desde, mora_extra, mora_extra_desde, mora_extra_total, cobro_saldo_referencia, created_at, updated_at

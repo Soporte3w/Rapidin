@@ -81,6 +81,7 @@ interface CuotaSemanal {
   cuota_semanal?: number;
   amount_due: number;
   paid_amount: number;
+  pago_puntual?: boolean;
   late_fee: number;
   /** Días civiles tras el vencimiento (Lima); el día de vencimiento es 0. */
   late_fee_calendar_days?: number;
@@ -247,6 +248,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const [comprobantesSemanaAbierta, setComprobantesSemanaAbierta] = useState<Record<string, boolean>>({});
   const [otrosTiposAbiertos, setOtrosTiposAbiertos] = useState<Record<string, boolean>>({});
   const [subiendoConformidadCuotaId, setSubiendoConformidadCuotaId] = useState<string | null>(null);
+  const [guardandoPagoPuntualId, setGuardandoPagoPuntualId] = useState<string | null>(null);
   /** Archivo elegido por cuota; la subida es explícita con el botón «Subir». */
   const [conformidadArchivoPendiente, setConformidadArchivoPendiente] = useState<Record<string, File | null>>({});
   /** Sobrescritura opcional de monto/moneda mostrados al subir conformidad (por defecto = pendiente de la cuota). */
@@ -534,6 +536,24 @@ export default function YegoMiAutoRentSaleDetail() {
       setEliminandoContratoId(null);
     }
   }, [id, fetchDetail]);
+
+  const togglePagoPuntualCuota = useCallback(async (cuotaId: string, checked: boolean) => {
+    if (!id) return;
+    const prevCuotas = cuotas;
+    setGuardandoPagoPuntualId(cuotaId);
+    setCuotas((current) => current.map((c) => (c.id === cuotaId ? { ...c, pago_puntual: checked } : c)));
+    try {
+      await api.patch(`/miauto/solicitudes/${id}/cuotas-semanales/${cuotaId}/pago-puntual`, {
+        pago_puntual: checked,
+      });
+      toast.success(checked ? 'Pago puntual marcado' : 'Pago puntual desmarcado');
+    } catch (err: any) {
+      setCuotas(prevCuotas);
+      toast.error(err.response?.data?.message || 'No se pudo actualizar el pago puntual');
+    } finally {
+      setGuardandoPagoPuntualId(null);
+    }
+  }, [cuotas, id]);
 
   const cuotasNotaVentaDisponibles = useMemo(() => {
     return cuotas.filter((c) => {
@@ -1135,19 +1155,20 @@ export default function YegoMiAutoRentSaleDetail() {
           <>
           <div className="px-4 pt-3 pb-1">
             <div className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0 rounded-lg border border-gray-100 bg-white">
-            <table className="w-full min-w-[1180px] table-fixed border-collapse text-sm">
+            <table className="w-full min-w-[1280px] table-fixed border-collapse text-sm">
               <colgroup>
+                <col style={{ width: '8.5%' }} />
+                <col style={{ width: '7.5%' }} />
                 <col style={{ width: '9%' }} />
                 <col style={{ width: '8%' }} />
+                <col style={{ width: '12%' }} />
+                <col style={{ width: '6.5%' }} />
+                <col style={{ width: '8%' }} />
+                <col style={{ width: '6.5%' }} />
                 <col style={{ width: '10%' }} />
+                <col style={{ width: '9.5%' }} />
+                <col style={{ width: '6%' }} />
                 <col style={{ width: '8.5%' }} />
-                <col style={{ width: '13%' }} />
-                <col style={{ width: '7%' }} />
-                <col style={{ width: '8.5%' }} />
-                <col style={{ width: '7%' }} />
-                <col style={{ width: '11%' }} />
-                <col style={{ width: '11%' }} />
-                <col style={{ width: '7%' }} />
               </colgroup>
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50/80">
@@ -1194,6 +1215,9 @@ export default function YegoMiAutoRentSaleDetail() {
                   </th>
                   <th className="py-2.5 pl-1 pr-3 align-middle text-center text-[11px] font-semibold uppercase tracking-wide text-gray-700 leading-tight">
                     <span className="block">Estado</span>
+                  </th>
+                  <th className="py-2.5 pl-1 pr-3 align-middle text-center text-[11px] font-semibold uppercase tracking-wide text-gray-700 leading-tight">
+                    <span className="block">Pago<br/>puntual</span>
                   </th>
                 </tr>
               </thead>
@@ -1377,9 +1401,22 @@ export default function YegoMiAutoRentSaleDetail() {
                         {c.status === 'bonificada' && (<span className="text-center text-[10px] text-gray-500">Por 4 cuotas al día</span>)}
                       </div>
                     </td>
+                    {/* Pago puntual */}
+                    <td className="py-2.5 pl-1 pr-3 align-middle text-center">
+                      <label className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-gray-200 bg-white transition-colors hover:border-green-300 hover:bg-green-50">
+                        <input
+                          type="checkbox"
+                          checked={c.pago_puntual === true}
+                          disabled={guardandoPagoPuntualId === c.id}
+                          onChange={(event) => void togglePagoPuntualCuota(c.id, event.target.checked)}
+                          className="h-4 w-4 cursor-pointer rounded border-gray-300 text-green-600 focus:ring-green-500 disabled:cursor-wait disabled:opacity-60"
+                          aria-label={`Marcar pago puntual semana ${numeroSemana}`}
+                        />
+                      </label>
+                    </td>
                   </tr>
                   <tr className="border-b border-gray-100">
-                       <td colSpan={11} className="p-0 align-top">
+                       <td colSpan={12} className="p-0 align-top">
                         <div
                           className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
                           style={{ maxHeight: abierto ? 1800 : 0, opacity: abierto ? 1 : 0 }}

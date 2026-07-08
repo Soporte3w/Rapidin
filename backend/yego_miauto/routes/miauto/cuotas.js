@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { validateUUID } from '../../../middleware/validations.js';
 import { successResponse, errorResponse } from '../../../utils/responses.js';
 import { logger } from '../../../utils/logger.js';
-import { getCuotasSemanalesConRacha, getSemanasDisponibles, recalcularMoraGlobal, updateMoraDiaria } from '../../services/cuotas/miautoCuotaSemanalService.js';
+import { getCuotasSemanalesConRacha, getSemanasDisponibles, recalcularMoraGlobal, updateMoraDiaria, updatePagoPuntualCuotaSemanal } from '../../services/cuotas/miautoCuotaSemanalService.js';
 import { regenerateMiAutoCuotaForWeekMonday } from '../../../jobs/miautoWeeklyCharge.js';
 import { getDriverGoals, getDriverIncome } from '../../../services/yangoService.js';
 import pool from '../../../database/connection.js';
@@ -65,6 +65,27 @@ router.post('/admin/recalcular-mora', async (req, res) => {
   } catch (error) {
     logger.error('Error recalculando mora Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al recalcular mora', 500);
+  }
+});
+
+// PATCH /api/miauto/solicitudes/:id/cuotas-semanales/:cuotaSemanalId/pago-puntual
+router.patch('/solicitudes/:id/cuotas-semanales/:cuotaSemanalId/pago-puntual', validateUUID, async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'Sin permisos para marcar pago puntual', 403);
+    }
+    const cuotaSemanalId = String(req.params.cuotaSemanalId || '').trim();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cuotaSemanalId)) {
+      return errorResponse(res, 'ID de cuota semanal inválido', 400);
+    }
+    if (typeof req.body?.pago_puntual !== 'boolean') {
+      return errorResponse(res, 'Indica pago_puntual como true o false', 400);
+    }
+    const data = await updatePagoPuntualCuotaSemanal(req.params.id, cuotaSemanalId, req.body.pago_puntual);
+    return successResponse(res, data, req.body.pago_puntual ? 'Cuota marcada como pago puntual' : 'Marca de pago puntual retirada');
+  } catch (error) {
+    logger.error('Error actualizando pago puntual Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al actualizar pago puntual', error.statusCode || 500);
   }
 });
 

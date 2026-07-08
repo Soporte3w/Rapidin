@@ -558,29 +558,53 @@ export async function createComprobanteConformidadAdmin(solicitudId, cuotaSemana
   const fileName = file.originalname || `conformidad_pago_${Date.now()}.pdf`;
 
   try {
-    await query(
+    const inserted = await query(
       `INSERT INTO module_miauto_comprobante_cuota_semanal
        (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado, origen, acredito_en_cronograma)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pendiente', 'admin_confirmacion', false)`,
+       VALUES ($1, $2, $3, $4, $5, $6, 'pendiente', 'admin_confirmacion', false)
+       RETURNING id`,
       [solicitudId, cuotaSemanalId, montoVal, monedaVal, fileName, path]
     );
+    const comprobanteId = inserted.rows[0].id;
+    try {
+      await aplicarComprobanteInmediato(solicitudId, comprobanteId, cuotaSemanalId, montoVal, monedaVal);
+    } catch (applyError) {
+      await query('DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2', [comprobanteId, solicitudId]);
+      throw applyError;
+    }
   } catch (e) {
     if (!isUndefinedColumnError(e)) throw e;
     try {
-      await query(
+      const inserted = await query(
         `INSERT INTO module_miauto_comprobante_cuota_semanal
          (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado, origen)
-         VALUES ($1, $2, $3, $4, $5, $6, 'pendiente', 'admin_confirmacion')`,
+         VALUES ($1, $2, $3, $4, $5, $6, 'pendiente', 'admin_confirmacion')
+         RETURNING id`,
         [solicitudId, cuotaSemanalId, montoVal, monedaVal, fileName, path]
       );
+      const comprobanteId = inserted.rows[0].id;
+      try {
+        await aplicarComprobanteInmediato(solicitudId, comprobanteId, cuotaSemanalId, montoVal, monedaVal);
+      } catch (applyError) {
+        await query('DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2', [comprobanteId, solicitudId]);
+        throw applyError;
+      }
     } catch (e2) {
       if (!isUndefinedColumnError(e2)) throw e2;
-      await query(
+      const inserted = await query(
         `INSERT INTO module_miauto_comprobante_cuota_semanal
          (solicitud_id, cuota_semanal_id, monto, moneda, file_name, file_path, estado)
-         VALUES ($1, $2, $3, $4, $5, $6, 'pendiente')`,
+         VALUES ($1, $2, $3, $4, $5, $6, 'pendiente')
+         RETURNING id`,
         [solicitudId, cuotaSemanalId, montoVal, monedaVal, fileName, path]
       );
+      const comprobanteId = inserted.rows[0].id;
+      try {
+        await aplicarComprobanteInmediato(solicitudId, comprobanteId, cuotaSemanalId, montoVal, monedaVal);
+      } catch (applyError) {
+        await query('DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2', [comprobanteId, solicitudId]);
+        throw applyError;
+      }
     }
   }
 

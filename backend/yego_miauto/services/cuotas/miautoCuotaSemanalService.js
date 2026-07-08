@@ -114,17 +114,19 @@ async function solicitudTieneCuotaVencidaSinCubrirParaMayorPlan(solicitudId) {
               coalesce(c.due_date, c.week_start_date) AS ref_d,
               coalesce(c.paid_amount, 0)::numeric AS p,
               coalesce(c.amount_due, 0)::numeric AS ad,
-              coalesce(c.late_fee, 0)::numeric AS lf
+              coalesce(c.late_fee, 0)::numeric AS lf,
+              coalesce(c.mora_extra, 0)::numeric AS me,
+              lower(coalesce(c.montos_fuente, '')) AS fuente
        FROM module_miauto_cuota_semanal c
        WHERE c.solicitud_id = $1::uuid
      ) x
      WHERE x.st NOT IN ('paid', 'bonificada')
+       AND x.p < CASE WHEN x.fuente = 'excel' THEN x.ad ELSE x.ad + x.lf + x.me END - 0.02
        AND (
          x.st = 'overdue'
          OR (
            x.ref_d IS NOT NULL
            AND (x.ref_d)::date < ${SQL_LIMA_TODAY}
-           AND x.p < x.ad + x.lf - 0.02
          )
        )
      LIMIT 1`,
@@ -215,6 +217,17 @@ function excelPaidIgualCuotaSemanalIgnoraMora(r) {
   const paid = round2(parseFloat(r.paid_amount) || 0);
   const cs = round2(parseFloat(r.cuota_semanal) || 0);
   return cs > 0.005 && Math.abs(paid - cs) <= 0.005;
+}
+
+function cuotaTieneSaldoPendienteColumnas(r) {
+  const paid = round2(parseFloat(r?.paid_amount) || 0);
+  const amountDue = round2(parseFloat(r?.amount_due) || 0);
+  if (rowMontosFuenteExcel(r)) {
+    return paid < amountDue - 0.005;
+  }
+  const lateFee = round2(parseFloat(r?.late_fee) || 0);
+  const moraExtra = round2(parseFloat(r?.mora_extra) || 0);
+  return paid < round2(amountDue + lateFee + moraExtra) - 0.005;
 }
 
 /** Montos base cargados desde Excel: la API y la mora deben usar columnas persistidas, no el cronograma dinámico. */
@@ -920,6 +933,23 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       OR (c.due_date IS NOT NULL AND c.due_date::date < ${SQL_LIMA_TODAY})
     )`;
 
+  const syncExcelSql = `
+    UPDATE module_miauto_cuota_semanal c
+    SET late_fee = 0,
+        mora_extra = 0,
+        mora_extra_desde = NULL,
+        mora_extra_total = 0,
+        mora_desde = NULL,
+        status = CASE
+          WHEN COALESCE(c.paid_amount, 0)::numeric >= COALESCE(c.amount_due, 0)::numeric - 0.005 THEN 'paid'
+          WHEN COALESCE(c.paid_amount, 0)::numeric > 0.005 THEN 'partial'
+          WHEN COALESCE(c.due_date, c.week_start_date)::date < ${SQL_LIMA_TODAY} THEN 'overdue'
+          ELSE 'pending'
+        END,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE LOWER(COALESCE(c.montos_fuente, '')) = 'excel'${scopeSql}${skipDesactivadasSql}`;
+  await query(syncExcelSql, scopeParams);
+
   /** Solo corrige estado; no pisa `late_fee` (mora histórica en cuotas pagadas). */
   /** Total registrado cuota+mora en columnas vs pagado (sin SQL del cronograma). */
   const revertOverdueSql = `
@@ -966,7 +996,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
             s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal
      FROM module_miauto_cuota_semanal c
      INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
-     WHERE ${statusSql} AND ${vencimientoYaPasadoSql}`;
+     WHERE LOWER(COALESCE(c.montos_fuente, '')) <> 'excel' AND ${statusSql} AND ${vencimientoYaPasadoSql}`;
   let p = 0;
   if (solicitudId) {
     p += 1;
@@ -1065,7 +1095,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     const tieneDatosMora = (row.num_viajes != null && Number(row.num_viajes) > 0) || (row.partner_fees_raw != null && round2(parseFloat(row.partner_fees_raw) || 0) > 0.005);
     const sinViajesYangoRow = isPrimera || (!yangoSemanaCerrada && !tieneDatosMora);
     const hermanasMis = hermanasPorSolicitud.get(String(row.solicitud_id)) || [];
-    const solTieneCuotaOverdue = hermanasMis.some((x) => String(x.status || '').toLowerCase() === 'overdue');
+    const solTieneCuotaOverdue = hermanasMis.some((x) => String(x.status || '').toLowerCase() === 'overdue' && cuotaTieneSaldoPendienteColumnas(x));
     const forzarCuotaMaxSinBono = debeAplicarCuotaMaximaSinBonoPorMora(solTieneCuotaOverdue, isPrimera, row.status);
     const cascRecvMapForRow = cascadeReceivedBySol.get(String(row.solicitud_id));
     const cascRecv = cascRecvMapForRow ? cascRecvMapForRow.get(String(row.id)) || 0 : 0;
@@ -1236,7 +1266,7 @@ export async function recalcularMoraGlobal() {
  */
 function calcularRacha(cuotas) {
   if (!Array.isArray(cuotas) || cuotas.length === 0) return 0;
-  const tieneVencida = cuotas.some((c) => (c.status || '').toLowerCase() === 'overdue');
+  const tieneVencida = cuotas.some((c) => (c.status || '').toLowerCase() === 'overdue' && cuotaTieneSaldoPendienteColumnas(c));
   if (tieneVencida) return 0;
   const porFechaAsc = ordenarCuotasSemanalesCronologico(cuotas);
   let racha = 0;
@@ -1609,7 +1639,13 @@ export async function loadMiautoComprobanteDerivacionContext(solicitudId) {
   );
   const cascadeMap = buildCascadeReceivedMap(cascRes.rows || []);
   const ovRes = await query(
-    `SELECT EXISTS (SELECT 1 FROM module_miauto_cuota_semanal WHERE solicitud_id = $1::uuid AND status = 'overdue') AS e`,
+    `SELECT EXISTS (
+       SELECT 1
+       FROM module_miauto_cuota_semanal
+       WHERE solicitud_id = $1::uuid
+         AND status = 'overdue'
+         AND COALESCE(paid_amount, 0)::numeric < COALESCE(amount_due, 0)::numeric + COALESCE(late_fee, 0)::numeric + COALESCE(mora_extra, 0)::numeric - 0.005
+     ) AS e`,
     [solicitudId]
   );
   const solicitudTieneCuotaOverdue = !!ovRes.rows?.[0]?.e;
@@ -1740,6 +1776,64 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   const sinViajesYango = isPrimera || (!yangoCerrada && !tieneDatosReales);
   const st = (r.status || '').toLowerCase();
   const ignoreClosedForDerived = st === 'paid' && esOrigenCascadaCobroIngresosSinPfEnFila(r);
+  if (rowMontosFuenteExcel(r)) {
+    const paidAmountExcel = round2(parseFloat(r.paid_amount) || 0);
+    const amountDueExcel = round2(parseFloat(r.amount_due) || 0);
+    const pendingExcel = round2(Math.max(0, amountDueExcel - paidAmountExcel));
+    const dueY = ymdFromDbDate(r.due_date);
+    const statusExcel = st === 'bonificada'
+      ? 'bonificada'
+      : miAutoOpenStatusSaldoVencimiento(dueY, pendingExcel, paidAmountExcel);
+    const monedaExcel = String(r.moneda || 'PEN').toUpperCase();
+    const creditoPend = round2(Math.max(0, Number(options.creditoComprobantePendienteMonedaCuota) || 0));
+
+    return {
+      id: r.id,
+      solicitud_id: r.solicitud_id,
+      montos_fuente: 'excel',
+      week_start_date: r.week_start_date,
+      due_date: r.due_date,
+      num_viajes: r.num_viajes ?? 0,
+      bono_auto: round2(parseFloat(r.bono_auto) || 0),
+      cuota_semanal: round2(parseFloat(r.cuota_semanal) || amountDueExcel),
+      amount_due: amountDueExcel,
+      paid_amount: paidAmountExcel,
+      comprobante_en_revision_monto: creditoPend > 0.005 ? round2(Math.min(creditoPend, pendingExcel)) : 0,
+      late_fee: 0,
+      mora_pendiente: 0,
+      late_fee_calendar_days: 0,
+      mora_interes_periodo: 0,
+      mora_acumulada: 0,
+      mora_extra: 0,
+      mora_extra_total: 0,
+      mora_extra_cobrada: 0,
+      mora_extra_desde: null,
+      status: statusExcel,
+      moneda: monedaExcel,
+      pct_comision: round2(parseFloat(r.pct_comision) || 0),
+      cobro_saldo: round2(parseFloat(r.cobro_saldo) || 0),
+      cobro_saldo_regla: round2(parseFloat(r.cobro_saldo) || 0),
+      cobro_desde_saldo_conductor: round2(parseFloat(r.cobro_desde_saldo_conductor) || 0),
+      fecha_ultimo_abono: ymdFromDbDate(r.fecha_ultimo_abono),
+      fecha_primer_comprobante: ymdFromDbDate(r.fecha_primer_comprobante),
+      partner_fees_raw: round2(parseFloat(r.partner_fees_raw) || 0),
+      partner_fees_83: round2(parseFloat(r.partner_fees_83) || 0),
+      partner_fees_yango_raw: r.partner_fees_yango_raw != null ? round2(parseFloat(r.partner_fees_yango_raw) || 0) : null,
+      partner_fees_yango_83: r.partner_fees_yango_raw != null ? round2((parseFloat(r.partner_fees_yango_raw) || 0) * PARTNER_FEES_PCT) : 0,
+      partner_fees_cascada_aplicado_a: cascadaDestinoExcluirCuotaOrigen(
+        parsePartnerFeesCascadaDestinoDb(r.partner_fees_cascada_destino),
+        r.id
+      ),
+      cobro_saldo_referencia: parsePartnerFeesCascadaDestinoDb(r.cobro_saldo_referencia),
+      saldo_favor_conductor: round2(parseFloat(r.saldo_favor_conductor) || 0),
+      cuota_neta: amountDueExcel,
+      cuota_pendiente: pendingExcel,
+      cuota_final: pendingExcel,
+      pending_total: pendingExcel,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    };
+  }
   const derivedOpts = {
     isPrimeraCuotaSemanal: isPrimera,
     fechaInicioCobroSemanal: fi,
@@ -2015,7 +2109,7 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
   );
 
   const rowsAll = res.rows || [];
-  const tieneCuotaOverdueSol = rowsAll.some((x) => String(x.status || '').toLowerCase() === 'overdue');
+  const tieneCuotaOverdueSol = rowsAll.some((x) => String(x.status || '').toLowerCase() === 'overdue' && cuotaTieneSaldoPendienteColumnas(x));
   const fiRaw = solRow.fecha_inicio_cobro_semanal;
   const todayYBlocking = limaTodayYmdSync();
   const cascRecvMap = buildCascadeReceivedMap(rowsAll);
@@ -2176,7 +2270,7 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
   const bonificadas_db = parseInt(solRow.cuotas_semanales_bonificadas, 10) || 0;
 
   const rows = res.rows || [];
-  const tieneCuotaVencidaGlobal = rows.some((row) => String(row.status || '').toLowerCase() === 'overdue');
+  const tieneCuotaVencidaGlobal = rows.some((row) => String(row.status || '').toLowerCase() === 'overdue' && cuotaTieneSaldoPendienteColumnas(row));
   let pendingComprobanteCuotaIds = new Set();
   /** Suma de montos declarados en comprobantes sin validar (moneda de la fila de cuota), para mostrar saldo pendiente. */
   const creditoComprobantePendientePorCuota = new Map();

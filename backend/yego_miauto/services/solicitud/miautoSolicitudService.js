@@ -19,6 +19,23 @@ const MINIMO_USD_PARCIAL = 500;
 
 const MAX_REAGENDOS = 2;
 
+const cuotaSaldoPendienteSql = (alias) =>
+  `(CASE
+      WHEN LOWER(COALESCE(${alias}.montos_fuente, '')) = 'excel'
+        THEN COALESCE(${alias}.paid_amount, 0)::numeric < COALESCE(${alias}.amount_due, 0)::numeric - 0.005
+      ELSE COALESCE(${alias}.paid_amount, 0)::numeric < COALESCE(${alias}.amount_due, 0)::numeric + COALESCE(${alias}.late_fee, 0)::numeric + COALESCE(${alias}.mora_extra, 0)::numeric - 0.005
+    END)`;
+
+const cuotaCubiertaSql = (alias) =>
+  `(CASE
+      WHEN LOWER(COALESCE(${alias}.montos_fuente, '')) = 'excel'
+        THEN COALESCE(${alias}.paid_amount, 0)::numeric >= COALESCE(${alias}.amount_due, 0)::numeric - 0.005
+      ELSE COALESCE(${alias}.paid_amount, 0)::numeric >= COALESCE(${alias}.amount_due, 0)::numeric + COALESCE(${alias}.late_fee, 0)::numeric + COALESCE(${alias}.mora_extra, 0)::numeric - 0.005
+    END)`;
+
+const cuotaVencidaConSaldoSql = (alias) =>
+  `${cuotaSaldoPendienteSql(alias)} AND (LOWER(COALESCE(${alias}.status, '')) = 'overdue' OR COALESCE(${alias}.due_date, ${alias}.week_start_date)::date < (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date)`;
+
 function trimOrUndefined(x) {
   if (x == null) return undefined;
   const s = String(x).trim();
@@ -342,12 +359,12 @@ export const listAlquilerVenta = async (filters = {}) => {
   if (cuotaEstado) {
     const ce = String(cuotaEstado).toLowerCase();
     if (ce === 'vencido') {
-      where += ` AND EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs WHERE cs.solicitud_id = s.id AND cs.status = 'overdue')`;
+      where += ` AND EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs WHERE cs.solicitud_id = s.id AND ${cuotaVencidaConSaldoSql('cs')})`;
     } else if (ce === 'pendiente') {
-      where += ` AND EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs WHERE cs.solicitud_id = s.id AND cs.status = 'pending')`;
+      where += ` AND EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs WHERE cs.solicitud_id = s.id AND cs.status = 'pending' AND ${cuotaSaldoPendienteSql('cs')})`;
     } else if (ce === 'al_dia') {
       where += ` AND EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs WHERE cs.solicitud_id = s.id)
-                AND NOT EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs2 WHERE cs2.solicitud_id = s.id AND cs2.status = 'overdue')`;
+                AND NOT EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs2 WHERE cs2.solicitud_id = s.id AND ${cuotaVencidaConSaldoSql('cs2')})`;
     } else if (ce === 'sin_cuotas') {
       where += ` AND NOT EXISTS (SELECT 1 FROM module_miauto_cuota_semanal cs WHERE cs.solicitud_id = s.id)`;
     }
@@ -384,8 +401,8 @@ export const listAlquilerVenta = async (filters = {}) => {
       ? query(
           `SELECT c.solicitud_id,
                   COUNT(*)::int AS total_cuotas,
-                  COUNT(*) FILTER (WHERE c.status IN ('paid', 'bonificada'))::int AS cuotas_pagadas,
-                  COUNT(*) FILTER (WHERE c.status = 'overdue')::int AS cuotas_vencidas,
+                  COUNT(*) FILTER (WHERE c.status IN ('paid', 'bonificada') OR ${cuotaCubiertaSql('c')})::int AS cuotas_pagadas,
+                  COUNT(*) FILTER (WHERE ${cuotaVencidaConSaldoSql('c')})::int AS cuotas_vencidas,
                   COALESCE(SUM(c.paid_amount) FILTER (WHERE UPPER(COALESCE(c.moneda,'PEN')) = 'PEN'), 0)::decimal AS total_pagado_pen,
                   COALESCE(SUM(c.paid_amount) FILTER (WHERE UPPER(COALESCE(c.moneda,'PEN')) = 'USD'), 0)::decimal AS total_pagado_usd,
                   MODE() WITHIN GROUP (ORDER BY UPPER(COALESCE(c.moneda,'PEN'))) AS moneda_dominante

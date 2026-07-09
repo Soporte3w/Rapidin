@@ -13,6 +13,7 @@ const FACTURADOR_SELLER_ID = Number(process.env.FACTURADOR_SELLER_ID || 2);
 const FACTURADOR_ITEM_ID = Number(process.env.FACTURADOR_ITEM_ID || 1);
 const FACTURADOR_PAYMENT_METHOD_TYPE_ID = process.env.FACTURADOR_PAYMENT_METHOD_TYPE_ID || '01';
 const MIAUTO_NOTAS_VENTA_BUCKET = process.env.MIAUTO_NOTAS_VENTA_BUCKET || 'miauto-notas-venta';
+const MIAUTO_NOTAS_VENTA_FALLBACK_BUCKET = process.env.MIAUTO_NOTAS_VENTA_FALLBACK_BUCKET || process.env.MEDIA_BUCKET || 'rapidin-media';
 const IGV_RATE = Number(process.env.FACTURADOR_IGV_RATE || 0.18);
 const FACTURADOR_TLS_REJECT_UNAUTHORIZED = process.env.FACTURADOR_TLS_REJECT_UNAUTHORIZED === '1';
 let facturadorSessionCookie = null;
@@ -96,6 +97,13 @@ function sanitizeFileName(value) {
     .slice(0, 180);
 }
 
+function sanitizeStorageObjectName(value) {
+  return sanitizeFileName(value)
+    .replace(/#/g, 'N')
+    .replace(/[^\w.\-/ ]+/g, '-')
+    .replace(/\s+/g, '_');
+}
+
 function cuotaLabelFromCuotas(cuotas = []) {
   const semanas = [...new Set(cuotas.map((c) => Number(c.semana)).filter((n) => Number.isFinite(n) && n > 0))]
     .sort((a, b) => a - b);
@@ -143,20 +151,47 @@ function pickResponsePdfUrl(response) {
     || null;
 }
 
+function pickFacturadorResponsePdfUrl(response) {
+  if (!response || typeof response !== 'object') return null;
+  return response.facturador_print_a4
+    || response.record?.data?.print_a4
+    || response.record?.print_a4
+    || null;
+}
+
 async function uploadNotaVentaPdfToMinio({ solicitudId, nota, cuotas, driverName, sourceUrl, dateYmd }) {
   if (!sourceUrl) return null;
   const pdf = await facturadorBinaryRequest(sourceUrl);
   const fileName = notaVentaDownloadName({ ...nota, cuotas }, driverName, dateYmd);
-  const objectName = `${solicitudId}/${Date.now()}-${fileName}`;
-  return await uploadFileToMedia(
-    {
-      buffer: pdf.buffer,
-      mimetype: pdf.contentType || 'application/pdf',
-      originalname: objectName,
-      size: pdf.buffer.length,
-    },
-    { bucket: MIAUTO_NOTAS_VENTA_BUCKET }
-  );
+  const objectName = `${solicitudId}/${Date.now()}-${sanitizeStorageObjectName(fileName)}`;
+  const filePayload = {
+    buffer: pdf.buffer,
+    mimetype: pdf.contentType || 'application/pdf',
+    originalname: objectName,
+    size: pdf.buffer.length,
+  };
+  try {
+    return await uploadFileToMedia(filePayload, { bucket: MIAUTO_NOTAS_VENTA_BUCKET });
+  } catch (error) {
+    const canFallback = MIAUTO_NOTAS_VENTA_FALLBACK_BUCKET && MIAUTO_NOTAS_VENTA_FALLBACK_BUCKET !== MIAUTO_NOTAS_VENTA_BUCKET;
+    if (!canFallback || !/NoSuchBucket/i.test(error?.message || '')) throw error;
+    logger.warn('Bucket de notas de venta Mi Auto no existe; usando bucket fallback', {
+      bucket: MIAUTO_NOTAS_VENTA_BUCKET,
+      fallbackBucket: MIAUTO_NOTAS_VENTA_FALLBACK_BUCKET,
+    });
+    return await uploadFileToMedia(filePayload, { bucket: MIAUTO_NOTAS_VENTA_FALLBACK_BUCKET });
+  }
+}
+
+function isFacturadorPdfUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  try {
+    const url = new URL(raw, FACTURADOR_BASE_URL);
+    return url.hostname === new URL(FACTURADOR_BASE_URL).hostname;
+  } catch {
+    return false;
+  }
 }
 
 function facturadorHeaders() {
@@ -365,7 +400,7 @@ async function facturadorBinaryRequestRaw(urlOrPath) {
   const url = /^https?:\/\//i.test(String(urlOrPath || ''))
     ? new URL(urlOrPath)
     : new URL(`${FACTURADOR_BASE_URL}${urlOrPath}`);
-  const headers = facturadorHeaders();
+  const headers = isFacturadorPdfUrl(url.toString()) ? facturadorHeaders() : { Accept: 'application/pdf,*/*' };
   delete headers['Content-Type'];
   const transport = url.protocol === 'https:' ? https : http;
   const timeoutMs = Number(process.env.FACTURADOR_TIMEOUT_MS || 25000);
@@ -876,17 +911,27 @@ export async function downloadNotaVentaPdfBySolicitud(solicitudId, notaVentaId) 
   const driverName = driverNameFromRow(nota);
 
   if (!nota.print_a4) {
-    const responsePdfUrl = pickResponsePdfUrl(nota.response);
+    const responsePdfUrl = pickFacturadorResponsePdfUrl(nota.response) || pickResponsePdfUrl(nota.response);
     if (responsePdfUrl) {
+      const pdfUrl = isFacturadorPdfUrl(responsePdfUrl)
+        ? await uploadNotaVentaPdfToMinio({
+            solicitudId,
+            nota,
+            cuotas: nota.cuotas || [],
+            driverName,
+            sourceUrl: responsePdfUrl,
+            dateYmd: ymdFromDbDate(nota.created_at),
+          })
+        : responsePdfUrl;
       const updateRes = await query(
         `UPDATE module_miauto_nota_venta
          SET print_a4 = $1,
              response = COALESCE(response, '{}'::jsonb) || $2::jsonb
          WHERE id = $3::uuid
          RETURNING *`,
-        [responsePdfUrl, JSON.stringify({ recovered_print_a4: responsePdfUrl }), nota.id]
+        [pdfUrl, JSON.stringify({ recovered_print_a4: pdfUrl, facturador_print_a4: responsePdfUrl }), nota.id]
       );
-      nota = { ...nota, ...(updateRes.rows[0] || {}), print_a4: responsePdfUrl };
+      nota = { ...nota, ...(updateRes.rows[0] || {}), print_a4: pdfUrl };
     }
   }
 
@@ -907,7 +952,54 @@ export async function downloadNotaVentaPdfBySolicitud(solicitudId, notaVentaId) 
     throw new Error('No se pudo recuperar el PDF de la nota de venta. Verifica la cookie del facturador o vuelve a intentar en unos minutos.');
   }
 
-  const pdf = await facturadorBinaryRequest(nota.print_a4);
+  if (isFacturadorPdfUrl(nota.print_a4)) {
+    const facturadorPrintA4 = nota.print_a4;
+    const minioPdfUrl = await uploadNotaVentaPdfToMinio({
+      solicitudId,
+      nota,
+      cuotas: nota.cuotas || [],
+      driverName,
+      sourceUrl: facturadorPrintA4,
+      dateYmd: ymdFromDbDate(nota.created_at),
+    });
+    const updateRes = await query(
+      `UPDATE module_miauto_nota_venta
+       SET print_a4 = $1,
+           response = COALESCE(response, '{}'::jsonb) || $2::jsonb
+       WHERE id = $3::uuid
+       RETURNING *`,
+      [minioPdfUrl, JSON.stringify({ minio_pdf_url: minioPdfUrl, facturador_print_a4: facturadorPrintA4 }), nota.id]
+    );
+    nota = { ...nota, ...(updateRes.rows[0] || {}), print_a4: minioPdfUrl };
+  }
+
+  let pdf;
+  try {
+    pdf = await facturadorBinaryRequest(nota.print_a4);
+  } catch (error) {
+    const sourcePrintA4 = pickFacturadorResponsePdfUrl(nota.response);
+    if (Number(error?.status) !== 404 || !sourcePrintA4 || isFacturadorPdfUrl(nota.print_a4)) {
+      throw error;
+    }
+    const minioPdfUrl = await uploadNotaVentaPdfToMinio({
+      solicitudId,
+      nota,
+      cuotas: nota.cuotas || [],
+      driverName,
+      sourceUrl: sourcePrintA4,
+      dateYmd: ymdFromDbDate(nota.created_at),
+    });
+    const updateRes = await query(
+      `UPDATE module_miauto_nota_venta
+       SET print_a4 = $1,
+           response = COALESCE(response, '{}'::jsonb) || $2::jsonb
+       WHERE id = $3::uuid
+       RETURNING *`,
+      [minioPdfUrl, JSON.stringify({ minio_pdf_url: minioPdfUrl, repaired_broken_pdf_url: nota.print_a4, facturador_print_a4: sourcePrintA4 }), nota.id]
+    );
+    nota = { ...nota, ...(updateRes.rows[0] || {}), print_a4: minioPdfUrl };
+    pdf = await facturadorBinaryRequest(nota.print_a4);
+  }
   return {
     ...pdf,
     fileName: notaVentaDownloadName(nota, driverName),

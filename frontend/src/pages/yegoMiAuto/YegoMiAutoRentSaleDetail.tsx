@@ -682,6 +682,7 @@ export default function YegoMiAutoRentSaleDetail() {
       const fallbackName = nota.download_name || `${nota.number_full || 'nota-venta'}.pdf`;
       const fileName = fileNameFromDisposition(res.headers['content-disposition'], fallbackName);
       downloadBlob(new Blob([res.data], { type: res.headers['content-type'] || 'application/pdf' }), fileName);
+      await fetchDetail(undefined, { refresh: true });
     } catch (e: any) {
       if (opts?.fromGeneration) {
         toast('Nota creada y guardada en Yego Mi Auto, pero no se pudo descargar el PDF automáticamente.');
@@ -692,7 +693,7 @@ export default function YegoMiAutoRentSaleDetail() {
     } finally {
       setDescargandoNotaVentaId(null);
     }
-  }, [id]);
+  }, [id, fetchDetail]);
 
   const handleGenerarNotaVenta = useCallback(async () => {
     if (!id) return;

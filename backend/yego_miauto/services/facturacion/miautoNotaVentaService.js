@@ -3,6 +3,7 @@ import https from 'node:https';
 import { getClient, query } from '../../../config/database.js';
 import { logger } from '../../../utils/logger.js';
 import { getCuotasSemanalesConRacha } from '../cuotas/miautoCuotaSemanalService.js';
+import { uploadFileToMedia } from '../../../services/voucherService.js';
 
 const FACTURADOR_BASE_URL = (process.env.FACTURADOR_BASE_URL || 'https://ajhla.facturador.3w.pe').replace(/\/+$/, '');
 const FACTURADOR_SERIES_ID = Number(process.env.FACTURADOR_SERIES_ID || 10);
@@ -11,6 +12,7 @@ const FACTURADOR_ESTABLISHMENT_ID = Number(process.env.FACTURADOR_ESTABLISHMENT_
 const FACTURADOR_SELLER_ID = Number(process.env.FACTURADOR_SELLER_ID || 2);
 const FACTURADOR_ITEM_ID = Number(process.env.FACTURADOR_ITEM_ID || 1);
 const FACTURADOR_PAYMENT_METHOD_TYPE_ID = process.env.FACTURADOR_PAYMENT_METHOD_TYPE_ID || '01';
+const MIAUTO_NOTAS_VENTA_BUCKET = process.env.MIAUTO_NOTAS_VENTA_BUCKET || 'miauto-notas-venta';
 const IGV_RATE = Number(process.env.FACTURADOR_IGV_RATE || 0.18);
 const FACTURADOR_TLS_REJECT_UNAUTHORIZED = process.env.FACTURADOR_TLS_REJECT_UNAUTHORIZED === '1';
 const DRIVER_NAME_SELECT_SQL = `
@@ -118,6 +120,32 @@ function notaVentaDownloadName(nota, driverName, dateYmd = ymdFromDbDate(nota?.c
     cuotas: nota?.cuotas || [],
     driverName,
   })}.pdf`;
+}
+
+function facturadorErrorPayload(error) {
+  return {
+    success: false,
+    message: error?.message || 'Error consultando facturador',
+    status: error?.status || null,
+    data: error?.data || null,
+    at: new Date().toISOString(),
+  };
+}
+
+async function uploadNotaVentaPdfToMinio({ solicitudId, nota, cuotas, driverName, sourceUrl, dateYmd }) {
+  if (!sourceUrl) return null;
+  const pdf = await facturadorBinaryRequest(sourceUrl);
+  const fileName = notaVentaDownloadName({ ...nota, cuotas }, driverName, dateYmd);
+  const objectName = `${solicitudId}/${Date.now()}-${fileName}`;
+  return await uploadFileToMedia(
+    {
+      buffer: pdf.buffer,
+      mimetype: pdf.contentType || 'application/pdf',
+      originalname: objectName,
+      size: pdf.buffer.length,
+    },
+    { bucket: MIAUTO_NOTAS_VENTA_BUCKET }
+  );
 }
 
 function facturadorHeaders() {
@@ -452,6 +480,203 @@ function semanaOrdinal(cuotasOrdenadas, cuota) {
   return idx >= 0 ? idx + 1 : null;
 }
 
+async function buildCuotasSeleccionadas(solicitudId, cuotas, { requirePaid = true } = {}) {
+  const { data: cuotasApi } = await getCuotasSemanalesConRacha(solicitudId, { incluirAbonoComprobantePendiente: false });
+  const apiById = new Map((cuotasApi || []).map((c) => [String(c.id), c]));
+  const allCuotasOrdenadas = (cuotasApi || []).length > 0 ? cuotasApi : cuotas;
+
+  const seleccionadas = cuotas.map((cuota) => {
+    const apiRow = apiById.get(String(cuota.id)) || cuota;
+    const status = String(apiRow.status || cuota.status || '').toLowerCase();
+    const paidAmount = round2(apiRow.paid_amount ?? cuota.paid_amount ?? 0);
+    if (requirePaid && status !== 'paid') {
+      throw new Error('Solo puedes generar nota de venta para cuotas con estado pagado');
+    }
+    if (paidAmount <= 0.005) {
+      throw new Error('Una cuota pagada no tiene monto pagado válido');
+    }
+    return {
+      id: String(cuota.id),
+      amount: paidAmount,
+      semana: semanaOrdinal(allCuotasOrdenadas, cuota),
+      moneda: normalizeSaleCurrency(apiRow.moneda || cuota.moneda),
+    };
+  });
+  const monedas = [...new Set(seleccionadas.map((c) => c.moneda))];
+  if (monedas.length !== 1) {
+    throw new Error('No puedes mezclar cuotas en soles y dólares en una misma nota de venta');
+  }
+  return { seleccionadas, currencyTypeId: monedas[0] || 'PEN' };
+}
+
+async function ensureFacturadorSaleNoteDisponible(client, saleNoteId) {
+  const res = await client.query(
+    `SELECT id, number_full
+     FROM module_miauto_nota_venta
+     WHERE facturador_sale_note_id = $1
+       AND deleted_at IS NULL
+     LIMIT 1`,
+    [Number(saleNoteId)]
+  );
+  if (res.rows.length > 0) {
+    throw new Error(`La nota de venta del facturador ya existe en Yego Mi Auto: ${res.rows[0].number_full || saleNoteId}`);
+  }
+}
+
+async function insertNotaVentaLocal(client, {
+  solicitudId,
+  saleNoteId,
+  factData = {},
+  customerId,
+  currencyTypeId,
+  exchangeRateSale,
+  total,
+  payload,
+  response,
+  createdBy,
+  cuotas,
+}) {
+  const insertRes = await client.query(
+    `INSERT INTO module_miauto_nota_venta
+     (solicitud_id, facturador_sale_note_id, number_full, external_id, print_a4, customer_id,
+      currency_type_id, exchange_rate_sale, total, payload, response, cash_response, created_by)
+     VALUES ($1::uuid, $2, $3, $4, NULL, $5, $6, $7, $8, $9::jsonb, $10::jsonb, NULL, $11)
+     RETURNING *`,
+    [
+      solicitudId,
+      Number(saleNoteId),
+      factData.number_full || factData.full_number || null,
+      factData.external_id || null,
+      customerId,
+      currencyTypeId,
+      exchangeRateSale,
+      total,
+      JSON.stringify(payload),
+      JSON.stringify(response),
+      createdBy || null,
+    ]
+  );
+  const nota = insertRes.rows[0];
+  for (const cuota of cuotas) {
+    await client.query(
+      `INSERT INTO module_miauto_nota_venta_cuota (nota_venta_id, cuota_semanal_id, amount)
+       VALUES ($1::uuid, $2::uuid, $3)`,
+      [nota.id, cuota.id, cuota.amount]
+    );
+  }
+  return nota;
+}
+
+async function appendNotaVentaResponse(notaId, patch) {
+  const res = await query(
+    `UPDATE module_miauto_nota_venta
+     SET response = COALESCE(response, '{}'::jsonb) || $1::jsonb
+     WHERE id = $2::uuid
+     RETURNING *`,
+    [JSON.stringify(patch), notaId]
+  );
+  return res.rows[0] || null;
+}
+
+async function enrichNotaVentaPostCommit({ nota, saleNoteId, solicitudId, cuotas, driverName, dateYmd, sourcePrintA4 = null }) {
+  const warnings = [];
+  let updatedNota = nota;
+  let facturadorPrintA4 = sourcePrintA4;
+
+  try {
+    const record = await facturadorRequest(`/sale-notes/record/${saleNoteId}`, { method: 'GET' });
+    const recordData = record?.data || {};
+    facturadorPrintA4 = recordData.print_a4 || facturadorPrintA4;
+    const res = await query(
+      `UPDATE module_miauto_nota_venta
+       SET number_full = COALESCE($1, number_full),
+           external_id = COALESCE($2, external_id),
+           response = COALESCE(response, '{}'::jsonb) || $3::jsonb
+       WHERE id = $4::uuid
+       RETURNING *`,
+      [
+        recordData.number_full || recordData.full_number || null,
+        recordData.external_id || null,
+        JSON.stringify({ record, facturador_print_a4: facturadorPrintA4 }),
+        updatedNota.id,
+      ]
+    );
+    updatedNota = res.rows[0] || updatedNota;
+  } catch (error) {
+    const warning = { step: 'record', ...facturadorErrorPayload(error) };
+    warnings.push(warning);
+    logger.warn('No se pudo consultar record de nota de venta; nota local conservada', { saleNoteId, error: error.message });
+    try {
+      await appendNotaVentaResponse(updatedNota.id, { record_error: warning });
+    } catch (updateError) {
+      logger.warn('No se pudo guardar advertencia de record en nota local', { saleNoteId, notaVentaId: updatedNota.id, error: updateError.message });
+    }
+  }
+
+  if (facturadorPrintA4) {
+    try {
+      const minioPdfUrl = await uploadNotaVentaPdfToMinio({
+        solicitudId,
+        nota: { ...updatedNota, facturador_sale_note_id: saleNoteId },
+        cuotas,
+        driverName,
+        sourceUrl: facturadorPrintA4,
+        dateYmd,
+      });
+      const res = await query(
+        `UPDATE module_miauto_nota_venta
+         SET print_a4 = $1,
+             response = COALESCE(response, '{}'::jsonb) || $2::jsonb
+         WHERE id = $3::uuid
+         RETURNING *`,
+        [minioPdfUrl, JSON.stringify({ minio_pdf_url: minioPdfUrl, facturador_print_a4: facturadorPrintA4 }), updatedNota.id]
+      );
+      updatedNota = res.rows[0] || updatedNota;
+    } catch (error) {
+      const warning = { step: 'minio_pdf', ...facturadorErrorPayload(error) };
+      warnings.push(warning);
+      logger.warn('No se pudo subir PDF de nota de venta a MinIO; nota local conservada', { saleNoteId, notaVentaId: updatedNota.id, error: error.message });
+      try {
+        await appendNotaVentaResponse(updatedNota.id, { minio_pdf_error: warning, facturador_print_a4: facturadorPrintA4 });
+      } catch (updateError) {
+        logger.warn('No se pudo guardar advertencia de MinIO en nota local', { saleNoteId, notaVentaId: updatedNota.id, error: updateError.message });
+      }
+    }
+  }
+
+  return { nota: updatedNota, warnings };
+}
+
+async function persistCashResponse(notaId, saleNoteId) {
+  let cashResponse = null;
+  const warnings = [];
+  try {
+    cashResponse = await facturadorRequest('/cash/cash_document', {
+      method: 'POST',
+      body: JSON.stringify({ document_id: null, sale_note_id: saleNoteId }),
+    });
+  } catch (error) {
+    cashResponse = facturadorErrorPayload(error);
+    warnings.push({ step: 'cash', ...cashResponse });
+    logger.warn('No se pudo registrar nota de venta en caja; nota local conservada', { saleNoteId, error: error.message });
+  }
+
+  try {
+    const res = await query(
+      `UPDATE module_miauto_nota_venta
+       SET cash_response = $1::jsonb
+       WHERE id = $2::uuid
+       RETURNING *`,
+      [JSON.stringify(cashResponse), notaId]
+    );
+    return { nota: res.rows[0] || null, cashResponse, warnings };
+  } catch (error) {
+    warnings.push({ step: 'cash_update', ...facturadorErrorPayload(error) });
+    logger.warn('No se pudo guardar respuesta de caja en nota local', { saleNoteId, notaVentaId: notaId, error: error.message });
+    return { nota: null, cashResponse, warnings };
+  }
+}
+
 export async function listNotasVentaBySolicitud(solicitudId) {
   await ensureNotaVentaTables({ query });
   const res = await query(
@@ -610,6 +835,7 @@ export async function generarNotaVentaCuotasPagadas(solicitudId, cuotaIds, opts 
   const uniqueCuotaIds = [...new Set(cuotaIds.map((x) => String(x).trim()).filter(Boolean))];
 
   const client = await getClient();
+  let localCommitted = false;
   try {
     await client.query('BEGIN');
     await ensureNotaVentaTables(client);
@@ -618,33 +844,7 @@ export async function generarNotaVentaCuotasPagadas(solicitudId, cuotaIds, opts 
     if (!Number.isInteger(customerId) || customerId <= 0) {
       throw new Error('Este conductor no tiene customer ID del facturador vinculado');
     }
-    const { data: cuotasApi } = await getCuotasSemanalesConRacha(solicitudId, { incluirAbonoComprobantePendiente: false });
-    const apiById = new Map((cuotasApi || []).map((c) => [String(c.id), c]));
-    const allCuotasOrdenadas = (cuotasApi || []).length > 0 ? cuotasApi : cuotas;
-
-    const seleccionadas = cuotas.map((cuota) => {
-      const apiRow = apiById.get(String(cuota.id)) || cuota;
-      const status = String(apiRow.status || cuota.status || '').toLowerCase();
-      const paidAmount = round2(apiRow.paid_amount ?? cuota.paid_amount ?? 0);
-      if (status !== 'paid') {
-        throw new Error('Solo puedes generar nota de venta para cuotas con estado pagado');
-      }
-      if (paidAmount <= 0.005) {
-        throw new Error('Una cuota pagada no tiene monto pagado válido');
-      }
-      const moneda = normalizeSaleCurrency(apiRow.moneda || cuota.moneda);
-      return {
-        id: String(cuota.id),
-        amount: paidAmount,
-        semana: semanaOrdinal(allCuotasOrdenadas, cuota),
-        moneda,
-      };
-    });
-    const monedasSeleccionadas = [...new Set(seleccionadas.map((c) => c.moneda))];
-    if (monedasSeleccionadas.length !== 1) {
-      throw new Error('No puedes mezclar cuotas en soles y dólares en una misma nota de venta');
-    }
-    const currencyTypeId = monedasSeleccionadas[0] || 'PEN';
+    const { seleccionadas, currencyTypeId } = await buildCuotasSeleccionadas(solicitudId, cuotas);
 
     const issueDate = limaYmd();
     const [exchangeRateSale, item] = await Promise.all([
@@ -693,56 +893,38 @@ export async function generarNotaVentaCuotasPagadas(solicitudId, cuotaIds, opts 
       throw error;
     }
 
-    let record = null;
-    try {
-      record = await facturadorRequest(`/sale-notes/record/${saleNoteId}`, { method: 'GET' });
-    } catch (error) {
-      logger.warn('No se pudo consultar record de nota de venta', { saleNoteId, error: error.message });
-    }
+    await ensureFacturadorSaleNoteDisponible(client, saleNoteId);
 
-    let cashResponse = null;
-    try {
-      cashResponse = await facturadorRequest('/cash/cash_document', {
-        method: 'POST',
-        body: JSON.stringify({ document_id: null, sale_note_id: saleNoteId }),
-      });
-    } catch (error) {
-      logger.warn('No se pudo registrar nota de venta en caja', { saleNoteId, error: error.message });
-      cashResponse = { success: false, message: error.message, data: error.data || null };
-    }
-
-    const factData = record?.data || saleNoteResponse?.data || {};
-    const insertRes = await client.query(
-      `INSERT INTO module_miauto_nota_venta
-       (solicitud_id, facturador_sale_note_id, number_full, external_id, print_a4, customer_id,
-        currency_type_id, exchange_rate_sale, total, payload, response, cash_response, created_by)
-       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13)
-       RETURNING *`,
-      [
-        solicitudId,
-        Number(saleNoteId),
-        factData.number_full || factData.full_number || saleNoteResponse?.data?.number_full || null,
-        factData.external_id || null,
-        factData.print_a4 || null,
-        customerId,
-        currencyTypeId,
-        exchangeRateSale,
-        payload.total,
-        JSON.stringify(payload),
-        JSON.stringify({ saleNoteResponse, record }),
-        JSON.stringify(cashResponse),
-        opts.created_by || null,
-      ]
-    );
-    const nota = insertRes.rows[0];
-    for (const cuota of seleccionadas) {
-      await client.query(
-        `INSERT INTO module_miauto_nota_venta_cuota (nota_venta_id, cuota_semanal_id, amount)
-         VALUES ($1::uuid, $2::uuid, $3)`,
-        [nota.id, cuota.id, cuota.amount]
-      );
-    }
+    const factData = saleNoteResponse?.data || {};
+    let nota = await insertNotaVentaLocal(client, {
+      solicitudId,
+      saleNoteId,
+      factData,
+      customerId,
+      currencyTypeId,
+      exchangeRateSale,
+      total: payload.total,
+      payload,
+      response: { saleNoteResponse, record: null, facturador_print_a4: factData.print_a4 || null },
+      createdBy: opts.created_by || null,
+      cuotas: seleccionadas,
+    });
     await client.query('COMMIT');
+    localCommitted = true;
+
+    const post = await enrichNotaVentaPostCommit({
+      nota,
+      saleNoteId,
+      solicitudId,
+      cuotas: seleccionadas,
+      driverName,
+      dateYmd: issueDate,
+      sourcePrintA4: factData.print_a4 || null,
+    });
+    nota = post.nota;
+    const cash = await persistCashResponse(nota.id, saleNoteId);
+    nota = cash.nota || nota;
+    const warnings = [...post.warnings, ...cash.warnings];
 
     logger.info('Nota de venta Mi Auto generada', {
       solicitudId,
@@ -756,10 +938,13 @@ export async function generarNotaVentaCuotasPagadas(solicitudId, cuotaIds, opts 
       ...nota,
       cuotas: seleccionadas,
       download_name: notaVentaDownloadName({ ...nota, facturador_sale_note_id: saleNoteId, cuotas: seleccionadas }, driverName, issueDate),
-      cash_response: cashResponse,
+      cash_response: cash.cashResponse,
+      warnings,
     };
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (!localCommitted) {
+      await client.query('ROLLBACK');
+    }
     logger.error('Error generando nota de venta Mi Auto', {
       solicitudId,
       cuotaIds: uniqueCuotaIds,

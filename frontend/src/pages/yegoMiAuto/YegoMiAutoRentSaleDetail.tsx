@@ -177,6 +177,7 @@ interface NotaVentaMiAuto {
   created_at?: string;
   download_name?: string | null;
   cuotas?: { cuota_semanal_id: string; amount: number | string; semana?: number | null }[];
+  warnings?: { step?: string; message?: string }[];
 }
 
 function fileNameFromDisposition(disposition: string | undefined, fallback: string): string {
@@ -300,8 +301,9 @@ export default function YegoMiAutoRentSaleDetail() {
   const [notaVentaAnularModal, setNotaVentaAnularModal] = useState<NotaVentaMiAuto | null>(null);
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
-  const [whatsAppTab, setWhatsAppTab] = useState<'cuotas' | 'metricas'>('cuotas');
+  const [whatsAppTab, setWhatsAppTab] = useState<'cuotas' | 'metricas' | 'comprobante'>('cuotas');
   const [whatsAppCuotasMsg, setWhatsAppCuotasMsg] = useState('');
+  const [whatsAppNotaVentaId, setWhatsAppNotaVentaId] = useState<string>('');
   const [metricasData, setMetricasData] = useState<any>(null);
   const [loadingMetricas, setLoadingMetricas] = useState(false);
   const [metricasError, setMetricasError] = useState('');
@@ -345,9 +347,44 @@ export default function YegoMiAutoRentSaleDetail() {
   }
 
   const whatsAppPhone = solicitud ? getWhatsAppPhone(solicitud.phone, solicitud.country || 'PE') : '';
+  const notasVentaConPdf = useMemo(() => notasVenta.filter((nota) => !!nota.print_a4), [notasVenta]);
+  const whatsAppNotaSeleccionada = useMemo(() => {
+    if (notasVentaConPdf.length === 0) return null;
+    return notasVentaConPdf.find((nota) => nota.id === whatsAppNotaVentaId) || notasVentaConPdf[0];
+  }, [notasVentaConPdf, whatsAppNotaVentaId]);
+  const whatsAppComprobanteMsg = useMemo(() => {
+    if (!whatsAppNotaSeleccionada) {
+      return 'Hola, te compartimos tu comprobante de pago de Yego Mi Auto.';
+    }
+    const name = driverNameFromState || 'Conductor';
+    const moneda = whatsAppNotaSeleccionada.currency_type_id || 'PEN';
+    const sym = symMoneda(moneda);
+    const semanas = (whatsAppNotaSeleccionada.cuotas || [])
+      .map((c) => c.semana)
+      .filter((semana): semana is number => semana != null)
+      .sort((a, b) => a - b);
+    const cuotasLine = semanas.length > 0
+      ? `\nCuota(s): ${semanas.map((s) => `#${s}`).join(', ')}`
+      : '';
+    return [
+      `Hola, ${name}.`,
+      '',
+      `Te compartimos tu comprobante de pago ${whatsAppNotaSeleccionada.number_full || ''}.`.trim(),
+      `Monto: ${sym} ${miautoNum(whatsAppNotaSeleccionada.total).toFixed(2)}${cuotasLine}`,
+      '',
+      'Por favor conserva este archivo como constancia.',
+    ].join('\n');
+  }, [driverNameFromState, whatsAppNotaSeleccionada]);
+  const whatsAppCanSend = Boolean(
+    whatsAppPhone
+    && whatsAppMessage.trim()
+    && !sendingWhatsApp
+    && (whatsAppTab !== 'comprobante' || whatsAppNotaSeleccionada?.print_a4)
+  );
 
   const openWhatsAppModal = () => {
     setWhatsAppTab('cuotas');
+    setWhatsAppNotaVentaId(notasVentaConPdf[0]?.id || '');
     setMetricasData(null);
     setMetricasError('');
 
@@ -359,10 +396,24 @@ export default function YegoMiAutoRentSaleDetail() {
 
   const handleSendWhatsApp = async () => {
     if (!id || !whatsAppMessage.trim() || !whatsAppPhone) return;
+    if (whatsAppTab === 'comprobante' && !whatsAppNotaSeleccionada?.print_a4) {
+      toast.error('Selecciona una nota de venta con PDF disponible');
+      return;
+    }
     setSendingWhatsApp(true);
     try {
-      await api.post(`/miauto/solicitudes/${id}/send-whatsapp`, { message: whatsAppMessage });
-      toast.success('Mensaje enviado por WhatsApp');
+      const payload: Record<string, string> = { message: whatsAppMessage };
+      if (whatsAppTab === 'comprobante' && whatsAppNotaSeleccionada?.print_a4) {
+        payload.nota_venta_id = whatsAppNotaSeleccionada.id;
+      }
+      const res = await api.post(`/miauto/solicitudes/${id}/send-whatsapp`, payload);
+      const sentAsAttachment = res.data?.data?.attachment_sent;
+      const sentAsLink = res.data?.data?.fallback_link_sent;
+      if (whatsAppTab === 'comprobante' && sentAsLink) {
+        toast('El proveedor no aceptó el adjunto; se envió el enlace del PDF por WhatsApp.');
+      } else {
+        toast.success(sentAsAttachment ? 'Comprobante enviado por WhatsApp' : 'Mensaje enviado por WhatsApp');
+      }
       setShowWhatsAppModal(false);
     } catch (err: any) {
       toast.error(err.response?.data?.message || 'Error al enviar el mensaje');
@@ -386,7 +437,7 @@ export default function YegoMiAutoRentSaleDetail() {
     }
   }, [id]);
 
-  const handleWhatsAppTabChange = useCallback((tab: 'cuotas' | 'metricas') => {
+  const handleWhatsAppTabChange = useCallback((tab: 'cuotas' | 'metricas' | 'comprobante') => {
     setWhatsAppTab(tab);
     if (tab === 'metricas' && !loadingMetricas) {
       fetchMetricas();
@@ -447,10 +498,12 @@ export default function YegoMiAutoRentSaleDetail() {
   useEffect(() => {
     if (whatsAppTab === 'metricas' && metricasMessages.length > 0) {
       setWhatsAppMessage(metricasMessages[0]);
+    } else if (whatsAppTab === 'comprobante') {
+      setWhatsAppMessage(whatsAppComprobanteMsg);
     } else if (whatsAppTab === 'cuotas' && whatsAppCuotasMsg) {
       setWhatsAppMessage(whatsAppCuotasMsg);
     }
-  }, [whatsAppTab, metricasMessages, whatsAppCuotasMsg]);
+  }, [whatsAppTab, metricasMessages, whatsAppCuotasMsg, whatsAppComprobanteMsg]);
 
   const fetchDetail = useCallback(async (signal?: AbortSignal, opts?: { refresh?: boolean }) => {
     if (!id) return;
@@ -619,7 +672,7 @@ export default function YegoMiAutoRentSaleDetail() {
     setNotaVentaCuotasSeleccionadas((prev) => ({ ...prev, [cuotaId]: !prev[cuotaId] }));
   }, []);
 
-  const handleDescargarNotaVenta = useCallback(async (nota: NotaVentaMiAuto) => {
+  const handleDescargarNotaVenta = useCallback(async (nota: NotaVentaMiAuto, opts?: { fromGeneration?: boolean }) => {
     if (!id || !nota?.id) return;
     try {
       setDescargandoNotaVentaId(nota.id);
@@ -630,7 +683,11 @@ export default function YegoMiAutoRentSaleDetail() {
       const fileName = fileNameFromDisposition(res.headers['content-disposition'], fallbackName);
       downloadBlob(new Blob([res.data], { type: res.headers['content-type'] || 'application/pdf' }), fileName);
     } catch (e: any) {
-      toast.error(e.response?.data?.message || 'No se pudo descargar la nota de venta');
+      if (opts?.fromGeneration) {
+        toast('Nota creada y guardada en Yego Mi Auto, pero no se pudo descargar el PDF automáticamente.');
+      } else {
+        toast.error(e.response?.data?.message || 'No se pudo descargar la nota de venta');
+      }
       if (nota.print_a4) window.open(nota.print_a4, '_blank', 'noopener,noreferrer');
     } finally {
       setDescargandoNotaVentaId(null);
@@ -659,11 +716,14 @@ export default function YegoMiAutoRentSaleDetail() {
       });
       const nota = res.data?.data;
       toast.success(`Nota de venta generada${nota?.number_full ? `: ${nota.number_full}` : ''}`);
+      if (Array.isArray(nota?.warnings) && nota.warnings.length > 0) {
+        toast('Nota guardada en Yego Mi Auto. Algunos pasos secundarios del facturador quedaron con advertencia.');
+      }
       setShowNotasVentaModal(false);
       setNotaVentaCuotasSeleccionadas({});
       await fetchDetail(undefined, { refresh: true });
       if (nota?.id) {
-        await handleDescargarNotaVenta(nota);
+        await handleDescargarNotaVenta(nota, { fromGeneration: true });
       } else if (nota?.print_a4) {
         window.open(nota.print_a4, '_blank', 'noopener,noreferrer');
       }
@@ -2362,6 +2422,9 @@ export default function YegoMiAutoRentSaleDetail() {
               <button type="button" onClick={() => handleWhatsAppTabChange('metricas')} className={`px-5 py-2.5 text-sm font-medium transition-colors ${whatsAppTab === 'metricas' ? 'text-[#8B1A1A] border-b-2 border-[#8B1A1A]' : 'text-gray-500 hover:text-gray-700'}`}>
                 Metricas
               </button>
+              <button type="button" onClick={() => handleWhatsAppTabChange('comprobante')} className={`px-5 py-2.5 text-sm font-medium transition-colors ${whatsAppTab === 'comprobante' ? 'text-[#8B1A1A] border-b-2 border-[#8B1A1A]' : 'text-gray-500 hover:text-gray-700'}`}>
+                Comprobante de pago
+              </button>
             </div>
             <div className="p-5 overflow-y-auto flex-1 grid grid-cols-2 gap-4">
               {/* Columna izquierda */}
@@ -2452,7 +2515,7 @@ export default function YegoMiAutoRentSaleDetail() {
                       </div>
                     )}
                   </>
-                ) : (
+                ) : whatsAppTab === 'metricas' ? (
                   <>
                     <div>
                       <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conductor</span>
@@ -2555,6 +2618,67 @@ export default function YegoMiAutoRentSaleDetail() {
                       <p className="text-sm text-gray-500 py-4">No hay objetivos activos para este conductor.</p>
                     )}
                   </>
+                ) : (
+                  <>
+                    <div>
+                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conductor</span>
+                      <p className="mt-1 text-gray-900 font-medium">
+                        {driverNameFromState || solicitud?.phone || solicitud?.dni || '—'}
+                      </p>
+                      {solicitud?.phone && (
+                        <p className="text-sm text-gray-500 mt-0.5">{solicitud.phone}</p>
+                      )}
+                    </div>
+
+                    {notasVentaConPdf.length === 0 ? (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                        <p className="text-sm font-medium text-amber-900">No hay comprobantes con PDF disponible.</p>
+                        <p className="text-xs text-amber-700 mt-1">Primero genera la nota de venta y espera que el PDF quede guardado.</p>
+                      </div>
+                    ) : (
+                      <div>
+                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Comprobante</span>
+                        <div className="mt-2 space-y-2 max-h-[340px] overflow-y-auto pr-1">
+                          {notasVentaConPdf.map((nota) => {
+                            const selected = whatsAppNotaSeleccionada?.id === nota.id;
+                            const moneda = nota.currency_type_id || 'PEN';
+                            const semanas = (nota.cuotas || [])
+                              .map((c) => c.semana)
+                              .filter((semana): semana is number => semana != null)
+                              .sort((a, b) => a - b);
+                            return (
+                              <label
+                                key={nota.id}
+                                className={`block rounded-lg border p-3 cursor-pointer transition ${selected ? 'border-[#8B1A1A] bg-red-50/50' : 'border-gray-200 bg-gray-50/80 hover:bg-gray-50'}`}
+                              >
+                                <div className="flex items-start gap-3">
+                                  <input
+                                    type="radio"
+                                    checked={selected}
+                                    onChange={() => setWhatsAppNotaVentaId(nota.id)}
+                                    className="mt-1 h-4 w-4 border-gray-300 text-[#8B1A1A] focus:ring-[#8B1A1A]"
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-semibold text-gray-900 truncate">{nota.number_full || `ID ${nota.facturador_sale_note_id}`}</span>
+                                      <span className="text-sm font-bold text-green-700 whitespace-nowrap">{symMoneda(moneda)} {miautoNum(nota.total).toFixed(2)}</span>
+                                    </div>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                      {semanas.length > 0 ? `Cuota(s): ${semanas.map((s) => `#${s}`).join(', ')}` : 'Sin cuotas asociadas'}
+                                    </p>
+                                    <div className="mt-2 flex items-center gap-2 text-xs">
+                                      <FileText className="w-3.5 h-3.5 text-[#8B1A1A]" />
+                                      <span className="text-gray-600 truncate">{nota.download_name || `${nota.number_full || 'comprobante'}.pdf`}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
               {/* Columna derecha: Mensaje */}
@@ -2580,11 +2704,11 @@ export default function YegoMiAutoRentSaleDetail() {
               <button
                 type="button"
                 onClick={handleSendWhatsApp}
-                disabled={!whatsAppPhone || !whatsAppMessage.trim() || sendingWhatsApp}
-                className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium text-white ${whatsAppPhone && whatsAppMessage.trim() && !sendingWhatsApp ? 'bg-[#25D366] hover:bg-[#20BD5A]' : 'bg-gray-300 cursor-not-allowed'}`}
+                disabled={!whatsAppCanSend}
+                className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium text-white ${whatsAppCanSend ? 'bg-[#25D366] hover:bg-[#20BD5A]' : 'bg-gray-300 cursor-not-allowed'}`}
               >
                 <FaWhatsapp className="w-5 h-5" />
-                {sendingWhatsApp ? 'Enviando...' : whatsAppPhone ? 'Enviar por WhatsApp' : 'Sin numero'}
+                {sendingWhatsApp ? 'Enviando...' : whatsAppPhone ? (whatsAppTab === 'comprobante' ? 'Enviar comprobante' : 'Enviar por WhatsApp') : 'Sin numero'}
               </button>
             </div>
           </div>

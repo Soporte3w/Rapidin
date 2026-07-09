@@ -5,7 +5,7 @@ import { successResponse, errorResponse } from '../../../utils/responses.js';
 import { logger } from '../../../utils/logger.js';
 import { getTipoCambioByCountry, setTipoCambio, listTiposCambio } from '../../services/tipo-cambio/miautoTipoCambioService.js';
 import { listBySolicitud, createAdjunto } from '../../services/adjuntos/miautoAdjuntoService.js';
-import { sendWhatsAppMessage } from '../../../services/authService.js';
+import { sendWhatsAppDocument, sendWhatsAppMessage } from '../../../services/authService.js';
 import { listBySolicitud as listOtrosGastosBySolicitud, updateOtroGastoStatus } from '../../services/gastos/miautoOtrosGastosService.js';
 import { getSolicitudById } from '../../services/solicitud/miautoSolicitudService.js';
 import pool from '../../../database/connection.js';
@@ -16,6 +16,31 @@ function trimOrUndefined(x) {
   if (x == null) return undefined;
   const s = String(x).trim();
   return s === '' ? undefined : s;
+}
+
+function miautoDriverNameFromSolicitud(sol) {
+  return [
+    sol?.driver_first_name || sol?.first_name,
+    sol?.driver_last_name || sol?.last_name,
+  ].filter(Boolean).join(' ').trim()
+    || sol?.driver_name
+    || sol?.full_name
+    || sol?.dni
+    || 'Conductor';
+}
+
+async function insertWhatsAppLog({ solicitudId, driverName, phone, message, status, error, userId }) {
+  try {
+    await pool.query(
+      `INSERT INTO module_miauto_whatsapp_log (solicitud_id, driver_name, phone, message, status, error, created_by, sent_at)
+       VALUES ($1, $2, $3, $4, $5::text, $6, $7, CASE WHEN $5::text = 'sent' THEN CURRENT_TIMESTAMP ELSE NULL END)`,
+      [solicitudId, driverName, phone, message, status, error || null, userId || null]
+    );
+  } catch (errorLog) {
+    if (errorLog?.code !== '42703') {
+      logger.error('Error insertando log WhatsApp MiAuto:', errorLog);
+    }
+  }
 }
 
 async function ensureSolicitudOwnedByDriver(solicitudId, req, res) {
@@ -135,7 +160,85 @@ router.post('/solicitudes/:id/send-whatsapp', validateUUID, async (req, res) => 
       phone = '57' + digits;
     }
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    const notaVentaId = trimOrUndefined(req.body?.nota_venta_id);
+    let comprobanteAdjunto = null;
     if (!message) return errorResponse(res, 'El mensaje no puede estar vacío', 400);
+
+    if (notaVentaId) {
+      const notaRes = await pool.query(
+        `SELECT number_full, print_a4
+         FROM module_miauto_nota_venta
+         WHERE id = $1::uuid
+           AND solicitud_id = $2::uuid
+           AND deleted_at IS NULL
+         LIMIT 1`,
+        [notaVentaId, req.params.id]
+      );
+      const nota = notaRes.rows[0];
+      if (!nota?.print_a4) {
+        return errorResponse(res, 'La nota de venta seleccionada no tiene PDF disponible', 400);
+      }
+      comprobanteAdjunto = {
+        url: nota.print_a4,
+        name: `${nota.number_full || 'comprobante-de-pago'}.pdf`,
+        mime: 'application/pdf',
+      };
+    }
+
+    if (comprobanteAdjunto) {
+      const documentResult = await sendWhatsAppDocument(
+        phone,
+        {
+          message,
+          fileUrl: comprobanteAdjunto.url,
+          fileName: comprobanteAdjunto.name,
+          mimeType: comprobanteAdjunto.mime,
+        },
+        process.env.WHATSAPP_MIAUTO_TOKEN
+      );
+      if (documentResult.success) {
+        await insertWhatsAppLog({
+          solicitudId: req.params.id,
+          driverName: miautoDriverNameFromSolicitud(sol),
+          phone,
+          message: `[COMPROBANTE ENVIADO] ${comprobanteAdjunto.name}\n${message}`,
+          status: 'sent',
+          error: null,
+          userId: req.user?.id || null,
+        });
+        return successResponse(res, { sent: true, attachment_sent: true }, 'Mensaje enviado por WhatsApp');
+      }
+
+      const fallbackMessage = `${message}\n\nComprobante de pago: ${comprobanteAdjunto.url}`;
+      const fallbackResult = await sendWhatsAppMessage(phone, fallbackMessage, process.env.WHATSAPP_MIAUTO_TOKEN);
+      if (!fallbackResult.success) {
+        await insertWhatsAppLog({
+          solicitudId: req.params.id,
+          driverName: miautoDriverNameFromSolicitud(sol),
+          phone,
+          message: `[COMPROBANTE FALLIDO] ${comprobanteAdjunto.name}\n${message}`,
+          status: 'failed',
+          error: documentResult.error || fallbackResult.error || 'Error al enviar WhatsApp',
+          userId: req.user?.id || null,
+        });
+        return errorResponse(res, documentResult.error || fallbackResult.error || 'Error al enviar WhatsApp', 400);
+      }
+      await insertWhatsAppLog({
+        solicitudId: req.params.id,
+        driverName: miautoDriverNameFromSolicitud(sol),
+        phone,
+        message: `[COMPROBANTE ENVIADO COMO LINK] ${comprobanteAdjunto.name}\n${fallbackMessage}`,
+        status: 'sent',
+        error: documentResult.error || null,
+        userId: req.user?.id || null,
+      });
+      return successResponse(
+        res,
+        { sent: true, attachment_sent: false, fallback_link_sent: true, attachment_error: documentResult.error },
+        'Mensaje enviado por WhatsApp con enlace del comprobante'
+      );
+    }
+
     const result = await sendWhatsAppMessage(phone, message, process.env.WHATSAPP_MIAUTO_TOKEN);
     if (!result.success) return errorResponse(res, result.error || 'Error al enviar WhatsApp', 400);
     return successResponse(res, { sent: true }, 'Mensaje enviado por WhatsApp');

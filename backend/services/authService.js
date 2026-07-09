@@ -130,6 +130,66 @@ export const sendWhatsAppMessage = async (phone, message, instanceId = null) => 
     }
 };
 
+/**
+ * Envía un documento por WhatsApp. Si el proveedor no acepta el endpoint de
+ * documentos, devuelve success=false para que el caller pueda hacer fallback.
+ */
+export const sendWhatsAppDocument = async (phone, { message = '', fileUrl, fileName = 'documento.pdf', mimeType = 'application/pdf' } = {}, instanceId = null) => {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone || normalizedPhone === '+') {
+        return { success: false, error: 'Número de teléfono inválido' };
+    }
+    if (!fileUrl) {
+        return { success: false, error: 'URL del documento requerida' };
+    }
+
+    const phoneWithPlus = normalizedPhone.startsWith('+') ? normalizedPhone : `+${normalizedPhone}`;
+    const whatsappInstanceId = instanceId || process.env.WHATSAPP_OTP_TOKEN || process.env.WHATSAPP_INSTANCE_ID;
+    if (!whatsappInstanceId) {
+        return { success: false, error: 'WHATSAPP_OTP_TOKEN no configurado' };
+    }
+
+    const endpointPath = process.env.WHATSAPP_DOCUMENT_ENDPOINT_PATH || '/messages/document';
+    const endpoint = /^https?:\/\//i.test(endpointPath)
+        ? endpointPath
+        : `https://api-wsp.3w.pe/instances/${whatsappInstanceId}${endpointPath}`;
+
+    try {
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${whatsappInstanceId}`,
+            },
+            body: JSON.stringify({
+                phone: phoneWithPlus,
+                message: message || '',
+                caption: message || '',
+                file_url: fileUrl,
+                fileUrl,
+                url: fileUrl,
+                file_name: fileName,
+                fileName,
+                mimetype: mimeType,
+                mime_type: mimeType,
+                type: 'document',
+            })
+        });
+
+        if (!response.ok) {
+            const text = await response.text();
+            logger.error(`API WhatsApp 3W documento error: ${response.status} ${text}`);
+            return { success: false, error: `Error al enviar documento: ${response.status}` };
+        }
+
+        logger.info(`WhatsApp documento enviado a ${phoneWithPlus}`);
+        return { success: true };
+    } catch (error) {
+        logger.error('Error enviando documento por WhatsApp:', error);
+        return { success: false, error: error.message || 'Error al enviar documento' };
+    }
+};
+
 export const sendOTP = async (phone, country) => {
     const normalizedPhone = normalizePhone(phone);
     // LOG para debug - ver exactamente qué llega
@@ -449,7 +509,6 @@ export const verifyOTP = async (phone, code, country) => {
         rapidin_driver_id: rapidin_driver_id
     };
 };
-
 
 
 

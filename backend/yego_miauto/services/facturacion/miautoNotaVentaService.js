@@ -132,6 +132,15 @@ function facturadorErrorPayload(error) {
   };
 }
 
+function pickResponsePdfUrl(response) {
+  if (!response || typeof response !== 'object') return null;
+  return response.minio_pdf_url
+    || response.facturador_print_a4
+    || response.record?.data?.print_a4
+    || response.record?.print_a4
+    || null;
+}
+
 async function uploadNotaVentaPdfToMinio({ solicitudId, nota, cuotas, driverName, sourceUrl, dateYmd }) {
   if (!sourceUrl) return null;
   const pdf = await facturadorBinaryRequest(sourceUrl);
@@ -710,9 +719,9 @@ export async function listNotasVentaBySolicitud(solicitudId) {
 export async function downloadNotaVentaPdfBySolicitud(solicitudId, notaVentaId) {
   await ensureNotaVentaTables({ query });
   const res = await query(
-    `SELECT nv.id, nv.facturador_sale_note_id, nv.number_full, nv.print_a4, nv.created_at,
+    `SELECT nv.id, nv.facturador_sale_note_id, nv.number_full, nv.print_a4, nv.response, nv.created_at,
             ${DRIVER_NAME_SELECT_SQL},
-            COALESCE(json_agg(json_build_object('semana', cw.semana) ORDER BY nc.created_at)
+            COALESCE(json_agg(json_build_object('cuota_semanal_id', nc.cuota_semanal_id, 'amount', nc.amount, 'semana', cw.semana) ORDER BY nc.created_at)
               FILTER (WHERE nc.id IS NOT NULL), '[]'::json) AS cuotas
      FROM module_miauto_nota_venta nv
      INNER JOIN module_miauto_solicitud s ON s.id = nv.solicitud_id
@@ -726,14 +735,46 @@ export async function downloadNotaVentaPdfBySolicitud(solicitudId, notaVentaId) 
      LIMIT 1`,
     [solicitudId, notaVentaId]
   );
-  const nota = res.rows[0];
+  let nota = res.rows[0];
   if (!nota) throw new Error('Nota de venta no encontrada');
-  if (!nota.print_a4) throw new Error('La nota no tiene PDF disponible');
+  const driverName = driverNameFromRow(nota);
+
+  if (!nota.print_a4) {
+    const responsePdfUrl = pickResponsePdfUrl(nota.response);
+    if (responsePdfUrl) {
+      const updateRes = await query(
+        `UPDATE module_miauto_nota_venta
+         SET print_a4 = $1,
+             response = COALESCE(response, '{}'::jsonb) || $2::jsonb
+         WHERE id = $3::uuid
+         RETURNING *`,
+        [responsePdfUrl, JSON.stringify({ recovered_print_a4: responsePdfUrl }), nota.id]
+      );
+      nota = { ...nota, ...(updateRes.rows[0] || {}), print_a4: responsePdfUrl };
+    }
+  }
+
+  if (!nota.print_a4 && nota.facturador_sale_note_id) {
+    const recovered = await enrichNotaVentaPostCommit({
+      nota,
+      saleNoteId: nota.facturador_sale_note_id,
+      solicitudId,
+      cuotas: nota.cuotas || [],
+      driverName,
+      dateYmd: ymdFromDbDate(nota.created_at),
+      sourcePrintA4: pickResponsePdfUrl(nota.response),
+    });
+    nota = { ...nota, ...(recovered.nota || {}) };
+  }
+
+  if (!nota.print_a4) {
+    throw new Error('No se pudo recuperar el PDF de la nota de venta. Verifica la cookie del facturador o vuelve a intentar en unos minutos.');
+  }
 
   const pdf = await facturadorBinaryRequest(nota.print_a4);
   return {
     ...pdf,
-    fileName: notaVentaDownloadName(nota, driverNameFromRow(nota)),
+    fileName: notaVentaDownloadName(nota, driverName),
   };
 }
 

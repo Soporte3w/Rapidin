@@ -6,6 +6,7 @@ import { getCuotasSemanalesConRacha } from '../cuotas/miautoCuotaSemanalService.
 import { uploadFileToMedia } from '../../../services/voucherService.js';
 
 const FACTURADOR_BASE_URL = (process.env.FACTURADOR_BASE_URL || 'https://ajhla.facturador.3w.pe').replace(/\/+$/, '');
+const FACTURADOR_HOSTNAME = new URL(FACTURADOR_BASE_URL).hostname;
 const FACTURADOR_SERIES_ID = Number(process.env.FACTURADOR_SERIES_ID || 10);
 const FACTURADOR_PREFIX = process.env.FACTURADOR_PREFIX || 'NV';
 const FACTURADOR_ESTABLISHMENT_ID = Number(process.env.FACTURADOR_ESTABLISHMENT_ID || 1);
@@ -188,7 +189,7 @@ function isFacturadorPdfUrl(value) {
   if (!raw) return false;
   try {
     const url = new URL(raw, FACTURADOR_BASE_URL);
-    return url.hostname === new URL(FACTURADOR_BASE_URL).hostname;
+    return url.hostname === FACTURADOR_HOSTNAME;
   } catch {
     return false;
   }
@@ -758,6 +759,43 @@ async function appendNotaVentaResponse(notaId, patch) {
   return res.rows[0] || null;
 }
 
+async function updateNotaVentaPdfUrl(notaId, pdfUrl, responsePatch = {}) {
+  const res = await query(
+    `UPDATE module_miauto_nota_venta
+     SET print_a4 = $1,
+         response = COALESCE(response, '{}'::jsonb) || $2::jsonb
+     WHERE id = $3::uuid
+     RETURNING *`,
+    [pdfUrl, JSON.stringify(responsePatch), notaId]
+  );
+  return res.rows[0] || null;
+}
+
+async function persistNotaVentaPdfFromFacturador({
+  solicitudId,
+  nota,
+  cuotas,
+  driverName,
+  sourceUrl,
+  dateYmd,
+  responsePatch = {},
+}) {
+  const minioPdfUrl = await uploadNotaVentaPdfToMinio({
+    solicitudId,
+    nota,
+    cuotas,
+    driverName,
+    sourceUrl,
+    dateYmd,
+  });
+  const updatedNota = await updateNotaVentaPdfUrl(nota.id, minioPdfUrl, {
+    minio_pdf_url: minioPdfUrl,
+    facturador_print_a4: sourceUrl,
+    ...responsePatch,
+  });
+  return { ...nota, ...(updatedNota || {}), print_a4: minioPdfUrl };
+}
+
 async function enrichNotaVentaPostCommit({ nota, saleNoteId, solicitudId, cuotas, driverName, dateYmd, sourcePrintA4 = null }) {
   const warnings = [];
   let updatedNota = nota;
@@ -795,7 +833,7 @@ async function enrichNotaVentaPostCommit({ nota, saleNoteId, solicitudId, cuotas
 
   if (facturadorPrintA4) {
     try {
-      const minioPdfUrl = await uploadNotaVentaPdfToMinio({
+      updatedNota = await persistNotaVentaPdfFromFacturador({
         solicitudId,
         nota: { ...updatedNota, facturador_sale_note_id: saleNoteId },
         cuotas,
@@ -803,15 +841,6 @@ async function enrichNotaVentaPostCommit({ nota, saleNoteId, solicitudId, cuotas
         sourceUrl: facturadorPrintA4,
         dateYmd,
       });
-      const res = await query(
-        `UPDATE module_miauto_nota_venta
-         SET print_a4 = $1,
-             response = COALESCE(response, '{}'::jsonb) || $2::jsonb
-         WHERE id = $3::uuid
-         RETURNING *`,
-        [minioPdfUrl, JSON.stringify({ minio_pdf_url: minioPdfUrl, facturador_print_a4: facturadorPrintA4 }), updatedNota.id]
-      );
-      updatedNota = res.rows[0] || updatedNota;
     } catch (error) {
       const warning = { step: 'minio_pdf', ...facturadorErrorPayload(error) };
       warnings.push(warning);
@@ -909,29 +938,25 @@ export async function downloadNotaVentaPdfBySolicitud(solicitudId, notaVentaId) 
   let nota = res.rows[0];
   if (!nota) throw new Error('Nota de venta no encontrada');
   const driverName = driverNameFromRow(nota);
+  const cuotas = nota.cuotas || [];
+  const notaDateYmd = ymdFromDbDate(nota.created_at);
 
   if (!nota.print_a4) {
     const responsePdfUrl = pickFacturadorResponsePdfUrl(nota.response) || pickResponsePdfUrl(nota.response);
     if (responsePdfUrl) {
-      const pdfUrl = isFacturadorPdfUrl(responsePdfUrl)
-        ? await uploadNotaVentaPdfToMinio({
-            solicitudId,
-            nota,
-            cuotas: nota.cuotas || [],
-            driverName,
-            sourceUrl: responsePdfUrl,
-            dateYmd: ymdFromDbDate(nota.created_at),
-          })
-        : responsePdfUrl;
-      const updateRes = await query(
-        `UPDATE module_miauto_nota_venta
-         SET print_a4 = $1,
-             response = COALESCE(response, '{}'::jsonb) || $2::jsonb
-         WHERE id = $3::uuid
-         RETURNING *`,
-        [pdfUrl, JSON.stringify({ recovered_print_a4: pdfUrl, facturador_print_a4: responsePdfUrl }), nota.id]
-      );
-      nota = { ...nota, ...(updateRes.rows[0] || {}), print_a4: pdfUrl };
+      if (isFacturadorPdfUrl(responsePdfUrl)) {
+        nota = await persistNotaVentaPdfFromFacturador({
+          solicitudId,
+          nota,
+          cuotas,
+          driverName,
+          sourceUrl: responsePdfUrl,
+          dateYmd: notaDateYmd,
+        });
+      } else {
+        const updatedNota = await updateNotaVentaPdfUrl(nota.id, responsePdfUrl, { recovered_print_a4: responsePdfUrl });
+        nota = { ...nota, ...(updatedNota || {}), print_a4: responsePdfUrl };
+      }
     }
   }
 
@@ -940,9 +965,9 @@ export async function downloadNotaVentaPdfBySolicitud(solicitudId, notaVentaId) 
       nota,
       saleNoteId: nota.facturador_sale_note_id,
       solicitudId,
-      cuotas: nota.cuotas || [],
+      cuotas,
       driverName,
-      dateYmd: ymdFromDbDate(nota.created_at),
+      dateYmd: notaDateYmd,
       sourcePrintA4: pickResponsePdfUrl(nota.response),
     });
     nota = { ...nota, ...(recovered.nota || {}) };
@@ -954,23 +979,14 @@ export async function downloadNotaVentaPdfBySolicitud(solicitudId, notaVentaId) 
 
   if (isFacturadorPdfUrl(nota.print_a4)) {
     const facturadorPrintA4 = nota.print_a4;
-    const minioPdfUrl = await uploadNotaVentaPdfToMinio({
+    nota = await persistNotaVentaPdfFromFacturador({
       solicitudId,
       nota,
-      cuotas: nota.cuotas || [],
+      cuotas,
       driverName,
       sourceUrl: facturadorPrintA4,
-      dateYmd: ymdFromDbDate(nota.created_at),
+      dateYmd: notaDateYmd,
     });
-    const updateRes = await query(
-      `UPDATE module_miauto_nota_venta
-       SET print_a4 = $1,
-           response = COALESCE(response, '{}'::jsonb) || $2::jsonb
-       WHERE id = $3::uuid
-       RETURNING *`,
-      [minioPdfUrl, JSON.stringify({ minio_pdf_url: minioPdfUrl, facturador_print_a4: facturadorPrintA4 }), nota.id]
-    );
-    nota = { ...nota, ...(updateRes.rows[0] || {}), print_a4: minioPdfUrl };
   }
 
   let pdf;
@@ -981,23 +997,15 @@ export async function downloadNotaVentaPdfBySolicitud(solicitudId, notaVentaId) 
     if (Number(error?.status) !== 404 || !sourcePrintA4 || isFacturadorPdfUrl(nota.print_a4)) {
       throw error;
     }
-    const minioPdfUrl = await uploadNotaVentaPdfToMinio({
+    nota = await persistNotaVentaPdfFromFacturador({
       solicitudId,
       nota,
-      cuotas: nota.cuotas || [],
+      cuotas,
       driverName,
       sourceUrl: sourcePrintA4,
-      dateYmd: ymdFromDbDate(nota.created_at),
+      dateYmd: notaDateYmd,
+      responsePatch: { repaired_broken_pdf_url: nota.print_a4 },
     });
-    const updateRes = await query(
-      `UPDATE module_miauto_nota_venta
-       SET print_a4 = $1,
-           response = COALESCE(response, '{}'::jsonb) || $2::jsonb
-       WHERE id = $3::uuid
-       RETURNING *`,
-      [minioPdfUrl, JSON.stringify({ minio_pdf_url: minioPdfUrl, repaired_broken_pdf_url: nota.print_a4, facturador_print_a4: sourcePrintA4 }), nota.id]
-    );
-    nota = { ...nota, ...(updateRes.rows[0] || {}), print_a4: minioPdfUrl };
     pdf = await facturadorBinaryRequest(nota.print_a4);
   }
   return {

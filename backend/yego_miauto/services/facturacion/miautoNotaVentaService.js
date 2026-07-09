@@ -296,12 +296,12 @@ async function getFacturadorItem() {
   return item;
 }
 
-function buildItemLine(baseItem, cuota, index, currencyTypeId, driverName) {
+function buildItemLine(baseItem, cuota, index, currencyTypeId) {
   const total = round2(cuota.amount);
   const totalValue = round2(total / (1 + IGV_RATE));
   const totalIgv = round2(total - totalValue);
   const cuotaLabel = `CUOTA #${cuota.semana || index + 1}`;
-  const description = `${cuotaLabel} - ${normalizePersonName(driverName) || 'CONDUCTOR'} - YEGO MI AUTO`;
+  const description = `${cuotaLabel} - YEGO MI AUTO`;
   const item = {
     ...baseItem,
     description,
@@ -338,10 +338,10 @@ function buildItemLine(baseItem, cuota, index, currencyTypeId, driverName) {
   };
 }
 
-function buildSaleNotePayload({ customerId, currencyTypeId, exchangeRateSale, item, cuotas, observation, driverName }) {
+function buildSaleNotePayload({ customerId, currencyTypeId, exchangeRateSale, item, cuotas, observation }) {
   const now = new Date();
   const dateOfIssue = limaYmd(now);
-  const items = cuotas.map((cuota, index) => buildItemLine(item, cuota, index, currencyTypeId, driverName));
+  const items = cuotas.map((cuota, index) => buildItemLine(item, cuota, index, currencyTypeId));
   const total = round2(items.reduce((sum, x) => sum + Number(x.total || 0), 0));
   const totalValue = round2(items.reduce((sum, x) => sum + Number(x.total_value || 0), 0));
   const totalIgv = round2(items.reduce((sum, x) => sum + Number(x.total_igv || 0), 0));
@@ -901,7 +901,6 @@ export async function generarNotaVentaCuotasPagadas(solicitudId, cuotaIds, opts 
       item,
       cuotas: seleccionadas,
       observation,
-      driverName,
     });
 
     logger.info('Generando nota de venta Mi Auto', {

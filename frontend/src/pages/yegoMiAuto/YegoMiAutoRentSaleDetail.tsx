@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText } from 'lucide-react';
+import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText, Download } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
@@ -175,7 +175,25 @@ interface NotaVentaMiAuto {
   currency_type_id?: string | null;
   total: number | string;
   created_at?: string;
-  cuotas?: { cuota_semanal_id: string; amount: number | string }[];
+  download_name?: string | null;
+  cuotas?: { cuota_semanal_id: string; amount: number | string; semana?: number | null }[];
+}
+
+function fileNameFromDisposition(disposition: string | undefined, fallback: string): string {
+  const value = String(disposition || '');
+  const match = value.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+  return decodeURIComponent(match?.[1] || fallback);
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
+  const blobUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(blobUrl);
 }
 
 interface ContratoDocumentoMiAuto {
@@ -277,6 +295,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const contratoFileRef = useRef<HTMLInputElement | null>(null);
   const [notaVentaCuotasSeleccionadas, setNotaVentaCuotasSeleccionadas] = useState<Record<string, boolean>>({});
   const [generandoNotaVenta, setGenerandoNotaVenta] = useState(false);
+  const [descargandoNotaVentaId, setDescargandoNotaVentaId] = useState<string | null>(null);
   const [anulandoNotaVentaId, setAnulandoNotaVentaId] = useState<string | null>(null);
   const [notaVentaAnularModal, setNotaVentaAnularModal] = useState<NotaVentaMiAuto | null>(null);
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
@@ -600,6 +619,24 @@ export default function YegoMiAutoRentSaleDetail() {
     setNotaVentaCuotasSeleccionadas((prev) => ({ ...prev, [cuotaId]: !prev[cuotaId] }));
   }, []);
 
+  const handleDescargarNotaVenta = useCallback(async (nota: NotaVentaMiAuto) => {
+    if (!id || !nota?.id) return;
+    try {
+      setDescargandoNotaVentaId(nota.id);
+      const res = await api.get(`/miauto/solicitudes/${id}/notas-venta/${nota.id}/pdf`, {
+        responseType: 'blob',
+      });
+      const fallbackName = nota.download_name || `${nota.number_full || 'nota-venta'}.pdf`;
+      const fileName = fileNameFromDisposition(res.headers['content-disposition'], fallbackName);
+      downloadBlob(new Blob([res.data], { type: res.headers['content-type'] || 'application/pdf' }), fileName);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'No se pudo descargar la nota de venta');
+      if (nota.print_a4) window.open(nota.print_a4, '_blank', 'noopener,noreferrer');
+    } finally {
+      setDescargandoNotaVentaId(null);
+    }
+  }, [id]);
+
   const handleGenerarNotaVenta = useCallback(async () => {
     if (!id) return;
     if (!facturadorCustomerId) {
@@ -625,13 +662,17 @@ export default function YegoMiAutoRentSaleDetail() {
       setShowNotasVentaModal(false);
       setNotaVentaCuotasSeleccionadas({});
       await fetchDetail(undefined, { refresh: true });
-      if (nota?.print_a4) window.open(nota.print_a4, '_blank', 'noopener,noreferrer');
+      if (nota?.id) {
+        await handleDescargarNotaVenta(nota);
+      } else if (nota?.print_a4) {
+        window.open(nota.print_a4, '_blank', 'noopener,noreferrer');
+      }
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al generar la nota de venta');
     } finally {
       setGenerandoNotaVenta(false);
     }
-  }, [facturadorCustomerId, id, notaVentaCuotasIds, notaVentaSeleccionMixta, fetchDetail]);
+  }, [facturadorCustomerId, id, notaVentaCuotasIds, notaVentaSeleccionMixta, fetchDetail, handleDescargarNotaVenta]);
 
   const handleConfirmarAnularNotaVenta = useCallback(async () => {
     if (!id || !notaVentaAnularModal?.id) return;
@@ -2666,9 +2707,15 @@ export default function YegoMiAutoRentSaleDetail() {
                           <span>{nota.created_at ? formatDateTime(nota.created_at, 'es-ES') : '—'}</span>
                           <div className="flex items-center gap-2">
                             {nota.print_a4 && (
-                              <a href={nota.print_a4} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[#8B1A1A] hover:underline">
-                                PDF <ExternalLink className="w-3 h-3" />
-                              </a>
+                              <button
+                                type="button"
+                                onClick={() => handleDescargarNotaVenta(nota)}
+                                disabled={descargandoNotaVentaId === nota.id}
+                                className="inline-flex items-center gap-1 text-[#8B1A1A] hover:underline disabled:opacity-60"
+                              >
+                                {descargandoNotaVentaId === nota.id ? 'Descargando...' : 'Descargar'}
+                                <Download className="w-3 h-3" />
+                              </button>
                             )}
                             <button
                               type="button"

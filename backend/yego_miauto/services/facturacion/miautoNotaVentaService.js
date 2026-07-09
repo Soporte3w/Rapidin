@@ -13,6 +13,35 @@ const FACTURADOR_ITEM_ID = Number(process.env.FACTURADOR_ITEM_ID || 1);
 const FACTURADOR_PAYMENT_METHOD_TYPE_ID = process.env.FACTURADOR_PAYMENT_METHOD_TYPE_ID || '01';
 const IGV_RATE = Number(process.env.FACTURADOR_IGV_RATE || 0.18);
 const FACTURADOR_TLS_REJECT_UNAUTHORIZED = process.env.FACTURADOR_TLS_REJECT_UNAUTHORIZED === '1';
+const DRIVER_NAME_SELECT_SQL = `
+  NULLIF(TRIM(CONCAT_WS(' ', rd.first_name, rd.last_name)), '') AS rapidin_driver_name,
+  NULLIF(TRIM(CONCAT_WS(' ', fl.first_name, fl.last_name)), '') AS fleet_driver_name
+`;
+const DRIVER_NAME_JOIN_SQL = `
+  LEFT JOIN module_rapidin_drivers rd ON rd.id::text = s.driver_id_fleet
+  LEFT JOIN LATERAL (
+    SELECT d.first_name, d.last_name
+    FROM drivers d
+    WHERE (
+        d.driver_id = s.driver_id_fleet
+        OR REGEXP_REPLACE(COALESCE(TRIM(d.license_number), ''), '[^0-9]', '', 'g') =
+           REGEXP_REPLACE(COALESCE(TRIM(s.dni), ''), '[^0-9]', '', 'g')
+      )
+    ORDER BY CASE WHEN d.driver_id = s.driver_id_fleet THEN 0 ELSE 1 END, d.driver_id::text
+    LIMIT 1
+  ) fl ON true
+`;
+const CUOTA_SEMANA_JOIN_SQL = `
+  LEFT JOIN (
+    SELECT c.id,
+           DENSE_RANK() OVER (
+             PARTITION BY c.solicitud_id
+             ORDER BY COALESCE(c.week_start_date, c.due_date) ASC NULLS LAST
+           ) AS semana
+    FROM module_miauto_cuota_semanal c
+    WHERE c.solicitud_id = $1::uuid AND c.deleted_at IS NULL
+  ) cw ON cw.id = nc.cuota_semanal_id
+`;
 
 function round2(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
@@ -46,6 +75,49 @@ function ymdFromDbDate(value) {
   if (typeof value === 'string') return value.slice(0, 10);
   if (value instanceof Date) return value.toISOString().slice(0, 10);
   return String(value).slice(0, 10);
+}
+
+function cleanText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizePersonName(...parts) {
+  return cleanText(parts.filter(Boolean).join(' ')).toUpperCase();
+}
+
+function sanitizeFileName(value) {
+  return cleanText(value)
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/\s+-\s+/g, ' - ')
+    .slice(0, 180);
+}
+
+function cuotaLabelFromCuotas(cuotas = []) {
+  const semanas = [...new Set(cuotas.map((c) => Number(c.semana)).filter((n) => Number.isFinite(n) && n > 0))]
+    .sort((a, b) => a - b);
+  if (semanas.length === 0) return cuotas.length > 1 ? 'CUOTAS' : 'CUOTA';
+  if (semanas.length === 1) return `CUOTA #${semanas[0]}`;
+  return `CUOTAS #${semanas.join(', #')}`;
+}
+
+function notaVentaBaseName({ numberFull, dateYmd, cuotas, driverName }) {
+  const number = cleanText(numberFull);
+  const date = cleanText(dateYmd).replace(/\D/g, '') || limaYmd().replace(/\D/g, '');
+  const conductor = normalizePersonName(driverName) || 'CONDUCTOR';
+  return sanitizeFileName([number, date, cuotaLabelFromCuotas(cuotas), conductor, 'YEGO MI AUTO'].filter(Boolean).join(' - '));
+}
+
+function driverNameFromRow(row = {}) {
+  return row.rapidin_driver_name || row.fleet_driver_name || null;
+}
+
+function notaVentaDownloadName(nota, driverName, dateYmd = ymdFromDbDate(nota?.created_at)) {
+  return `${notaVentaBaseName({
+    numberFull: nota?.number_full || `NV-${nota?.facturador_sale_note_id || ''}`,
+    dateYmd,
+    cuotas: nota?.cuotas || [],
+    driverName,
+  })}.pdf`;
 }
 
 function facturadorHeaders() {
@@ -123,10 +195,55 @@ async function facturadorRequest(path, options = {}) {
     const msg = data?.message || data?.error || `Facturador respondió HTTP ${text.statusCode}`;
     const error = new Error(msg);
     error.status = text.statusCode;
+    error.source = 'facturador';
     error.data = data;
     throw error;
   }
   return data;
+}
+
+async function facturadorBinaryRequest(urlOrPath) {
+  const url = /^https?:\/\//i.test(String(urlOrPath || ''))
+    ? new URL(urlOrPath)
+    : new URL(`${FACTURADOR_BASE_URL}${urlOrPath}`);
+  const headers = facturadorHeaders();
+  delete headers['Content-Type'];
+  const transport = url.protocol === 'https:' ? https : http;
+  const timeoutMs = Number(process.env.FACTURADOR_TIMEOUT_MS || 25000);
+
+  return await new Promise((resolve, reject) => {
+    const req = transport.request({
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port || (url.protocol === 'https:' ? 443 : 80),
+      path: `${url.pathname}${url.search}`,
+      method: 'GET',
+      headers,
+      timeout: timeoutMs,
+      rejectUnauthorized: FACTURADOR_TLS_REJECT_UNAUTHORIZED,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        if ((res.statusCode || 0) < 200 || (res.statusCode || 0) >= 300) {
+          const error = new Error(`Facturador respondió HTTP ${res.statusCode || 0}`);
+          error.status = res.statusCode || 502;
+          error.source = 'facturador';
+          error.data = buffer.toString('utf8');
+          reject(error);
+          return;
+        }
+        resolve({
+          buffer,
+          contentType: res.headers['content-type'] || 'application/pdf',
+        });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error(`Timeout descargando nota de venta (${timeoutMs}ms)`)));
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 async function getExchangeRate(dateYmd) {
@@ -142,14 +259,16 @@ async function getFacturadorItem() {
   return item;
 }
 
-function buildItemLine(baseItem, cuota, index, currencyTypeId) {
+function buildItemLine(baseItem, cuota, index, currencyTypeId, driverName) {
   const total = round2(cuota.amount);
   const totalValue = round2(total / (1 + IGV_RATE));
   const totalIgv = round2(total - totalValue);
+  const cuotaLabel = `CUOTA #${cuota.semana || index + 1}`;
+  const description = `${cuotaLabel} - ${normalizePersonName(driverName) || 'CONDUCTOR'} - YEGO MI AUTO`;
   const item = {
     ...baseItem,
-    description: `Cuota semanal ${cuota.semana || index + 1} - Yego Mi Auto`,
-    name_product_pdf: `<p>Cuota semanal ${cuota.semana || index + 1} - Yego Mi Auto</p>`,
+    description,
+    name_product_pdf: `<p>${description}</p>`,
     sale_unit_price: total,
   };
   return {
@@ -182,10 +301,10 @@ function buildItemLine(baseItem, cuota, index, currencyTypeId) {
   };
 }
 
-function buildSaleNotePayload({ customerId, currencyTypeId, exchangeRateSale, item, cuotas, observation }) {
+function buildSaleNotePayload({ customerId, currencyTypeId, exchangeRateSale, item, cuotas, observation, driverName }) {
   const now = new Date();
   const dateOfIssue = limaYmd(now);
-  const items = cuotas.map((cuota, index) => buildItemLine(item, cuota, index, currencyTypeId));
+  const items = cuotas.map((cuota, index) => buildItemLine(item, cuota, index, currencyTypeId, driverName));
   const total = round2(items.reduce((sum, x) => sum + Number(x.total || 0), 0));
   const totalValue = round2(items.reduce((sum, x) => sum + Number(x.total_value || 0), 0));
   const totalIgv = round2(items.reduce((sum, x) => sum + Number(x.total_igv || 0), 0));
@@ -285,8 +404,10 @@ async function ensureNotaVentaTables(client) {
 
 async function loadSolicitudAndCuotas(client, solicitudId, cuotaIds) {
   const solRes = await client.query(
-    `SELECT s.id, s.dni, s.country, s.placa_asignada, s.facturador_customer_id
+    `SELECT s.id, s.dni, s.country, s.placa_asignada, s.facturador_customer_id,
+            ${DRIVER_NAME_SELECT_SQL}
      FROM module_miauto_solicitud s
+     ${DRIVER_NAME_JOIN_SQL}
      WHERE s.id = $1::uuid
      LIMIT 1`,
     [solicitudId]
@@ -336,16 +457,59 @@ export async function listNotasVentaBySolicitud(solicitudId) {
   const res = await query(
     `SELECT nv.id, nv.facturador_sale_note_id, nv.number_full, nv.external_id, nv.print_a4,
             nv.customer_id, nv.currency_type_id, nv.exchange_rate_sale, nv.total, nv.created_at,
-            COALESCE(json_agg(json_build_object('cuota_semanal_id', nc.cuota_semanal_id, 'amount', nc.amount) ORDER BY nc.created_at)
+            COALESCE(json_agg(json_build_object('cuota_semanal_id', nc.cuota_semanal_id, 'amount', nc.amount, 'semana', cw.semana) ORDER BY nc.created_at)
               FILTER (WHERE nc.id IS NOT NULL), '[]'::json) AS cuotas
      FROM module_miauto_nota_venta nv
      LEFT JOIN module_miauto_nota_venta_cuota nc ON nc.nota_venta_id = nv.id
+     ${CUOTA_SEMANA_JOIN_SQL}
      WHERE nv.solicitud_id = $1::uuid AND nv.deleted_at IS NULL
      GROUP BY nv.id
      ORDER BY nv.created_at DESC`,
     [solicitudId]
   );
-  return res.rows || [];
+  const solicitudRes = await query(
+    `SELECT ${DRIVER_NAME_SELECT_SQL}
+     FROM module_miauto_solicitud s
+     ${DRIVER_NAME_JOIN_SQL}
+     WHERE s.id = $1::uuid
+     LIMIT 1`,
+    [solicitudId]
+  );
+  const driverName = driverNameFromRow(solicitudRes.rows[0]);
+  return (res.rows || []).map((nota) => ({
+    ...nota,
+    download_name: notaVentaDownloadName(nota, driverName),
+  }));
+}
+
+export async function downloadNotaVentaPdfBySolicitud(solicitudId, notaVentaId) {
+  await ensureNotaVentaTables({ query });
+  const res = await query(
+    `SELECT nv.id, nv.facturador_sale_note_id, nv.number_full, nv.print_a4, nv.created_at,
+            ${DRIVER_NAME_SELECT_SQL},
+            COALESCE(json_agg(json_build_object('semana', cw.semana) ORDER BY nc.created_at)
+              FILTER (WHERE nc.id IS NOT NULL), '[]'::json) AS cuotas
+     FROM module_miauto_nota_venta nv
+     INNER JOIN module_miauto_solicitud s ON s.id = nv.solicitud_id
+     ${DRIVER_NAME_JOIN_SQL}
+     LEFT JOIN module_miauto_nota_venta_cuota nc ON nc.nota_venta_id = nv.id
+     ${CUOTA_SEMANA_JOIN_SQL}
+     WHERE nv.id = $2::uuid
+       AND nv.solicitud_id = $1::uuid
+       AND nv.deleted_at IS NULL
+     GROUP BY nv.id, rd.first_name, rd.last_name, fl.first_name, fl.last_name
+     LIMIT 1`,
+    [solicitudId, notaVentaId]
+  );
+  const nota = res.rows[0];
+  if (!nota) throw new Error('Nota de venta no encontrada');
+  if (!nota.print_a4) throw new Error('La nota no tiene PDF disponible');
+
+  const pdf = await facturadorBinaryRequest(nota.print_a4);
+  return {
+    ...pdf,
+    fileName: notaVentaDownloadName(nota, driverNameFromRow(nota)),
+  };
 }
 
 export async function anularNotaVentaBySolicitud(solicitudId, notaVentaId, userId = null) {
@@ -488,6 +652,7 @@ export async function generarNotaVentaCuotasPagadas(solicitudId, cuotaIds, opts 
       getFacturadorItem(),
     ]);
     const observation = opts.observation || `Yego Mi Auto${solicitud.dni ? ` - DNI ${solicitud.dni}` : ''}`;
+    const driverName = driverNameFromRow(solicitud);
     const payload = buildSaleNotePayload({
       customerId,
       currencyTypeId,
@@ -495,6 +660,7 @@ export async function generarNotaVentaCuotasPagadas(solicitudId, cuotaIds, opts 
       item,
       cuotas: seleccionadas,
       observation,
+      driverName,
     });
 
     logger.info('Generando nota de venta Mi Auto', {
@@ -589,6 +755,7 @@ export async function generarNotaVentaCuotasPagadas(solicitudId, cuotaIds, opts 
     return {
       ...nota,
       cuotas: seleccionadas,
+      download_name: notaVentaDownloadName({ ...nota, facturador_sale_note_id: saleNoteId, cuotas: seleccionadas }, driverName, issueDate),
       cash_response: cashResponse,
     };
   } catch (error) {

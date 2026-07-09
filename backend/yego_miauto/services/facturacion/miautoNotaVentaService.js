@@ -200,25 +200,11 @@ function facturadorHeaders() {
     Accept: 'application/json',
     'Content-Type': 'application/json',
   };
-  if (process.env.FACTURADOR_AUTHORIZATION) {
-    headers.Authorization = process.env.FACTURADOR_AUTHORIZATION;
-  }
-  const cookie = facturadorSessionCookie || process.env.FACTURADOR_COOKIE;
-  if (cookie) {
-    headers.Cookie = cookie;
-    const xsrfMatch = cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
+  if (facturadorSessionCookie) {
+    headers.Cookie = facturadorSessionCookie;
+    const xsrfMatch = facturadorSessionCookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
     if (xsrfMatch?.[1]) {
       headers['X-XSRF-TOKEN'] = decodeURIComponent(xsrfMatch[1]);
-    }
-  }
-  if (process.env.FACTURADOR_X_CSRF_TOKEN) {
-    headers['X-CSRF-TOKEN'] = process.env.FACTURADOR_X_CSRF_TOKEN;
-  }
-  if (process.env.FACTURADOR_EXTRA_HEADERS) {
-    try {
-      Object.assign(headers, JSON.parse(process.env.FACTURADOR_EXTRA_HEADERS));
-    } catch (error) {
-      logger.warn('FACTURADOR_EXTRA_HEADERS no es JSON válido', { error: error.message });
     }
   }
   return headers;
@@ -248,8 +234,8 @@ function isAuthExpiredError(error) {
 
 function facturadorLoginCredentials() {
   return {
-    email: process.env.FACTURADOR_LOGIN_EMAIL || process.env.FACTURADOR_EMAIL || '',
-    password: process.env.FACTURADOR_LOGIN_PASSWORD || process.env.FACTURADOR_PASSWORD || '',
+    email: process.env.FACTURADOR_LOGIN_EMAIL || '',
+    password: process.env.FACTURADOR_LOGIN_PASSWORD || '',
   };
 }
 

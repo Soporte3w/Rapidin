@@ -15,6 +15,8 @@ const FACTURADOR_PAYMENT_METHOD_TYPE_ID = process.env.FACTURADOR_PAYMENT_METHOD_
 const MIAUTO_NOTAS_VENTA_BUCKET = process.env.MIAUTO_NOTAS_VENTA_BUCKET || 'miauto-notas-venta';
 const IGV_RATE = Number(process.env.FACTURADOR_IGV_RATE || 0.18);
 const FACTURADOR_TLS_REJECT_UNAUTHORIZED = process.env.FACTURADOR_TLS_REJECT_UNAUTHORIZED === '1';
+let facturadorSessionCookie = null;
+let facturadorLoginPromise = null;
 const DRIVER_NAME_SELECT_SQL = `
   NULLIF(TRIM(CONCAT_WS(' ', rd.first_name, rd.last_name)), '') AS rapidin_driver_name,
   NULLIF(TRIM(CONCAT_WS(' ', fl.first_name, fl.last_name)), '') AS fleet_driver_name
@@ -165,9 +167,10 @@ function facturadorHeaders() {
   if (process.env.FACTURADOR_AUTHORIZATION) {
     headers.Authorization = process.env.FACTURADOR_AUTHORIZATION;
   }
-  if (process.env.FACTURADOR_COOKIE) {
-    headers.Cookie = process.env.FACTURADOR_COOKIE;
-    const xsrfMatch = process.env.FACTURADOR_COOKIE.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
+  const cookie = facturadorSessionCookie || process.env.FACTURADOR_COOKIE;
+  if (cookie) {
+    headers.Cookie = cookie;
+    const xsrfMatch = cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
     if (xsrfMatch?.[1]) {
       headers['X-XSRF-TOKEN'] = decodeURIComponent(xsrfMatch[1]);
     }
@@ -185,25 +188,51 @@ function facturadorHeaders() {
   return headers;
 }
 
-async function facturadorRequest(path, options = {}) {
-  const url = new URL(`${FACTURADOR_BASE_URL}${path}`);
-  const method = options.method || 'GET';
-  const body = options.body || null;
-  const headers = { ...facturadorHeaders(), ...(options.headers || {}) };
-  if (body && !headers['Content-Length']) {
-    headers['Content-Length'] = Buffer.byteLength(body);
+function mergeCookies(currentCookie, setCookieHeaders = []) {
+  const jar = new Map();
+  for (const cookie of String(currentCookie || '').split(';')) {
+    const [key, ...rest] = cookie.trim().split('=');
+    if (key && rest.length > 0) jar.set(key, rest.join('='));
   }
+  for (const raw of setCookieHeaders || []) {
+    const first = String(raw || '').split(';')[0]?.trim();
+    const [key, ...rest] = first.split('=');
+    if (key && rest.length > 0) jar.set(key, rest.join('='));
+  }
+  return [...jar.entries()].map(([key, value]) => `${key}=${value}`).join('; ');
+}
+
+function csrfTokenFromLoginPage(html) {
+  return (String(html || '').match(/<input[^>]+name=["']_token["'][^>]+value=["']([^"']+)/i) || [])[1] || null;
+}
+
+function isAuthExpiredError(error) {
+  return error?.source === 'facturador' && [401, 419].includes(Number(error.status));
+}
+
+function facturadorLoginCredentials() {
+  return {
+    email: process.env.FACTURADOR_LOGIN_EMAIL || process.env.FACTURADOR_EMAIL || '',
+    password: process.env.FACTURADOR_LOGIN_PASSWORD || process.env.FACTURADOR_PASSWORD || '',
+  };
+}
+
+async function facturadorHttpRequest(url, { method = 'GET', headers = {}, body = null, timeoutMessage = 'Timeout consultando facturador' } = {}) {
   const transport = url.protocol === 'https:' ? https : http;
   const timeoutMs = Number(process.env.FACTURADOR_TIMEOUT_MS || 25000);
+  const requestHeaders = { ...headers };
+  if (body && !headers['Content-Length']) {
+    requestHeaders['Content-Length'] = Buffer.byteLength(body);
+  }
 
-  const text = await new Promise((resolve, reject) => {
+  return await new Promise((resolve, reject) => {
     const req = transport.request({
       protocol: url.protocol,
       hostname: url.hostname,
       port: url.port || (url.protocol === 'https:' ? 443 : 80),
       path: `${url.pathname}${url.search}`,
       method,
-      headers,
+      headers: requestHeaders,
       timeout: timeoutMs,
       rejectUnauthorized: FACTURADOR_TLS_REJECT_UNAUTHORIZED,
     }, (res) => {
@@ -211,13 +240,92 @@ async function facturadorRequest(path, options = {}) {
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => {
         const raw = Buffer.concat(chunks).toString('utf8');
-        resolve({ statusCode: res.statusCode || 0, raw });
+        resolve({ statusCode: res.statusCode || 0, raw, headers: res.headers });
       });
     });
-    req.on('timeout', () => req.destroy(new Error(`Timeout consultando facturador (${timeoutMs}ms)`)));
+    req.on('timeout', () => req.destroy(new Error(`${timeoutMessage} (${timeoutMs}ms)`)));
     req.on('error', reject);
     if (body) req.write(body);
     req.end();
+  });
+}
+
+async function loginFacturadorSession() {
+  const { email, password } = facturadorLoginCredentials();
+  if (!email || !password) {
+    const error = new Error('FACTURADOR_LOGIN_EMAIL y FACTURADOR_LOGIN_PASSWORD no están configurados');
+    error.status = 401;
+    error.source = 'facturador';
+    throw error;
+  }
+
+  if (facturadorLoginPromise) return await facturadorLoginPromise;
+
+  facturadorLoginPromise = (async () => {
+    const loginUrl = new URL(`${FACTURADOR_BASE_URL}/login`);
+    const loginPage = await facturadorHttpRequest(loginUrl, {
+      method: 'GET',
+      headers: { Accept: 'text/html,application/xhtml+xml' },
+      timeoutMessage: 'Timeout abriendo login del facturador',
+    });
+    const csrfToken = csrfTokenFromLoginPage(loginPage.raw);
+    const cookieFromLogin = mergeCookies(null, loginPage.headers['set-cookie']);
+    if (!csrfToken || !cookieFromLogin) {
+      throw new Error('El facturador no devolvió token o cookies de login');
+    }
+
+    const postBody = new URLSearchParams({
+      _token: csrfToken,
+      email,
+      password,
+    }).toString();
+    const xsrfMatch = cookieFromLogin.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
+    const loginResponse = await facturadorHttpRequest(loginUrl, {
+      method: 'POST',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml,application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Cookie: cookieFromLogin,
+        Referer: loginUrl.toString(),
+        ...(xsrfMatch?.[1] ? { 'X-XSRF-TOKEN': decodeURIComponent(xsrfMatch[1]) } : {}),
+      },
+      body: postBody,
+      timeoutMessage: 'Timeout autenticando facturador',
+    });
+    const nextCookie = mergeCookies(cookieFromLogin, loginResponse.headers['set-cookie']);
+    const stillLoginPage = loginResponse.statusCode === 200
+      && /name=["']email["']/i.test(loginResponse.raw || '')
+      && /name=["']password["']/i.test(loginResponse.raw || '');
+    if (![200, 302, 303].includes(loginResponse.statusCode) || !nextCookie || stillLoginPage) {
+      const error = new Error(`No se pudo autenticar en facturador (HTTP ${loginResponse.statusCode})`);
+      error.status = loginResponse.statusCode;
+      error.source = 'facturador';
+      throw error;
+    }
+
+    facturadorSessionCookie = nextCookie;
+    logger.info('Sesión del facturador renovada automáticamente');
+    return facturadorSessionCookie;
+  })();
+
+  try {
+    return await facturadorLoginPromise;
+  } finally {
+    facturadorLoginPromise = null;
+  }
+}
+
+async function facturadorRequestRaw(path, options = {}) {
+  const url = new URL(`${FACTURADOR_BASE_URL}${path}`);
+  const method = options.method || 'GET';
+  const body = options.body || null;
+  const headers = { ...facturadorHeaders(), ...(options.headers || {}) };
+
+  const text = await facturadorHttpRequest(url, {
+    method,
+    headers,
+    body,
+    timeoutMessage: 'Timeout consultando facturador',
   });
 
   let data = null;
@@ -239,7 +347,21 @@ async function facturadorRequest(path, options = {}) {
   return data;
 }
 
-async function facturadorBinaryRequest(urlOrPath) {
+async function facturadorRequest(path, options = {}) {
+  try {
+    return await facturadorRequestRaw(path, options);
+  } catch (error) {
+    if (!options.skipAuthRetry && isAuthExpiredError(error)) {
+      logger.warn('Sesión del facturador expirada; renovando automáticamente', { path, status: error.status });
+      facturadorSessionCookie = null;
+      await loginFacturadorSession();
+      return await facturadorRequestRaw(path, { ...options, skipAuthRetry: true });
+    }
+    throw error;
+  }
+}
+
+async function facturadorBinaryRequestRaw(urlOrPath) {
   const url = /^https?:\/\//i.test(String(urlOrPath || ''))
     ? new URL(urlOrPath)
     : new URL(`${FACTURADOR_BASE_URL}${urlOrPath}`);
@@ -281,6 +403,20 @@ async function facturadorBinaryRequest(urlOrPath) {
     req.on('error', reject);
     req.end();
   });
+}
+
+async function facturadorBinaryRequest(urlOrPath, options = {}) {
+  try {
+    return await facturadorBinaryRequestRaw(urlOrPath);
+  } catch (error) {
+    if (!options.skipAuthRetry && isAuthExpiredError(error)) {
+      logger.warn('Sesión del facturador expirada descargando PDF; renovando automáticamente', { status: error.status });
+      facturadorSessionCookie = null;
+      await loginFacturadorSession();
+      return await facturadorBinaryRequestRaw(urlOrPath);
+    }
+    throw error;
+  }
 }
 
 async function getExchangeRate(dateYmd) {

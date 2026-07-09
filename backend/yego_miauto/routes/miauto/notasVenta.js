@@ -19,7 +19,7 @@ function statusForNotaVentaError(error) {
 
 function messageForNotaVentaError(error, fallback) {
   if (error?.source === 'facturador' && Number(error.status) === 401) {
-    return 'El facturador no se encuentra autenticado. Actualiza FACTURADOR_COOKIE en el servidor.';
+    return 'El facturador no se encuentra autenticado. Verifica FACTURADOR_LOGIN_EMAIL y FACTURADOR_LOGIN_PASSWORD en el servidor.';
   }
   return error.message || fallback;
 }

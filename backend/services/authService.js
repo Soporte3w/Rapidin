@@ -4,7 +4,6 @@ import { query } from '../config/database.js';
 import { generateToken } from '../config/jwt.js';
 import { SYSTEM_ROLES_TABLE, SYSTEM_USERS_TABLE } from '../config/systemUsers.js';
 import { logger } from '../utils/logger.js';
-import { sendSMS } from './notificationService.js';
 import { getPartnerNameById } from './partnersService.js';
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helpers.js';
 import { sendEvolutionGoTextMessage } from './evolutionGoWhatsAppService.js';

@@ -6,6 +6,11 @@ import { logger } from '../../../utils/logger.js';
 import { getTipoCambioByCountry, setTipoCambio, listTiposCambio } from '../../services/tipo-cambio/miautoTipoCambioService.js';
 import { listBySolicitud, createAdjunto } from '../../services/adjuntos/miautoAdjuntoService.js';
 import { sendEvolutionGoMediaMessage, sendEvolutionGoTextMessage } from '../../../services/evolutionGoWhatsAppService.js';
+import {
+  normalizeWhatsAppPhoneDigits,
+  refreshMiautoWhatsAppPhone,
+  resolveMiautoWhatsAppPhone,
+} from '../../../services/whatsappPhoneSyncService.js';
 import { listBySolicitud as listOtrosGastosBySolicitud, updateOtroGastoStatus } from '../../services/gastos/miautoOtrosGastosService.js';
 import { getSolicitudById } from '../../services/solicitud/miautoSolicitudService.js';
 import pool from '../../../database/connection.js';
@@ -140,25 +145,29 @@ router.post(
   }
 );
 
+// POST /api/miauto/solicitudes/:id/whatsapp-phone/refresh
+router.post('/solicitudes/:id/whatsapp-phone/refresh', validateUUID, async (req, res) => {
+  try {
+    const result = await refreshMiautoWhatsAppPhone(req.params.id, req.user?.id || null);
+    return successResponse(res, result, 'Teléfono WhatsApp actualizado');
+  } catch (error) {
+    logger.error('Error refrescando teléfono WhatsApp Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al refrescar teléfono', error.statusCode || 500);
+  }
+});
+
 // POST /api/miauto/solicitudes/:id/send-whatsapp
 router.post('/solicitudes/:id/send-whatsapp', validateUUID, async (req, res) => {
   try {
     const sol = await getSolicitudById(req.params.id);
     if (!sol) return errorResponse(res, 'Solicitud no encontrada', 404);
-    const rawPhone = sol.phone;
+    const resolvedPhone = await resolveMiautoWhatsAppPhone(req.params.id);
+    const rawPhone = resolvedPhone?.phone || sol.phone;
     if (!rawPhone || !String(rawPhone).trim()) {
       return errorResponse(res, 'La solicitud no tiene número de teléfono asociado', 400);
     }
-    const digits = String(rawPhone).replace(/\D/g, '');
     const country = sol.country || 'PE';
-    let phone = digits;
-    if (digits.length >= 10 && (digits.startsWith('51') || digits.startsWith('57'))) {
-      phone = digits;
-    } else if (country === 'PE' && digits.length === 9) {
-      phone = '51' + digits;
-    } else if (country === 'CO' && digits.length === 10) {
-      phone = '57' + digits;
-    }
+    const phone = normalizeWhatsAppPhoneDigits(rawPhone, country);
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     const notaVentaId = trimOrUndefined(req.body?.nota_venta_id);
     let comprobanteAdjunto = null;

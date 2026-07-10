@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText, Download } from 'lucide-react';
+import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText, Download, RefreshCw } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
@@ -301,6 +301,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const [notaVentaAnularModal, setNotaVentaAnularModal] = useState<NotaVentaMiAuto | null>(null);
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
+  const [refreshingWhatsAppPhone, setRefreshingWhatsAppPhone] = useState(false);
   const [whatsAppTab, setWhatsAppTab] = useState<'cuotas' | 'metricas' | 'comprobante'>('cuotas');
   const [whatsAppCuotasMsg, setWhatsAppCuotasMsg] = useState('');
   const [whatsAppNotaVentaId, setWhatsAppNotaVentaId] = useState<string>('');
@@ -392,6 +393,37 @@ export default function YegoMiAutoRentSaleDetail() {
     setWhatsAppMessage(result.fullMessage);
     setWhatsAppCuotasMsg(result.cuotasMsg);
     setShowWhatsAppModal(true);
+  };
+
+  const handleRefreshWhatsAppPhone = async () => {
+    if (!id || refreshingWhatsAppPhone) return;
+    setRefreshingWhatsAppPhone(true);
+    try {
+      const res = await api.post(`/miauto/solicitudes/${id}/whatsapp-phone/refresh`);
+      const data = res.data?.data || {};
+      const nextPhone = data.phone_after || solicitud?.phone || '';
+      if (nextPhone) {
+        setSolicitud((prev) => (prev ? { ...prev, phone: nextPhone } : prev));
+      }
+      if (data.miauto_updated && data.rapidin_updated) {
+        toast.success('Número actualizado en Mi Auto y Rapidín');
+      } else if (data.miauto_updated) {
+        toast.success('Número actualizado desde Fleet');
+      } else if (data.rapidin_updated) {
+        toast.success('Número actualizado en Rapidín');
+      } else if (data.phone_after) {
+        toast('El número ya estaba actualizado');
+      } else {
+        toast.error(data.warnings?.[0] || 'No se encontró un teléfono Fleet válido');
+      }
+      if (Array.isArray(data.warnings) && data.warnings.length > 0 && data.phone_after) {
+        toast(data.warnings[0]);
+      }
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Error al actualizar teléfono');
+    } finally {
+      setRefreshingWhatsAppPhone(false);
+    }
   };
 
   const handleSendWhatsApp = async () => {
@@ -2427,6 +2459,22 @@ export default function YegoMiAutoRentSaleDetail() {
                 Comprobante de pago
               </button>
             </div>
+            <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-gray-100 bg-white">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">WhatsApp</p>
+                <p className="text-sm font-medium text-gray-900 truncate">{solicitud?.phone || 'Sin teléfono'}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleRefreshWhatsAppPhone()}
+                disabled={refreshingWhatsAppPhone}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                title="Actualizar teléfono desde Fleet"
+              >
+                <RefreshCw className={`w-4 h-4 ${refreshingWhatsAppPhone ? 'animate-spin' : ''}`} />
+                Actualizar
+              </button>
+            </div>
             <div className="p-5 overflow-y-auto flex-1 grid grid-cols-2 gap-4">
               {/* Columna izquierda */}
               <div className="space-y-3 border-r border-gray-100 pr-3">
@@ -2437,9 +2485,6 @@ export default function YegoMiAutoRentSaleDetail() {
                       <p className="mt-1 text-gray-900 font-medium">
                         {driverNameFromState || solicitud?.phone || solicitud?.dni || '—'}
                       </p>
-                      {solicitud?.phone && (
-                        <p className="text-sm text-gray-500 mt-0.5">{solicitud.phone}</p>
-                      )}
                     </div>
                     <div>
                       <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">

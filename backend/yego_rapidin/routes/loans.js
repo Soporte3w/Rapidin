@@ -1,6 +1,11 @@
 import express from 'express';
 import { getLoans, getLoanById, getInstallmentSchedule, getLoansExportBundle } from '../services/loanService.js';
 import { sendEvolutionGoTextMessage } from '../../services/evolutionGoWhatsAppService.js';
+import {
+  normalizeWhatsAppPhoneDigits,
+  refreshRapidinWhatsAppPhone,
+  resolveRapidinWhatsAppPhone,
+} from '../../services/whatsappPhoneSyncService.js';
 import { verifyToken } from '../../middleware/auth.js';
 import { filterByCountry } from '../../middleware/permissions.js';
 import { validateUUID } from '../../middleware/validations.js';
@@ -105,6 +110,23 @@ router.get('/:id/schedule', validateUUID, async (req, res) => {
   }
 });
 
+router.post('/:id/whatsapp-phone/refresh', validateUUID, async (req, res) => {
+  try {
+    const loan = await getLoanById(req.params.id);
+    if (!loan) {
+      return errorResponse(res, 'Préstamo no encontrado', 404);
+    }
+    if (req.allowedCountries && !req.allowedCountries.includes(loan.country)) {
+      return errorResponse(res, 'No tienes permisos para este préstamo', 403);
+    }
+    const result = await refreshRapidinWhatsAppPhone(req.params.id, req.user?.id || null);
+    return successResponse(res, result, 'Teléfono WhatsApp actualizado');
+  } catch (error) {
+    logger.error('Error refrescando teléfono WhatsApp Rapidín:', error);
+    return errorResponse(res, error.message || 'Error al refrescar teléfono', error.statusCode || 500);
+  }
+});
+
 router.post('/:id/send-whatsapp', validateUUID, async (req, res) => {
   try {
     const loan = await getLoanById(req.params.id);
@@ -114,20 +136,13 @@ router.post('/:id/send-whatsapp', validateUUID, async (req, res) => {
     if (req.allowedCountries && !req.allowedCountries.includes(loan.country)) {
       return errorResponse(res, 'No tienes permisos para este préstamo', 403);
     }
-    const rawPhone = loan.whatsapp_phone ?? loan.phone;
+    const resolvedPhone = await resolveRapidinWhatsAppPhone(req.params.id);
+    const rawPhone = resolvedPhone?.phone || loan.whatsapp_phone || loan.phone;
     if (!rawPhone || !String(rawPhone).trim()) {
       return errorResponse(res, 'El préstamo no tiene número de WhatsApp asociado', 400);
     }
-    const digits = String(rawPhone).replace(/\D/g, '');
     const country = loan.country || 'PE';
-    let phone = digits;
-    if (digits.length >= 10 && (digits.startsWith('51') || digits.startsWith('57'))) {
-      phone = digits;
-    } else if (country === 'PE' && digits.length === 9) {
-      phone = '51' + digits;
-    } else if (country === 'CO' && digits.length === 10) {
-      phone = '57' + digits;
-    }
+    const phone = normalizeWhatsAppPhoneDigits(rawPhone, country);
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     if (!message) {
       return errorResponse(res, 'El mensaje no puede estar vacío', 400);
@@ -148,9 +163,3 @@ router.post('/:id/send-whatsapp', validateUUID, async (req, res) => {
 });
 
 export default router;
-
-
-
-
-
-

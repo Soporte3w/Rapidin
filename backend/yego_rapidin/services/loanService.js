@@ -656,7 +656,9 @@ export const getLoanById = async (id) => {
              LIMIT 1) AS next_installment_id
      FROM module_rapidin_loans l
      LEFT JOIN module_rapidin_drivers d ON d.id = l.driver_id
-     LEFT JOIN drivers yd ON yd.driver_id::text = d.external_driver_id
+     LEFT JOIN drivers yd
+       ON yd.driver_id::text = d.external_driver_id
+      AND yd.park_id::text = d.park_id
      LEFT JOIN module_rapidin_loan_requests r ON r.id = l.request_id
      WHERE l.id = $1`,
     [id]
@@ -762,7 +764,6 @@ export const getInstallmentSchedule = async (loanId) => {
   });
   return rows;
 };
-
 
 
 

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, User, Banknote, Calendar, AlertCircle, FileText, CheckCircle, Clock, XCircle, X, Download, Upload, Trash2, ExternalLink } from 'lucide-react';
+import { ArrowLeft, User, Banknote, Calendar, AlertCircle, FileText, CheckCircle, Clock, XCircle, X, Download, Upload, Trash2, ExternalLink, RefreshCw } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import api from '../../services/api';
 import { formatDateUTC } from '../../utils/date';
@@ -65,6 +65,7 @@ const LoanDetail = () => {
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
+  const [refreshingWhatsAppPhone, setRefreshingWhatsAppPhone] = useState(false);
   const [downloadingConstancia, setDownloadingConstancia] = useState(false);
   const [uploadingConstancia, setUploadingConstancia] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -257,6 +258,37 @@ const LoanDetail = () => {
   };
 
   const whatsAppPhone = loan ? getWhatsAppPhone(loan.whatsapp_phone ?? loan.phone, loan.country || 'PE') : '';
+
+  const handleRefreshWhatsAppPhone = async () => {
+    if (!id || refreshingWhatsAppPhone) return;
+    setRefreshingWhatsAppPhone(true);
+    try {
+      const res = await api.post(`/loans/${id}/whatsapp-phone/refresh`);
+      const data = res.data?.data || {};
+      const nextPhone = data.phone_after || loan?.phone || '';
+      if (nextPhone) {
+        setLoan((prev: any) => (prev ? { ...prev, phone: nextPhone, whatsapp_phone: nextPhone } : prev));
+      }
+      if (data.rapidin_updated && data.miauto_updated) {
+        toast.success('Número actualizado en Rapidín y Mi Auto');
+      } else if (data.rapidin_updated) {
+        toast.success('Número actualizado desde Fleet');
+      } else if (data.miauto_updated) {
+        toast.success('Número actualizado en Mi Auto');
+      } else if (data.phone_after) {
+        toast('El número ya estaba actualizado');
+      } else {
+        toast.error(data.warnings?.[0] || 'No se encontró un teléfono Fleet válido');
+      }
+      if (Array.isArray(data.warnings) && data.warnings.length > 0 && data.phone_after) {
+        toast(data.warnings[0]);
+      }
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Error al actualizar teléfono');
+    } finally {
+      setRefreshingWhatsAppPhone(false);
+    }
+  };
 
   const handleSendWhatsApp = async () => {
     if (!id || !whatsAppMessage.trim() || !whatsAppPhone) return;
@@ -658,9 +690,22 @@ const LoanDetail = () => {
                 <p className="mt-1 text-gray-900 font-medium">
                   {loan?.driver_first_name || ''} {loan?.driver_last_name || ''}
                 </p>
-                {loan?.phone && (
-                  <p className="text-sm text-gray-500 mt-0.5">{loan.phone}</p>
-                )}
+                <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">WhatsApp</p>
+                    <p className="text-sm font-medium text-gray-900 truncate">{loan?.whatsapp_phone || loan?.phone || 'Sin teléfono'}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleRefreshWhatsAppPhone()}
+                    disabled={refreshingWhatsAppPhone}
+                    className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                    title="Actualizar teléfono desde Fleet"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${refreshingWhatsAppPhone ? 'animate-spin' : ''}`} />
+                    Actualizar
+                  </button>
+                </div>
               </div>
               <div>
                 <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Cuotas vencidas</span>
@@ -820,9 +865,6 @@ const LoanDetail = () => {
 };
 
 export default LoanDetail;
-
-
-
 
 
 

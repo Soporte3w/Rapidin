@@ -7,6 +7,7 @@ import { logger } from '../utils/logger.js';
 import { sendSMS } from './notificationService.js';
 import { getPartnerNameById } from './partnersService.js';
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helpers.js';
+import { sendEvolutionGoTextMessage } from './evolutionGoWhatsAppService.js';
 
 export const login = async (email, password) => {
     const result = await query(
@@ -132,33 +133,20 @@ export const sendOTP = async (phone, country) => {
         country,
         driverData: driver
     });
-    // Enviar WhatsApp con el código usando el API de 3W
+    // Enviar WhatsApp con el código usando Evolution GO (instancia Rapidín)
     const message = `Hola ${driver.first_name}! 👋\n\nTu código de verificación para Yego Rapidín es: *${code}*\n\nVálido por 1 minuto.\nNo compartas este código con nadie.`;
 
     try {
-        const phoneWithPlus = normalizedPhone.startsWith('+') ? normalizedPhone : `+${normalizedPhone}`;
-
-        const whatsappInstanceId = process.env.WHATSAPP_OTP_TOKEN || process.env.WHATSAPP_INSTANCE_ID;
-        if (!whatsappInstanceId) {
-            throw new Error('WHATSAPP_OTP_TOKEN (o WHATSAPP_INSTANCE_ID) no configurado en .env');
-        }
-        const response = await fetch(`https://api-wsp.3w.pe/instances/${whatsappInstanceId}/messages/text`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${whatsappInstanceId}`,
-            },
-            body: JSON.stringify({
-                phone: phoneWithPlus,
-                message: message
-            })
+        const result = await sendEvolutionGoTextMessage(normalizedPhone, message, {
+            token: process.env.EVOLUTION_GO_RAPIDIN_TOKEN,
+            tokenName: 'EVOLUTION_GO_RAPIDIN_TOKEN',
+            defaultCountry: country || driver.license_country || 'PE',
         });
-
-        if (!response.ok) {
-            throw new Error(`Error en API WhatsApp: ${response.statusText}`);
+        if (!result.success) {
+            throw new Error(result.error || 'Error enviando OTP por Evolution GO');
         }
 
-        logger.info(`Código OTP enviado por WhatsApp a ${phoneWithPlus}`);
+        logger.info(`Código OTP enviado por Evolution GO a ${normalizedPhone}`);
     } catch (error) {
         logger.error('Error enviando código OTP por WhatsApp:', error);
         if (process.env.NODE_ENV === 'development') {

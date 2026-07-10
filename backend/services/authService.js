@@ -165,6 +165,7 @@ export const sendWhatsAppDocument = async (phone, { message = '', fileUrl, fileN
                 phone: phoneWithPlus,
                 message: message || '',
                 caption: message || '',
+                document: fileUrl,
                 file_url: fileUrl,
                 fileUrl,
                 url: fileUrl,
@@ -509,6 +510,5 @@ export const verifyOTP = async (phone, code, country) => {
         rapidin_driver_id: rapidin_driver_id
     };
 };
-
 
 

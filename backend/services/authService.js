@@ -88,136 +88,6 @@ function normalizePhone(phone) {
     return digits ? `+${digits}` : phone.trim();
 }
 
-function whatsappPhoneVariants(phone) {
-    const normalizedPhone = normalizePhone(phone);
-    if (!normalizedPhone || normalizedPhone === '+') return [];
-    const withPlus = normalizedPhone.startsWith('+') ? normalizedPhone : `+${normalizedPhone}`;
-    const digitsOnly = withPlus.replace(/\D/g, '');
-    return [...new Set([withPlus, digitsOnly].filter(Boolean))];
-}
-
-async function parseWhatsAppError(response) {
-    const text = await response.text();
-    let data = null;
-    try {
-        data = text ? JSON.parse(text) : null;
-    } catch {
-        data = null;
-    }
-    const message = data?.message || data?.error || text || `HTTP ${response.status}`;
-    return { text, data, message };
-}
-
-/**
- * Envía un mensaje de texto por WhatsApp usando la API 3W (misma instancia que el OTP).
- * @param {string} phone - Número con o sin + (se normaliza a +digits)
- * @param {string} message - Texto a enviar
- * @param {string|null} [instanceId] - Token de instancia 3W (si no se pasa, usa WHATSAPP_OTP_TOKEN)
- * @returns {Promise<{ success: boolean, error?: string }>}
- */
-export const sendWhatsAppMessage = async (phone, message, instanceId = null) => {
-    const phoneVariants = whatsappPhoneVariants(phone);
-    if (phoneVariants.length === 0) {
-        return { success: false, error: 'Número de teléfono inválido' };
-    }
-    const whatsappInstanceId = instanceId || process.env.WHATSAPP_OTP_TOKEN || process.env.WHATSAPP_INSTANCE_ID;
-    if (!whatsappInstanceId) {
-        return { success: false, error: 'WHATSAPP_OTP_TOKEN no configurado' };
-    }
-    try {
-        let lastError = null;
-        for (const phoneToSend of phoneVariants) {
-            const response = await fetch(`https://api-wsp.3w.pe/instances/${whatsappInstanceId}/messages/text`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${whatsappInstanceId}`,
-                },
-                body: JSON.stringify({
-                    phone: phoneToSend,
-                    message: message || ''
-                })
-            });
-            if (response.ok) {
-                logger.info(`WhatsApp enviado a ${phoneToSend}`);
-                return { success: true };
-            }
-            const providerError = await parseWhatsAppError(response);
-            lastError = providerError;
-            logger.error(`API WhatsApp 3W error: ${response.status} ${providerError.text}`);
-            if (!/463/.test(providerError.message)) break;
-        }
-        return { success: false, error: lastError?.message || 'Error al enviar WhatsApp' };
-    } catch (error) {
-        logger.error('Error enviando WhatsApp:', error);
-        return { success: false, error: error.message || 'Error al enviar' };
-    }
-};
-
-/**
- * Envía un documento por WhatsApp. Si el proveedor no acepta el endpoint de
- * documentos, devuelve success=false para que el caller pueda hacer fallback.
- */
-export const sendWhatsAppDocument = async (phone, { message = '', fileUrl, fileName = 'documento.pdf', mimeType = 'application/pdf' } = {}, instanceId = null) => {
-    const phoneVariants = whatsappPhoneVariants(phone);
-    if (phoneVariants.length === 0) {
-        return { success: false, error: 'Número de teléfono inválido' };
-    }
-    if (!fileUrl) {
-        return { success: false, error: 'URL del documento requerida' };
-    }
-
-    const whatsappInstanceId = instanceId || process.env.WHATSAPP_OTP_TOKEN || process.env.WHATSAPP_INSTANCE_ID;
-    if (!whatsappInstanceId) {
-        return { success: false, error: 'WHATSAPP_OTP_TOKEN no configurado' };
-    }
-
-    const endpointPath = process.env.WHATSAPP_DOCUMENT_ENDPOINT_PATH || '/messages/document';
-    const endpoint = /^https?:\/\//i.test(endpointPath)
-        ? endpointPath
-        : `https://api-wsp.3w.pe/instances/${whatsappInstanceId}${endpointPath}`;
-
-    try {
-        let lastError = null;
-        for (const phoneToSend of phoneVariants) {
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${whatsappInstanceId}`,
-                },
-                body: JSON.stringify({
-                    phone: phoneToSend,
-                    message: message || '',
-                    caption: message || '',
-                    document: fileUrl,
-                    file_url: fileUrl,
-                    fileUrl,
-                    url: fileUrl,
-                    file_name: fileName,
-                    fileName,
-                    mimetype: mimeType,
-                    mime_type: mimeType,
-                    type: 'document',
-                })
-            });
-
-            if (response.ok) {
-                logger.info(`WhatsApp documento enviado a ${phoneToSend}`);
-                return { success: true };
-            }
-            const providerError = await parseWhatsAppError(response);
-            lastError = providerError;
-            logger.error(`API WhatsApp 3W documento error: ${response.status} ${providerError.text}`);
-            if (!/463/.test(providerError.message)) break;
-        }
-        return { success: false, error: lastError?.message || 'Error al enviar documento' };
-    } catch (error) {
-        logger.error('Error enviando documento por WhatsApp:', error);
-        return { success: false, error: error.message || 'Error al enviar documento' };
-    }
-};
-
 export const sendOTP = async (phone, country) => {
     const normalizedPhone = normalizePhone(phone);
     // LOG para debug - ver exactamente qué llega
@@ -254,7 +124,6 @@ export const sendOTP = async (phone, country) => {
     // Generar código de 6 dígitos
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + 60 * 1000; // 1 minuto
-console.log('code', code);
     // Guardar código (clave normalizada para que verifyOTP lo encuentre)
     otpStore.set(normalizedPhone, {
         code,
@@ -537,4 +406,3 @@ export const verifyOTP = async (phone, code, country) => {
         rapidin_driver_id: rapidin_driver_id
     };
 };
-

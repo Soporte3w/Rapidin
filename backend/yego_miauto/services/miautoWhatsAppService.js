@@ -3,7 +3,7 @@
  * Recibe mensajes pre-armados del frontend, envía en lote, registra trazabilidad.
  */
 import { query } from '../../config/database.js';
-import { sendWhatsAppMessage } from '../../services/authService.js';
+import { sendEvolutionGoTextMessage } from '../../services/evolutionGoWhatsAppService.js';
 import { logger } from '../../utils/logger.js';
 
 /**
@@ -15,7 +15,7 @@ import { logger } from '../../utils/logger.js';
  * @returns {{ sent: [], failed: [], total: number }}
  */
 export async function sendBulkWhatsApp(items, userId, instanceToken = null) {
-  const token = instanceToken || process.env.WHATSAPP_MIAUTO_TOKEN || process.env.WHATSAPP_OTP_TOKEN;
+  const token = instanceToken || process.env.EVOLUTION_GO_MIAUTO_TOKEN;
   const results = { sent: [], failed: [], total: items.length };
 
   for (const item of items) {
@@ -26,7 +26,10 @@ export async function sendBulkWhatsApp(items, userId, instanceToken = null) {
         continue;
       }
 
-      const result = await sendWhatsAppMessage(item.phone, item.message, token);
+      const result = await sendEvolutionGoTextMessage(item.phone, item.message, {
+        token,
+        tokenName: 'EVOLUTION_GO_MIAUTO_TOKEN',
+      });
 
       if (result.success) {
         await insertLog(item.solicitud_id, item.driver_name, item.phone, item.message, 'sent', null, userId);

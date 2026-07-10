@@ -5,7 +5,7 @@ import { successResponse, errorResponse } from '../../../utils/responses.js';
 import { logger } from '../../../utils/logger.js';
 import { getTipoCambioByCountry, setTipoCambio, listTiposCambio } from '../../services/tipo-cambio/miautoTipoCambioService.js';
 import { listBySolicitud, createAdjunto } from '../../services/adjuntos/miautoAdjuntoService.js';
-import { sendWhatsAppDocument, sendWhatsAppMessage } from '../../../services/authService.js';
+import { sendEvolutionGoMediaMessage, sendEvolutionGoTextMessage } from '../../../services/evolutionGoWhatsAppService.js';
 import { listBySolicitud as listOtrosGastosBySolicitud, updateOtroGastoStatus } from '../../services/gastos/miautoOtrosGastosService.js';
 import { getSolicitudById } from '../../services/solicitud/miautoSolicitudService.js';
 import pool from '../../../database/connection.js';
@@ -186,15 +186,19 @@ router.post('/solicitudes/:id/send-whatsapp', validateUUID, async (req, res) => 
     }
 
     if (comprobanteAdjunto) {
-      const documentResult = await sendWhatsAppDocument(
+      const documentResult = await sendEvolutionGoMediaMessage(
         phone,
         {
-          message,
+          caption: message,
           fileUrl: comprobanteAdjunto.url,
           fileName: comprobanteAdjunto.name,
-          mimeType: comprobanteAdjunto.mime,
+          type: 'document',
+          defaultCountry: country,
         },
-        process.env.WHATSAPP_MIAUTO_TOKEN
+        {
+          token: process.env.EVOLUTION_GO_MIAUTO_TOKEN,
+          tokenName: 'EVOLUTION_GO_MIAUTO_TOKEN',
+        }
       );
       if (documentResult.success) {
         await insertWhatsAppLog({
@@ -210,7 +214,11 @@ router.post('/solicitudes/:id/send-whatsapp', validateUUID, async (req, res) => 
       }
 
       const fallbackMessage = `${message}\n\nComprobante de pago: ${comprobanteAdjunto.url}`;
-      const fallbackResult = await sendWhatsAppMessage(phone, fallbackMessage, process.env.WHATSAPP_MIAUTO_TOKEN);
+      const fallbackResult = await sendEvolutionGoTextMessage(phone, fallbackMessage, {
+        token: process.env.EVOLUTION_GO_MIAUTO_TOKEN,
+        tokenName: 'EVOLUTION_GO_MIAUTO_TOKEN',
+        defaultCountry: country,
+      });
       if (!fallbackResult.success) {
         await insertWhatsAppLog({
           solicitudId: req.params.id,
@@ -239,7 +247,11 @@ router.post('/solicitudes/:id/send-whatsapp', validateUUID, async (req, res) => 
       );
     }
 
-    const result = await sendWhatsAppMessage(phone, message, process.env.WHATSAPP_MIAUTO_TOKEN);
+    const result = await sendEvolutionGoTextMessage(phone, message, {
+      token: process.env.EVOLUTION_GO_MIAUTO_TOKEN,
+      tokenName: 'EVOLUTION_GO_MIAUTO_TOKEN',
+      defaultCountry: country,
+    });
     if (!result.success) return errorResponse(res, result.error || 'Error al enviar WhatsApp', 400);
     return successResponse(res, { sent: true }, 'Mensaje enviado por WhatsApp');
   } catch (error) {

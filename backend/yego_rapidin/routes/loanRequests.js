@@ -4,7 +4,7 @@ import path from 'path';
 import pool from '../../database/connection.js';
 import { getLoanRequests, getLoanRequestById, rejectLoanRequest, getLoanByRequestId, getInstallmentSchedule } from '../services/loanService.js';
 import { getDocumentsByRequestId, getDocumentByIdAndRequestId } from '../../services/documentService.js';
-import { sendWhatsAppMessage } from '../../services/authService.js';
+import { sendEvolutionGoTextMessage } from '../../services/evolutionGoWhatsAppService.js';
 import { getPartnerNameById } from '../../services/partnersService.js';
 import { verifyToken, verifyRole } from '../../middleware/auth.js';
 import { filterByCountry } from '../../middleware/permissions.js';
@@ -226,7 +226,11 @@ router.post('/:id/send-message', validateUUID, verifyRole('analyst', 'approver',
     } else if (country === 'CO' && digits.length === 10) {
       phone = '57' + digits;
     }
-    const result = await sendWhatsAppMessage(phone, message);
+    const result = await sendEvolutionGoTextMessage(phone, message, {
+      token: process.env.EVOLUTION_GO_RAPIDIN_TOKEN,
+      tokenName: 'EVOLUTION_GO_RAPIDIN_TOKEN',
+      defaultCountry: country,
+    });
     if (!result.success) {
       return errorResponse(res, result.error || 'Error al enviar WhatsApp', 400);
     }
@@ -238,7 +242,6 @@ router.post('/:id/send-message', validateUUID, verifyRole('analyst', 'approver',
 });
 
 export default router;
-
 
 
 

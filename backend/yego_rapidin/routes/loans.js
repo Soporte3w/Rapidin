@@ -1,6 +1,6 @@
 import express from 'express';
 import { getLoans, getLoanById, getInstallmentSchedule, getLoansExportBundle } from '../services/loanService.js';
-import { sendWhatsAppMessage } from '../../services/authService.js';
+import { sendEvolutionGoTextMessage } from '../../services/evolutionGoWhatsAppService.js';
 import { verifyToken } from '../../middleware/auth.js';
 import { filterByCountry } from '../../middleware/permissions.js';
 import { validateUUID } from '../../middleware/validations.js';
@@ -132,7 +132,11 @@ router.post('/:id/send-whatsapp', validateUUID, async (req, res) => {
     if (!message) {
       return errorResponse(res, 'El mensaje no puede estar vacío', 400);
     }
-    const result = await sendWhatsAppMessage(phone, message);
+    const result = await sendEvolutionGoTextMessage(phone, message, {
+      token: process.env.EVOLUTION_GO_RAPIDIN_TOKEN,
+      tokenName: 'EVOLUTION_GO_RAPIDIN_TOKEN',
+      defaultCountry: country,
+    });
     if (!result.success) {
       return errorResponse(res, result.error || 'Error al enviar WhatsApp', 400);
     }
@@ -144,7 +148,6 @@ router.post('/:id/send-whatsapp', validateUUID, async (req, res) => {
 });
 
 export default router;
-
 
 
 

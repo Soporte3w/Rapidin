@@ -1989,13 +1989,23 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   if (rowMontosFuenteExcel(r)) {
     const paidAmountExcel = round2(parseFloat(r.paid_amount) || 0);
     const amountDueExcel = round2(parseFloat(r.amount_due) || 0);
+    const lateFeeExcel = st === 'bonificada' ? 0 : round2(parseFloat(r.late_fee) || 0);
+    const moraExtraExcel = st === 'bonificada' ? 0 : round2(parseFloat(r.mora_extra) || 0);
+    const moraExtraTotalExcel = st === 'bonificada'
+      ? 0
+      : round2(Math.max(parseFloat(r.mora_extra_total) || 0, moraExtraExcel));
     const pendingExcel = round2(Math.max(0, amountDueExcel - paidAmountExcel));
+    const pendingTotalExcel = round2(Math.max(0, amountDueExcel + lateFeeExcel + moraExtraExcel - paidAmountExcel));
     const dueY = ymdFromDbDate(r.due_date);
     const statusExcel = st === 'bonificada'
       ? 'bonificada'
-      : miAutoOpenStatusSaldoVencimiento(dueY, pendingExcel, paidAmountExcel);
+      : miAutoOpenStatusSaldoVencimiento(dueY, pendingTotalExcel, paidAmountExcel);
     const monedaExcel = String(r.moneda || 'PEN').toUpperCase();
     const creditoPend = round2(Math.max(0, Number(options.creditoComprobantePendienteMonedaCuota) || 0));
+    const lateFeeCalendarDaysExcel =
+      pendingTotalExcel <= 0.005 || statusExcel === 'bonificada'
+        ? 0
+        : calendarDaysLateLima(ymdFromDbDate(r.mora_desde) || dueY);
 
     return {
       id: r.id,
@@ -2009,16 +2019,16 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
       amount_due: amountDueExcel,
       paid_amount: paidAmountExcel,
       pago_puntual: r.pago_puntual === true,
-      comprobante_en_revision_monto: creditoPend > 0.005 ? round2(Math.min(creditoPend, pendingExcel)) : 0,
-      late_fee: 0,
-      mora_pendiente: 0,
-      late_fee_calendar_days: 0,
-      mora_interes_periodo: 0,
-      mora_acumulada: 0,
-      mora_extra: 0,
-      mora_extra_total: 0,
-      mora_extra_cobrada: 0,
-      mora_extra_desde: null,
+      comprobante_en_revision_monto: creditoPend > 0.005 ? round2(Math.min(creditoPend, pendingTotalExcel)) : 0,
+      late_fee: lateFeeExcel,
+      mora_pendiente: lateFeeExcel,
+      late_fee_calendar_days: lateFeeCalendarDaysExcel,
+      mora_interes_periodo: lateFeeExcel,
+      mora_acumulada: lateFeeExcel,
+      mora_extra: moraExtraExcel,
+      mora_extra_total: moraExtraTotalExcel,
+      mora_extra_cobrada: round2(Math.max(0, moraExtraTotalExcel - moraExtraExcel)),
+      mora_extra_desde: ymdFromDbDate(r.mora_extra_desde),
       status: statusExcel,
       moneda: monedaExcel,
       pct_comision: round2(parseFloat(r.pct_comision) || 0),
@@ -2039,8 +2049,8 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
       saldo_favor_conductor: round2(parseFloat(r.saldo_favor_conductor) || 0),
       cuota_neta: amountDueExcel,
       cuota_pendiente: pendingExcel,
-      cuota_final: pendingExcel,
-      pending_total: pendingExcel,
+      cuota_final: pendingTotalExcel,
+      pending_total: pendingTotalExcel,
       created_at: r.created_at,
       updated_at: r.updated_at,
     };

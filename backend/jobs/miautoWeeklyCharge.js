@@ -733,8 +733,8 @@ export async function runWeeklyChargeForSolicitud(solicitudId, options = {}) {
 
 async function runDailyMora() {
   try {
-    logger.info('Mi Auto: mora diaria');
-    await updateMoraDiaria(null, { includePartial: true });
+    logger.info('Mi Auto: mora diaria', { includeExcelMora: true });
+    await updateMoraDiaria(null, { includePartial: true, includeExcelMora: true });
   } catch (err) {
     logger.error('Mi Auto mora diaria:', err);
   }

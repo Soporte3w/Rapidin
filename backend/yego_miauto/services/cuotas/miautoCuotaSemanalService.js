@@ -103,6 +103,10 @@ const MORA_MAX_DIAS_ACUMULACION_MI_AUTO = null;
 /** Fragmento SQL: fecha civil de hoy en Lima (misma región que cronos Mi Auto). */
 const SQL_LIMA_TODAY = `(CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date`;
 
+function envFlagEnabled(name) {
+  return ['1', 'true', 'yes', 'on', 'si', 'sí'].includes(String(process.env[name] || '').trim().toLowerCase());
+}
+
 /**
  * Cuota vencida con saldo pendiente (overdue o fecha < hoy Lima con deuda).
  * La generación semanal usa esta señal para cobrar cuota máxima sin bono por viajes.
@@ -469,6 +473,116 @@ function computeLateFeeForDayCount(cronograma, baseCuota, daysOverdue) {
   const factorDia = tasa / 7;
   const moraDia = round2(baseCuota * factorDia);
   return round2(moraDia * d);
+}
+
+function cuotaRegistradaParaMora(row) {
+  const amountDue = round2(parseFloat(row?.amount_due) || 0);
+  if (amountDue > 0.005) return amountDue;
+  return round2(parseFloat(row?.cuota_semanal) || 0);
+}
+
+function resolveCuotaEsperadaParaMora(row, cronograma, vehId, isPrimera) {
+  const rowCuota = cuotaRegistradaParaMora(row);
+  if (isPrimera) return rowCuota;
+  const trips = tripCountForRules(row.num_viajes);
+  const plan = cronograma?.rules?.length && vehId != null && trips != null
+    ? planFromCronograma(cronograma, vehId, trips)
+    : null;
+  if (plan?.cuotaSemanal != null) return round2(plan.cuotaSemanal);
+  return rowCuota;
+}
+
+function saldoColumnasConMora(row) {
+  const amountDue = round2(parseFloat(row?.amount_due) || 0);
+  const lateFee = round2(parseFloat(row?.late_fee) || 0);
+  const moraExtra = round2(parseFloat(row?.mora_extra) || 0);
+  const paid = round2(parseFloat(row?.paid_amount) || 0);
+  return round2(Math.max(0, amountDue + lateFee + moraExtra - paid));
+}
+
+function saldoBaseCuotaParaMora(row) {
+  const amountDue = round2(parseFloat(row?.amount_due) || 0);
+  const paid = round2(parseFloat(row?.paid_amount) || 0);
+  return round2(Math.max(0, amountDue - paid));
+}
+
+function latestOverdueDueYmdWithDebt(rows) {
+  const todayYmd = limaTodayYmdSync();
+  let latest = null;
+  for (const r of rows || []) {
+    const st = String(r?.status || '').toLowerCase();
+    if (st === 'paid' || st === 'bonificada') continue;
+    const dueYmd = ymdFromDbDate(r?.due_date) || ymdFromDbDate(r?.week_start_date);
+    if (!dueYmd || !/^\d{4}-\d{2}-\d{2}$/.test(dueYmd) || dueYmd >= todayYmd) continue;
+    if (saldoColumnasConMora(r) <= 0.005) continue;
+    if (!latest || dueYmd > latest) latest = dueYmd;
+  }
+  return latest;
+}
+
+function classifyMoraCuotaSemanalCase({
+  row,
+  cronograma,
+  vehId,
+  isPrimera,
+  dueEffYmd,
+  hermanas,
+  comprobanteAbonoYmd,
+}) {
+  const paid = round2(parseFloat(row?.paid_amount) || 0);
+  const basePendiente = saldoBaseCuotaParaMora(row);
+  const esExcel = rowMontosFuenteExcel(row);
+  const cuotaEsperada = resolveCuotaEsperadaParaMora(row, cronograma, vehId, isPrimera);
+  const todayYmd = limaTodayYmdSync();
+  const vencida = dueEffYmd && /^\d{4}-\d{2}-\d{2}$/.test(dueEffYmd) && dueEffYmd < todayYmd;
+  if (isPrimera || !vencida || basePendiente <= 0.005) {
+    return {
+      case: basePendiente <= 0.005 ? (esExcel ? 'excel_sin_saldo' : 'sin_saldo') : (esExcel ? 'excel_no_vencida' : 'no_vencida'),
+      cuotaEsperada,
+      baseMora: basePendiente,
+      fechaMora: null,
+      lateFee: 0,
+    };
+  }
+  if (paid > 0.005) {
+    const fechaCorte = comprobanteAbonoYmd || ymdFromDbDate(row.fecha_ultimo_abono) || ymdFromDbDate(row.fecha_primer_comprobante) || todayYmd;
+    const dias = dueEffYmd < fechaCorte ? Math.max(0, diffDaysYmdUtc(dueEffYmd, fechaCorte)) : 0;
+    return {
+      case: esExcel ? 'excel_pagado_comprobante' : 'pagado_comprobante',
+      cuotaEsperada,
+      baseMora: round2(Math.max(0, Number(cuotaEsperada) || Number(row.amount_due) || 0)),
+      fechaMora: dueEffYmd,
+      fechaCorte,
+      lateFee: computeLateFeeForDayCount(cronograma, round2(Math.max(0, Number(cuotaEsperada) || Number(row.amount_due) || 0)), dias),
+    };
+  }
+  const diff = round2(basePendiente - cuotaEsperada);
+  if (Math.abs(diff) <= 0.05) {
+    return {
+      case: esExcel ? 'excel_igual_due' : 'igual_due',
+      cuotaEsperada,
+      baseMora: basePendiente,
+      fechaMora: dueEffYmd,
+      lateFee: computeLateFeeDisplay(cronograma, dueEffYmd, basePendiente, MORA_MAX_DIAS_ACUMULACION_MI_AUTO),
+    };
+  }
+  if (diff < -0.05) {
+    const recentDue = latestOverdueDueYmdWithDebt(hermanas) || dueEffYmd;
+    return {
+      case: esExcel ? 'excel_menor_fecha_reciente' : 'menor_fecha_reciente',
+      cuotaEsperada,
+      baseMora: basePendiente,
+      fechaMora: recentDue,
+      lateFee: computeLateFeeDisplay(cronograma, recentDue, basePendiente, MORA_MAX_DIAS_ACUMULACION_MI_AUTO),
+    };
+  }
+  return {
+    case: esExcel ? 'excel_mayor_due' : 'mayor_due_alerta',
+    cuotaEsperada,
+    baseMora: basePendiente,
+    fechaMora: dueEffYmd,
+    lateFee: computeLateFeeDisplay(cronograma, dueEffYmd, basePendiente, MORA_MAX_DIAS_ACUMULACION_MI_AUTO),
+  };
 }
 
 function addOneCalendarDayYmd(ymd) {
@@ -925,6 +1039,8 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
   const singleCuotaId = options.singleCuotaId || null;
   const includePartial = options.includePartial === true;
   const ignorePendingComprobanteFreeze = options.ignorePendingComprobanteFreeze === true;
+  const dryRun = options.dryRun === true;
+  const includeExcelMora = dryRun || options.includeExcelMora === true || envFlagEnabled('MIAUTO_MORA_EXCEL_ENABLED');
 
   const scopeConds = [];
   const scopeParams = [];
@@ -956,22 +1072,19 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       OR (c.due_date IS NOT NULL AND c.due_date::date < ${SQL_LIMA_TODAY})
     )`;
 
-  const syncExcelSql = `
-    UPDATE module_miauto_cuota_semanal c
-    SET late_fee = 0,
-        mora_extra = 0,
-        mora_extra_desde = NULL,
-        mora_extra_total = 0,
-        mora_desde = NULL,
-        status = CASE
-          WHEN COALESCE(c.paid_amount, 0)::numeric >= COALESCE(c.amount_due, 0)::numeric - 0.005 THEN 'paid'
-          WHEN COALESCE(c.paid_amount, 0)::numeric > 0.005 THEN 'partial'
-          WHEN COALESCE(c.due_date, c.week_start_date)::date < ${SQL_LIMA_TODAY} THEN 'overdue'
-          ELSE 'pending'
-        END,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE LOWER(COALESCE(c.montos_fuente, '')) = 'excel'${scopeSql}${skipDesactivadasSql}`;
-  await query(syncExcelSql, scopeParams);
+  if (!dryRun && !includeExcelMora) {
+    const syncExcelSql = `
+      UPDATE module_miauto_cuota_semanal c
+      SET status = CASE
+            WHEN COALESCE(c.paid_amount, 0)::numeric >= COALESCE(c.amount_due, 0)::numeric + COALESCE(c.late_fee, 0)::numeric + COALESCE(c.mora_extra, 0)::numeric - 0.005 THEN 'paid'
+            WHEN COALESCE(c.due_date, c.week_start_date)::date < ${SQL_LIMA_TODAY} THEN 'overdue'
+            WHEN COALESCE(c.paid_amount, 0)::numeric > 0.005 THEN 'partial'
+            ELSE 'pending'
+          END,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE LOWER(COALESCE(c.montos_fuente, '')) = 'excel'${scopeSql}${skipDesactivadasSql}`;
+    await query(syncExcelSql, scopeParams);
+  }
 
   /** Solo corrige estado; no pisa `late_fee` (mora histórica en cuotas pagadas). */
   /** Total registrado cuota+mora en columnas vs pagado (sin SQL del cronograma). */
@@ -986,7 +1099,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     WHERE c.status = 'overdue'
       AND ${vencimientoHoyOFuturoSql}
       AND (c.due_date IS NULL OR c.due_date::date >= ${SQL_LIMA_TODAY})${scopeSql}${skipDesactivadasSql}`;
-  await query(revertOverdueSql, scopeParams);
+  if (!dryRun) await query(revertOverdueSql, scopeParams);
 
   /** Bonificada: anular mora en columna; en `paid` se conserva devengo/histórico. */
   const clearBonificadaLateFeeSql = `
@@ -994,7 +1107,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     SET late_fee = 0, updated_at = CURRENT_TIMESTAMP
     WHERE c.status = 'bonificada'
       AND COALESCE(c.late_fee, 0)::numeric > 0.005${scopeSql}${skipDesactivadasSql}`;
-  await query(clearBonificadaLateFeeSql, scopeParams);
+  if (!dryRun) await query(clearBonificadaLateFeeSql, scopeParams);
 
   const clearPartialSql = `
     UPDATE module_miauto_cuota_semanal c
@@ -1003,14 +1116,15 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       AND ${vencimientoHoyOFuturoSql}
       AND (c.due_date IS NULL OR c.due_date::date >= ${SQL_LIMA_TODAY})
       AND COALESCE(c.late_fee, 0)::numeric > 0.005${scopeSql}${skipDesactivadasSql}`;
-  await query(clearPartialSql, scopeParams);
+  if (!dryRun) await query(clearPartialSql, scopeParams);
 
   /** Incluir `paid` mal etiquetada: aún hay saldo en columnas cuota+mora respecto al abono (p. ej. cascada vs Excel). */
   /** Columnas pueden marcar «pagado» sin mora persistida; el job re-deriva cuota+mora y corrige estado. */
   const underpaidPaidSql = `(c.status = 'paid' AND COALESCE(c.amount_due,0)::numeric + COALESCE(c.late_fee,0)::numeric > COALESCE(c.paid_amount,0)::numeric + 0.02)`;
   const statusSql = includePartial
-    ? `(c.status IN ('pending', 'overdue', 'partial') OR ${underpaidPaidSql} OR c.status = 'paid')`
-    : `(c.status IN ('pending', 'overdue') OR ${underpaidPaidSql} OR c.status = 'paid')`;
+    ? `(c.status IN ('pending', 'overdue', 'partial') OR ${underpaidPaidSql})`
+    : `(c.status IN ('pending', 'overdue') OR ${underpaidPaidSql})`;
+  const fuenteSql = includeExcelMora ? '' : `LOWER(COALESCE(c.montos_fuente, '')) <> 'excel' AND `;
   let sql = `SELECT c.id, c.solicitud_id, c.week_start_date, c.cuota_semanal, c.amount_due, c.due_date, c.num_viajes, c.bono_auto,
             c.paid_amount, c.late_fee, c.status, c.moneda, c.pct_comision, c.cobro_saldo,
             c.partner_fees_raw, c.partner_fees_83,
@@ -1019,7 +1133,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
             s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal
      FROM module_miauto_cuota_semanal c
      INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
-     WHERE LOWER(COALESCE(c.montos_fuente, '')) <> 'excel' AND ${statusSql} AND ${vencimientoYaPasadoSql}`;
+     WHERE ${fuenteSql}${statusSql} AND ${vencimientoYaPasadoSql}`;
   let p = 0;
   if (solicitudId) {
     p += 1;
@@ -1045,6 +1159,24 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       [cuotaIdList]
     );
     pendingComprobanteCuotaIds = new Set((pendRes.rows || []).map((x) => String(x.id)));
+  }
+
+  const comprobanteAbonoFechaByCuota = new Map();
+  if (rows.length > 0) {
+    const cuotaIdList = rows.map((r) => r.id);
+    const compRes = await query(
+      `SELECT cuota_semanal_id::text AS id,
+              MIN(created_at)::date AS fecha_abono
+       FROM module_miauto_comprobante_cuota_semanal
+       WHERE cuota_semanal_id = ANY($1::uuid[])
+         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) NOT IN ('rechazado', 'anulado')
+       GROUP BY cuota_semanal_id`,
+      [cuotaIdList]
+    );
+    for (const r of compRes.rows || []) {
+      const ymd = ymdFromDbDate(r.fecha_abono);
+      if (ymd) comprobanteAbonoFechaByCuota.set(String(r.id), ymd);
+    }
   }
 
   const solIds = [...new Set(rows.map((x) => x.solicitud_id).filter(Boolean))];
@@ -1096,7 +1228,9 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     congeladasPorComprobante: 0,
     cambiosEstado: 0,
     cambiosMoraNormal: 0,
+    casos: {},
   };
+  const dryRunChanges = [];
   for (const row of rows) {
     const cronograma = await cronogramaFor(row.cronograma_id);
     const vehId = row.cronograma_vehiculo_id;
@@ -1128,7 +1262,20 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       cascadeReceived: cascRecv,
       forzarMayorCuotaSinBono: forzarCuotaMaxSinBono,
     });
-    const lateFeeOut = round2(d.late_fee);
+    let lateFeeOut = round2(d.late_fee);
+    const moraCase = classifyMoraCuotaSemanalCase({
+      row,
+      cronograma,
+      vehId,
+      isPrimera,
+      dueEffYmd,
+      hermanas: hermanasMis,
+      comprobanteAbonoYmd: comprobanteAbonoFechaByCuota.get(String(row.id)) || null,
+    });
+    if (rowMontosFuenteExcel(row)) {
+      lateFeeOut = round2(moraCase.lateFee);
+    }
+    moraStats.casos[moraCase.case] = (moraStats.casos[moraCase.case] || 0) + 1;
     const lateFeeDb = round2(parseFloat(row.late_fee) || 0);
     const paidDb = round2(parseFloat(row.paid_amount) || 0);
     const oblig = round2(d.obligacion_total);
@@ -1154,7 +1301,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
         pendienteEconomico: pendEconHermana,
       });
     });
-    const moraComputed = round2(d.late_fee);
+    const moraComputed = round2(lateFeeOut);
     const freezeMoraPorComprobante = pendingComprobanteCuotaIds.has(String(row.id));
     let pendDerivedUse = pendDerived;
     let pendColsUse = pendCols;
@@ -1184,9 +1331,9 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     let moraExtraPersist = round2(parseFloat(row.mora_extra) || 0);
     let moraExtraDesde = ymdFromDbDate(row.mora_extra_desde);
     const pagoHecho = round2(paidDb);
-    const fechaUltimoAbono = ymdFromDbDate(row.fecha_ultimo_abono);
+    const fechaUltimoAbono = comprobanteAbonoFechaByCuota.get(String(row.id)) || ymdFromDbDate(row.fecha_ultimo_abono);
     const fechaCorteMoraNormal = fechaUltimoAbono || limaTodayYmdSync();
-    const baseCapitalMoraNormal = round2(Math.max(0, Number(d.amount_due_sched) || Number(row.amount_due) || 0));
+    const baseCapitalMoraNormal = round2(Math.max(0, Number(rowMontosFuenteExcel(row) ? moraCase.cuotaEsperada : d.amount_due_sched) || Number(row.amount_due) || 0));
     const diasMoraNormalHastaAbono =
       dueEffYmd && fechaCorteMoraNormal && dueEffYmd < fechaCorteMoraNormal
         ? Math.max(0, diffDaysYmdUtc(dueEffYmd, fechaCorteMoraNormal))
@@ -1197,7 +1344,11 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     const moraExtraExistente = round2(parseFloat(row.mora_extra) || 0);
     const abonoMoraNormal = round2(Math.min(pagoHecho, moraNormalHastaAbono));
     const saldoPagoTrasMoraNormal = round2(Math.max(0, pagoHecho - abonoMoraNormal));
-    const abonoMoraExtraExistente = round2(Math.min(saldoPagoTrasMoraNormal, moraExtraExistente));
+    const moraExtraDisponibleParaImputar =
+      moraExtraDesde && fechaUltimoAbono && moraExtraDesde >= fechaUltimoAbono
+        ? 0
+        : moraExtraExistente;
+    const abonoMoraExtraExistente = round2(Math.min(saldoPagoTrasMoraNormal, moraExtraDisponibleParaImputar));
     const abonoACapital = round2(Math.max(0, saldoPagoTrasMoraNormal - abonoMoraExtraExistente));
     const moraNormalPendiente = round2(Math.max(0, moraNormalHastaAbono - abonoMoraNormal));
     const moraExtraExistentePendiente = round2(Math.max(0, moraExtraExistente - abonoMoraExtraExistente));
@@ -1221,7 +1372,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       const moraExtraNueva = abonoACapital > 0.005 && dias > 0
         ? computeLateFeeForDayCount(cronograma, capitalPendienteTrasAbono, dias)
         : 0;
-      moraExtraPersist = round2(moraExtraExistentePendiente + moraExtraNueva);
+      moraExtraPersist = round2(Math.max(moraExtraExistentePendiente, moraExtraNueva));
     } else {
       if (moraExtraExistentePendiente > 0.005) {
         moraExtraPersist = moraExtraExistentePendiente;
@@ -1247,14 +1398,37 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     const moraExtraTotalDbOld = round2(parseFloat(row.mora_extra_total) || 0);
     const moraExtraTotalPersist = round2(Math.max(moraExtraTotalDbOld, moraExtraTotalDbOld - moraExtraDbOld + moraExtraPersist));
 
-    await query(
-      patchDue
-        ? `UPDATE module_miauto_cuota_semanal SET late_fee = $1, mora_extra = $5, mora_extra_desde = $6::date, mora_extra_total = $7, status = $4, due_date = $3::date, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
-        : `UPDATE module_miauto_cuota_semanal SET late_fee = $1, mora_extra = $4, mora_extra_desde = $5::date, mora_extra_total = $6, status = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-      patchDue
-        ? [lateFeePersist, row.id, canonicalDueYmd, statusOut, moraExtraPersist, moraExtraDesde, moraExtraTotalPersist]
-        : [lateFeePersist, row.id, statusOut, moraExtraPersist, moraExtraDesde, moraExtraTotalPersist]
-    );
+    if (dryRun) {
+      dryRunChanges.push({
+        cuota_semanal_id: row.id,
+        solicitud_id: row.solicitud_id,
+        fuente: row.montos_fuente || null,
+        caso_mora: moraCase.case,
+        fecha_mora: moraCase.fechaMora,
+        fecha_corte: moraCase.fechaCorte || null,
+        cuota_esperada: moraCase.cuotaEsperada,
+        base_mora: moraCase.baseMora,
+        late_fee_actual: lateFeeDb,
+        late_fee_nuevo: lateFeePersist,
+        mora_extra_actual: round2(parseFloat(row.mora_extra) || 0),
+        mora_extra_nueva: moraExtraPersist,
+        mora_extra_desde_actual: ymdFromDbDate(row.mora_extra_desde),
+        mora_extra_desde_nueva: moraExtraDesde,
+        status_actual: row.status,
+        status_nuevo: statusOut,
+        due_date_actual: storedDueYmd,
+        due_date_nueva: patchDue ? canonicalDueYmd : storedDueYmd,
+      });
+    } else {
+      await query(
+        patchDue
+          ? `UPDATE module_miauto_cuota_semanal SET late_fee = $1, mora_extra = $5, mora_extra_desde = $6::date, mora_extra_total = $7, status = $4, due_date = $3::date, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
+          : `UPDATE module_miauto_cuota_semanal SET late_fee = $1, mora_extra = $4, mora_extra_desde = $5::date, mora_extra_total = $6, status = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+        patchDue
+          ? [lateFeePersist, row.id, canonicalDueYmd, statusOut, moraExtraPersist, moraExtraDesde, moraExtraTotalPersist]
+          : [lateFeePersist, row.id, statusOut, moraExtraPersist, moraExtraDesde, moraExtraTotalPersist]
+      );
+    }
     if (lateFeePersist > 0.005) moraStats.conMoraNormal++;
     if (moraExtraPersist > 0.005) moraStats.conMoraExtra++;
     if (String(statusOut || '').toLowerCase() !== String(row.status || '').toLowerCase()) {
@@ -1269,9 +1443,22 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     solicitudId: solicitudId || null,
     singleCuotaId,
     includePartial,
+    dryRun,
+    includeExcelMora,
     updated,
     ...moraStats,
   });
+  if (dryRun) {
+    return {
+      dryRun: true,
+      updated,
+      stats: {
+        ...moraStats,
+        includeExcelMora,
+      },
+      changes: dryRunChanges,
+    };
+  }
   return updated;
 }
 

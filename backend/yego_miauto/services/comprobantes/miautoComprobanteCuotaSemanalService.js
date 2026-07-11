@@ -79,14 +79,15 @@ function normalizeChunksFromRow(raw) {
 function computeStatusAfterRevert(c, newPaid) {
   const amountDue = parseFloat(c.amount_due) || 0;
   const lateFee = parseFloat(c.late_fee) || 0;
-  const totalDue = round2(amountDue + lateFee);
+  const moraExtra = parseFloat(c.mora_extra) || 0;
+  const totalDue = round2(amountDue + lateFee + moraExtra);
   const st = (c.status || '').toLowerCase();
   if (st === 'bonificada') return 'bonificada';
   if (newPaid >= totalDue - 0.02) return 'paid';
-  if (newPaid > 0.02) return 'partial';
   const dueY = dueYmdFromRow(c.due_date);
   const today = limaTodayYmd();
   if (dueY && dueY < today) return 'overdue';
+  if (newPaid > 0.02) return 'partial';
   return 'pending';
 }
 

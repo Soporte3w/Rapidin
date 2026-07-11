@@ -60,6 +60,23 @@ router.post('/admin/recalcular-mora', async (req, res) => {
     if (req.user?.role === 'driver') {
       return errorResponse(res, 'Sin permisos para recalcular mora', 403);
     }
+    const dryRun = req.body?.dry_run === true || req.query?.dry_run === 'true';
+    const solicitudId = trimOrUndefined(req.body?.solicitud_id || req.query?.solicitud_id);
+    if (solicitudId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(solicitudId)) {
+      return errorResponse(res, 'solicitud_id inválido', 400);
+    }
+    if (dryRun || solicitudId) {
+      const result = await updateMoraDiaria(solicitudId || null, {
+        includePartial: true,
+        dryRun,
+        includeExcelMora: dryRun || req.body?.include_excel_mora === true || req.query?.include_excel_mora === 'true',
+      });
+      return successResponse(
+        res,
+        dryRun ? result : { updated: result },
+        dryRun ? 'Simulación de mora generada sin cambios en BD' : 'Mora recalculada en cuotas vencidas'
+      );
+    }
     const { updated } = await recalcularMoraGlobal();
     return successResponse(res, { updated }, 'Mora recalculada en todas las cuotas vencidas');
   } catch (error) {

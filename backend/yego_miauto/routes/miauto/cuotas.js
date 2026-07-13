@@ -69,7 +69,9 @@ router.post('/admin/recalcular-mora', async (req, res) => {
       const result = await updateMoraDiaria(solicitudId || null, {
         includePartial: true,
         dryRun,
-        includeExcelMora: dryRun || req.body?.include_excel_mora === true || req.query?.include_excel_mora === 'true',
+        includeExcelMora: req.body?.include_excel_mora === false || req.query?.include_excel_mora === 'false'
+          ? false
+          : true,
       });
       return successResponse(
         res,
@@ -171,7 +173,7 @@ router.post('/solicitudes/:id/cuotas-semanales/generar', validateUUID, async (re
       return errorResponse(res, result.error || 'No se pudo generar la cuota semanal', 400);
     }
 
-    await updateMoraDiaria(req.params.id);
+    await updateMoraDiaria(req.params.id, { includePartial: true, includeExcelMora: true });
 
     return successResponse(res, result, 'Cuota semanal generada correctamente');
   } catch (error) {

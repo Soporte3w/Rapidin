@@ -1513,7 +1513,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
  * Recalcula mora en BD para todas las cuotas vencidas (incl. parciales), para alinear conductores tras validar tarde, etc.
  */
 export async function recalcularMoraGlobal() {
-  const updated = await updateMoraDiaria(null, { includePartial: true });
+  const updated = await updateMoraDiaria(null, { includePartial: true, includeExcelMora: true });
   return { updated };
 }
 
@@ -2592,7 +2592,7 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
     realignedOrigenCascada = true;
   }
   if (realignedOrigenCascada) {
-    await updateMoraDiaria(solicitudId, { includePartial: true });
+    await updateMoraDiaria(solicitudId, { includePartial: true, includeExcelMora: true });
   }
   if (updated > 0) {
     logger.info('miauto.cuota.cap_status_realign', {
@@ -2926,7 +2926,7 @@ export async function recalcMontosCuotasSemanalesDesdeCronograma(opts = {}) {
     updated++;
   }
 
-  await updateMoraDiaria(null, { includePartial: true });
+  await updateMoraDiaria(null, { includePartial: true, includeExcelMora: true });
   for (const sid of solicitudesAfectadas) {
     await persistPaidAmountCapsForSolicitud(sid);
   }

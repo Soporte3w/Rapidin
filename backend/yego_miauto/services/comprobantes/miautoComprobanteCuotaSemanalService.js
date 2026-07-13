@@ -42,7 +42,7 @@ const SELECT_CUOTA_COMP_BASE = `SELECT id, solicitud_id, cuota_semanal_id, monto
             validated_at, validated_by, rechazado_at, rechazo_razon, created_at`;
 
 async function refreshMoraTrasPagoValidado(solicitudId) {
-  await updateMoraDiaria(solicitudId, { includePartial: true });
+  await updateMoraDiaria(solicitudId, { includePartial: true, includeExcelMora: true });
   await persistPaidAmountCapsForSolicitud(solicitudId);
 }
 

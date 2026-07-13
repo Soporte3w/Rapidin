@@ -14,7 +14,7 @@ if (!sid) {
 }
 
 try {
-  await updateMoraDiaria(sid, { includePartial: true });
+  await updateMoraDiaria(sid, { includePartial: true, includeExcelMora: true });
   const n = await persistPaidAmountCapsForSolicitud(sid);
   console.log(JSON.stringify({ ok: true, solicitud_id: sid, ajustes_cap_paid: n }, null, 2));
   process.exit(0);

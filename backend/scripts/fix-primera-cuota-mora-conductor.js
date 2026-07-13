@@ -49,7 +49,7 @@ async function main() {
   console.log('  status (antes):', cuota.status);
   console.log('  fecha_inicio_cobro:', cuota.fecha_inicio_cobro_semanal);
 
-  const updated = await updateMoraDiaria(solicitudId);
+  const updated = await updateMoraDiaria(solicitudId, { includePartial: true, includeExcelMora: true });
   console.log(`\nMora actualizada en ${updated} cuota(s).`);
 
   const verify = await query(

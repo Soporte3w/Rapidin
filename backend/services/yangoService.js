@@ -53,6 +53,9 @@ const MAX_RATE_LIMIT_RETRIES = Number(process.env.YANGO_RATE_LIMIT_MAX_RETRIES |
 const SUPPLY_SUMMARY_CACHE_TTL_MS = 2 * 60 * 1000;
 const SUPPLY_SUMMARY_PAGE_SIZE = 50;
 const MAX_SUPPLY_SUMMARY_PAGES = 100;
+const MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID = String(
+  process.env.MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID || '0e935ec639324568a0f5ac66583f8bfe'
+).trim();
 const miAutoSupplySummaryCache = new Map();
 
 function normalizeApiMessage(data) {
@@ -477,9 +480,10 @@ export async function getMiAutoSupplySummary({ dateFrom, dateTo, parkId = null, 
   const requestedPeriod = {
     date_from: String(dateFrom || '').slice(0, 10),
     date_to: String(dateTo || '').slice(0, 10),
+    work_rule_id: MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID,
     sort: { field: 'driver_id', direction: 'asc' },
   };
-  const cacheKey = `${resolvedPark}:${requestedPeriod.date_from}:${requestedPeriod.date_to}`;
+  const cacheKey = `${resolvedPark}:${requestedPeriod.date_from}:${requestedPeriod.date_to}:${MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID}`;
   const cached = miAutoSupplySummaryCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const headers = {

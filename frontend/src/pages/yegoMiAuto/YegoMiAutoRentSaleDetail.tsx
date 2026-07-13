@@ -144,6 +144,16 @@ interface SolicitudSummary {
   otros_gastos?: MiautoOtrosGastoRow[];
 }
 
+interface BonoTiempoResumen {
+  enabled: boolean;
+  racha: number;
+  bonos: Array<{
+    id: string;
+    target_week_number: number;
+    status: 'reservado' | 'aplicado';
+  }>;
+}
+
 function miautoMontoFacturableNotaVentaCuota(cuota: CuotaSemanal) {
   const pagoDirecto = miautoNum(cuota.paid_amount);
   const recaudo = Math.max(0, miautoNum(cuota.partner_fees_83));
@@ -294,6 +304,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const [eliminandoConformidadId, setEliminandoConformidadId] = useState<string | null>(null);
   const [racha, setRacha] = useState<number | null>(null);
   const [bonoAplicado, setBonoAplicado] = useState<number>(0);
+  const [bonoTiempoResumen, setBonoTiempoResumen] = useState<BonoTiempoResumen | null>(null);
   const [tabCronograma, setTabCronograma] = useState<'semanales' | 'otros_gastos'>('semanales');
   const [ogTipoFilterAdmin, setOgTipoFilterAdmin] = useState<string | null>(null);
   const [subTabCuota, setSubTabCuota] = useState<Record<string, 'comprobantes' | 'evidencias'>>({});
@@ -571,6 +582,8 @@ export default function YegoMiAutoRentSaleDetail() {
       ]);
       const sol = resSol.data?.data ?? resSol.data;
       const { cuotas: rawCuotas, racha: rachaNum, cuotasSemanalesBonificadas: bonoNum } = parseCuotasSemanalesPayload(resCuotas);
+      const cuotasEnvelope = resCuotas.data?.data ?? resCuotas.data ?? {};
+      const bonoResumen = (cuotasEnvelope as { bono_tiempo?: BonoTiempoResumen }).bono_tiempo ?? null;
       const comp = resComp.data?.data ?? resComp.data ?? [];
       const evFleet = resEvidencias.data?.data ?? resEvidencias.data ?? [];
       const notas = resNotasVenta.data?.data ?? resNotasVenta.data ?? [];
@@ -584,6 +597,7 @@ export default function YegoMiAutoRentSaleDetail() {
       setEvidenciasFleet(Array.isArray(evFleet) ? evFleet : []);
       setRacha(rachaNum);
       setBonoAplicado(bonoNum);
+      setBonoTiempoResumen(bonoResumen);
     } catch (e: any) {
       if (isAxiosAbortError(e)) return;
       const msg = e.response?.data?.message || 'Error al cargar el detalle';
@@ -600,6 +614,7 @@ export default function YegoMiAutoRentSaleDetail() {
         setEvidenciasFleet([]);
         setRacha(null);
         setBonoAplicado(0);
+        setBonoTiempoResumen(null);
       }
     } finally {
       if (signal?.aborted) return;
@@ -666,13 +681,14 @@ export default function YegoMiAutoRentSaleDetail() {
         pago_puntual: checked,
       });
       toast.success(checked ? 'Pago puntual marcado' : 'Pago puntual desmarcado');
+      await fetchDetail(undefined, { refresh: true });
     } catch (err: any) {
       setCuotas(prevCuotas);
       toast.error(err.response?.data?.message || 'No se pudo actualizar el pago puntual');
     } finally {
       setGuardandoPagoPuntualId(null);
     }
-  }, [cuotas, id]);
+  }, [cuotas, fetchDetail, id]);
 
   const cuotasNotaVentaDisponibles = useMemo(() => {
     return cuotas.filter((c) => {
@@ -1202,8 +1218,8 @@ export default function YegoMiAutoRentSaleDetail() {
                   <TrendingUp className="w-4 h-4" />
                   <span>Racha</span>
                 </div>
-                <p className="text-xl font-bold text-green-800">{racha ?? '—'}</p>
-                <p className="text-xs text-gray-500">cuotas seguidas al día</p>
+                <p className="text-xl font-bold text-green-800">{racha ?? 0}/4</p>
+                <p className="text-xs text-gray-500">pagadas, puntuales y con 120 viajes</p>
               </div>
               <div className="bg-white rounded-lg border border-[#8B1A1A]/20 p-4 shadow-sm">
                 <div className="flex items-center gap-2 text-[#8B1A1A] text-sm mb-1">
@@ -1212,16 +1228,23 @@ export default function YegoMiAutoRentSaleDetail() {
                 </div>
                 <p className="text-xl font-bold text-[#8B1A1A]">{bonoAplicado}</p>
                 <p className="text-xs text-gray-500">
-                  {bonoAplicado >= 1 ? `${bonoAplicado} cuota${bonoAplicado !== 1 ? 's' : ''} bonificada${bonoAplicado !== 1 ? 's' : ''}` : 'aplicado'}
+                  {bonoAplicado >= 1 ? `${bonoAplicado} cuota${bonoAplicado !== 1 ? 's' : ''} consolidada${bonoAplicado !== 1 ? 's' : ''}` : 'sin bonos aún'}
                 </p>
               </div>
             </>
           )}
         </div>
         {bonoTiempoActivo && (
-          <p className="text-xs text-gray-500 px-1">
-            Bono tiempo: 1 cuota bonificada por cada 4 pagos consecutivos a tiempo; en cada una de esas 4 semanas el conductor debe tener al menos 120 viajes.
-          </p>
+          <>
+            <p className="text-xs text-gray-500 px-1">
+              Bono tiempo: la primera semana de depósito no cuenta. Cada 4 cuotas pagadas puntualmente y con al menos 120 viajes consolida una cuota final; un incumplimiento posterior solo reinicia la siguiente racha.
+            </p>
+            {bonoTiempoResumen?.bonos.some((bono) => bono.status === 'reservado') && (
+              <p className="text-xs text-amber-700 px-1">
+                Hay un bono consolidado reservado para una cuota final aún no generada.
+              </p>
+            )}
+          </>
         )}
       </div>
 
@@ -1373,9 +1396,11 @@ export default function YegoMiAutoRentSaleDetail() {
                   <th className="py-2.5 pl-1 pr-3 align-middle text-center text-[11px] font-semibold uppercase tracking-wide text-gray-700 leading-tight">
                     <span className="block">Estado</span>
                   </th>
-                  <th className="py-2.5 pl-1 pr-3 align-middle text-center text-[11px] font-semibold uppercase tracking-wide text-gray-700 leading-tight">
-                    <span className="block">Pago<br/>puntual</span>
-                  </th>
+                  {bonoTiempoActivo && (
+                    <th className="py-2.5 pl-1 pr-3 align-middle text-center text-[11px] font-semibold uppercase tracking-wide text-gray-700 leading-tight">
+                      <span className="block">Pago<br/>puntual</span>
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -1598,22 +1623,24 @@ export default function YegoMiAutoRentSaleDetail() {
                         {c.status === 'bonificada' && (<span className="text-center text-[10px] text-gray-500">Por 4 cuotas al día</span>)}
                       </div>
                     </td>
-                    {/* Pago puntual */}
-                    <td className="py-2.5 pl-1 pr-3 align-middle text-center">
-                      <label className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-gray-200 bg-white transition-colors hover:border-green-300 hover:bg-green-50">
-                        <input
-                          type="checkbox"
-                          checked={c.pago_puntual === true}
-                          disabled={guardandoPagoPuntualId === c.id}
-                          onChange={(event) => void togglePagoPuntualCuota(c.id, event.target.checked)}
-                          className="h-4 w-4 cursor-pointer rounded border-gray-300 text-green-600 focus:ring-green-500 disabled:cursor-wait disabled:opacity-60"
-                          aria-label={`Marcar pago puntual semana ${numeroSemana}`}
-                        />
-                      </label>
-                    </td>
+                    {bonoTiempoActivo && (
+                      <td className="py-2.5 pl-1 pr-3 align-middle text-center">
+                        <label className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-gray-200 bg-white transition-colors hover:border-green-300 hover:bg-green-50">
+                          <input
+                            type="checkbox"
+                            checked={c.pago_puntual === true}
+                            disabled={guardandoPagoPuntualId === c.id || c.status !== 'paid' || numeroSemana === 1}
+                            onChange={(event) => void togglePagoPuntualCuota(c.id, event.target.checked)}
+                            className="h-4 w-4 cursor-pointer rounded border-gray-300 text-green-600 focus:ring-green-500 disabled:cursor-wait disabled:opacity-60"
+                            aria-label={`Marcar pago puntual semana ${numeroSemana}`}
+                            title={numeroSemana === 1 ? 'La primera semana de depósito no cuenta para el bono tiempo' : c.status !== 'paid' ? 'La cuota debe estar pagada para marcarla puntual' : 'Marcar pago puntual'}
+                          />
+                        </label>
+                      </td>
+                    )}
                   </tr>
                   <tr className="border-b border-gray-100">
-                       <td colSpan={12} className="p-0 align-top">
+                       <td colSpan={bonoTiempoActivo ? 12 : 11} className="p-0 align-top">
                         <div
                           className="overflow-hidden transition-[max-height,opacity] duration-300 ease-out"
                           style={{ maxHeight: abierto ? 1800 : 0, opacity: abierto ? 1 : 0 }}

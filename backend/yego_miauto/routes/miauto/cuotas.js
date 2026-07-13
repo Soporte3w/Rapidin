@@ -3,6 +3,7 @@ import { validateUUID } from '../../../middleware/validations.js';
 import { successResponse, errorResponse } from '../../../utils/responses.js';
 import { logger } from '../../../utils/logger.js';
 import { getCuotasSemanalesConRacha, getSemanasDisponibles, recalcularMoraGlobal, updateMoraDiaria, updatePagoPuntualCuotaSemanal } from '../../services/cuotas/miautoCuotaSemanalService.js';
+import { getResumenBonoTiempo } from '../../services/bonos/miautoBonoTiempoService.js';
 import { regenerateMiAutoCuotaForWeekMonday } from '../../../jobs/miautoWeeklyCharge.js';
 import { getDriverGoals, getDriverIncome } from '../../../services/yangoService.js';
 import pool from '../../../database/connection.js';
@@ -44,10 +45,17 @@ router.get('/solicitudes/:id/cuotas-semanales', validateUUID, async (req, res) =
     const { data: list, racha, cuotas_semanales_bonificadas, total_cuotas_cargadas } = await getCuotasSemanalesConRacha(req.params.id, {
       incluirAbonoComprobantePendiente,
     });
+    const bonoTiempo = await getResumenBonoTiempo(req.params.id);
     const rachaNum = typeof racha === 'number' && Number.isFinite(racha) ? Math.max(0, Math.floor(racha)) : 0;
     const bonoAplicado = typeof cuotas_semanales_bonificadas === 'number' && Number.isFinite(cuotas_semanales_bonificadas) ? Math.max(0, Math.floor(cuotas_semanales_bonificadas)) : 0;
     const totalCargadas = typeof total_cuotas_cargadas === 'number' ? Math.max(0, Math.floor(total_cuotas_cargadas)) : 0;
-    return successResponse(res, { data: list, racha: rachaNum, cuotas_semanales_bonificadas: bonoAplicado, total_cuotas_cargadas: totalCargadas });
+    return successResponse(res, {
+      data: list,
+      racha: bonoTiempo.enabled ? bonoTiempo.racha : rachaNum,
+      cuotas_semanales_bonificadas: bonoAplicado,
+      total_cuotas_cargadas: totalCargadas,
+      bono_tiempo: bonoTiempo,
+    });
   } catch (error) {
     logger.error('Error listando cuotas semanales Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al listar cuotas semanales', 500);

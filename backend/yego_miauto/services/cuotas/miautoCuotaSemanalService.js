@@ -698,6 +698,35 @@ export async function touchFechaPrimerComprobanteCuota(cuotaSemanalId) {
 }
 
 export async function updatePagoPuntualCuotaSemanal(solicitudId, cuotaSemanalId, pagoPuntual) {
+  const elegibilidad = await query(
+    `SELECT c.status, c.week_start_date, s.fecha_inicio_cobro_semanal, cr.bono_tiempo_activo
+     FROM module_miauto_cuota_semanal c
+     JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
+     LEFT JOIN module_miauto_cronograma cr ON cr.id = s.cronograma_id
+     WHERE c.solicitud_id = $1::uuid AND c.id = $2::uuid AND c.deleted_at IS NULL`,
+    [solicitudId, cuotaSemanalId]
+  );
+  const cuota = elegibilidad.rows[0];
+  if (!cuota) {
+    const err = new Error('Cuota semanal no encontrada');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!cuota.bono_tiempo_activo) {
+    const err = new Error('El cronograma de esta solicitud no tiene bono tiempo activo');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (pagoPuntual === true && isSemanaDepositoMiAuto(cuota.week_start_date, cuota.fecha_inicio_cobro_semanal)) {
+    const err = new Error('La primera semana de depósito no cuenta para el bono tiempo');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (pagoPuntual === true && String(cuota.status || '').toLowerCase() !== 'paid') {
+    const err = new Error('Solo una cuota pagada puede marcarse como pago puntual');
+    err.statusCode = 400;
+    throw err;
+  }
   const res = await query(
     `UPDATE module_miauto_cuota_semanal
      SET pago_puntual = $1,
@@ -713,6 +742,8 @@ export async function updatePagoPuntualCuotaSemanal(solicitudId, cuotaSemanalId,
     err.statusCode = 404;
     throw err;
   }
+  const { reconciliarBonosTiempo } = await import('../bonos/miautoBonoTiempoService.js');
+  await reconciliarBonosTiempo(solicitudId);
   return {
     id: res.rows[0].id,
     solicitud_id: res.rows[0].solicitud_id,
@@ -1532,20 +1563,25 @@ export async function recalcularMoraGlobal() {
 }
 
 /**
- * Calcula la racha actual: cuántas cuotas consecutivas (desde la más antigua por due_date)
- * están pagadas o bonificadas y sin cuota pendiente (`pending_total` = 0). Si hay alguna vencida (overdue), racha = 0.
+ * Progreso de la racha actual de bono: cuotas pagadas, puntuales y con viajes mínimos.
+ * La semana de depósito se excluye; una cuota no elegible reinicia solo la racha en curso.
  */
-function calcularRacha(cuotas) {
+function calcularRacha(cuotas, fechaInicioCobroSemanal) {
   if (!Array.isArray(cuotas) || cuotas.length === 0) return 0;
-  const tieneVencida = cuotas.some((c) => (c.status || '').toLowerCase() === 'overdue' && cuotaTieneSaldoPendienteColumnas(c));
-  if (tieneVencida) return 0;
   const porFechaAsc = ordenarCuotasSemanalesCronologico(cuotas);
   let racha = 0;
   for (const c of porFechaAsc) {
+    if (isSemanaDepositoMiAuto(c.week_start_date, fechaInicioCobroSemanal)) continue;
     const pend = Number(c.pending_total) || 0;
-    const ok = (c.status === 'paid' || c.status === 'bonificada') && pend === 0;
-    if (!ok) break;
-    racha++;
+    const ok = c.status === 'paid'
+      && pend <= 0.005
+      && c.pago_puntual === true
+      && Number(c.num_viajes || 0) >= 120;
+    if (!ok) {
+      racha = 0;
+      continue;
+    }
+    racha = (racha + 1) % 4;
   }
   return racha;
 }
@@ -2791,7 +2827,7 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
       })
     );
   }
-  return { cuotas, bonificadas_db };
+  return { cuotas, bonificadas_db, fecha_inicio_cobro_semanal: fiRaw };
 }
 
 /**
@@ -2831,8 +2867,8 @@ async function pendingTotalMapsForSolicitudIdsBatched(solicitudIds, batchSize = 
  * @param {{ incluirAbonoComprobantePendiente?: boolean }} [options] Solo staff/admin: proyectar abono de comprobantes en revisión en `cuota_final` / `pending_total`.
  */
 export async function getCuotasSemanalesConRacha(solicitudId, options = {}) {
-  const { cuotas, bonificadas_db: fromDb } = await fetchCuotasSemanalesPayload(solicitudId, options);
-  const racha = calcularRacha(cuotas);
+  const { cuotas, bonificadas_db: fromDb, fecha_inicio_cobro_semanal } = await fetchCuotasSemanalesPayload(solicitudId, options);
+  const racha = calcularRacha(cuotas, fecha_inicio_cobro_semanal);
   const fromCuotas = (cuotas || []).filter((c) => c.status === 'bonificada').length;
   const cuotasSemanalesBonificadas = Math.max(fromDb, fromCuotas);
   const totalCuotasCargadas = (cuotas || []).length;

@@ -44,6 +44,7 @@ import {
 import { buildPendingTotalMapForSolicitud, isSemanaDepositoMiAuto } from '../cuotas/miautoCuotaSemanalService.js';
 import { computeDueDateForMiAutoCuota, isWeekYangoClosedForMiAutoCuotaMetrics } from '../../../utils/miautoLimaWeekRange.js';
 import { partnerFeesYangoAMonedaCuota } from '../utils/miautoMoneyUtils.js';
+import { aplicarBonoTiempoReservado } from '../bonos/miautoBonoTiempoService.js';
 
 function limaTodayYmd() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -648,6 +649,8 @@ export async function generateWeeklyCharge({
       executionHash: cascadeHash,
     });
   }
+
+  await aplicarBonoTiempoReservado(solicitudId);
 
   return {
     cuotaId,

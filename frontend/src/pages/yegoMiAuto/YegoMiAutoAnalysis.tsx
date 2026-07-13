@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { Activity, CalendarDays, Car, ChevronLeft, ChevronRight, Clock3, Download, ListFilter, RefreshCw, Route, Search, Users } from 'lucide-react';
+import { Activity, Car, ChevronLeft, ChevronRight, Clock3, Download, ListFilter, RefreshCw, Route, Search, Users } from 'lucide-react';
 import api from '../../services/api';
+import { DateRangePicker } from '../../components/DateRangePicker';
 
 type SupplyDriver = {
   driver_id: string;
   name: string;
-  work_rule_id: string | null;
   license_number: string | null;
   plate: string | null;
   completed_trips: number;
@@ -31,10 +31,6 @@ const ymdToday = () => new Intl.DateTimeFormat('en-CA', {
 
 function defaultDateFrom() {
   return `${ymdToday().slice(0, 7)}-01`;
-}
-
-function workRuleLabel(id: string) {
-  return `Término ${id.slice(0, 8).toUpperCase()}`;
 }
 
 function daysInclusive(from: string, to: string) {
@@ -91,15 +87,13 @@ export default function YegoMiAutoAnalysis() {
   const [dateTo, setDateTo] = useState(ymdToday);
   const [data, setData] = useState<SupplyData | null>(null);
   const [query, setQuery] = useState('');
-  const [workRuleId, setWorkRuleId] = useState('');
-  const [workRules, setWorkRules] = useState<string[]>([]);
   const [stateFilter, setStateFilter] = useState<'all' | SupplyState>('all');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const load = async (selectedWorkRuleId = workRuleId) => {
+  const load = async () => {
     if (dateFrom > dateTo) {
       setError('La fecha inicial no puede ser posterior a la fecha final.');
       return;
@@ -111,17 +105,10 @@ export default function YegoMiAutoAnalysis() {
         params: {
           date_from: dateFrom,
           date_to: dateTo,
-          ...(selectedWorkRuleId ? { work_rule_id: selectedWorkRuleId } : {}),
         },
       });
       const supplyData = response.data?.data ?? response.data;
       setData(supplyData);
-      setWorkRules((current) => [...new Set([
-        ...current,
-        ...(supplyData.drivers || [])
-          .map((driver: SupplyDriver) => driver.work_rule_id)
-          .filter((id: string | null): id is string => Boolean(id)),
-      ])].sort());
       setPage(1);
     } catch (err: any) {
       setData(null);
@@ -167,24 +154,18 @@ export default function YegoMiAutoAnalysis() {
 
       <section className="border border-gray-200 bg-gray-50 px-3 py-2.5">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex h-10 items-center gap-2 rounded-full border border-gray-300 bg-white px-3 text-sm text-gray-700 shadow-sm">
-            <CalendarDays className="h-4 w-4 text-gray-500" />
-            <label className="sr-only" htmlFor="supply-date-from">Desde</label>
-            <input id="supply-date-from" type="date" value={dateFrom} max={dateTo} onChange={(event) => setDateFrom(event.target.value)} className="w-[122px] bg-transparent text-sm outline-none" />
-            <span className="text-gray-300">—</span>
-            <label className="sr-only" htmlFor="supply-date-to">Hasta</label>
-            <input id="supply-date-to" type="date" value={dateTo} max={ymdToday()} onChange={(event) => setDateTo(event.target.value)} className="w-[122px] bg-transparent text-sm outline-none" />
-          </div>
+          <DateRangePicker
+            label=""
+            value={{ date_from: dateFrom, date_to: dateTo }}
+            onChange={(range) => { setDateFrom(range.date_from); setDateTo(range.date_to); setPage(1); }}
+            placeholder="Seleccionar período"
+            className="min-w-[230px] max-w-[280px]"
+            inputClassName="h-10 rounded-full border-gray-300 py-0 shadow-sm"
+          />
           <label className="relative flex h-10 min-w-[240px] flex-1 items-center rounded-full border border-gray-300 bg-white pl-9 pr-3 text-sm shadow-sm sm:flex-none">
             <Search className="pointer-events-none absolute left-3 h-4 w-4 text-gray-500" />
             <span className="sr-only">Conductor, licencia o placa</span>
             <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Conductor, licencia o placa" className="w-full bg-transparent text-gray-800 outline-none placeholder:text-gray-500" />
-          </label>
-          <label className="relative flex h-10 items-center gap-2 rounded-full border border-gray-300 bg-white pl-3 pr-8 text-sm text-gray-700 shadow-sm">
-            <ListFilter className="h-4 w-4 text-gray-500" />
-            <span className="sr-only">Términos de trabajo</span>
-            <select value={workRuleId} onChange={(event) => { const next = event.target.value; setWorkRuleId(next); load(next); }} className="appearance-none bg-transparent pr-1 text-sm font-medium outline-none"><option value="">Términos de trabajo</option>{workRules.map((ruleId) => <option key={ruleId} value={ruleId}>{workRuleLabel(ruleId)}</option>)}</select>
-            <ChevronRight className="pointer-events-none absolute right-3 h-4 w-4 rotate-90 text-gray-500" />
           </label>
           <label className="relative flex h-10 items-center gap-2 rounded-full border border-gray-300 bg-white pl-3 pr-8 text-sm text-gray-700 shadow-sm">
             <ListFilter className="h-4 w-4 text-gray-500" />

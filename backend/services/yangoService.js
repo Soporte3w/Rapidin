@@ -429,7 +429,6 @@ function normalizeSupplyDriver(item) {
   return {
     driver_id: String(driver.id || ''),
     name,
-    work_rule_id: driver.work_rule_id || null,
     license_number: driver.license_number || null,
     plate: item?.car?.callsign || firstCar.number || null,
     completed_trips: Math.max(0, Number(item?.count_orders_completed) || 0),
@@ -468,7 +467,7 @@ async function fetchSupplyDrivers({ endpoint, requestedPeriod, headers }) {
 }
 
 /** Resumen Fleet de Supply por conductor para el dashboard de Yego Mi Auto. */
-export async function getMiAutoSupplySummary({ dateFrom, dateTo, workRuleId = null, parkId = null, cookieOverride = null } = {}) {
+export async function getMiAutoSupplySummary({ dateFrom, dateTo, parkId = null, cookieOverride = null } = {}) {
   const resolvedCookie = fleetCookieCobroForMiAuto(cookieOverride);
   const resolvedPark = fleetParkIdForMiAuto(parkId);
   if (!resolvedCookie || !resolvedPark) {
@@ -480,8 +479,7 @@ export async function getMiAutoSupplySummary({ dateFrom, dateTo, workRuleId = nu
     date_to: String(dateTo || '').slice(0, 10),
     sort: { field: 'driver_id', direction: 'asc' },
   };
-  if (workRuleId) requestedPeriod.work_rule_id = String(workRuleId).trim();
-  const cacheKey = `${resolvedPark}:${requestedPeriod.date_from}:${requestedPeriod.date_to}:${requestedPeriod.work_rule_id || 'all'}`;
+  const cacheKey = `${resolvedPark}:${requestedPeriod.date_from}:${requestedPeriod.date_to}`;
   const cached = miAutoSupplySummaryCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const headers = {

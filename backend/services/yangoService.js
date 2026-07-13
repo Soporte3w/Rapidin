@@ -54,12 +54,16 @@ const SUPPLY_SUMMARY_CACHE_TTL_MS = 2 * 60 * 1000;
 const SUPPLY_HEATMAP_CACHE_TTL_MS = 5 * 60 * 1000;
 const SUPPLY_SUMMARY_PAGE_SIZE = 50;
 const MAX_SUPPLY_SUMMARY_PAGES = 100;
-const SUPPLY_HEATMAP_CONCURRENCY = 2;
+const configuredHeatmapConcurrency = Number(process.env.MIAUTO_SUPPLY_HEATMAP_CONCURRENCY || 4);
+const SUPPLY_HEATMAP_CONCURRENCY = Number.isFinite(configuredHeatmapConcurrency)
+  ? Math.min(4, Math.max(1, configuredHeatmapConcurrency))
+  : 4;
 const MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID = String(
   process.env.MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID || '0e935ec639324568a0f5ac66583f8bfe'
 ).trim();
 const miAutoSupplySummaryCache = new Map();
 const miAutoSupplyHeatmapCache = new Map();
+const miAutoSupplyHeatmapRequests = new Map();
 
 function normalizeApiMessage(data) {
   if (data == null) return '';
@@ -536,13 +540,8 @@ function listYmdDates(dateFrom, dateTo) {
   return dates;
 }
 
-/** Supply diario por conductor, listo para una matriz de calor sin persistir datos locales. */
-export async function getMiAutoSupplyHeatmap({ dateFrom, dateTo, parkId = null, cookieOverride = null } = {}) {
+async function buildMiAutoSupplyHeatmap({ dateFrom, dateTo, parkId = null, cookieOverride = null } = {}) {
   const dates = listYmdDates(dateFrom, dateTo);
-  const cacheKey = `${parkId || 'default'}:${dateFrom}:${dateTo}:${MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID}`;
-  const cached = miAutoSupplyHeatmapCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
-
   const dailySummaries = [];
   for (let start = 0; start < dates.length; start += SUPPLY_HEATMAP_CONCURRENCY) {
     const batch = dates.slice(start, start + SUPPLY_HEATMAP_CONCURRENCY);
@@ -585,8 +584,24 @@ export async function getMiAutoSupplyHeatmap({ dateFrom, dateTo, parkId = null, 
     }))
     .sort((left, right) => right.total_supply_hours - left.total_supply_hours);
   const result = { success: true, dates, drivers };
+  const cacheKey = `${parkId || 'default'}:${dateFrom}:${dateTo}:${MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID}`;
   miAutoSupplyHeatmapCache.set(cacheKey, { value: result, expiresAt: Date.now() + SUPPLY_HEATMAP_CACHE_TTL_MS });
   return result;
+}
+
+/** Supply diario por conductor, listo para una matriz de calor sin persistir datos locales. */
+export function getMiAutoSupplyHeatmap({ dateFrom, dateTo, parkId = null, cookieOverride = null } = {}) {
+  const cacheKey = `${parkId || 'default'}:${dateFrom}:${dateTo}:${MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID}`;
+  const cached = miAutoSupplyHeatmapCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
+
+  const inFlight = miAutoSupplyHeatmapRequests.get(cacheKey);
+  if (inFlight) return inFlight;
+
+  const request = buildMiAutoSupplyHeatmap({ dateFrom, dateTo, parkId, cookieOverride })
+    .finally(() => miAutoSupplyHeatmapRequests.delete(cacheKey));
+  miAutoSupplyHeatmapRequests.set(cacheKey, request);
+  return request;
 }
 
 /**

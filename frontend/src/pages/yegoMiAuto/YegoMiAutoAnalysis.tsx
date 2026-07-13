@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, ChevronLeft, ChevronRight, Download, ListFilter, RefreshCw, Search } from 'lucide-react';
+import { BarChart3, ChevronRight, Download, ListFilter, RefreshCw, Search } from 'lucide-react';
 import { DateRangePicker } from '../../components/DateRangePicker';
 import api from '../../services/api';
 
@@ -39,7 +39,6 @@ type SupplyState = 'on_track' | 'near' | 'behind';
 type DateRange = { date_from: string; date_to: string };
 
 const HOURS_TARGET = 200;
-const PAGE_SIZES = [10, 25, 50];
 
 const stateMeta: Record<SupplyState, { label: string; color: string; badge: string }> = {
   on_track: { label: 'Cumple', color: '#16a34a', badge: 'bg-green-100 text-green-800' },
@@ -117,12 +116,12 @@ function buildHeatmapPdf(data: SupplyHeatmapData | null, visibleDrivers: SupplyD
       const intensity = entry.hours > 0 ? 0.14 + (entry.hours / maxHours) * 0.76 : 0;
       const color = entry.hours ? `rgba(139,26,26,${intensity})` : '#f9fafb';
       const text = intensity > 0.55 ? '#ffffff' : '#7f1d1d';
-      return `<td style="background:${color};color:${entry.hours ? text : '#9ca3af'}">${entry.hours ? entry.hours.toFixed(1) : '—'}</td>`;
+      return `<td style="background:${color};color:${entry.hours ? text : '#9ca3af'}">${entry.hours ? `${entry.hours.toFixed(1)}h<br><small>${entry.trips} viajes</small>` : '—'}</td>`;
     }).join('');
     return `<tr><th>${escapeHtml(driver.name)}<small>${escapeHtml(driver.plate || driver.license_number)}</small></th>${cells}</tr>`;
   }).join('');
 
-  return `<section class="heatmap"><h2>Mapa de calor de Supply</h2><p class="muted">Horas por conductor y día. Cada celda muestra horas Supply; el color más intenso indica mayor actividad.</p><table><thead><tr><th>Conductor</th>${dates}</tr></thead><tbody>${rows}</tbody></table></section>`;
+  return `<section class="heatmap"><h2>Mapa de calor de Supply</h2><p class="muted">Cada celda muestra horas Supply y viajes realizados. El color más intenso indica mayor actividad.</p><table><thead><tr><th>Conductor</th>${dates}</tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
 function exportSupplyPdf(drivers: SupplyDriver[], heatmapData: SupplyHeatmapData | null, dateRange: DateRange, target: number, closedPeriod: boolean) {
@@ -138,7 +137,7 @@ function exportSupplyPdf(drivers: SupplyDriver[], heatmapData: SupplyHeatmapData
   }).join('');
   const heatmap = buildHeatmapPdf(heatmapData, drivers);
 
-  popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Supply Mi Auto</title><style>@page{size:landscape;margin:12mm}body{font-family:Arial,sans-serif;color:#111827;margin:28px}h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:28px 0 4px}.muted{color:#6b7280;font-size:12px;margin:0 0 20px}.summary{display:flex;gap:18px;margin:0 0 20px}.summary div{border:1px solid #e5e7eb;padding:10px 12px;min-width:120px}.summary strong{display:block;font-size:18px;margin-top:3px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f3f4f6;text-align:left}th,td{border-bottom:1px solid #e5e7eb;padding:8px}.num{text-align:right}.heatmap{break-before:page;page-break-before:always}.heatmap table{font-size:8px;table-layout:fixed}.heatmap th,.heatmap td{padding:4px;text-align:center;border:1px solid #fff}.heatmap th:first-child{text-align:left;width:150px}.heatmap small{display:block;color:#6b7280;font-weight:normal;margin-top:2px}@media print{body{margin:0}}</style></head><body><h1>Yego Mi Auto · Análisis Supply</h1><p class="muted">Período: ${escapeHtml(dateRange.date_from)} a ${escapeHtml(dateRange.date_to)} · Meta: ${formatHours(target)}</p><div class="summary"><div>Conductores<strong>${drivers.length}</strong></div><div>Horas Supply<strong>${formatHours(totalHours)}</strong></div><div>Viajes completados<strong>${totalTrips.toLocaleString('es-PE')}</strong></div></div><table><thead><tr><th>Conductor</th><th>Placa</th><th class="num">Viajes</th><th class="num">Horas Supply</th><th>Estado</th></tr></thead><tbody>${rows}</tbody></table>${heatmap}<script>window.onload=()=>window.print()</script></body></html>`);
+  popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Supply Mi Auto</title><style>@page{size:landscape;margin:12mm}body{font-family:Arial,sans-serif;color:#111827;margin:28px}h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:28px 0 4px}.muted{color:#6b7280;font-size:12px;margin:0 0 20px}.summary{display:flex;gap:18px;margin:0 0 20px}.summary div{border:1px solid #e5e7eb;padding:10px 12px;min-width:120px}.summary strong{display:block;font-size:18px;margin-top:3px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f3f4f6;text-align:left}th,td{border-bottom:1px solid #e5e7eb;padding:8px}.num{text-align:right}.heatmap{break-before:page;page-break-before:always}.heatmap table{font-size:8px;table-layout:fixed}.heatmap th,.heatmap td{padding:4px;text-align:center;border:1px solid #fff}.heatmap th:first-child{text-align:left;width:150px}.heatmap small{display:block;font-size:7px;font-weight:normal;margin-top:2px;opacity:.85}@media print{body{margin:0}}</style></head><body><h1>Yego Mi Auto · Análisis Supply</h1><p class="muted">Período: ${escapeHtml(dateRange.date_from)} a ${escapeHtml(dateRange.date_to)} · Meta: ${formatHours(target)}</p><div class="summary"><div>Conductores<strong>${drivers.length}</strong></div><div>Horas Supply<strong>${formatHours(totalHours)}</strong></div><div>Viajes completados<strong>${totalTrips.toLocaleString('es-PE')}</strong></div></div><table><thead><tr><th>Conductor</th><th>Placa</th><th class="num">Viajes</th><th class="num">Horas Supply</th><th>Estado</th></tr></thead><tbody>${rows}</tbody></table>${heatmap}<script>window.onload=()=>window.print()</script></body></html>`);
   popup.document.close();
 }
 
@@ -212,7 +211,7 @@ function SupplyHeatmap({ data, visibleDrivers, loading }: { data: SupplyHeatmapD
       <div className="flex flex-col gap-2 border-b border-gray-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-sm font-semibold text-gray-900">Mapa de calor de Supply</h2>
-          <p className="mt-0.5 text-xs text-gray-500">Horas por conductor y día. La intensidad representa mayor tiempo conectado.</p>
+          <p className="mt-0.5 text-xs text-gray-500">Cada celda muestra horas Supply y viajes realizados. La intensidad representa mayor tiempo conectado.</p>
         </div>
         <div className="flex items-center gap-2 text-xs text-gray-500"><span>0 h</span><i className="h-3 w-3 border border-red-100 bg-red-50" /><i className="h-3 w-3 bg-red-300" /><i className="h-3 w-3 bg-[#8B1A1A]" /><span>{formatHours(maxHours)}</span></div>
       </div>
@@ -220,55 +219,10 @@ function SupplyHeatmap({ data, visibleDrivers, loading }: { data: SupplyHeatmapD
         {loading ? <div className="flex h-56 items-center justify-center text-sm text-gray-500">Cargando mapa de calor...</div> : drivers.length === 0 ? <div className="flex h-56 items-center justify-center text-sm text-gray-500">No hay datos para el período seleccionado.</div> : (
           <table className="w-full min-w-[760px] border-separate border-spacing-1.5 px-2 py-2 text-xs">
             <thead className="sticky top-0 z-10 bg-white"><tr><th className="sticky left-0 z-20 min-w-48 bg-white px-2 py-1 text-left font-semibold text-gray-500">Conductor</th>{data?.dates.map((date) => <th key={date} className="min-w-12 px-1 py-1 text-center font-semibold capitalize text-gray-500">{formatHeatmapDate(date)}</th>)}</tr></thead>
-            <tbody>{drivers.map((driver) => <tr key={driver.driver_id}><th className="sticky left-0 z-10 bg-white px-2 py-1 text-left font-medium text-gray-800"><span className="block max-w-48 truncate" title={driver.name}>{driver.name}</span><span className="font-normal text-gray-500">{driver.plate || driver.license_number || '—'}</span></th>{data?.dates.map((date) => { const entry = driver.supply_by_date[date] || { hours: 0, trips: 0 }; const intensity = entry.hours > 0 ? 0.14 + (entry.hours / maxHours) * 0.76 : 0; const textColor = intensity > 0.55 ? '#ffffff' : '#7f1d1d'; return <td key={date} className="h-10 min-w-12 rounded-sm text-center font-semibold tabular-nums" style={{ backgroundColor: entry.hours ? `rgba(139, 26, 26, ${intensity})` : '#f9fafb', color: entry.hours ? textColor : '#9ca3af' }} title={`${driver.name} · ${date}: ${formatHours(entry.hours)} · ${entry.trips} viaje(s)`}>{entry.hours ? entry.hours.toFixed(1) : '—'}</td>; })}</tr>)}</tbody>
+            <tbody>{drivers.map((driver) => <tr key={driver.driver_id}><th className="sticky left-0 z-10 bg-white px-2 py-1 text-left font-medium text-gray-800"><span className="block max-w-48 truncate" title={driver.name}>{driver.name}</span><span className="font-normal text-gray-500">{driver.plate || driver.license_number || '—'}</span></th>{data?.dates.map((date) => { const entry = driver.supply_by_date[date] || { hours: 0, trips: 0 }; const intensity = entry.hours > 0 ? 0.14 + (entry.hours / maxHours) * 0.76 : 0; const textColor = intensity > 0.55 ? '#ffffff' : '#7f1d1d'; return <td key={date} className="h-12 min-w-12 rounded-sm text-center font-semibold tabular-nums" style={{ backgroundColor: entry.hours ? `rgba(139, 26, 26, ${intensity})` : '#f9fafb', color: entry.hours ? textColor : '#9ca3af' }} title={`${driver.name} · ${date}: ${formatHours(entry.hours)} · ${entry.trips} viaje(s)`}><span className="block">{entry.hours ? `${entry.hours.toFixed(1)}h` : '—'}</span>{entry.hours > 0 && <span className="block text-[10px] font-normal opacity-90">{entry.trips} v</span>}</td>; })}</tr>)}</tbody>
           </table>
         )}
       </div>
-    </section>
-  );
-}
-
-function SupplyTable({ drivers, totalReceived, target, closedPeriod, page, pageSize, onPageChange, onPageSizeChange }: {
-  drivers: SupplyDriver[];
-  totalReceived: number;
-  target: number;
-  closedPeriod: boolean;
-  page: number;
-  pageSize: number;
-  onPageChange: (page: number) => void;
-  onPageSizeChange: (size: number) => void;
-}) {
-  const totalPages = Math.max(1, Math.ceil(drivers.length / pageSize));
-  const safePage = Math.min(page, totalPages);
-  const pageDrivers = drivers.slice((safePage - 1) * pageSize, safePage * pageSize);
-
-  return (
-    <section className="border border-gray-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-sm font-semibold text-gray-900">Detalle por conductor</h2>
-          <p className="mt-0.5 text-xs text-gray-500">{drivers.length} resultado(s) de {totalReceived} recibidos por Fleet</p>
-        </div>
-        <label className="flex items-center gap-2 text-xs font-semibold text-gray-600">Filas
-          <select value={pageSize} onChange={(event) => onPageSizeChange(Number(event.target.value))} className="h-8 rounded-md border border-gray-300 bg-white px-2 text-sm font-normal text-gray-800">
-            {PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
-          </select>
-        </label>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-[760px] w-full text-sm">
-          <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500"><tr><th className="px-4 py-3 font-semibold">Conductor</th><th className="px-4 py-3 font-semibold">Placa</th><th className="px-4 py-3 text-right font-semibold">Viajes</th><th className="px-4 py-3 text-right font-semibold">Horas Supply</th><th className="px-4 py-3 font-semibold">Progreso</th><th className="px-4 py-3 text-right font-semibold">Estado</th></tr></thead>
-          <tbody className="divide-y divide-gray-100">
-            {pageDrivers.map((driver) => {
-              const state = getSupplyState(driver.supply_hours, target, closedPeriod);
-              const meta = stateMeta[state];
-              const progress = Math.min(100, target > 0 ? (driver.supply_hours / target) * 100 : 0);
-              return <tr key={driver.driver_id} className="hover:bg-gray-50"><td className="px-4 py-3"><p className="font-medium text-gray-900">{driver.name}</p><p className="text-xs text-gray-500">{driver.license_number || 'Sin licencia'}</p></td><td className="px-4 py-3 font-mono text-xs text-gray-700">{driver.plate || '—'}</td><td className="px-4 py-3 text-right font-semibold tabular-nums text-gray-900">{driver.completed_trips.toLocaleString('es-PE')}</td><td className="px-4 py-3 text-right font-semibold tabular-nums text-gray-900">{formatHours(driver.supply_hours)}</td><td className="px-4 py-3"><div className="flex min-w-44 items-center gap-2"><div className="h-2 flex-1 overflow-hidden rounded-full bg-gray-100"><div className="h-full rounded-full" style={{ width: `${progress}%`, backgroundColor: meta.color }} /></div><span className="w-9 text-right text-xs tabular-nums text-gray-500">{Math.round(progress)}%</span></div></td><td className="px-4 py-3 text-right"><span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${meta.badge}`}>{meta.label}</span></td></tr>;
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="flex items-center justify-between border-t border-gray-100 px-4 py-3"><span className="text-xs text-gray-500">Página {safePage} de {totalPages}</span><div className="flex gap-2"><button type="button" onClick={() => onPageChange(Math.max(1, safePage - 1))} disabled={safePage <= 1} title="Página anterior" className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 text-gray-600 disabled:opacity-40"><ChevronLeft className="h-4 w-4" /></button><button type="button" onClick={() => onPageChange(Math.min(totalPages, safePage + 1))} disabled={safePage >= totalPages} title="Página siguiente" className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 text-gray-600 disabled:opacity-40"><ChevronRight className="h-4 w-4" /></button></div></div>
     </section>
   );
 }
@@ -279,8 +233,6 @@ export default function YegoMiAutoAnalysis() {
   const [heatmapData, setHeatmapData] = useState<SupplyHeatmapData | null>(null);
   const [query, setQuery] = useState('');
   const [stateFilter, setStateFilter] = useState<'all' | SupplyState>('all');
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(true);
   const [heatmapLoading, setHeatmapLoading] = useState(true);
   const [error, setError] = useState('');
@@ -310,7 +262,6 @@ export default function YegoMiAutoAnalysis() {
     void summaryRequest.then((response) => {
       if (version !== requestVersion.current) return;
       setData(response.data?.data ?? response.data);
-      setPage(1);
     }).catch((requestError: any) => {
       if (version !== requestVersion.current) return;
       setData(null);
@@ -348,10 +299,9 @@ export default function YegoMiAutoAnalysis() {
   return (
     <div className="space-y-5">
       <section className="rounded-lg bg-[#8B1A1A] p-4 lg:p-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-3"><div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[#6B1515]"><BarChart3 className="h-5 w-5 text-white" /></div><div><h1 className="text-lg font-bold leading-tight text-white lg:text-xl">Análisis Mi Auto</h1><p className="mt-0.5 text-xs text-white/90 lg:text-sm">Supply y viajes completados de conductores</p></div></div><button type="button" onClick={() => exportSupplyPdf(filteredDrivers, heatmapData, dateRange, target, closedPeriod)} disabled={!canExportPdf} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-white/30 bg-white px-3 text-sm font-semibold text-[#8B1A1A] hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"><Download className="h-4 w-4" />PDF</button></div></section>
-      <SupplyFilters dateRange={dateRange} query={query} stateFilter={stateFilter} loading={loading || heatmapLoading} closedPeriod={closedPeriod} onDateChange={setDateRange} onQueryChange={(value) => { setQuery(value); setPage(1); }} onStateChange={(value) => { setStateFilter(value); setPage(1); }} onRefresh={refresh} />
+      <SupplyFilters dateRange={dateRange} query={query} stateFilter={stateFilter} loading={loading || heatmapLoading} closedPeriod={closedPeriod} onDateChange={setDateRange} onQueryChange={setQuery} onStateChange={setStateFilter} onRefresh={refresh} />
       {error && <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
       <SupplyHeatmap data={heatmapData} visibleDrivers={filteredDrivers} loading={heatmapLoading} />
-      <SupplyTable drivers={filteredDrivers} totalReceived={data?.drivers.length || 0} target={target} closedPeriod={closedPeriod} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
     </div>
   );
 }

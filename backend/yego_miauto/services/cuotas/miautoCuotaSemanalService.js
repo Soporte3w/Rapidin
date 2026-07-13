@@ -2121,13 +2121,22 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
           isPrimera,
           options.moraNormalHistoricaAplicada
         );
+    const moraExtraPendienteDbExcel = st === 'bonificada' || ignorarMoraExcelPagada
+      ? 0
+      : round2(parseFloat(r.mora_extra) || 0);
     const moraExtraBaseExcel = st === 'bonificada' || ignorarMoraExcelPagada
       ? 0
       : round2(Math.max(
           parseFloat(r.mora_extra_total) || 0,
-          parseFloat(r.mora_extra) || 0,
+          moraExtraPendienteDbExcel,
           Number(options.moraExtraHistoricaAplicada) || 0
         ));
+    /*
+     * En cuotas Excel con abono parcial, la mora extra suele nacer DESPUES del abono
+     * (`mora_extra_desde`). No debe consumirse con el mismo `paid_amount` histórico,
+     * porque ese pago solo podía cubrir la mora normal vigente y luego capital.
+     * La BD ya guarda `mora_extra` como saldo pendiente y `mora_extra_total` como histórico.
+     */
     const imputacionExcel = ignorarMoraExcelPagada
       ? {
           mora_normal_pendiente: 0,
@@ -2138,16 +2147,16 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
       : distribuirPagoMoraPrimero({
           capital: amountDueExcel,
           moraNormal: moraNormalBaseExcel,
-          moraExtra: moraExtraBaseExcel,
+          moraExtra: 0,
           pagado: paidAmountExcel,
         });
     const lateFeeExcel = st === 'bonificada' ? 0 : imputacionExcel.mora_normal_pendiente;
-    const moraExtraExcel = st === 'bonificada' ? 0 : imputacionExcel.mora_extra_pendiente;
+    const moraExtraExcel = st === 'bonificada' ? 0 : moraExtraPendienteDbExcel;
     const moraExtraTotalExcel = st === 'bonificada'
       ? 0
       : round2(Math.max(moraExtraBaseExcel, moraExtraExcel));
     const pendingExcel = imputacionExcel.capital_pendiente;
-    const pendingTotalExcel = imputacionExcel.total_pendiente;
+    const pendingTotalExcel = round2(imputacionExcel.mora_normal_pendiente + moraExtraExcel + pendingExcel);
     const dueY = ymdFromDbDate(r.due_date);
     const statusExcel = st === 'bonificada'
       ? 'bonificada'

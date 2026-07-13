@@ -1388,7 +1388,7 @@ export default function YegoMiAutoRentSaleDetail() {
                   const moraExtraTotal = miautoNum(c.mora_extra_total ?? c.mora_extra);
                   const paidReal = miautoNum(c.paid_amount);
                   const moraPagada = roundToTwoDecimals(Math.min(paidReal, Math.max(0, moraAcumulada - moraPendiente)));
-                  const moraExtraPagada = roundToTwoDecimals(Math.min(Math.max(0, paidReal - moraPagada), Math.max(0, moraExtraTotal - moraExtra)));
+                  const moraExtraPagada = roundToTwoDecimals(miautoNum(c.mora_extra_cobrada ?? Math.max(0, moraExtraTotal - moraExtra)));
                   const cuotaOriginal = miautoNum(c.amount_due);
                   const cuotaPagada = roundToTwoDecimals(Math.min(cuotaOriginal, Math.max(0, paidReal - moraPagada - moraExtraPagada)));
                   const cuotaCapitalPendienteApi = c.status === 'paid' || c.status === 'bonificada' ? 0 : miautoCuotaCapitalPendienteColumna(c);
@@ -1518,6 +1518,29 @@ export default function YegoMiAutoRentSaleDetail() {
                             Sin saldo
                           </span>
                         )}
+                        {(moraExtraTotal > 0.005 || moraExtra > 0.005 || moraExtraPagada > 0.005) && (
+                          <span
+                            className="group/extra relative mt-0.5 inline-flex cursor-help items-center whitespace-nowrap rounded-full bg-red-50 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-red-600 ring-1 ring-inset ring-red-100"
+                            title={`Mora extra generada: ${miautoFmtMonto(symCuota, moraExtraTotal)}\nMora extra pendiente: ${miautoFmtMonto(symCuota, moraExtra)}\nMora extra cobrada: ${miautoFmtMonto(symCuota, moraExtraPagada)}`}
+                          >
+                            Extra
+                            <span className="pointer-events-none absolute right-0 top-full z-20 mt-1 hidden w-48 rounded-md border border-red-100 bg-white p-2 text-left text-[10px] font-normal leading-snug text-gray-600 shadow-lg group-hover/extra:block">
+                              <span className="mb-1 block border-b border-red-50 pb-1 text-[10px] font-semibold text-gray-800">Mora extra</span>
+                              <span className="flex items-center justify-between gap-3">
+                                <span className="text-gray-400">Generada</span>
+                                <span className="font-semibold text-gray-700">{miautoFmtMonto(symCuota, moraExtraTotal)}</span>
+                              </span>
+                              <span className="flex items-center justify-between gap-3">
+                                <span className="text-gray-400">Pendiente</span>
+                                <span className="font-semibold text-red-600">{miautoFmtMonto(symCuota, moraExtra)}</span>
+                              </span>
+                              <span className="flex items-center justify-between gap-3">
+                                <span className="text-gray-400">Cobrada</span>
+                                <span className="font-semibold text-green-700">{miautoFmtMonto(symCuota, moraExtraPagada)}</span>
+                              </span>
+                            </span>
+                          </span>
+                        )}
                       </div>
                     </td>
                     {/* Pendiente de pago */}
@@ -1526,11 +1549,6 @@ export default function YegoMiAutoRentSaleDetail() {
                         <span className="font-medium tabular-nums text-orange-600">
                           {miautoFmtMonto(symCuota, pendienteDisplay)}
                         </span>
-                        {moraExtra > 0.005 && (
-                          <span className="text-[10px] font-normal leading-snug text-red-500 tabular-nums">
-                            Mora extra: {miautoFmtMonto(symCuota, moraExtra)}
-                          </span>
-                        )}
                       </div>
                     </td>
                     {/* Pagado */}

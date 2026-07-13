@@ -1330,6 +1330,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     // y dejó un abono real a capital/cuota.
     let moraExtraPersist = round2(parseFloat(row.mora_extra) || 0);
     let moraExtraDesde = ymdFromDbDate(row.mora_extra_desde);
+    const moraExtraTotalDbOld = round2(parseFloat(row.mora_extra_total) || 0);
     const pagoHecho = round2(paidDb);
     const fechaUltimoAbono = comprobanteAbonoFechaByCuota.get(String(row.id)) || ymdFromDbDate(row.fecha_ultimo_abono);
     const fechaCorteMoraNormal = fechaUltimoAbono || limaTodayYmdSync();
@@ -1360,7 +1361,10 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       statusOut = miAutoOpenStatusSaldoVencimiento(dueEffYmd, pendienteTrasImputacion, paidDb);
     }
     
-    if (
+    if (freezeMoraPorComprobante) {
+      moraExtraPersist = round2(parseFloat(row.mora_extra) || 0);
+      moraExtraDesde = ymdFromDbDate(row.mora_extra_desde);
+    } else if (
       statusOut === 'overdue' &&
       moraNormalPendiente <= 0.005 &&
       capitalPendienteTrasAbono > 0.005
@@ -1386,7 +1390,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       }
     }
 
-    if (isPrimera) {
+    if (isPrimera && !freezeMoraPorComprobante) {
       lateFeePersist = 0;
       moraExtraPersist = 0;
       moraExtraDesde = null;
@@ -1395,8 +1399,9 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
 
     // mora_extra_total = total generado histórico (cristalizado + actual)
     const moraExtraDbOld = round2(parseFloat(row.mora_extra) || 0);
-    const moraExtraTotalDbOld = round2(parseFloat(row.mora_extra_total) || 0);
-    const moraExtraTotalPersist = round2(Math.max(moraExtraTotalDbOld, moraExtraTotalDbOld - moraExtraDbOld + moraExtraPersist));
+    const moraExtraTotalPersist = freezeMoraPorComprobante
+      ? moraExtraTotalDbOld
+      : round2(Math.max(moraExtraTotalDbOld, moraExtraTotalDbOld - moraExtraDbOld + moraExtraPersist));
 
     if (dryRun) {
       dryRunChanges.push({

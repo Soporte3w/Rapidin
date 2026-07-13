@@ -1960,8 +1960,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                                   <button
                                                     type="button"
                                                     onClick={() => setConformidadEliminarModal({ comprobanteId: comp.id })}
-                                                    disabled={eliminandoConformidadId === comp.id || c.status === 'paid' || c.status === 'bonificada'}
-                                                    title={c.status === 'paid' || c.status === 'bonificada' ? 'No se puede eliminar: la cuota ya está pagada' : undefined}
+                                                    disabled={eliminandoConformidadId === comp.id}
                                                     className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-white px-2 py-1 text-[11px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:pointer-events-none"
                                                   >
                                                     <Trash2 className="w-3 h-3.5" />

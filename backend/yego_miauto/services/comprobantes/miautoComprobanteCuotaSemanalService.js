@@ -125,9 +125,10 @@ async function aplicarComprobanteInmediato(solicitudId, comprobanteId, cuotaSema
   await query(
     `UPDATE module_miauto_comprobante_cuota_semanal
      SET monto = $1,
-         moneda = $2
+         moneda = $2,
+         acredito_en_cronograma = $5
      WHERE id = $3 AND solicitud_id = $4`,
-    [montoAplicar, monedaComprobantePersist, comprobanteId, solicitudId]
+    [montoAplicar, monedaComprobantePersist, comprobanteId, solicitudId, chunks.length > 0]
   );
   await refreshMoraTrasPagoValidado(solicitudId);
   return { montoAplicar, monedaComprobantePersist, chunks };
@@ -498,8 +499,10 @@ export async function deleteComprobanteCuotaSemanalConductor(solicitudId, compro
   if ((row.estado || 'pendiente').toLowerCase() === 'validado') {
     throw new Error('No puedes eliminar un comprobante ya validado');
   }
-  if (normalizeChunksFromRow(row.aplicacion_chunks).length > 0) {
-    throw new Error('Este comprobante ya fue aplicado a la cuota. Recházalo desde validación si no llegó al banco.');
+  const chunks = normalizeChunksFromRow(row.aplicacion_chunks);
+  const didRevert = chunks.length > 0;
+  if (didRevert) {
+    await revertirPagoPorChunks(solicitudId, chunks, { excludeComprobanteId: comprobanteId, refresh: false });
   }
 
   await query(`DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2`, [
@@ -668,16 +671,14 @@ export async function deleteComprobanteConformidadAdmin(solicitudId, comprobante
   }
   const didRevert = chunks.length > 0;
   if (didRevert) {
-    await revertirPagoPorChunks(solicitudId, chunks);
+    await revertirPagoPorChunks(solicitudId, chunks, { excludeComprobanteId: comprobanteId, refresh: false });
   }
 
   await query(`DELETE FROM module_miauto_comprobante_cuota_semanal WHERE id = $1 AND solicitud_id = $2`, [
     comprobanteId,
     solicitudId,
   ]);
-  if (!didRevert) {
-    await refreshMoraTrasPagoValidado(solicitudId);
-  }
+  await refreshMoraTrasPagoValidado(solicitudId);
   return listBySolicitud(solicitudId);
 }
 
@@ -686,7 +687,7 @@ export async function rejectComprobanteCuotaSemanal(solicitudId, comprobanteId, 
   let row;
   try {
     const comp = await query(
-      `SELECT id, estado, COALESCE(origen, 'conductor') AS origen, file_path
+      `SELECT id, estado, COALESCE(origen, 'conductor') AS origen, file_path, aplicacion_chunks
        FROM module_miauto_comprobante_cuota_semanal WHERE solicitud_id = $1 AND id = $2`,
       [solicitudId, comprobanteId]
     );
@@ -704,6 +705,7 @@ export async function rejectComprobanteCuotaSemanal(solicitudId, comprobanteId, 
   }
   const estado = (row.estado || '').toLowerCase();
   if (estado === 'rechazado') throw new Error('El comprobante ya está rechazado');
+  const chunks = normalizeChunksFromRow(row.aplicacion_chunks);
 
   await query(
     `UPDATE module_miauto_comprobante_cuota_semanal
@@ -715,6 +717,11 @@ export async function rejectComprobanteCuotaSemanal(solicitudId, comprobanteId, 
      WHERE id = $3`,
     [motivo ? String(motivo).trim() : null, userId, comprobanteId]
   );
+  if (chunks.length > 0) {
+    await revertirPagoPorChunks(solicitudId, chunks, { excludeComprobanteId: comprobanteId });
+  } else {
+    await refreshMoraTrasPagoValidado(solicitudId);
+  }
   return listBySolicitud(solicitudId);
 }
 

@@ -2117,14 +2117,19 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     const amountDueExcel = round2(parseFloat(r.amount_due) || 0);
     const lateFeeDbExcel = round2(parseFloat(r.late_fee) || 0);
     const moraExtraDbExcel = round2(Math.max(parseFloat(r.mora_extra_total) || 0, parseFloat(r.mora_extra) || 0));
+    const moraNormalHistoricaExcel = round2(Number(options.moraNormalHistoricaAplicada) || 0);
+    const moraExtraHistoricaExcel = round2(Number(options.moraExtraHistoricaAplicada) || 0);
+    const tieneMoraHistoricaExcel = moraNormalHistoricaExcel > 0.005 || moraExtraHistoricaExcel > 0.005;
     const dueY = ymdFromDbDate(r.due_date);
     const excelPagadaSinMora = st === 'paid'
       && lateFeeDbExcel <= 0.005
       && moraExtraDbExcel <= 0.005
+      && !tieneMoraHistoricaExcel
       && paidAmountExcel >= amountDueExcel - 0.005;
     const ignorarMoraExcelPagada = excelPagadaSinMora || (
       lateFeeDbExcel <= 0.005
       && moraExtraDbExcel <= 0.005
+      && !tieneMoraHistoricaExcel
       && excelPaidIgualCuotaSemanalIgnoraMora(r)
     );
     const moraCaseExcel = ignorarMoraExcelPagada
@@ -2140,9 +2145,11 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
         });
     const moraNormalBaseExcel = st === 'bonificada' || ignorarMoraExcelPagada
       ? 0
+      : st === 'paid' && lateFeeDbExcel > 0.005
+        ? lateFeeDbExcel
       : round2(Math.max(
           Number(moraCaseExcel?.lateFee) || 0,
-          Number(options.moraNormalHistoricaAplicada) || 0
+          moraNormalHistoricaExcel
         ));
     const moraExtraPendienteDbExcel = st === 'bonificada' || ignorarMoraExcelPagada
       ? 0
@@ -2152,7 +2159,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
       : round2(Math.max(
           parseFloat(r.mora_extra_total) || 0,
           moraExtraPendienteDbExcel,
-          Number(options.moraExtraHistoricaAplicada) || 0
+          moraExtraHistoricaExcel
         ));
     /*
      * En cuotas Excel con abono parcial, la mora extra suele nacer DESPUES del abono
@@ -2723,7 +2730,9 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
         if (sum > 0.005) creditoComprobantePendientePorCuota.set(cid, sum);
       }
     }
-    const moraHistorica = await loadMoraHistoricaAplicadaPorCuota(solicitudId);
+    const moraHistorica = await loadMoraHistoricaAplicadaPorCuota(solicitudId, {
+      incluirPendientesAplicados: true,
+    });
     for (const [cid, monto] of moraHistorica.normal) {
       moraNormalHistoricaAplicadaPorCuota.set(cid, monto);
     }

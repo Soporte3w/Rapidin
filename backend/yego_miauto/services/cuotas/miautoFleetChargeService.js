@@ -260,7 +260,7 @@ async function pendingTotalMapsForSolicitudIdsBatched(solicitudIds, batchSize = 
 
 export async function getCuotasToCharge() {
   const res = await query(
-    `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.status,
+    `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.mora_extra, c.status,
             c.cuota_semanal, c.bono_auto, c.cobro_saldo, c.pct_comision, c.partner_fees_raw, c.moneda,
             c.fecha_ultimo_abono, c.fecha_primer_comprobante,
             s.cronograma_id, s.fecha_inicio_cobro_semanal, s.placa_asignada, s.license_number,
@@ -292,7 +292,7 @@ export async function getCuotasToCharge() {
 
 export async function getCuotasToChargeForSolicitud(solicitudId) {
   const res = await query(
-    `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.status,
+    `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.mora_extra, c.status,
             c.cuota_semanal, c.bono_auto, c.cobro_saldo, c.pct_comision, c.partner_fees_raw, c.moneda,
             c.fecha_ultimo_abono, c.fecha_primer_comprobante,
             s.cronograma_id, s.fecha_inicio_cobro_semanal, s.placa_asignada, s.license_number,
@@ -335,12 +335,15 @@ export async function processCobroCuota(
   const amountDue = await effectiveAmountDueForMiAutoFleetRowAsync(cuotaRow);
   const paid = round2(parseFloat(cuotaRow.paid_amount) || 0);
   const lateFee = round2(parseFloat(cuotaRow.late_fee) || 0);
-  const pendingCols = round2(amountDue + lateFee - paid);
+  const moraExtra = round2(parseFloat(cuotaRow.mora_extra) || 0);
+  // El mapa se prepara antes de procesar la cola. Después de una cascada puede quedar
+  // desactualizado; nunca puede habilitar un retiro mayor al saldo persistido de la cuota.
+  const pendingCols = round2(Math.max(0, amountDue + lateFee + moraExtra - paid));
   let pendingAmount = pendingCols;
   if (pendingMap instanceof Map) {
     const v = pendingMap.get(String(cuotaRow.id));
     if (v != null && !Number.isNaN(Number(v))) {
-      pendingAmount = round2(Number(v));
+      pendingAmount = round2(Math.min(Math.max(0, Number(v)), pendingCols));
     }
   }
 

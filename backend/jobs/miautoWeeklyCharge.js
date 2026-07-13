@@ -343,6 +343,23 @@ async function appendCobroSaldoReferencia(sourceCuota, targetCuota, monto, optio
 }
 
 /**
+ * La fila de la semana que originó el saldo conserva el retiro Fleet completo.
+ * Las referencias descuentan lo que se destinó a cuotas anteriores, dejando visible
+ * en esa misma semana solamente el remanente que la cubrió a ella.
+ */
+async function acumularCobroFleetDistribuidoEnSemanaOrigen(sourceCuota, monto) {
+  const amount = round2(Math.max(0, Number(monto) || 0));
+  if (!sourceCuota?.id || amount <= 0.005) return;
+  await query(
+    `UPDATE module_miauto_cuota_semanal
+     SET cobro_desde_saldo_conductor = ROUND((COALESCE(cobro_desde_saldo_conductor, 0) + $1::numeric)::numeric, 2),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $2::uuid AND deleted_at IS NULL`,
+    [amount, sourceCuota.id]
+  );
+}
+
+/**
  * Cola Fleet: **un solo** `getContractorBalance` por conductor+parque; el total retirado en la pasada
  * no supera ese snapshot (p. ej. saldo 780 → reparto entre cuotas hasta agotar, sin reconsultar saldo inflado).
  */
@@ -413,6 +430,7 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
 
     const sharedFleetBalancePEN = { remaining: snapshot };
     const sourceCuota = findCobroSaldoSourceCuota(chunk, cuotaWeekMonday);
+    let distribuidoDesdeSemanaOrigen = 0;
 
     for (let j = 0; j < chunk.length; j++) {
       const result = await processCobroCuota(chunk[j], null, null, {
@@ -437,10 +455,14 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
         await appendCobroSaldoReferencia(sourceCuota, chunk[j], amountCredited, {
           source: cobroReferenciaSource,
         });
+        if (sourceCuota?.id && String(sourceCuota.id) !== String(chunk[j]?.id)) {
+          distribuidoDesdeSemanaOrigen = round2(distribuidoDesdeSemanaOrigen + amountCredited);
+        }
       }
       processedGlobal += 1;
       if (processedGlobal < total) await delay(FLEET_MS_BETWEEN_COBROS);
     }
+    await acumularCobroFleetDistribuidoEnSemanaOrigen(sourceCuota, distribuidoDesdeSemanaOrigen);
   }
 
   return { success, partial, failed };

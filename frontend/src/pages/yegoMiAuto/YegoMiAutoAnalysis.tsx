@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { Activity, Car, ChevronLeft, ChevronRight, Clock3, Download, ListFilter, RefreshCw, Route, Search, Users } from 'lucide-react';
+import { BarChart3, ChevronLeft, ChevronRight, Download, ListFilter, RefreshCw, Search } from 'lucide-react';
 import api from '../../services/api';
 import { DateRangePicker } from '../../components/DateRangePicker';
 
@@ -137,22 +137,24 @@ export default function YegoMiAutoAnalysis() {
     chart_name: driver.name.length > 24 ? `${driver.name.slice(0, 24)}...` : driver.name,
     state: supplyState(driver.supply_hours, target, closedPeriod),
   })).reverse();
-  const onTrack = filteredDrivers.filter((driver) => supplyState(driver.supply_hours, target, closedPeriod) === 'on_track').length;
-
   return (
     <div className="space-y-5">
-      <section className="border-b border-gray-200 pb-4">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <div className="flex items-center gap-2 text-[#8B1A1A]"><Activity className="h-5 w-5" /><span className="text-sm font-semibold">Yego Mi Auto</span></div>
-            <h1 className="mt-1 text-2xl font-bold text-gray-900">Supply de conductores</h1>
-            <p className="mt-1 text-sm text-gray-600">Horas Supply y viajes completados reportados por Fleet.</p>
+      <section className="rounded-lg bg-[#8B1A1A] p-4 lg:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[#6B1515]">
+              <BarChart3 className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-lg font-bold leading-tight text-white lg:text-xl">Análisis Mi Auto</h1>
+              <p className="mt-0.5 text-xs text-white/90 lg:text-sm">Supply y viajes completados de conductores</p>
+            </div>
           </div>
-          <button type="button" onClick={() => exportSupplyPdf(filteredDrivers, dateFrom, dateTo, target, closedPeriod)} disabled={filteredDrivers.length === 0} className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#8B1A1A] px-3 text-sm font-semibold text-white hover:bg-[#6B1515] disabled:cursor-not-allowed disabled:opacity-50"><Download className="h-4 w-4" />PDF</button>
+          <button type="button" onClick={() => exportSupplyPdf(filteredDrivers, dateFrom, dateTo, target, closedPeriod)} disabled={filteredDrivers.length === 0} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-white/30 bg-white px-3 text-sm font-semibold text-[#8B1A1A] hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"><Download className="h-4 w-4" />PDF</button>
         </div>
       </section>
 
-      <section className="border border-gray-200 bg-gray-50 px-3 py-2.5">
+      <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-2">
           <DateRangePicker
             label=""
@@ -178,15 +180,6 @@ export default function YegoMiAutoAnalysis() {
       </section>
 
       {error ? <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div> : null}
-
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {[
-          { label: 'Horas Supply', value: fmtHours(data?.totals.supply_hours || 0), icon: Clock3, tint: 'text-blue-700 bg-blue-50' },
-          { label: 'Viajes completados', value: (data?.totals.completed_trips || 0).toLocaleString('es-PE'), icon: Route, tint: 'text-[#8B1A1A] bg-red-50' },
-          { label: 'Conductores activos', value: String(data?.totals.active_drivers || 0), icon: Users, tint: 'text-green-700 bg-green-50' },
-          { label: 'Cumplen meta', value: `${onTrack}/${filteredDrivers.length}`, icon: Car, tint: 'text-amber-700 bg-amber-50' },
-        ].map((kpi) => { const Icon = kpi.icon; return <div key={kpi.label} className="border border-gray-200 bg-white p-4 shadow-sm"><div className={`mb-3 flex h-9 w-9 items-center justify-center rounded-md ${kpi.tint}`}><Icon className="h-4 w-4" /></div><p className="text-xs font-medium text-gray-500">{kpi.label}</p><p className="mt-1 text-xl font-bold tabular-nums text-gray-900">{kpi.value}</p></div>; })}
-      </section>
 
       <section className="border border-gray-200 bg-white shadow-sm">
         <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between"><div><h2 className="text-sm font-semibold text-gray-900">Horas Supply por conductor</h2><p className="mt-0.5 text-xs text-gray-500">Meta {closedPeriod ? 'cerrada' : 'proporcional al período'}: {fmtHours(target)}</p></div><div className="flex items-center gap-3 text-xs font-medium text-gray-600"><span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-green-600" />Cumple</span>{!closedPeriod ? <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-yellow-400" />75%-99%</span> : null}<span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-red-600" />Rezago</span></div></div>

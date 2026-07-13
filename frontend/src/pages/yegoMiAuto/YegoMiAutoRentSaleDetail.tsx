@@ -144,6 +144,15 @@ interface SolicitudSummary {
   otros_gastos?: MiautoOtrosGastoRow[];
 }
 
+function miautoMontoFacturableNotaVentaCuota(cuota: CuotaSemanal) {
+  const pagoDirecto = miautoNum(cuota.paid_amount);
+  const recaudo = Math.max(0, miautoNum(cuota.partner_fees_83));
+  const cobroSaldoRaw = miautoNum(cuota.cobro_saldo);
+  const cobroDesdeSaldoConductor = Math.max(0, miautoNum(cuota.cobro_desde_saldo_conductor));
+  const cobroSaldoInterno = Math.max(0, Math.abs(cobroSaldoRaw) - cobroDesdeSaldoConductor);
+  return roundToTwoDecimals(pagoDirecto + recaudo + cobroSaldoInterno);
+}
+
 type MiautoMoneda = 'PEN' | 'COP' | 'USD';
 
 interface ComprobanteCuotaSemanal {
@@ -669,7 +678,7 @@ export default function YegoMiAutoRentSaleDetail() {
     return cuotas.filter((c) => {
       const moneda = monedaCuotaRow(c);
       return c.status === 'paid'
-        && miautoNum(c.paid_amount) > 0.005
+        && miautoMontoFacturableNotaVentaCuota(c) > 0.005
         && (moneda === 'PEN' || moneda === 'USD')
         && !notasVentaByCuotaId[c.id];
     });
@@ -682,7 +691,9 @@ export default function YegoMiAutoRentSaleDetail() {
 
   const notaVentaTotalSeleccionado = useMemo(() => {
     const selected = new Set(notaVentaCuotasIds);
-    return roundToTwoDecimals(cuotas.reduce((sum, c) => selected.has(c.id) ? sum + miautoNum(c.paid_amount) : sum, 0));
+    return roundToTwoDecimals(cuotas.reduce((sum, c) => (
+      selected.has(c.id) ? sum + miautoMontoFacturableNotaVentaCuota(c) : sum
+    ), 0));
   }, [cuotas, notaVentaCuotasIds]);
 
   const notaVentaMonedasSeleccionadas = useMemo(() => {
@@ -1401,6 +1412,19 @@ export default function YegoMiAutoRentSaleDetail() {
                   const cuotaCapitalPendienteApi = c.status === 'paid' || c.status === 'bonificada' ? 0 : miautoCuotaCapitalPendienteColumna(c);
                   const cuotaAPagarNeta = roundToTwoDecimals(Math.max(0, cuotaCapitalPendienteApi, cuotaOriginal - cuotaPagada));
                   const saldoFavor = miautoNum(c.saldo_favor_conductor);
+                  const cobroSaldoRefs = Array.isArray(c.cobro_saldo_referencia) ? c.cobro_saldo_referencia : [];
+                  const cobroSaldoReferenciadoComoDestino = cuotas.some((cc) =>
+                    cc.id !== c.id &&
+                    Array.isArray(cc.cobro_saldo_referencia) &&
+                    cc.cobro_saldo_referencia.some((ref) => String(ref.cuota_semanal_id || '') === c.id)
+                  );
+                  const cobroSaldoDisplay = cobroSaldoReferenciadoComoDestino ? 0 : miautoCobroSaldoDisplay(c);
+                  const recaudoDisplay = miautoNum(c.partner_fees_83);
+                  const pagoRealDisplay = montoPagadoDisplay;
+                  const pagadoCubiertoDisplay = c.status === 'paid'
+                    ? roundToTwoDecimals(pagoRealDisplay + recaudoDisplay)
+                    : pagoRealDisplay;
+                  const mostrarDesglosePagado = c.status === 'paid' && recaudoDisplay > 0.005;
                   const pendienteDisplay = roundToTwoDecimals(Math.max(
                     miautoCuotaFinalCronogramaSemanal(c),
                     cuotaAPagarNeta + moraPendiente + moraExtra
@@ -1457,20 +1481,12 @@ export default function YegoMiAutoRentSaleDetail() {
                     <td className="py-2.5 px-1 align-top text-[11px] tabular-nums text-right text-green-700">
                       <div className="flex min-w-0 flex-col items-end gap-1">
                         {(() => {
-                          const refs = Array.isArray(c.cobro_saldo_referencia) ? c.cobro_saldo_referencia : [];
-                          const referencedAsDestino = cuotas.some((cc) =>
-                            cc.id !== c.id &&
-                            Array.isArray(cc.cobro_saldo_referencia) &&
-                            cc.cobro_saldo_referencia.some((ref) => String(ref.cuota_semanal_id || '') === c.id)
-                          );
-                          const display = referencedAsDestino ? 0 : miautoCobroSaldoDisplay(c);
-
                           return (
                             <>
-                              <span>{miautoFmtMonto(symCuota, display)}</span>
-                              {refs.length > 0 && (
+                              <span>{miautoFmtMonto(symCuota, cobroSaldoDisplay)}</span>
+                              {cobroSaldoRefs.length > 0 && (
                                 <div className="flex max-w-[120px] flex-col items-end gap-0.5 text-[10px] font-normal leading-tight text-gray-600">
-                                  {refs.map((ref, idx) => {
+                                  {cobroSaldoRefs.map((ref, idx) => {
                                     const refDate = ref.due_date || ref.week_start_date || '';
                                     const semana = ref.semana ?? (refDate ? miautoSemanaOrdinalPorVencimiento(cuotas, refDate, ref.week_start_date || refDate) : null);
                                     const title = `${miautoFmtMonto(symCuota, ref.monto)} aplicado a ${semana ? `Semana ${semana}` : 'otra cuota'}${refDate ? ` (${formatDate(refDate, 'es-ES')})` : ''}`;
@@ -1555,7 +1571,22 @@ export default function YegoMiAutoRentSaleDetail() {
                     </td>
                     {/* Pagado */}
                     <td className="py-2.5 pr-2 align-middle text-right text-[13px] text-green-800">
-                      <span className="font-medium">{miautoFmtMonto(symCuota, montoPagadoDisplay)}</span>
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span
+                          className="font-medium tabular-nums"
+                          title={mostrarDesglosePagado ? 'Total cubierto = recaudo + pago aplicado' : undefined}
+                        >
+                          {miautoFmtMonto(symCuota, pagadoCubiertoDisplay)}
+                        </span>
+                        {mostrarDesglosePagado && (
+                          <span className="text-[10px] font-normal leading-snug text-gray-500">
+                            {[
+                              recaudoDisplay > 0.005 ? `Recaudo ${miautoFmtMonto(symCuota, recaudoDisplay)}` : null,
+                              pagoRealDisplay > 0.005 ? `Pago ${miautoFmtMonto(symCuota, pagoRealDisplay)}` : null,
+                            ].filter(Boolean).join(' + ')}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     {/* Estado */}
                     <td className="py-2.5 pl-1 pr-2 align-middle whitespace-nowrap">
@@ -2867,6 +2898,17 @@ export default function YegoMiAutoRentSaleDetail() {
                       const semana = miautoSemanaLista(cuotas, c.week_start_date) ?? miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date) ?? '—';
                       const checked = notaVentaCuotasSeleccionadas[c.id] === true;
                       const monedaCuota = monedaCuotaRow(c);
+                      const pagoDirecto = miautoNum(c.paid_amount);
+                      const recaudo = Math.max(0, miautoNum(c.partner_fees_83));
+                      const cobroSaldoRaw = miautoNum(c.cobro_saldo);
+                      const cobroDesdeSaldoConductor = Math.max(0, miautoNum(c.cobro_desde_saldo_conductor));
+                      const cobroSaldoInterno = Math.max(0, Math.abs(cobroSaldoRaw) - cobroDesdeSaldoConductor);
+                      const montoFacturable = miautoMontoFacturableNotaVentaCuota(c);
+                      const detallesFacturacion = [
+                        recaudo > 0.005 ? `Recaudo ${symMoneda(monedaCuota)} ${recaudo.toFixed(2)}` : null,
+                        cobroSaldoInterno > 0.005 ? `Cobro saldo ${symMoneda(monedaCuota)} ${cobroSaldoInterno.toFixed(2)}` : null,
+                        pagoDirecto > 0.005 ? `Pago ${symMoneda(monedaCuota)} ${pagoDirecto.toFixed(2)}` : null,
+                      ].filter(Boolean);
                       return (
                         <label key={c.id} className="flex items-center gap-3 px-3 py-3 hover:bg-gray-50 cursor-pointer">
                           <input
@@ -2880,9 +2922,11 @@ export default function YegoMiAutoRentSaleDetail() {
                               <span className="text-sm font-semibold text-gray-900">Semana {semana}</span>
                               <span className="text-xs text-gray-500">{c.due_date ? formatDate(c.due_date, 'es-ES') : 'Sin fecha'}</span>
                             </div>
-                            <p className="text-xs text-gray-500 truncate">Cuota pagada lista para nota de venta</p>
+                            <p className="text-xs text-gray-500 truncate">
+                              {detallesFacturacion.length > 0 ? detallesFacturacion.join(' + ') : 'Cuota pagada lista para nota de venta'}
+                            </p>
                           </div>
-                          <span className="text-sm font-bold tabular-nums text-green-700">{symMoneda(monedaCuota)} {miautoNum(c.paid_amount).toFixed(2)}</span>
+                          <span className="text-sm font-bold tabular-nums text-green-700">{symMoneda(monedaCuota)} {montoFacturable.toFixed(2)}</span>
                         </label>
                       );
                     })}

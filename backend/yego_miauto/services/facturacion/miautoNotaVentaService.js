@@ -210,6 +210,16 @@ function facturadorHeaders() {
   return headers;
 }
 
+function facturadorWriteEnabled() {
+  return String(process.env.ENABLE_FACTURADOR_SEND || 'true').toLowerCase() !== 'false';
+}
+
+function isFacturadorWriteRequest(path, method) {
+  const cleanMethod = String(method || 'GET').toUpperCase();
+  const cleanPath = String(path || '').toLowerCase();
+  return cleanMethod !== 'GET' || cleanPath.includes('/anulate/');
+}
+
 function mergeCookies(currentCookie, setCookieHeaders = []) {
   const jar = new Map();
   for (const cookie of String(currentCookie || '').split(';')) {
@@ -340,6 +350,12 @@ async function loginFacturadorSession() {
 async function facturadorRequestRaw(path, options = {}) {
   const url = new URL(`${FACTURADOR_BASE_URL}${path}`);
   const method = options.method || 'GET';
+  if (!facturadorWriteEnabled() && isFacturadorWriteRequest(path, method)) {
+    const error = new Error('Facturador deshabilitado por ENABLE_FACTURADOR_SEND=false');
+    error.status = 503;
+    error.source = 'facturador';
+    throw error;
+  }
   const body = options.body || null;
   const headers = { ...facturadorHeaders(), ...(options.headers || {}) };
 
@@ -459,7 +475,7 @@ function buildItemLine(baseItem, cuota, index, currencyTypeId) {
   const totalValue = round2(total / (1 + IGV_RATE));
   const totalIgv = round2(total - totalValue);
   const cuotaLabel = `CUOTA #${cuota.semana || index + 1}`;
-  const description = `${cuotaLabel} - YEGO MI AUTO`;
+  const description = cuota.description || `${cuotaLabel} - YEGO MI AUTO`;
   const item = {
     ...baseItem,
     description,
@@ -611,7 +627,9 @@ async function loadSolicitudAndCuotas(client, solicitudId, cuotaIds) {
   if (!solicitud) throw new Error('Solicitud no encontrada');
 
   const cuotasRes = await client.query(
-    `SELECT id, solicitud_id, week_start_date, due_date, paid_amount, status, moneda
+    `SELECT id, solicitud_id, week_start_date, due_date, paid_amount, status, moneda,
+            amount_due, cuota_semanal, late_fee, mora_extra, mora_extra_total,
+            partner_fees_83, cobro_saldo, cobro_desde_saldo_conductor
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1::uuid
        AND id = ANY($2::uuid[])
@@ -647,6 +665,23 @@ function semanaOrdinal(cuotasOrdenadas, cuota) {
   return idx >= 0 ? idx + 1 : null;
 }
 
+function facturaMontoCuotaBreakdown(apiRow = {}, cuota = {}) {
+  const paidAmount = round2(apiRow.paid_amount ?? cuota.paid_amount ?? 0);
+  const recaudo = round2(Math.max(0, Number(apiRow.partner_fees_83 ?? cuota.partner_fees_83 ?? 0) || 0));
+  const cobroSaldoRaw = Number(apiRow.cobro_saldo ?? cuota.cobro_saldo ?? 0) || 0;
+  const cobroDesdeSaldoConductor = round2(Math.max(0, Number(apiRow.cobro_desde_saldo_conductor ?? cuota.cobro_desde_saldo_conductor ?? 0) || 0));
+  const cobroSaldoInterno = round2(Math.max(0, Math.abs(cobroSaldoRaw) - cobroDesdeSaldoConductor));
+  const totalFacturable = round2(paidAmount + recaudo + cobroSaldoInterno);
+  return {
+    total_facturable: totalFacturable,
+    pago_directo: paidAmount,
+    recaudo,
+    cobro_saldo: cobroSaldoInterno,
+    mora: round2(Math.max(0, Number(apiRow.mora_acumulada ?? apiRow.late_fee ?? cuota.late_fee ?? 0) || 0)),
+    mora_extra: round2(Math.max(0, Number(apiRow.mora_extra_total ?? apiRow.mora_extra ?? cuota.mora_extra_total ?? cuota.mora_extra ?? 0) || 0)),
+  };
+}
+
 async function buildCuotasSeleccionadas(solicitudId, cuotas, { requirePaid = true } = {}) {
   const { data: cuotasApi } = await getCuotasSemanalesConRacha(solicitudId, { incluirAbonoComprobantePendiente: false });
   const apiById = new Map((cuotasApi || []).map((c) => [String(c.id), c]));
@@ -655,18 +690,23 @@ async function buildCuotasSeleccionadas(solicitudId, cuotas, { requirePaid = tru
   const seleccionadas = cuotas.map((cuota) => {
     const apiRow = apiById.get(String(cuota.id)) || cuota;
     const status = String(apiRow.status || cuota.status || '').toLowerCase();
-    const paidAmount = round2(apiRow.paid_amount ?? cuota.paid_amount ?? 0);
     if (requirePaid && status !== 'paid') {
       throw new Error('Solo puedes generar nota de venta para cuotas con estado pagado');
     }
-    if (paidAmount <= 0.005) {
-      throw new Error('Una cuota pagada no tiene monto pagado válido');
+    const breakdown = facturaMontoCuotaBreakdown(apiRow, cuota);
+    if (breakdown.total_facturable <= 0.005) {
+      throw new Error('Una cuota pagada no tiene monto facturable válido');
     }
+    const semana = semanaOrdinal(allCuotasOrdenadas, cuota);
+    const cuotaLabel = `CUOTA #${semana || '?'}`;
+    const moneda = normalizeSaleCurrency(apiRow.moneda || cuota.moneda);
     return {
       id: String(cuota.id),
-      amount: paidAmount,
-      semana: semanaOrdinal(allCuotasOrdenadas, cuota),
-      moneda: normalizeSaleCurrency(apiRow.moneda || cuota.moneda),
+      amount: breakdown.total_facturable,
+      semana,
+      moneda,
+      description: `${cuotaLabel} - YEGO MI AUTO`,
+      facturacion_breakdown: breakdown,
     };
   });
   const monedas = [...new Set(seleccionadas.map((c) => c.moneda))];

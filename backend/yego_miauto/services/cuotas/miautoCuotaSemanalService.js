@@ -548,10 +548,11 @@ function saldoBaseCuotaParaMora(row) {
   return round2(Math.max(0, amountDue - paid));
 }
 
-function latestOverdueDueYmdWithDebt(rows) {
+function latestOverdueDueYmdWithDebt(rows, { excelOnly = false } = {}) {
   const todayYmd = limaTodayYmdSync();
   let latest = null;
   for (const r of rows || []) {
+    if (excelOnly && !rowMontosFuenteExcel(r)) continue;
     const st = String(r?.status || '').toLowerCase();
     if (st === 'paid' || st === 'bonificada') continue;
     const dueYmd = ymdFromDbDate(r?.due_date) || ymdFromDbDate(r?.week_start_date);
@@ -575,6 +576,7 @@ function classifyMoraCuotaSemanalCase({
   const basePendiente = saldoBaseCuotaParaMora(row);
   const esExcel = rowMontosFuenteExcel(row);
   const cuotaEsperada = resolveCuotaEsperadaParaMora(row, cronograma, vehId, isPrimera);
+  const diff = round2(basePendiente - cuotaEsperada);
   const todayYmd = limaTodayYmdSync();
   const vencida = dueEffYmd && /^\d{4}-\d{2}-\d{2}$/.test(dueEffYmd) && dueEffYmd < todayYmd;
   if (isPrimera || !vencida || basePendiente <= 0.005) {
@@ -588,17 +590,22 @@ function classifyMoraCuotaSemanalCase({
   }
   if (paid > 0.005) {
     const fechaCorte = comprobanteAbonoYmd || ymdFromDbDate(row.fecha_ultimo_abono) || ymdFromDbDate(row.fecha_primer_comprobante) || todayYmd;
-    const dias = dueEffYmd < fechaCorte ? Math.max(0, diffDaysYmdUtc(dueEffYmd, fechaCorte)) : 0;
+    const fechaMora = esExcel && diff < -0.05
+      ? (latestOverdueDueYmdWithDebt(hermanas, { excelOnly: true }) || dueEffYmd)
+      : dueEffYmd;
+    const baseMora = esExcel && diff < -0.05
+      ? cuotaRegistradaParaMora(row)
+      : round2(Math.max(0, Number(cuotaEsperada) || Number(row.amount_due) || 0));
+    const dias = fechaMora < fechaCorte ? Math.max(0, diffDaysYmdUtc(fechaMora, fechaCorte)) : 0;
     return {
-      case: esExcel ? 'excel_pagado_comprobante' : 'pagado_comprobante',
+      case: esExcel && diff < -0.05 ? 'excel_menor_fecha_reciente_pagado' : (esExcel ? 'excel_pagado_comprobante' : 'pagado_comprobante'),
       cuotaEsperada,
-      baseMora: round2(Math.max(0, Number(cuotaEsperada) || Number(row.amount_due) || 0)),
-      fechaMora: dueEffYmd,
+      baseMora,
+      fechaMora,
       fechaCorte,
-      lateFee: computeLateFeeForDayCount(cronograma, round2(Math.max(0, Number(cuotaEsperada) || Number(row.amount_due) || 0)), dias),
+      lateFee: computeLateFeeForDayCount(cronograma, baseMora, dias),
     };
   }
-  const diff = round2(basePendiente - cuotaEsperada);
   if (Math.abs(diff) <= 0.05) {
     return {
       case: esExcel ? 'excel_igual_due' : 'igual_due',
@@ -609,7 +616,7 @@ function classifyMoraCuotaSemanalCase({
     };
   }
   if (diff < -0.05) {
-    const recentDue = latestOverdueDueYmdWithDebt(hermanas) || dueEffYmd;
+    const recentDue = latestOverdueDueYmdWithDebt(hermanas, { excelOnly: esExcel }) || dueEffYmd;
     return {
       case: esExcel ? 'excel_menor_fecha_reciente' : 'menor_fecha_reciente',
       cuotaEsperada,
@@ -1375,11 +1382,12 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     const moraExtraTotalDbOld = round2(parseFloat(row.mora_extra_total) || 0);
     const pagoHecho = round2(paidDb);
     const fechaUltimoAbono = comprobanteAbonoFechaByCuota.get(String(row.id)) || ymdFromDbDate(row.fecha_ultimo_abono);
-    const fechaCorteMoraNormal = fechaUltimoAbono || limaTodayYmdSync();
-    const baseCapitalMoraNormal = round2(Math.max(0, Number(rowMontosFuenteExcel(row) ? moraCase.cuotaEsperada : d.amount_due_sched) || Number(row.amount_due) || 0));
+    const fechaCorteMoraNormal = moraCase.fechaCorte || fechaUltimoAbono || limaTodayYmdSync();
+    const fechaInicioMoraNormal = rowMontosFuenteExcel(row) && moraCase.fechaMora ? moraCase.fechaMora : dueEffYmd;
+    const baseCapitalMoraNormal = round2(Math.max(0, Number(rowMontosFuenteExcel(row) ? moraCase.baseMora : d.amount_due_sched) || Number(row.amount_due) || 0));
     const diasMoraNormalHastaAbono =
-      dueEffYmd && fechaCorteMoraNormal && dueEffYmd < fechaCorteMoraNormal
-        ? Math.max(0, diffDaysYmdUtc(dueEffYmd, fechaCorteMoraNormal))
+      fechaInicioMoraNormal && fechaCorteMoraNormal && fechaInicioMoraNormal < fechaCorteMoraNormal
+        ? Math.max(0, diffDaysYmdUtc(fechaInicioMoraNormal, fechaCorteMoraNormal))
         : 0;
     const moraNormalHastaAbono = isPrimera
       ? 0
@@ -1399,7 +1407,9 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
 
     if (!isPrimera && !freezeMoraPorComprobante && pagoHecho > 0.005) {
       lateFeePersist = moraNormalPendiente;
-      const pendienteTrasImputacion = round2(moraNormalPendiente + capitalPendienteTrasAbono);
+      const pendienteTrasImputacion = round2(
+        moraNormalPendiente + moraExtraExistentePendiente + capitalPendienteTrasAbono
+      );
       statusOut = miAutoOpenStatusSaldoVencimiento(dueEffYmd, pendienteTrasImputacion, paidDb);
     }
     
@@ -1437,6 +1447,10 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
       moraExtraPersist = 0;
       moraExtraDesde = null;
       if (statusOut === 'overdue') statusOut = paidDb > 0.005 ? 'partial' : 'pending';
+    }
+
+    if (!isPrimera && moraExtraPersist > 0.005 && statusOut === 'paid') {
+      statusOut = miAutoOpenStatusSaldoVencimiento(dueEffYmd, moraExtraPersist, paidDb);
     }
 
     // mora_extra_total = total generado histórico (cristalizado + actual)
@@ -2103,6 +2117,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     const amountDueExcel = round2(parseFloat(r.amount_due) || 0);
     const lateFeeDbExcel = round2(parseFloat(r.late_fee) || 0);
     const moraExtraDbExcel = round2(Math.max(parseFloat(r.mora_extra_total) || 0, parseFloat(r.mora_extra) || 0));
+    const dueY = ymdFromDbDate(r.due_date);
     const excelPagadaSinMora = st === 'paid'
       && lateFeeDbExcel <= 0.005
       && moraExtraDbExcel <= 0.005
@@ -2112,15 +2127,23 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
       && moraExtraDbExcel <= 0.005
       && excelPaidIgualCuotaSemanalIgnoraMora(r)
     );
-    const moraNormalBaseExcel = st === 'bonificada' || ignorarMoraExcelPagada
-      ? 0
-      : moraNormalBaseExcelParaImputacion(
-          r,
+    const moraCaseExcel = ignorarMoraExcelPagada
+      ? null
+      : classifyMoraCuotaSemanalCase({
+          row: r,
           cronograma,
           vehId,
           isPrimera,
-          options.moraNormalHistoricaAplicada
-        );
+          dueEffYmd: dueY,
+          hermanas: options.hermanasForMora || [r],
+          comprobanteAbonoYmd: null,
+        });
+    const moraNormalBaseExcel = st === 'bonificada' || ignorarMoraExcelPagada
+      ? 0
+      : round2(Math.max(
+          Number(moraCaseExcel?.lateFee) || 0,
+          Number(options.moraNormalHistoricaAplicada) || 0
+        ));
     const moraExtraPendienteDbExcel = st === 'bonificada' || ignorarMoraExcelPagada
       ? 0
       : round2(parseFloat(r.mora_extra) || 0);
@@ -2157,7 +2180,6 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
       : round2(Math.max(moraExtraBaseExcel, moraExtraExcel));
     const pendingExcel = imputacionExcel.capital_pendiente;
     const pendingTotalExcel = round2(imputacionExcel.mora_normal_pendiente + moraExtraExcel + pendingExcel);
-    const dueY = ymdFromDbDate(r.due_date);
     const statusExcel = st === 'bonificada'
       ? 'bonificada'
       : miAutoOpenStatusSaldoVencimiento(dueY, pendingTotalExcel, paidAmountExcel);
@@ -2166,7 +2188,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     const lateFeeCalendarDaysExcel =
       pendingTotalExcel <= 0.005 || statusExcel === 'bonificada'
         ? 0
-        : calendarDaysLateLima(ymdFromDbDate(r.mora_desde) || dueY);
+        : calendarDaysLateLima(ymdFromDbDate(r.mora_desde) || moraCaseExcel?.fechaMora || dueY);
 
     return {
       id: r.id,
@@ -2755,6 +2777,7 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
           moraExtraHistoricaAplicadaPorCuota.get(String(rNorm.id)) || 0,
           cascMoraHistoricaMap.extra.get(String(rNorm.id)) || 0
         ),
+        hermanasForMora: rows,
         forzarMayorCuotaSinBono: forzarBonifPorCuotaOverdueGlobal,
       })
     );

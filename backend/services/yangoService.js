@@ -50,6 +50,8 @@ export function fleetCookieCobroForMiAuto(cookieOverride) {
 
 /** Reintentos ante 429 / Too many requests (con o sin proxies). */
 const MAX_RATE_LIMIT_RETRIES = Number(process.env.YANGO_RATE_LIMIT_MAX_RETRIES || 8);
+const SUPPLY_SUMMARY_CACHE_TTL_MS = 2 * 60 * 1000;
+const miAutoSupplySummaryCache = new Map();
 
 function normalizeApiMessage(data) {
   if (data == null) return '';
@@ -413,6 +415,77 @@ export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null,
     };
   } catch (error) {
     return { success: false, error: error.response ? `Error ${error.response.status}` : error.message };
+  }
+}
+
+/** Resumen Fleet de Supply por conductor para el dashboard de Yego Mi Auto. */
+export async function getMiAutoSupplySummary({ dateFrom, dateTo, parkId = null, cookieOverride = null } = {}) {
+  const resolvedCookie = fleetCookieCobroForMiAuto(cookieOverride);
+  const resolvedPark = fleetParkIdForMiAuto(parkId);
+  if (!resolvedCookie || !resolvedPark) {
+    return { success: false, error: 'Falta configurar la sesión o flota Yango de Mi Auto' };
+  }
+
+  const body = {
+    date_from: String(dateFrom || '').slice(0, 10),
+    date_to: String(dateTo || '').slice(0, 10),
+    sort: { field: 'driver_id', direction: 'asc' },
+  };
+  const cacheKey = `${resolvedPark}:${body.date_from}:${body.date_to}`;
+  const cached = miAutoSupplySummaryCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const headers = {
+    'Accept-Language': 'es-ES,es',
+    Cookie: resolvedCookie,
+    'X-Park-Id': resolvedPark,
+    'Content-Type': 'application/json',
+  };
+
+  try {
+    const res = await postWithProxyRetry(
+      `${fleetBaseUrl()}/api/reports-api/v2/summary/drivers/list`,
+      body,
+      headers
+    );
+    const payload = res.data || {};
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const drivers = items.map((item) => {
+      const driver = item?.driver || {};
+      const cars = Array.isArray(item?.cars) ? item.cars : [];
+      const firstCar = cars[0] || {};
+      const name = [driver.first_name, driver.last_name].filter(Boolean).join(' ').trim() || 'Sin nombre';
+      return {
+        driver_id: String(driver.id || ''),
+        name,
+        license_number: driver.license_number || null,
+        plate: item?.car?.callsign || firstCar.number || null,
+        completed_trips: Math.max(0, Number(item?.count_orders_completed) || 0),
+        supply_hours: round2(Math.max(0, Number(item?.work_time_seconds) || 0) / 3600),
+      };
+    });
+    const total = payload.total || {};
+    const result = {
+      success: true,
+      requested_period: body,
+      reported_period: {
+        date_from: payload.date_from || body.date_from,
+        date_to: payload.date_to || body.date_to,
+      },
+      drivers,
+      totals: {
+        drivers: Math.max(0, Number(total.count_drivers) || drivers.length),
+        active_drivers: Math.max(0, Number(total.count_active_drivers) || 0),
+        completed_trips: Math.max(0, Number(total.count_orders_completed ?? total.sum_orders_completed) || 0),
+        supply_hours: round2(Math.max(0, Number(total.sum_work_time_seconds) || 0) / 3600),
+      },
+    };
+    miAutoSupplySummaryCache.set(cacheKey, { value: result, expiresAt: Date.now() + SUPPLY_SUMMARY_CACHE_TTL_MS });
+    return result;
+  } catch (error) {
+    const status = error.response?.status;
+    const detail = normalizeApiMessage(error.response?.data) || error.message;
+    logger.error('Yango Mi Auto supply summary error', { status, detail });
+    return { success: false, status, error: `Fleet no pudo obtener las horas Supply${status ? ` (${status})` : ''}` };
   }
 }
 

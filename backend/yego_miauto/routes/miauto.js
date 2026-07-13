@@ -10,6 +10,7 @@ import evidenciasRouter from './miauto/evidencias.js';
 import whatsappRouter from './miauto/whatsapp.js';
 import notasVentaRouter from './miauto/notasVenta.js';
 import contratosRouter from './miauto/contratos.js';
+import analysisRouter from './miauto/analysis.js';
 
 const router = Router();
 router.use(authenticate);
@@ -31,5 +32,6 @@ router.use(evidenciasRouter);
 router.use(whatsappRouter);
 router.use(notasVentaRouter);
 router.use(contratosRouter);
+router.use(analysisRouter);
 
 export default router;

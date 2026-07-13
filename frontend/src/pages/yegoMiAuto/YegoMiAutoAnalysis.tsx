@@ -6,6 +6,7 @@ import api from '../../services/api';
 type SupplyDriver = {
   driver_id: string;
   name: string;
+  work_rule_id: string | null;
   license_number: string | null;
   plate: string | null;
   completed_trips: number;
@@ -30,6 +31,10 @@ const ymdToday = () => new Intl.DateTimeFormat('en-CA', {
 
 function defaultDateFrom() {
   return `${ymdToday().slice(0, 7)}-01`;
+}
+
+function workRuleLabel(id: string) {
+  return `Término ${id.slice(0, 8).toUpperCase()}`;
 }
 
 function daysInclusive(from: string, to: string) {
@@ -86,13 +91,15 @@ export default function YegoMiAutoAnalysis() {
   const [dateTo, setDateTo] = useState(ymdToday);
   const [data, setData] = useState<SupplyData | null>(null);
   const [query, setQuery] = useState('');
+  const [workRuleId, setWorkRuleId] = useState('');
+  const [workRules, setWorkRules] = useState<string[]>([]);
   const [stateFilter, setStateFilter] = useState<'all' | SupplyState>('all');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const load = async () => {
+  const load = async (selectedWorkRuleId = workRuleId) => {
     if (dateFrom > dateTo) {
       setError('La fecha inicial no puede ser posterior a la fecha final.');
       return;
@@ -100,8 +107,21 @@ export default function YegoMiAutoAnalysis() {
     setLoading(true);
     setError('');
     try {
-      const response = await api.get('/miauto/analysis/supply', { params: { date_from: dateFrom, date_to: dateTo } });
-      setData(response.data?.data ?? response.data);
+      const response = await api.get('/miauto/analysis/supply', {
+        params: {
+          date_from: dateFrom,
+          date_to: dateTo,
+          ...(selectedWorkRuleId ? { work_rule_id: selectedWorkRuleId } : {}),
+        },
+      });
+      const supplyData = response.data?.data ?? response.data;
+      setData(supplyData);
+      setWorkRules((current) => [...new Set([
+        ...current,
+        ...(supplyData.drivers || [])
+          .map((driver: SupplyDriver) => driver.work_rule_id)
+          .filter((id: string | null): id is string => Boolean(id)),
+      ])].sort());
       setPage(1);
     } catch (err: any) {
       setData(null);
@@ -162,11 +182,17 @@ export default function YegoMiAutoAnalysis() {
           </label>
           <label className="relative flex h-10 items-center gap-2 rounded-full border border-gray-300 bg-white pl-3 pr-8 text-sm text-gray-700 shadow-sm">
             <ListFilter className="h-4 w-4 text-gray-500" />
+            <span className="sr-only">Términos de trabajo</span>
+            <select value={workRuleId} onChange={(event) => { const next = event.target.value; setWorkRuleId(next); load(next); }} className="appearance-none bg-transparent pr-1 text-sm font-medium outline-none"><option value="">Términos de trabajo</option>{workRules.map((ruleId) => <option key={ruleId} value={ruleId}>{workRuleLabel(ruleId)}</option>)}</select>
+            <ChevronRight className="pointer-events-none absolute right-3 h-4 w-4 rotate-90 text-gray-500" />
+          </label>
+          <label className="relative flex h-10 items-center gap-2 rounded-full border border-gray-300 bg-white pl-3 pr-8 text-sm text-gray-700 shadow-sm">
+            <ListFilter className="h-4 w-4 text-gray-500" />
             <span className="sr-only">Estado</span>
             <select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value as 'all' | SupplyState); setPage(1); }} className="appearance-none bg-transparent pr-1 text-sm font-medium outline-none"><option value="all">Todos</option><option value="on_track">Cumple meta</option>{!closedPeriod ? <option value="near">Por acelerar</option> : null}<option value="behind">Rezago</option></select>
             <ChevronRight className="pointer-events-none absolute right-3 h-4 w-4 rotate-90 text-gray-500" />
           </label>
-          <button type="button" onClick={load} disabled={loading} title="Actualizar Supply" className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-700 shadow-sm hover:bg-gray-100 disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /></button>
+          <button type="button" onClick={() => load()} disabled={loading} title="Actualizar Supply" className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-700 shadow-sm hover:bg-gray-100 disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /></button>
         </div>
       </section>
 

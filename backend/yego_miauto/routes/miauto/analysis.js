@@ -4,6 +4,7 @@ import { getMiAutoSupplySummary } from '../../../services/yangoService.js';
 
 const router = Router();
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+const FLEET_ID_RE = /^[a-f0-9]{32}$/i;
 
 function limaYmd(date = new Date()) {
   return new Intl.DateTimeFormat('en-CA', {
@@ -16,7 +17,7 @@ function defaultRange() {
   return { dateFrom: `${today.slice(0, 7)}-01`, dateTo: today };
 }
 
-// GET /api/miauto/analysis/supply?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+// GET /api/miauto/analysis/supply?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&work_rule_id=<fleet-id>
 router.get('/analysis/supply', async (req, res) => {
   const fallback = defaultRange();
   const dateFrom = String(req.query.date_from || fallback.dateFrom).slice(0, 10);
@@ -24,8 +25,12 @@ router.get('/analysis/supply', async (req, res) => {
   if (!YMD_RE.test(dateFrom) || !YMD_RE.test(dateTo) || dateFrom > dateTo) {
     return errorResponse(res, 'El rango de fechas es inválido', 400);
   }
+  const workRuleId = String(req.query.work_rule_id || '').trim();
+  if (workRuleId && !FLEET_ID_RE.test(workRuleId)) {
+    return errorResponse(res, 'El término de trabajo es inválido', 400);
+  }
   try {
-    const result = await getMiAutoSupplySummary({ dateFrom, dateTo });
+    const result = await getMiAutoSupplySummary({ dateFrom, dateTo, workRuleId: workRuleId || null });
     if (!result.success) return errorResponse(res, result.error || 'No se pudo consultar Fleet', 502);
     return successResponse(res, result);
   } catch (error) {

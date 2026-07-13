@@ -51,6 +51,8 @@ export function fleetCookieCobroForMiAuto(cookieOverride) {
 /** Reintentos ante 429 / Too many requests (con o sin proxies). */
 const MAX_RATE_LIMIT_RETRIES = Number(process.env.YANGO_RATE_LIMIT_MAX_RETRIES || 8);
 const SUPPLY_SUMMARY_CACHE_TTL_MS = 2 * 60 * 1000;
+const SUPPLY_SUMMARY_PAGE_SIZE = 50;
+const MAX_SUPPLY_SUMMARY_PAGES = 100;
 const miAutoSupplySummaryCache = new Map();
 
 function normalizeApiMessage(data) {
@@ -426,12 +428,12 @@ export async function getMiAutoSupplySummary({ dateFrom, dateTo, parkId = null, 
     return { success: false, error: 'Falta configurar la sesión o flota Yango de Mi Auto' };
   }
 
-  const body = {
+  const requestedPeriod = {
     date_from: String(dateFrom || '').slice(0, 10),
     date_to: String(dateTo || '').slice(0, 10),
     sort: { field: 'driver_id', direction: 'asc' },
   };
-  const cacheKey = `${resolvedPark}:${body.date_from}:${body.date_to}`;
+  const cacheKey = `${resolvedPark}:${requestedPeriod.date_from}:${requestedPeriod.date_to}`;
   const cached = miAutoSupplySummaryCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const headers = {
@@ -442,19 +444,35 @@ export async function getMiAutoSupplySummary({ dateFrom, dateTo, parkId = null, 
   };
 
   try {
-    const res = await postWithProxyRetry(
-      `${fleetBaseUrl()}/api/reports-api/v2/summary/drivers/list`,
-      body,
-      headers
-    );
-    const payload = res.data || {};
-    const items = Array.isArray(payload.items) ? payload.items : [];
-    const drivers = items.map((item) => {
+    const endpoint = `${fleetBaseUrl()}/api/reports-api/v2/summary/drivers/list`;
+    const items = [];
+    let firstPayload = null;
+    let expectedDrivers = null;
+
+    for (let page = 1; page <= MAX_SUPPLY_SUMMARY_PAGES; page += 1) {
+      const res = await postWithProxyRetry(endpoint, {
+        ...requestedPeriod,
+        page,
+        limit: SUPPLY_SUMMARY_PAGE_SIZE,
+      }, headers);
+      const payload = res.data || {};
+      const pageItems = Array.isArray(payload.items) ? payload.items : [];
+      if (!firstPayload) {
+        firstPayload = payload;
+        expectedDrivers = Number(payload.total?.count_drivers) || null;
+      }
+      items.push(...pageItems);
+
+      if (pageItems.length < SUPPLY_SUMMARY_PAGE_SIZE || (expectedDrivers !== null && items.length >= expectedDrivers)) break;
+    }
+
+    const driversById = new Map();
+    items.forEach((item) => {
       const driver = item?.driver || {};
       const cars = Array.isArray(item?.cars) ? item.cars : [];
       const firstCar = cars[0] || {};
       const name = [driver.first_name, driver.last_name].filter(Boolean).join(' ').trim() || 'Sin nombre';
-      return {
+      const normalized = {
         driver_id: String(driver.id || ''),
         name,
         license_number: driver.license_number || null,
@@ -462,14 +480,16 @@ export async function getMiAutoSupplySummary({ dateFrom, dateTo, parkId = null, 
         completed_trips: Math.max(0, Number(item?.count_orders_completed) || 0),
         supply_hours: round2(Math.max(0, Number(item?.work_time_seconds) || 0) / 3600),
       };
+      if (normalized.driver_id) driversById.set(normalized.driver_id, normalized);
     });
-    const total = payload.total || {};
+    const drivers = [...driversById.values()];
+    const total = firstPayload?.total || {};
     const result = {
       success: true,
-      requested_period: body,
+      requested_period: requestedPeriod,
       reported_period: {
-        date_from: payload.date_from || body.date_from,
-        date_to: payload.date_to || body.date_to,
+        date_from: firstPayload?.date_from || requestedPeriod.date_from,
+        date_to: firstPayload?.date_to || requestedPeriod.date_to,
       },
       drivers,
       totals: {

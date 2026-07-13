@@ -325,6 +325,7 @@ export async function processCobroCuota(
   options = {}
 ) {
   const dryRun = !!options.dryRun;
+  const simulateFleetWithdraw = !dryRun && !!options.simulateFleetWithdraw;
   const skipBalanceCheck = !!options.skipBalanceCheck;
   const sharedFleetCap = options.sharedFleetBalancePEN;
   const pendingMap = options.solicitudPendingMap;
@@ -593,26 +594,29 @@ export async function processCobroCuota(
     };
   }
 
-  let withdrawResult = await withdrawFromContractor(
-    externalDriverId,
-    amountToChargeFleet.toFixed(2),
-    'Cuota Mi Auto',
-    cookieMiAuto,
-    parkId
-  );
-  const maxW = fleetWithdrawMaxAttempts();
-  const delayMs = fleetWithdrawRetryDelayMs();
-  let wAttempt = 0;
-  while (
-    !withdrawResult.success &&
-    wAttempt < maxW - 1 &&
-    isFleetOngoingTransactionsError(withdrawResult.message || withdrawResult.error)
-  ) {
-    wAttempt += 1;
-    logger.warn(
-      `Yego Mi Auto cobro: retiro ${driverName} transacciones en curso — reintento ${wAttempt}/${maxW - 1} en ${delayMs}ms`
-    );
-    await new Promise((r) => setTimeout(r, delayMs));
+  let withdrawResult;
+  if (simulateFleetWithdraw) {
+    withdrawResult = {
+      success: true,
+      data: {
+        simulated: true,
+        reason: options.simulateReason || 'miauto_fleet_charge_simulated_no_withdraw',
+        external_driver_id: externalDriverId,
+        park_id: parkId,
+        amount: amountToChargeFleet.toFixed(2),
+        currency: monedaFleetLocal,
+      },
+    };
+    logger.warn('miauto.fleet.withdraw_simulated_no_external_charge', {
+      solicitudId: cuotaRow.solicitud_id,
+      cuotaId: cuotaRow.id,
+      driverName,
+      externalDriverId,
+      parkId,
+      montoRetiroFleet: amountToChargeFleet,
+      monedaFleetLocal,
+    });
+  } else {
     withdrawResult = await withdrawFromContractor(
       externalDriverId,
       amountToChargeFleet.toFixed(2),
@@ -620,6 +624,27 @@ export async function processCobroCuota(
       cookieMiAuto,
       parkId
     );
+    const maxW = fleetWithdrawMaxAttempts();
+    const delayMs = fleetWithdrawRetryDelayMs();
+    let wAttempt = 0;
+    while (
+      !withdrawResult.success &&
+      wAttempt < maxW - 1 &&
+      isFleetOngoingTransactionsError(withdrawResult.message || withdrawResult.error)
+    ) {
+      wAttempt += 1;
+      logger.warn(
+        `Yego Mi Auto cobro: retiro ${driverName} transacciones en curso — reintento ${wAttempt}/${maxW - 1} en ${delayMs}ms`
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
+      withdrawResult = await withdrawFromContractor(
+        externalDriverId,
+        amountToChargeFleet.toFixed(2),
+        'Cuota Mi Auto',
+        cookieMiAuto,
+        parkId
+      );
+    }
   }
 
   if (!withdrawResult.success) {

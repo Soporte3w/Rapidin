@@ -69,6 +69,13 @@ function currentMondayCuotaContext() {
   return { incomeWeekMonday, sundayDate, dateFrom, dateTo, cuotaWeekMonday };
 }
 
+function ymdFromDbDate(value) {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+  const s = String(value).trim();
+  return s ? s.slice(0, 10) : null;
+}
+
 /**
  * Viajes desde el conductor working de la placa, no del driver_id_fleet.
  * Aplica para todos los conductores. Si no hay conductor working con esa placa → viajes = 0.
@@ -265,6 +272,76 @@ function chunkCuotasFleetMismaCuenta(cuotas) {
   return chunks;
 }
 
+function parseJsonArraySafe(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function findCobroSaldoSourceCuota(chunk, cuotaWeekMonday) {
+  if (!Array.isArray(chunk) || chunk.length === 0) return null;
+  const currentWeek = chunk.find((c) => ymdFromDbDate(c.week_start_date) === cuotaWeekMonday);
+  if (currentWeek) return currentWeek;
+  return [...chunk].sort((a, b) => {
+    const aw = ymdFromDbDate(a.week_start_date) || ymdFromDbDate(a.due_date) || '';
+    const bw = ymdFromDbDate(b.week_start_date) || ymdFromDbDate(b.due_date) || '';
+    return bw.localeCompare(aw);
+  })[0] || null;
+}
+
+async function appendCobroSaldoReferencia(sourceCuota, targetCuota, monto, options = {}) {
+  const amount = round2(Math.max(0, Number(monto) || 0));
+  const sourceId = sourceCuota?.id ? String(sourceCuota.id) : '';
+  const targetId = targetCuota?.id ? String(targetCuota.id) : '';
+  if (!sourceId || !targetId || sourceId === targetId || amount <= 0.005) return;
+
+  const source = options.source || 'fleet_7_10';
+  const existing = await query(
+    `SELECT cobro_saldo_referencia
+     FROM module_miauto_cuota_semanal
+     WHERE id = $1::uuid AND deleted_at IS NULL
+     LIMIT 1`,
+    [sourceId]
+  );
+  const refs = parseJsonArraySafe(existing.rows[0]?.cobro_saldo_referencia);
+  const targetWeek = ymdFromDbDate(targetCuota.week_start_date);
+  const targetDue = ymdFromDbDate(targetCuota.due_date);
+  const idx = refs.findIndex((r) =>
+    String(r?.cuota_semanal_id || '') === targetId &&
+    String(r?.source || 'fleet_7_10') === source
+  );
+
+  const nextRef = {
+    cuota_semanal_id: targetId,
+    week_start_date: targetWeek,
+    due_date: targetDue,
+    monto: amount,
+    source,
+  };
+  if (idx >= 0) {
+    refs[idx] = {
+      ...refs[idx],
+      ...nextRef,
+      monto: round2((Number(refs[idx]?.monto) || 0) + amount),
+    };
+  } else {
+    refs.push(nextRef);
+  }
+
+  await query(
+    `UPDATE module_miauto_cuota_semanal
+     SET cobro_saldo_referencia = $1::jsonb,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $2::uuid AND deleted_at IS NULL`,
+    [JSON.stringify(refs), sourceId]
+  );
+}
+
 /**
  * Cola Fleet: **un solo** `getContractorBalance` por conductor+parque; el total retirado en la pasada
  * no supera ese snapshot (p. ej. saldo 780 → reparto entre cuotas hasta agotar, sin reconsultar saldo inflado).
@@ -279,6 +356,10 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
   if (!(solicitudPendingMap instanceof Map)) {
     throw new Error('processCobroCuotaQueue: falta solicitudPendingMap (usar retorno de getCuotasToCharge*)');
   }
+  const simulateFleetWithdraw = !!options.simulateFleetWithdraw;
+  const simulateReason = options.simulateReason || null;
+  const { cuotaWeekMonday } = currentMondayCuotaContext();
+  const cobroReferenciaSource = options.cobroReferenciaSource || (simulateFleetWithdraw ? 'fleet_7_10_simulado' : 'fleet_7_10');
 
   const chunks = chunkCuotasFleetMismaCuenta(cuotas);
   let processedGlobal = 0;
@@ -331,11 +412,14 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
     });
 
     const sharedFleetBalancePEN = { remaining: snapshot };
+    const sourceCuota = findCobroSaldoSourceCuota(chunk, cuotaWeekMonday);
 
     for (let j = 0; j < chunk.length; j++) {
       const result = await processCobroCuota(chunk[j], null, null, {
         sharedFleetBalancePEN,
         solicitudPendingMap,
+        simulateFleetWithdraw,
+        simulateReason,
       });
       if (result.failed) {
         failed += 1;
@@ -348,6 +432,12 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
         });
       } else if (result.partial) partial += 1;
       else success += 1;
+      const amountCredited = round2(Math.max(0, Number(result.amountCreditedCuota) || 0));
+      if (!result.failed && amountCredited > 0.005) {
+        await appendCobroSaldoReferencia(sourceCuota, chunk[j], amountCredited, {
+          source: cobroReferenciaSource,
+        });
+      }
       processedGlobal += 1;
       if (processedGlobal < total) await delay(FLEET_MS_BETWEEN_COBROS);
     }
@@ -461,12 +551,14 @@ export async function runWeeklyCuotaGenerationMonday(options = {}) {
 /**
  * Cobro Fleet todas las solicitudes en cola (mismo proceso que cron lunes 7:10 Lima).
  * Opcional `{ auditJob: 'manual_script' }` para el log de auditoría.
+ * Opcional `{ simulateFleetWithdraw: true }` para consultar saldo y acreditar internamente sin retirar de Fleet.
  *
- * @param {{ auditJob?: string }} [options]
+ * @param {{ auditJob?: string, simulateFleetWithdraw?: boolean, simulateReason?: string }} [options]
  * @returns {Promise<{ ok: boolean; success?: number; partial?: number; failed?: number; cuotas_en_cola?: number; error?: string }>}
  */
 export async function runWeeklyFleetChargeMonday(options = {}) {
   const auditJob = String(options.auditJob || 'lunes_7_10_lima');
+  const simulateFleetWithdraw = !!options.simulateFleetWithdraw;
 
   const lock = await acquireCronLock('miauto_cobro_fleet', 600);
   if (!lock.acquired) {
@@ -477,16 +569,23 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
   logger.info('miauto.fleet_job.start', {
     schedule: 'lunes 7:10 Lima',
     executionId: lock.executionId,
+    simulateFleetWithdraw,
   });
   await appendMiautoFleetCobroJobAuditEvent({
     tipo: 'cobro_job_inicio',
     job: auditJob,
     timezone: TIMEZONE,
+    simulate_fleet_withdraw: simulateFleetWithdraw,
   });
   try {
     // Mora: ya aplicada por el cron 1:00 (mismo lunes); no duplicar antes del cobro.
     const { cuotas, solicitudPendingMap } = await getCuotasToCharge();
-    const { success, partial, failed } = await processCobroCuotaQueue(cuotas, { solicitudPendingMap });
+    const { success, partial, failed } = await processCobroCuotaQueue(cuotas, {
+      solicitudPendingMap,
+      simulateFleetWithdraw,
+      simulateReason: options.simulateReason || auditJob,
+      cobroReferenciaSource: simulateFleetWithdraw ? 'fleet_7_10_simulado' : 'fleet_7_10',
+    });
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_fin',
       job: auditJob,
@@ -494,6 +593,7 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       success,
       partial,
       failed,
+      simulate_fleet_withdraw: simulateFleetWithdraw,
     });
     logger.info('miauto.fleet_job.finish', {
       cuotasEnCola: cuotas.length,
@@ -501,9 +601,10 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       partial,
       failed,
       executionId: lock.executionId,
+      simulateFleetWithdraw,
     });
     await releaseCronLock('miauto_cobro_fleet', lock.executionId);
-    return { ok: true, success, partial, failed, cuotas_en_cola: cuotas.length };
+    return { ok: true, success, partial, failed, cuotas_en_cola: cuotas.length, simulated: simulateFleetWithdraw };
   } catch (err) {
     await releaseCronLock('miauto_cobro_fleet', lock.executionId);
     await appendMiautoFleetCobroJobAuditEvent({
@@ -527,7 +628,7 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
  * Solo cobro Fleet (misma cola que lunes 7:10), una solicitud rent sale / Mi Auto.
  * No regenera cuota ni llama a Yango income — útil tras ajustes manuales en BD.
  */
-export async function runFleetCobroSoloSolicitud(solicitudId) {
+export async function runFleetCobroSoloSolicitud(solicitudId, options = {}) {
   const sid = String(solicitudId || '').trim();
   if (!sid) {
     return { ok: false, error: 'solicitud_id vacío' };
@@ -535,12 +636,14 @@ export async function runFleetCobroSoloSolicitud(solicitudId) {
   logger.info('miauto.fleet_solicitud.start', {
     solicitudId: sid,
     mode: 'solo_solicitud',
+    simulateFleetWithdraw: !!options.simulateFleetWithdraw,
   });
   try {
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_inicio',
-      job: 'solo_solicitud',
+      job: options.auditJob || 'solo_solicitud',
       solicitud_id: sid,
+      simulate_fleet_withdraw: !!options.simulateFleetWithdraw,
     });
     // Mora: cron 1:00 Lima + generación/regeneración; mismo criterio que runWeeklyFleetChargeMonday (sin update extra).
     const { cuotas, pendingMap } = await getCuotasToChargeForSolicitud(sid);
@@ -568,15 +671,19 @@ export async function runFleetCobroSoloSolicitud(solicitudId) {
     }
     const { success, partial, failed } = await processCobroCuotaQueue(cuotas, {
       solicitudPendingMap: pendingMap,
+      simulateFleetWithdraw: !!options.simulateFleetWithdraw,
+      simulateReason: options.simulateReason || options.auditJob || 'solo_solicitud',
+      cobroReferenciaSource: options.simulateFleetWithdraw ? 'fleet_7_10_simulado' : 'fleet_7_10',
     });
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_fin',
-      job: 'solo_solicitud',
+      job: options.auditJob || 'solo_solicitud',
       solicitud_id: sid,
       cuotas_en_cola: cuotas.length,
       success,
       partial,
       failed,
+      simulate_fleet_withdraw: !!options.simulateFleetWithdraw,
     });
     logger.info('miauto.fleet_solicitud.finish', {
       solicitudId: sid,
@@ -592,13 +699,15 @@ export async function runFleetCobroSoloSolicitud(solicitudId) {
       success,
       partial,
       failed,
+      simulated: !!options.simulateFleetWithdraw,
     };
   } catch (err) {
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_error',
-      job: 'solo_solicitud',
+      job: options.auditJob || 'solo_solicitud',
       solicitud_id: sid,
       error: String(err?.message || err),
+      simulate_fleet_withdraw: !!options.simulateFleetWithdraw,
     });
     logger.error('miauto.fleet_solicitud.error', {
       solicitudId: sid,

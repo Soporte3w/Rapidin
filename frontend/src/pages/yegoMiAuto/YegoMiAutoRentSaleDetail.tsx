@@ -103,7 +103,14 @@ interface CuotaSemanal {
   cobro_saldo?: number;
   cobro_desde_saldo_conductor?: number;
   saldo_favor_conductor?: number;
-  cobro_saldo_referencia?: { semana?: number; week_start_date?: string; monto: number }[];
+  cobro_saldo_referencia?: {
+    cuota_semanal_id?: string;
+    semana?: number;
+    week_start_date?: string;
+    due_date?: string;
+    monto: number;
+    source?: string;
+  }[];
   /** Alícuota regla cronograma (si la API la envía). */
   cobro_saldo_regla?: number;
   cuota_neta?: number;
@@ -1449,42 +1456,37 @@ export default function YegoMiAutoRentSaleDetail() {
                     {/* Cobro saldo */}
                     <td className="py-2.5 px-1 align-top text-[11px] tabular-nums text-right text-green-700">
                       <div className="flex min-w-0 flex-col items-end gap-1">
-                        <span>{miautoFmtMonto(symCuota, miautoCobroSaldoDisplay(c))}</span>
-                        {c.cobro_saldo_referencia && c.cobro_saldo_referencia.length > 0 && (
-                          <div className="text-[10px] font-normal leading-snug text-gray-600">
-                            {c.cobro_saldo_referencia.map((ref, idx) => (
-                              <span key={idx} className="block tabular-nums">
-                                → Semana {ref.semana ?? (ref.week_start_date ? miautoSemanaOrdinalPorVencimiento(cuotas, ref.week_start_date, ref.week_start_date) : '')}: {miautoFmtMonto(symCuota, ref.monto)}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        {/* Mostrar distribución del cobro fleet */}
                         {(() => {
-                          const cobroFleetVal = miautoNum(c.cobro_desde_saldo_conductor);
-                          if (cobroFleetVal <= 0.005) return null;
-                          if (c.cobro_saldo_referencia && c.cobro_saldo_referencia.length > 0) return null;
-                          // El cobro se distribuyó → buscar semanas que recibieron el pago
-                          const destinos: { semana: number; monto: number }[] = [];
-                          for (const cc of cuotas) {
-                            if (cc.id === c.id) continue;
-                            if (cc.status === 'paid' || cc.status === 'bonificada') continue;
-                            const ccPaid = miautoNum(cc.paid_amount);
-                            if (ccPaid <= 0.005) continue;
-                            const semana = miautoSemanaOrdinalPorVencimiento(cuotas, cc.due_date, cc.week_start_date);
-                            if (semana) destinos.push({ semana, monto: cobroFleetVal });
-                          }
-                          if (destinos.length === 0) return (
-                            <span className="text-[10px] font-normal leading-snug text-gray-500">→ distribuido a semanas anteriores</span>
+                          const refs = Array.isArray(c.cobro_saldo_referencia) ? c.cobro_saldo_referencia : [];
+                          const referencedAsDestino = cuotas.some((cc) =>
+                            cc.id !== c.id &&
+                            Array.isArray(cc.cobro_saldo_referencia) &&
+                            cc.cobro_saldo_referencia.some((ref) => String(ref.cuota_semanal_id || '') === c.id)
                           );
+                          const display = referencedAsDestino ? 0 : miautoCobroSaldoDisplay(c);
+
                           return (
-                            <div className="text-[10px] font-normal leading-snug text-gray-600">
-                              {destinos.map((d, idx) => (
-                                <span key={idx} className="block tabular-nums">
-                                  → Semana {d.semana}: {miautoFmtMonto(symCuota, d.monto)}
-                                </span>
-                              ))}
-                            </div>
+                            <>
+                              <span>{miautoFmtMonto(symCuota, display)}</span>
+                              {refs.length > 0 && (
+                                <div className="flex max-w-[120px] flex-col items-end gap-0.5 text-[10px] font-normal leading-tight text-gray-600">
+                                  {refs.map((ref, idx) => {
+                                    const refDate = ref.due_date || ref.week_start_date || '';
+                                    const semana = ref.semana ?? (refDate ? miautoSemanaOrdinalPorVencimiento(cuotas, refDate, ref.week_start_date || refDate) : null);
+                                    const title = `${miautoFmtMonto(symCuota, ref.monto)} aplicado a ${semana ? `Semana ${semana}` : 'otra cuota'}${refDate ? ` (${formatDate(refDate, 'es-ES')})` : ''}`;
+                                    return (
+                                      <span
+                                        key={`${ref.cuota_semanal_id || idx}-${idx}`}
+                                        className="inline-flex max-w-full items-center justify-end truncate rounded-full border border-green-100 bg-green-50 px-1.5 py-0.5 text-[10px] font-medium text-green-700"
+                                        title={title}
+                                      >
+                                        → Sem. {semana || '-'} · {miautoFmtMonto(symCuota, ref.monto)}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </>
                           );
                         })()}
                       </div>

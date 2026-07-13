@@ -164,10 +164,35 @@ async function aplicarPagoACuota(solicitudId, cuotaSemanalId, montoMaxAplicar, c
     return { newPaid: paid, newStatus: c.status, chunk: 0 };
   }
   const newPaid = round2(paid + chunk);
-  const newStatus = miautoStatusCuotaTrasAbonoDerivado(c, newPaid, ctx);
+  const moraNormalAntes = round2(parseFloat(c.late_fee) || 0);
+  const moraNormalCobrada = round2(Math.min(chunk, moraNormalAntes));
+  const moraNormalDespues = round2(Math.max(0, moraNormalAntes - moraNormalCobrada));
+  const moraExtraAntes = round2(parseFloat(c.mora_extra) || 0);
+  const saldoTrasMoraNormal = round2(Math.max(0, chunk - moraNormalCobrada));
+  const moraExtraCobrada = round2(Math.min(saldoTrasMoraNormal, moraExtraAntes));
+  const moraExtraDespues = round2(Math.max(0, moraExtraAntes - moraExtraCobrada));
+  const moraExtraTotalDespues = round2(Math.max(
+    parseFloat(c.mora_extra_total) || 0,
+    moraExtraAntes
+  ));
+  const cuotaDespues = {
+    ...c,
+    paid_amount: newPaid,
+    late_fee: moraNormalDespues,
+    mora_extra: moraExtraDespues,
+    mora_extra_total: moraExtraTotalDespues,
+  };
+  const newStatus = miautoStatusCuotaTrasAbonoDerivado(cuotaDespues, newPaid, ctx);
   await query(
-    `UPDATE module_miauto_cuota_semanal SET paid_amount = $1, status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
-    [newPaid, newStatus, cuotaSemanalId]
+    `UPDATE module_miauto_cuota_semanal
+     SET paid_amount = $1,
+         status = $2,
+         late_fee = $3,
+         mora_extra = $4,
+         mora_extra_total = $5,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $6`,
+    [newPaid, newStatus, moraNormalDespues, moraExtraDespues, moraExtraTotalDespues, cuotaSemanalId]
   );
   await touchFechaUltimoAbonoCuota(cuotaSemanalId, paid, newPaid);
   await reconciliarBonosTiempo(solicitudId);

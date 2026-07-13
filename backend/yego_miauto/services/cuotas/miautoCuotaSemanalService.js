@@ -220,7 +220,8 @@ function excelPaidIgualCuotaSemanalIgnoraMora(r) {
   if (!r || String(r.status || '').toLowerCase() === 'bonificada') return false;
   const paid = round2(parseFloat(r.paid_amount) || 0);
   const cs = round2(parseFloat(r.cuota_semanal) || 0);
-  return cs > 0.005 && Math.abs(paid - cs) <= 0.005;
+  const moraExtraPendiente = round2(parseFloat(r.mora_extra) || 0);
+  return cs > 0.005 && moraExtraPendiente <= 0.005 && Math.abs(paid - cs) <= 0.005;
 }
 
 function cuotaTieneSaldoPendienteColumnas(r) {
@@ -2044,23 +2045,21 @@ function aplicarPisoColumnasPendienteCuota(cuotaRow, d, pendienteEconPrePiso, is
   if (rowMontosFuenteExcel(cuotaRow)) {
     const cid = String(cuotaRow.id || '');
     const moraHist = ctx?.moraNormalHistoricaAplicadaPorCuota?.get?.(cid) || 0;
-    const moraExtraHist = ctx?.moraExtraHistoricaAplicadaPorCuota?.get?.(cid) || 0;
     const moraNormalBase = round2(Math.max(
       parseFloat(cuotaRow.late_fee) || 0,
       parseFloat(d?.mora_full) || 0,
       moraHist
     ));
-    const moraExtraBase = round2(Math.max(
-      parseFloat(cuotaRow.mora_extra_total) || 0,
-      parseFloat(cuotaRow.mora_extra) || 0,
-      moraExtraHist
-    ));
-    const saldoExcel = distribuirPagoMoraPrimero({
+    const moraExtraPendiente = round2(parseFloat(cuotaRow.mora_extra) || 0);
+    // La mora extra se genera después de un abono. No puede ser absorbida por
+    // `paid_amount` histórico: solo un pago posterior puede disminuirla.
+    const saldoSinMoraExtra = distribuirPagoMoraPrimero({
       capital: parseFloat(cuotaRow.amount_due) || 0,
       moraNormal: moraNormalBase,
-      moraExtra: moraExtraBase,
+      moraExtra: 0,
       pagado: parseFloat(cuotaRow.paid_amount) || 0,
     }).total_pendiente;
+    const saldoExcel = round2(saldoSinMoraExtra + moraExtraPendiente);
     return round2(Math.max(pendienteEconPrePiso, saldoExcel));
   }
   const obTot = d.obligacion_total;

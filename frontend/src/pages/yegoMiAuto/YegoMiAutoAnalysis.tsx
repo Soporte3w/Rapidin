@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { BarChart3, ChevronLeft, ChevronRight, Download, ListFilter, RefreshCw, Search } from 'lucide-react';
 import { DateRangePicker } from '../../components/DateRangePicker';
 import api from '../../services/api';
@@ -177,45 +176,6 @@ function SupplyFilters({
   );
 }
 
-function SupplyChart({ drivers, target, closedPeriod, loading }: { drivers: SupplyDriver[]; target: number; closedPeriod: boolean; loading: boolean }) {
-  const chartData = drivers.slice(0, 15).map((driver) => ({
-    ...driver,
-    chart_name: driver.name.length > 24 ? `${driver.name.slice(0, 24)}...` : driver.name,
-    state: getSupplyState(driver.supply_hours, target, closedPeriod),
-  })).reverse();
-
-  return (
-    <section className="border border-gray-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h2 className="text-sm font-semibold text-gray-900">Horas Supply por conductor</h2>
-          <p className="mt-0.5 text-xs text-gray-500">Meta {closedPeriod ? 'cerrada' : 'proporcional al período'}: {formatHours(target)}</p>
-        </div>
-        <div className="flex items-center gap-3 text-xs font-medium text-gray-600">
-          <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-green-600" />Cumple</span>
-          {!closedPeriod && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-yellow-400" />75%-99%</span>}
-          <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-red-600" />Rezago</span>
-        </div>
-      </div>
-      <div className="h-[min(760px,max(340px,calc(100vh-250px)))] min-h-[340px] p-3">
-        {loading ? <div className="flex h-full items-center justify-center text-sm text-gray-500">Cargando Supply...</div> : chartData.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-gray-500">No hay conductores para los filtros seleccionados.</div> : (
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} layout="vertical" margin={{ top: 8, right: 34, left: 12, bottom: 8 }}>
-              <CartesianGrid horizontal={false} stroke="#e5e7eb" />
-              <XAxis type="number" tick={{ fontSize: 11, fill: '#6b7280' }} tickFormatter={(value) => `${value}h`} />
-              <YAxis type="category" dataKey="chart_name" width={175} tick={{ fontSize: 11, fill: '#374151' }} />
-              <Tooltip cursor={{ fill: '#f9fafb' }} formatter={(value: number) => [formatHours(value), 'Horas Supply']} labelFormatter={(_, payload) => payload?.[0]?.payload?.name || ''} />
-              <Bar dataKey="supply_hours" radius={[0, 4, 4, 0]} maxBarSize={22}>
-                {chartData.map((driver) => <Cell key={driver.driver_id} fill={stateMeta[driver.state].color} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-    </section>
-  );
-}
-
 function formatHeatmapDate(date: string) {
   return new Date(`${date}T12:00:00`).toLocaleDateString('es-PE', { weekday: 'short', day: 'numeric' });
 }
@@ -367,7 +327,6 @@ export default function YegoMiAutoAnalysis() {
       <section className="rounded-lg bg-[#8B1A1A] p-4 lg:p-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-3"><div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[#6B1515]"><BarChart3 className="h-5 w-5 text-white" /></div><div><h1 className="text-lg font-bold leading-tight text-white lg:text-xl">Análisis Mi Auto</h1><p className="mt-0.5 text-xs text-white/90 lg:text-sm">Supply y viajes completados de conductores</p></div></div><button type="button" onClick={() => exportSupplyPdf(filteredDrivers, dateRange, target, closedPeriod)} disabled={filteredDrivers.length === 0} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-white/30 bg-white px-3 text-sm font-semibold text-[#8B1A1A] hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"><Download className="h-4 w-4" />PDF</button></div></section>
       <SupplyFilters dateRange={dateRange} query={query} stateFilter={stateFilter} loading={loading || heatmapLoading} closedPeriod={closedPeriod} onDateChange={setDateRange} onQueryChange={(value) => { setQuery(value); setPage(1); }} onStateChange={(value) => { setStateFilter(value); setPage(1); }} onRefresh={refresh} />
       {error && <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
-      <SupplyChart drivers={filteredDrivers} target={target} closedPeriod={closedPeriod} loading={loading} />
       <SupplyHeatmap data={heatmapData} visibleDrivers={filteredDrivers} loading={heatmapLoading} />
       <SupplyTable drivers={filteredDrivers} totalReceived={data?.drivers.length || 0} target={target} closedPeriod={closedPeriod} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
     </div>

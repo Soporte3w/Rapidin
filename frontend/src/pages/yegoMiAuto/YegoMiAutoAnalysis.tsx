@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { Activity, Car, ChevronLeft, ChevronRight, Clock3, Download, RefreshCw, Route, Search, Users } from 'lucide-react';
+import { Activity, CalendarDays, Car, ChevronLeft, ChevronRight, Clock3, Download, ListFilter, RefreshCw, Route, Search, Users } from 'lucide-react';
 import api from '../../services/api';
 
 type SupplyDriver = {
@@ -145,13 +145,28 @@ export default function YegoMiAutoAnalysis() {
         </div>
       </section>
 
-      <section className="border border-gray-200 bg-gray-50 p-3">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[150px_150px_minmax(220px,1fr)_190px_auto] xl:items-end">
-          <label className="block text-xs font-semibold text-gray-600">Desde<input type="date" value={dateFrom} max={dateTo} onChange={(event) => setDateFrom(event.target.value)} className="mt-1 h-10 w-full rounded-md border border-gray-300 bg-white px-2 text-sm text-gray-800 focus:border-[#8B1A1A] focus:outline-none" /></label>
-          <label className="block text-xs font-semibold text-gray-600">Hasta<input type="date" value={dateTo} max={ymdToday()} onChange={(event) => setDateTo(event.target.value)} className="mt-1 h-10 w-full rounded-md border border-gray-300 bg-white px-2 text-sm text-gray-800 focus:border-[#8B1A1A] focus:outline-none" /></label>
-          <label className="relative block text-xs font-semibold text-gray-600">Conductor, licencia o placa<Search className="pointer-events-none absolute bottom-3 left-3 h-4 w-4 text-gray-400" /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Buscar" className="mt-1 h-10 w-full rounded-md border border-gray-300 bg-white pl-9 pr-3 text-sm font-normal text-gray-800 focus:border-[#8B1A1A] focus:outline-none" /></label>
-          <label className="block text-xs font-semibold text-gray-600">Estado<select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value as 'all' | SupplyState); setPage(1); }} className="mt-1 h-10 w-full rounded-md border border-gray-300 bg-white px-2 text-sm font-normal text-gray-800 focus:border-[#8B1A1A] focus:outline-none"><option value="all">Todos</option><option value="on_track">Cumple</option>{!closedPeriod ? <option value="near">Por acelerar</option> : null}<option value="behind">Rezago</option></select></label>
-          <button type="button" onClick={load} disabled={loading} title="Actualizar Supply" className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /></button>
+      <section className="border border-gray-200 bg-gray-50 px-3 py-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex h-10 items-center gap-2 rounded-full border border-gray-300 bg-white px-3 text-sm text-gray-700 shadow-sm">
+            <CalendarDays className="h-4 w-4 text-gray-500" />
+            <label className="sr-only" htmlFor="supply-date-from">Desde</label>
+            <input id="supply-date-from" type="date" value={dateFrom} max={dateTo} onChange={(event) => setDateFrom(event.target.value)} className="w-[122px] bg-transparent text-sm outline-none" />
+            <span className="text-gray-300">—</span>
+            <label className="sr-only" htmlFor="supply-date-to">Hasta</label>
+            <input id="supply-date-to" type="date" value={dateTo} max={ymdToday()} onChange={(event) => setDateTo(event.target.value)} className="w-[122px] bg-transparent text-sm outline-none" />
+          </div>
+          <label className="relative flex h-10 min-w-[240px] flex-1 items-center rounded-full border border-gray-300 bg-white pl-9 pr-3 text-sm shadow-sm sm:flex-none">
+            <Search className="pointer-events-none absolute left-3 h-4 w-4 text-gray-500" />
+            <span className="sr-only">Conductor, licencia o placa</span>
+            <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Conductor, licencia o placa" className="w-full bg-transparent text-gray-800 outline-none placeholder:text-gray-500" />
+          </label>
+          <label className="relative flex h-10 items-center gap-2 rounded-full border border-gray-300 bg-white pl-3 pr-8 text-sm text-gray-700 shadow-sm">
+            <ListFilter className="h-4 w-4 text-gray-500" />
+            <span className="sr-only">Estado</span>
+            <select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value as 'all' | SupplyState); setPage(1); }} className="appearance-none bg-transparent pr-1 text-sm font-medium outline-none"><option value="all">Todos</option><option value="on_track">Cumple meta</option>{!closedPeriod ? <option value="near">Por acelerar</option> : null}<option value="behind">Rezago</option></select>
+            <ChevronRight className="pointer-events-none absolute right-3 h-4 w-4 rotate-90 text-gray-500" />
+          </label>
+          <button type="button" onClick={load} disabled={loading} title="Actualizar Supply" className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-700 shadow-sm hover:bg-gray-100 disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /></button>
         </div>
       </section>
 

@@ -420,6 +420,53 @@ export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null,
   }
 }
 
+function normalizeSupplyDriver(item) {
+  const driver = item?.driver || {};
+  const cars = Array.isArray(item?.cars) ? item.cars : [];
+  const firstCar = cars[0] || {};
+  const name = [driver.first_name, driver.last_name].filter(Boolean).join(' ').trim() || 'Sin nombre';
+
+  return {
+    driver_id: String(driver.id || ''),
+    name,
+    work_rule_id: driver.work_rule_id || null,
+    license_number: driver.license_number || null,
+    plate: item?.car?.callsign || firstCar.number || null,
+    completed_trips: Math.max(0, Number(item?.count_orders_completed) || 0),
+    supply_hours: round2(Math.max(0, Number(item?.work_time_seconds) || 0) / 3600),
+  };
+}
+
+async function fetchSupplyDrivers({ endpoint, requestedPeriod, headers }) {
+  const driversById = new Map();
+  let firstPayload = null;
+  let expectedDrivers = null;
+
+  for (let page = 1; page <= MAX_SUPPLY_SUMMARY_PAGES; page += 1) {
+    const res = await postWithProxyRetry(endpoint, {
+      ...requestedPeriod,
+      page,
+      limit: SUPPLY_SUMMARY_PAGE_SIZE,
+    }, headers);
+    const payload = res.data || {};
+    const pageItems = Array.isArray(payload.items) ? payload.items : [];
+
+    if (!firstPayload) {
+      firstPayload = payload;
+      expectedDrivers = Number(payload.total?.count_drivers) || null;
+    }
+
+    pageItems.forEach((item) => {
+      const driver = normalizeSupplyDriver(item);
+      if (driver.driver_id) driversById.set(driver.driver_id, driver);
+    });
+
+    if (pageItems.length < SUPPLY_SUMMARY_PAGE_SIZE || (expectedDrivers !== null && driversById.size >= expectedDrivers)) break;
+  }
+
+  return { firstPayload, drivers: [...driversById.values()] };
+}
+
 /** Resumen Fleet de Supply por conductor para el dashboard de Yego Mi Auto. */
 export async function getMiAutoSupplySummary({ dateFrom, dateTo, workRuleId = null, parkId = null, cookieOverride = null } = {}) {
   const resolvedCookie = fleetCookieCobroForMiAuto(cookieOverride);
@@ -446,45 +493,7 @@ export async function getMiAutoSupplySummary({ dateFrom, dateTo, workRuleId = nu
 
   try {
     const endpoint = `${fleetBaseUrl()}/api/reports-api/v2/summary/drivers/list`;
-    const items = [];
-    let firstPayload = null;
-    let expectedDrivers = null;
-
-    for (let page = 1; page <= MAX_SUPPLY_SUMMARY_PAGES; page += 1) {
-      const res = await postWithProxyRetry(endpoint, {
-        ...requestedPeriod,
-        page,
-        limit: SUPPLY_SUMMARY_PAGE_SIZE,
-      }, headers);
-      const payload = res.data || {};
-      const pageItems = Array.isArray(payload.items) ? payload.items : [];
-      if (!firstPayload) {
-        firstPayload = payload;
-        expectedDrivers = Number(payload.total?.count_drivers) || null;
-      }
-      items.push(...pageItems);
-
-      if (pageItems.length < SUPPLY_SUMMARY_PAGE_SIZE || (expectedDrivers !== null && items.length >= expectedDrivers)) break;
-    }
-
-    const driversById = new Map();
-    items.forEach((item) => {
-      const driver = item?.driver || {};
-      const cars = Array.isArray(item?.cars) ? item.cars : [];
-      const firstCar = cars[0] || {};
-      const name = [driver.first_name, driver.last_name].filter(Boolean).join(' ').trim() || 'Sin nombre';
-      const normalized = {
-        driver_id: String(driver.id || ''),
-        name,
-        work_rule_id: driver.work_rule_id || null,
-        license_number: driver.license_number || null,
-        plate: item?.car?.callsign || firstCar.number || null,
-        completed_trips: Math.max(0, Number(item?.count_orders_completed) || 0),
-        supply_hours: round2(Math.max(0, Number(item?.work_time_seconds) || 0) / 3600),
-      };
-      if (normalized.driver_id) driversById.set(normalized.driver_id, normalized);
-    });
-    const drivers = [...driversById.values()];
+    const { firstPayload, drivers } = await fetchSupplyDrivers({ endpoint, requestedPeriod, headers });
     const total = firstPayload?.total || {};
     const result = {
       success: true,

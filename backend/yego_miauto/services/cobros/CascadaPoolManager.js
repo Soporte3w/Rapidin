@@ -14,6 +14,42 @@
 
 import { round2 } from './CuotaCalculator.js';
 
+function limaTodayYmd() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Lima',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+function ymdFromDateLike(v) {
+  if (v == null) return null;
+  if (typeof v === 'string') {
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(v.trim());
+    return m ? m[1] : null;
+  }
+  try {
+    const d = v instanceof Date ? v : new Date(v);
+    if (Number.isNaN(d.getTime())) return null;
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Lima',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(d);
+  } catch {
+    return null;
+  }
+}
+
+function statusTrasCascada(cuota, pendingDespues, paidDespues, todayYmd) {
+  if (pendingDespues <= 0.005) return 'paid';
+  const dueYmd = ymdFromDateLike(cuota?.due_date);
+  if (dueYmd && dueYmd < todayYmd) return 'overdue';
+  return paidDespues > 0.005 ? 'partial' : (cuota?.status || 'pending');
+}
+
 /**
  * Aplica un pool a un conjunto de cuotas (en memoria).
  * Devuelve las imputaciones sin modificar la base de datos.
@@ -28,6 +64,7 @@ export function applyWaterfallPool({ poolAmount, cuotas, excludeCuotaId = null }
   let pool = round2(Number(poolAmount) || 0);
   const allocations = [];
   let applied = 0;
+  const todayYmd = limaTodayYmd();
 
   if (pool <= 0.005) {
     return { applied: 0, remainingPool: 0, allocations: [] };
@@ -46,8 +83,8 @@ export function applyWaterfallPool({ poolAmount, cuotas, excludeCuotaId = null }
     })
     .sort((a, b) => {
       // Normalizar due_date a YYYY-MM-DD (viene como objeto Date de pg)
-      const na = a.due_date ? new Date(a.due_date).toISOString().slice(0, 10) : '';
-      const nb = b.due_date ? new Date(b.due_date).toISOString().slice(0, 10) : '';
+      const na = ymdFromDateLike(a.due_date) || '';
+      const nb = ymdFromDateLike(b.due_date) || '';
       if (na && nb) return na.localeCompare(nb);
       if (na) return -1;
       if (nb) return 1;
@@ -69,8 +106,8 @@ export function applyWaterfallPool({ poolAmount, cuotas, excludeCuotaId = null }
 
     const applyAmt = round2(Math.min(pool, pending));
     const newPaid = round2(paid + applyAmt);
-    const newPending = round2(Math.max(0, amountDue + lateFee + moraExtra - newPaid));
-    const newStatus = newPending <= 0.005 ? 'paid' : (newPaid > 0.005 ? 'partial' : cuota.status);
+    const newPending = round2(Math.max(0, pending - applyAmt));
+    const newStatus = statusTrasCascada(cuota, newPending, newPaid, todayYmd);
 
     allocations.push({
       cuotaId: String(cuota.id),

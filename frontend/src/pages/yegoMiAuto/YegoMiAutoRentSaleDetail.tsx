@@ -1504,11 +1504,18 @@ export default function YegoMiAutoRentSaleDetail() {
                     {/* Mora */}
                     <td className="py-2.5 px-1 align-middle font-medium tabular-nums text-right text-[12px] text-red-600">
                       <div className="flex flex-col items-end gap-0.5">
-                        <span className="text-[10px] text-gray-400">Total: {miautoFmtMonto(symCuota, moraAcumulada)}</span>
-                        <span className="block font-semibold">{miautoFmtMonto(symCuota, moraPendiente)}</span>
+                        <span className="text-[10px] text-gray-400">Generada: {miautoFmtMonto(symCuota, moraAcumulada)}</span>
+                        <span className="block font-semibold" title="Mora pendiente por cobrar">
+                          {miautoFmtMonto(symCuota, moraPendiente)}
+                        </span>
                         {moraPagada > 0.005 && (
                           <span className="text-[10px] font-normal leading-snug text-green-700">
-                            Cobrado: {miautoFmtMonto(symCuota, moraPagada)}
+                            Cobrada: {miautoFmtMonto(symCuota, moraPagada)}
+                          </span>
+                        )}
+                        {moraAcumulada > 0.005 && moraPendiente <= 0.005 && moraPagada <= 0.005 && (
+                          <span className="text-[10px] font-normal leading-snug text-gray-500">
+                            Sin saldo
                           </span>
                         )}
                       </div>

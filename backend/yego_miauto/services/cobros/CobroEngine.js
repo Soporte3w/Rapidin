@@ -41,7 +41,7 @@ import {
   buildCobroAuditContext,
   persistCobroAudit,
 } from './CobroAuditTrail.js';
-import { isSemanaDepositoMiAuto } from '../cuotas/miautoCuotaSemanalService.js';
+import { buildPendingTotalMapForSolicitud, isSemanaDepositoMiAuto } from '../cuotas/miautoCuotaSemanalService.js';
 import { computeDueDateForMiAutoCuota, isWeekYangoClosedForMiAutoCuotaMetrics } from '../../../utils/miautoLimaWeekRange.js';
 import { partnerFeesYangoAMonedaCuota } from '../utils/miautoMoneyUtils.js';
 
@@ -136,8 +136,7 @@ async function hayCuotaVencidaConSaldo(solicitudId) {
  * Carga las cuotas pendientes de una solicitud para la cascada.
  */
 async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
-  const ctx = await loadBillingContext(solicitudId);
-  if (ctx.error) return [];
+  const pendingMap = await buildPendingTotalMapForSolicitud(solicitudId);
 
   let sql = `SELECT id, due_date, week_start_date, amount_due, late_fee, mora_extra, paid_amount, status
      FROM module_miauto_cuota_semanal
@@ -151,65 +150,17 @@ async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
   }
   sql += ` ORDER BY due_date ASC NULLS LAST, id ASC`;
   const res = await query(sql, params);
-  const todayYmd = limaTodayYmd();
   const out = [];
 
   for (const r of res.rows || []) {
-    const weekYmd = ymdFromDb(r.week_start_date);
-    const storedDueYmd = ymdFromDb(r.due_date);
-    const isPrimera = weekYmd ? isSemanaDepositoMiAuto(weekYmd, ctx.fechaInicioCobroSemanal) : false;
-    const dueYmd = weekYmd
-      ? computeDueDateForMiAutoCuota(weekYmd, ymdFromDb(ctx.fechaInicioCobroSemanal), !!isPrimera)
-      : storedDueYmd;
-    const amountDue = round2(Number(r.amount_due) || 0);
-    const paid = round2(Number(r.paid_amount) || 0);
-    const moraExtra = round2(Number(r.mora_extra) || 0);
-    const lateFeeFresh = isPrimera
-      ? 0
-      : computeLateFee({
-          tasaInteresMora: ctx.cronograma?.tasa_interes_mora || 0,
-          dueDateYmd: dueYmd,
-          todayYmd,
-          capitalMoroso: amountDue,
-        }).moraTotal;
-    const pending = round2(Math.max(0, amountDue + lateFeeFresh + moraExtra - paid));
-    const statusFresh = pending <= 0.005
-      ? 'paid'
-      : paid > 0.005
-        ? 'partial'
-        : (dueYmd && dueYmd < todayYmd ? 'overdue' : 'pending');
-
-    if (
-      Math.abs(round2(Number(r.late_fee) || 0) - lateFeeFresh) > 0.005 ||
-      String(r.status || '').toLowerCase() !== statusFresh
-    ) {
-      await query(
-        `UPDATE module_miauto_cuota_semanal
-         SET late_fee = $1, status = $2, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $3::uuid`,
-        [lateFeeFresh, statusFresh, r.id]
-      );
-      logger.info('miauto.cascada.pre_mora_refresh', {
-        solicitudId,
-        cuotaId: r.id,
-        dueDate: dueYmd,
-        amountDue,
-        paidAmount: paid,
-        lateFeeAntes: round2(Number(r.late_fee) || 0),
-        lateFeeDespues: lateFeeFresh,
-        statusAntes: r.status,
-        statusDespues: statusFresh,
-        pending,
-      });
-    }
+    const pending = round2(Number(pendingMap.get(String(r.id))) || 0);
 
     if (pending > 0.005) {
       out.push({
         ...r,
-        due_date: dueYmd || r.due_date,
-        late_fee: lateFeeFresh,
-        mora_extra: moraExtra,
-        status: statusFresh,
+        late_fee: round2(Number(r.late_fee) || 0),
+        mora_extra: round2(Number(r.mora_extra) || 0),
+        paid_amount: round2(Number(r.paid_amount) || 0),
         pending,
       });
     }
@@ -245,41 +196,6 @@ export async function generateWeeklyCharge({
 
   const weekYmd = String(weekStartDate).trim().slice(0,10);
 
-  // --- IDEMPOTENCIA: verificar si ya se ejecutó esta generación exacta ---
-  const rawExecutionKey = [
-    solicitudId,
-    weekYmd,
-    Number(incomeResult?.count_completed) || 0,
-    round2(Number(incomeResult?.partner_fees) || 0),
-    generatedBy,
-  ].join('|');
-  const executionHash = crypto.createHash('sha256').update(rawExecutionKey).digest('hex');
-
-  const existingExec = await query(
-    `SELECT cuota_semanal_id, billing_context FROM module_miauto_billing_audit_trail
-     WHERE solicitud_id = $1::uuid AND week_start_date = $2::date
-       AND event_type = 'generated' AND execution_hash = $3
-     LIMIT 1`,
-    [solicitudId, weekYmd, executionHash]
-  );
-
-  if (existingExec.rows.length > 0) {
-    logger.debug('miauto.cuota.idempotent_skip', {
-      solicitudId,
-      weekStartDate: weekYmd,
-      executionHash: executionHash.slice(0, 12),
-      generatedBy,
-    });
-    return {
-      cuotaId: existingExec.rows[0].cuota_semanal_id,
-      weekStartDate: weekYmd,
-      idempotent: true,
-      skipped: true,
-      executionHash,
-    };
-  }
-  // --- FIN IDEMPOTENCIA ---
-
   const auditSteps = {
     inputs: {},
     planResolution: {},
@@ -311,6 +227,10 @@ export async function generateWeeklyCharge({
     partnerFeesRaw = 0;
   }
 
+  const sourceYango = isPrimera
+    ? 'deposito'
+    : (weekCerradaYango ? 'yango' : (forzarDatosYango ? 'force_yango' : 'semana_no_cerrada'));
+
   auditSteps.inputs = {
     solicitudId,
     cronogramaId: ctx.cronogramaId,
@@ -320,8 +240,49 @@ export async function generateWeeklyCharge({
     isPrimera,
     weekCerradaYango,
     fechaInicioCobroSemanal: fechaInicioYmd,
-    yango: { numViajes, partnerFeesRaw, source: isPrimera ? 'deposito' : (weekCerradaYango ? 'yango' : 'semana_no_cerrada') },
+    yango: { numViajes, partnerFeesRaw, source: sourceYango },
   };
+
+  // --- IDEMPOTENCIA: verificar si ya se ejecutó esta generación exacta ---
+  // La llave usa los valores efectivos que se van a guardar. Así, una corrida
+  // temprana con "semana_no_cerrada" no bloquea una corrida posterior con Yango real.
+  const rawExecutionKey = [
+    solicitudId,
+    weekYmd,
+    sourceYango,
+    numViajes,
+    partnerFeesRaw,
+    generatedBy,
+  ].join('|');
+  const executionHash = crypto.createHash('sha256').update(rawExecutionKey).digest('hex');
+
+  const existingExec = await query(
+    `SELECT cuota_semanal_id, billing_context FROM module_miauto_billing_audit_trail
+     WHERE solicitud_id = $1::uuid AND week_start_date = $2::date
+       AND event_type IN ('generated', 'updated') AND execution_hash = $3
+     LIMIT 1`,
+    [solicitudId, weekYmd, executionHash]
+  );
+
+  if (existingExec.rows.length > 0) {
+    logger.debug('miauto.cuota.idempotent_skip', {
+      solicitudId,
+      weekStartDate: weekYmd,
+      source: sourceYango,
+      numViajes,
+      partnerFeesRaw,
+      executionHash: executionHash.slice(0, 12),
+      generatedBy,
+    });
+    return {
+      cuotaId: existingExec.rows[0].cuota_semanal_id,
+      weekStartDate: weekYmd,
+      idempotent: true,
+      skipped: true,
+      executionHash,
+    };
+  }
+  // --- FIN IDEMPOTENCIA ---
 
   // --- 2. Resolver plan ---
   let plan;

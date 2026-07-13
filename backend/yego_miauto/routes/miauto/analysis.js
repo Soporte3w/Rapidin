@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { errorResponse, successResponse } from '../../../utils/responses.js';
-import { getMiAutoSupplySummary } from '../../../services/yangoService.js';
+import { getMiAutoSupplyHeatmap, getMiAutoSupplySummary } from '../../../services/yangoService.js';
 
 const router = Router();
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -16,11 +16,20 @@ function defaultRange() {
   return { dateFrom: `${today.slice(0, 7)}-01`, dateTo: today };
 }
 
-// GET /api/miauto/analysis/supply?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
-router.get('/analysis/supply', async (req, res) => {
+function daysInclusive(dateFrom, dateTo) {
+  return Math.round((Date.parse(`${dateTo}T00:00:00Z`) - Date.parse(`${dateFrom}T00:00:00Z`)) / 86_400_000) + 1;
+}
+
+function resolveRange(req) {
   const fallback = defaultRange();
   const dateFrom = String(req.query.date_from || fallback.dateFrom).slice(0, 10);
   const dateTo = String(req.query.date_to || fallback.dateTo).slice(0, 10);
+  return { dateFrom, dateTo };
+}
+
+// GET /api/miauto/analysis/supply?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+router.get('/analysis/supply', async (req, res) => {
+  const { dateFrom, dateTo } = resolveRange(req);
   if (!YMD_RE.test(dateFrom) || !YMD_RE.test(dateTo) || dateFrom > dateTo) {
     return errorResponse(res, 'El rango de fechas es inválido', 400);
   }
@@ -30,6 +39,24 @@ router.get('/analysis/supply', async (req, res) => {
     return successResponse(res, result);
   } catch (error) {
     return errorResponse(res, error.message || 'No se pudo cargar el dashboard Supply', 500);
+  }
+});
+
+// GET /api/miauto/analysis/supply/heatmap?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+router.get('/analysis/supply/heatmap', async (req, res) => {
+  const { dateFrom, dateTo } = resolveRange(req);
+  if (!YMD_RE.test(dateFrom) || !YMD_RE.test(dateTo) || dateFrom > dateTo) {
+    return errorResponse(res, 'El rango de fechas es inválido', 400);
+  }
+  if (daysInclusive(dateFrom, dateTo) > 31) {
+    return errorResponse(res, 'El mapa de calor permite un máximo de 31 días', 400);
+  }
+  try {
+    const result = await getMiAutoSupplyHeatmap({ dateFrom, dateTo });
+    if (!result.success) return errorResponse(res, result.error || 'No se pudo consultar Fleet', 502);
+    return successResponse(res, result);
+  } catch (error) {
+    return errorResponse(res, error.message || 'No se pudo cargar el mapa de calor', 500);
   }
 });
 

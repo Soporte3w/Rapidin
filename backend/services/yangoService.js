@@ -51,12 +51,15 @@ export function fleetCookieCobroForMiAuto(cookieOverride) {
 /** Reintentos ante 429 / Too many requests (con o sin proxies). */
 const MAX_RATE_LIMIT_RETRIES = Number(process.env.YANGO_RATE_LIMIT_MAX_RETRIES || 8);
 const SUPPLY_SUMMARY_CACHE_TTL_MS = 2 * 60 * 1000;
+const SUPPLY_HEATMAP_CACHE_TTL_MS = 5 * 60 * 1000;
 const SUPPLY_SUMMARY_PAGE_SIZE = 50;
 const MAX_SUPPLY_SUMMARY_PAGES = 100;
+const SUPPLY_HEATMAP_CONCURRENCY = 2;
 const MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID = String(
   process.env.MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID || '0e935ec639324568a0f5ac66583f8bfe'
 ).trim();
 const miAutoSupplySummaryCache = new Map();
+const miAutoSupplyHeatmapCache = new Map();
 
 function normalizeApiMessage(data) {
   if (data == null) return '';
@@ -520,6 +523,70 @@ export async function getMiAutoSupplySummary({ dateFrom, dateTo, parkId = null, 
     logger.error('Yango Mi Auto supply summary error', { status, detail });
     return { success: false, status, error: `Fleet no pudo obtener las horas Supply${status ? ` (${status})` : ''}` };
   }
+}
+
+function listYmdDates(dateFrom, dateTo) {
+  const dates = [];
+  const current = new Date(`${dateFrom}T00:00:00Z`);
+  const end = new Date(`${dateTo}T00:00:00Z`);
+  while (current <= end) {
+    dates.push(current.toISOString().slice(0, 10));
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+/** Supply diario por conductor, listo para una matriz de calor sin persistir datos locales. */
+export async function getMiAutoSupplyHeatmap({ dateFrom, dateTo, parkId = null, cookieOverride = null } = {}) {
+  const dates = listYmdDates(dateFrom, dateTo);
+  const cacheKey = `${parkId || 'default'}:${dateFrom}:${dateTo}:${MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID}`;
+  const cached = miAutoSupplyHeatmapCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const dailySummaries = [];
+  for (let start = 0; start < dates.length; start += SUPPLY_HEATMAP_CONCURRENCY) {
+    const batch = dates.slice(start, start + SUPPLY_HEATMAP_CONCURRENCY);
+    const results = await Promise.all(batch.map((date) => getMiAutoSupplySummary({
+      dateFrom: date,
+      dateTo: date,
+      parkId,
+      cookieOverride,
+    })));
+    const failed = results.find((result) => !result.success);
+    if (failed) return failed;
+    dailySummaries.push(...results);
+  }
+
+  const driversById = new Map();
+  dailySummaries.forEach((summary, index) => {
+    const date = dates[index];
+    summary.drivers.forEach((driver) => {
+      if (!driversById.has(driver.driver_id)) {
+        driversById.set(driver.driver_id, {
+          driver_id: driver.driver_id,
+          name: driver.name,
+          license_number: driver.license_number,
+          plate: driver.plate,
+          supply_by_date: {},
+        });
+      }
+      driversById.get(driver.driver_id).supply_by_date[date] = {
+        hours: driver.supply_hours,
+        trips: driver.completed_trips,
+      };
+    });
+  });
+
+  const drivers = [...driversById.values()]
+    .map((driver) => ({
+      ...driver,
+      total_supply_hours: round2(Object.values(driver.supply_by_date).reduce((sum, value) => sum + value.hours, 0)),
+      total_completed_trips: Object.values(driver.supply_by_date).reduce((sum, value) => sum + value.trips, 0),
+    }))
+    .sort((left, right) => right.total_supply_hours - left.total_supply_hours);
+  const result = { success: true, dates, drivers };
+  miAutoSupplyHeatmapCache.set(cacheKey, { value: result, expiresAt: Date.now() + SUPPLY_HEATMAP_CACHE_TTL_MS });
+  return result;
 }
 
 /**

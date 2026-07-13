@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { BarChart3, ChevronLeft, ChevronRight, Download, ListFilter, RefreshCw, Search } from 'lucide-react';
 import { DateRangePicker } from '../../components/DateRangePicker';
@@ -21,6 +21,19 @@ type SupplyData = {
     completed_trips: number;
     supply_hours: number;
   };
+};
+
+type HeatmapDriver = {
+  driver_id: string;
+  name: string;
+  license_number: string | null;
+  plate: string | null;
+  supply_by_date: Record<string, { hours: number; trips: number }>;
+};
+
+type SupplyHeatmapData = {
+  dates: string[];
+  drivers: HeatmapDriver[];
 };
 
 type SupplyState = 'on_track' | 'near' | 'behind';
@@ -203,6 +216,36 @@ function SupplyChart({ drivers, target, closedPeriod, loading }: { drivers: Supp
   );
 }
 
+function formatHeatmapDate(date: string) {
+  return new Date(`${date}T12:00:00`).toLocaleDateString('es-PE', { weekday: 'short', day: 'numeric' });
+}
+
+function SupplyHeatmap({ data, visibleDrivers, loading }: { data: SupplyHeatmapData | null; visibleDrivers: SupplyDriver[]; loading: boolean }) {
+  const visibleDriverIds = new Set(visibleDrivers.map((driver) => driver.driver_id));
+  const drivers = (data?.drivers || []).filter((driver) => visibleDriverIds.has(driver.driver_id));
+  const maxHours = Math.max(1, ...drivers.flatMap((driver) => Object.values(driver.supply_by_date).map((entry) => entry.hours)));
+
+  return (
+    <section className="border border-gray-200 bg-white shadow-sm">
+      <div className="flex flex-col gap-2 border-b border-gray-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-900">Mapa de calor de Supply</h2>
+          <p className="mt-0.5 text-xs text-gray-500">Horas por conductor y día. La intensidad representa mayor tiempo conectado.</p>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-500"><span>0 h</span><i className="h-3 w-3 border border-red-100 bg-red-50" /><i className="h-3 w-3 bg-red-300" /><i className="h-3 w-3 bg-[#8B1A1A]" /><span>{formatHours(maxHours)}</span></div>
+      </div>
+      <div className="max-h-[560px] overflow-auto">
+        {loading ? <div className="flex h-56 items-center justify-center text-sm text-gray-500">Cargando mapa de calor...</div> : drivers.length === 0 ? <div className="flex h-56 items-center justify-center text-sm text-gray-500">No hay datos para el período seleccionado.</div> : (
+          <table className="w-full min-w-[760px] border-separate border-spacing-1.5 px-2 py-2 text-xs">
+            <thead className="sticky top-0 z-10 bg-white"><tr><th className="sticky left-0 z-20 min-w-48 bg-white px-2 py-1 text-left font-semibold text-gray-500">Conductor</th>{data?.dates.map((date) => <th key={date} className="min-w-12 px-1 py-1 text-center font-semibold capitalize text-gray-500">{formatHeatmapDate(date)}</th>)}</tr></thead>
+            <tbody>{drivers.map((driver) => <tr key={driver.driver_id}><th className="sticky left-0 z-10 bg-white px-2 py-1 text-left font-medium text-gray-800"><span className="block max-w-48 truncate" title={driver.name}>{driver.name}</span><span className="font-normal text-gray-500">{driver.plate || driver.license_number || '—'}</span></th>{data?.dates.map((date) => { const entry = driver.supply_by_date[date] || { hours: 0, trips: 0 }; const intensity = entry.hours > 0 ? 0.14 + (entry.hours / maxHours) * 0.76 : 0; const textColor = intensity > 0.55 ? '#ffffff' : '#7f1d1d'; return <td key={date} className="h-10 min-w-12 rounded-sm text-center font-semibold tabular-nums" style={{ backgroundColor: entry.hours ? `rgba(139, 26, 26, ${intensity})` : '#f9fafb', color: entry.hours ? textColor : '#9ca3af' }} title={`${driver.name} · ${date}: ${formatHours(entry.hours)} · ${entry.trips} viaje(s)`}>{entry.hours ? entry.hours.toFixed(1) : '—'}</td>; })}</tr>)}</tbody>
+          </table>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function SupplyTable({ drivers, totalReceived, target, closedPeriod, page, pageSize, onPageChange, onPageSizeChange }: {
   drivers: SupplyDriver[];
   totalReceived: number;
@@ -251,34 +294,62 @@ function SupplyTable({ drivers, totalReceived, target, closedPeriod, page, pageS
 export default function YegoMiAutoAnalysis() {
   const [dateRange, setDateRange] = useState<DateRange>(defaultDateRange);
   const [data, setData] = useState<SupplyData | null>(null);
+  const [heatmapData, setHeatmapData] = useState<SupplyHeatmapData | null>(null);
   const [query, setQuery] = useState('');
   const [stateFilter, setStateFilter] = useState<'all' | SupplyState>('all');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(true);
+  const [heatmapLoading, setHeatmapLoading] = useState(true);
   const [error, setError] = useState('');
+  const requestVersion = useRef(0);
 
-  const load = useCallback(async () => {
+  const refresh = useCallback(() => {
+    const version = ++requestVersion.current;
     if (dateRange.date_from > dateRange.date_to) {
       setError('La fecha inicial no puede ser posterior a la fecha final.');
+      setLoading(false);
+      setHeatmapLoading(false);
+      return;
+    }
+    if (daysInclusive(dateRange.date_from, dateRange.date_to) > 31) {
+      setError('El mapa de calor permite consultar como máximo 31 días.');
+      setLoading(false);
+      setHeatmapLoading(false);
       return;
     }
 
     setLoading(true);
+    setHeatmapLoading(true);
     setError('');
-    try {
-      const response = await api.get('/miauto/analysis/supply', { params: dateRange });
+    const summaryRequest = api.get('/miauto/analysis/supply', { params: dateRange });
+    const heatmapRequest = api.get('/miauto/analysis/supply/heatmap', { params: dateRange });
+
+    void summaryRequest.then((response) => {
+      if (version !== requestVersion.current) return;
       setData(response.data?.data ?? response.data);
       setPage(1);
-    } catch (requestError: any) {
+    }).catch((requestError: any) => {
+      if (version !== requestVersion.current) return;
       setData(null);
       setError(requestError.response?.data?.message || 'No se pudieron cargar los datos de Supply.');
-    } finally {
-      setLoading(false);
-    }
+    }).finally(() => {
+      if (version === requestVersion.current) setLoading(false);
+    });
+
+    void heatmapRequest.then((response) => {
+      if (version !== requestVersion.current) return;
+      setHeatmapData(response.data?.data ?? response.data);
+    }).catch((requestError: any) => {
+      if (version !== requestVersion.current) return;
+      setHeatmapData(null);
+      setError((current) => current || requestError.response?.data?.message || 'No se pudo cargar el mapa de calor.');
+    }).finally(() => {
+      if (version === requestVersion.current) setHeatmapLoading(false);
+    });
   }, [dateRange]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { refresh(); }, [refresh]);
 
   const target = targetForPeriod(dateRange.date_from, dateRange.date_to);
   const closedPeriod = dateRange.date_to < limaYmd().slice(0, 7);
@@ -294,9 +365,10 @@ export default function YegoMiAutoAnalysis() {
   return (
     <div className="space-y-5">
       <section className="rounded-lg bg-[#8B1A1A] p-4 lg:p-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-3"><div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[#6B1515]"><BarChart3 className="h-5 w-5 text-white" /></div><div><h1 className="text-lg font-bold leading-tight text-white lg:text-xl">Análisis Mi Auto</h1><p className="mt-0.5 text-xs text-white/90 lg:text-sm">Supply y viajes completados de conductores</p></div></div><button type="button" onClick={() => exportSupplyPdf(filteredDrivers, dateRange, target, closedPeriod)} disabled={filteredDrivers.length === 0} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-white/30 bg-white px-3 text-sm font-semibold text-[#8B1A1A] hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"><Download className="h-4 w-4" />PDF</button></div></section>
-      <SupplyFilters dateRange={dateRange} query={query} stateFilter={stateFilter} loading={loading} closedPeriod={closedPeriod} onDateChange={setDateRange} onQueryChange={(value) => { setQuery(value); setPage(1); }} onStateChange={(value) => { setStateFilter(value); setPage(1); }} onRefresh={load} />
+      <SupplyFilters dateRange={dateRange} query={query} stateFilter={stateFilter} loading={loading || heatmapLoading} closedPeriod={closedPeriod} onDateChange={setDateRange} onQueryChange={(value) => { setQuery(value); setPage(1); }} onStateChange={(value) => { setStateFilter(value); setPage(1); }} onRefresh={refresh} />
       {error && <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
       <SupplyChart drivers={filteredDrivers} target={target} closedPeriod={closedPeriod} loading={loading} />
+      <SupplyHeatmap data={heatmapData} visibleDrivers={filteredDrivers} loading={heatmapLoading} />
       <SupplyTable drivers={filteredDrivers} totalReceived={data?.drivers.length || 0} target={target} closedPeriod={closedPeriod} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
     </div>
   );

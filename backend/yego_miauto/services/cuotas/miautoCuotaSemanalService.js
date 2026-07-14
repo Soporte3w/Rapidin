@@ -1975,10 +1975,11 @@ export async function loadMiautoComprobanteDerivacionContext(solicitudId) {
   if (!sol?.cronograma_id) return null;
   const cronograma = await getCronogramaById(sol.cronograma_id);
   const cascRes = await query(
-    `SELECT id, partner_fees_cascada_destino FROM module_miauto_cuota_semanal WHERE solicitud_id = $1`,
+    `SELECT * FROM module_miauto_cuota_semanal WHERE solicitud_id = $1 AND deleted_at IS NULL`,
     [solicitudId]
   );
   const cascadeMap = buildCascadeReceivedMap(cascRes.rows || []);
+  const cascadeMoraHistorica = buildCascadeMoraHistoricaMap(cascRes.rows || []);
   const moraHistorica = await loadMoraHistoricaAplicadaPorCuota(solicitudId, {
     incluirPendientesAplicados: true,
   });
@@ -1997,6 +1998,8 @@ export async function loadMiautoComprobanteDerivacionContext(solicitudId) {
     sol,
     cronograma,
     cascadeMap,
+    cascadeMoraHistorica,
+    cuotas: cascRes.rows || [],
     solicitudTieneCuotaOverdue,
     moraNormalHistoricaAplicadaPorCuota: moraHistorica.normal,
     moraExtraHistoricaAplicadaPorCuota: moraHistorica.extra,
@@ -2102,6 +2105,27 @@ function aplicarPisoColumnasPendienteCuota(cuotaRow, d, pendienteEconPrePiso, is
 
 /** Saldo pendiente económico (`cuota_final`) alineado con el cronograma y mora derivada. */
 export function miautoCuotaFinalDerivada(cuotaRow, ctx) {
+  if (rowMontosFuenteExcel(cuotaRow) && ctx?.cronograma && ctx?.sol) {
+    const ws = ymdFromDbDate(cuotaRow.week_start_date);
+    const isPrimera = ws
+      ? isSemanaDepositoMiAuto(ws, ctx.sol.fecha_inicio_cobro_semanal)
+      : false;
+    const cuotaApi = buildCuotaSemanalApiRow(cuotaRow, ctx.cronograma, ctx.sol.cronograma_vehiculo_id, {
+      isPrimeraCuotaSemanal: isPrimera,
+      fechaInicioCobroSemanal: ctx.sol.fecha_inicio_cobro_semanal,
+      moraNormalHistoricaAplicada: Math.max(
+        ctx.moraNormalHistoricaAplicadaPorCuota?.get?.(String(cuotaRow.id)) || 0,
+        ctx.cascadeMoraHistorica?.normal?.get?.(String(cuotaRow.id)) || 0
+      ),
+      moraExtraHistoricaAplicada: Math.max(
+        ctx.moraExtraHistoricaAplicadaPorCuota?.get?.(String(cuotaRow.id)) || 0,
+        ctx.cascadeMoraHistorica?.extra?.get?.(String(cuotaRow.id)) || 0
+      ),
+      hermanasForMora: ctx.cuotas,
+    });
+    return round2(Math.max(0, cuotaApi.cuota_final));
+  }
+
   const d = computeDerivedForComprobanteRow(cuotaRow, ctx);
   const base = round2(Math.max(0, d.cuota_final));
   const ws = ymdFromDbDate(cuotaRow.week_start_date);

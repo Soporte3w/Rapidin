@@ -2105,23 +2105,31 @@ function aplicarPisoColumnasPendienteCuota(cuotaRow, d, pendienteEconPrePiso, is
 
 /** Saldo pendiente económico (`cuota_final`) alineado con el cronograma y mora derivada. */
 export function miautoCuotaFinalDerivada(cuotaRow, ctx) {
-  if (rowMontosFuenteExcel(cuotaRow) && ctx?.cronograma && ctx?.sol) {
+  if (ctx?.cronograma && ctx?.sol) {
     const ws = ymdFromDbDate(cuotaRow.week_start_date);
     const isPrimera = ws
       ? isSemanaDepositoMiAuto(ws, ctx.sol.fecha_inicio_cobro_semanal)
       : false;
+    const cuotaId = String(cuotaRow.id);
+    const forzarMayorCuotaSinBono = debeAplicarCuotaMaximaSinBonoPorMora(
+      !!ctx.solicitudTieneCuotaOverdue,
+      isPrimera,
+      cuotaRow.status
+    );
     const cuotaApi = buildCuotaSemanalApiRow(cuotaRow, ctx.cronograma, ctx.sol.cronograma_vehiculo_id, {
       isPrimeraCuotaSemanal: isPrimera,
       fechaInicioCobroSemanal: ctx.sol.fecha_inicio_cobro_semanal,
       moraNormalHistoricaAplicada: Math.max(
-        ctx.moraNormalHistoricaAplicadaPorCuota?.get?.(String(cuotaRow.id)) || 0,
-        ctx.cascadeMoraHistorica?.normal?.get?.(String(cuotaRow.id)) || 0
+        ctx.moraNormalHistoricaAplicadaPorCuota?.get?.(cuotaId) || 0,
+        ctx.cascadeMoraHistorica?.normal?.get?.(cuotaId) || 0
       ),
       moraExtraHistoricaAplicada: Math.max(
-        ctx.moraExtraHistoricaAplicadaPorCuota?.get?.(String(cuotaRow.id)) || 0,
-        ctx.cascadeMoraHistorica?.extra?.get?.(String(cuotaRow.id)) || 0
+        ctx.moraExtraHistoricaAplicadaPorCuota?.get?.(cuotaId) || 0,
+        ctx.cascadeMoraHistorica?.extra?.get?.(cuotaId) || 0
       ),
+      cascadeReceived: ctx.cascadeMap?.get?.(cuotaId) || 0,
       hermanasForMora: ctx.cuotas,
+      forzarMayorCuotaSinBono,
     });
     return round2(Math.max(0, cuotaApi.cuota_final));
   }
@@ -2138,12 +2146,7 @@ export function miautoCuotaFinalDerivada(cuotaRow, ctx) {
 /** Estado tras abonar `newPaid` según derivado (evita marcar pagada si solo cubre cuota en columnas y falta mora). */
 export function miautoStatusCuotaTrasAbonoDerivado(cuotaRow, newPaid, ctx) {
   const row = { ...cuotaRow, paid_amount: newPaid };
-  const d = computeDerivedForComprobanteRow(row, ctx);
-  const ws = ymdFromDbDate(cuotaRow.week_start_date);
-  const isPrimera = ws && ctx?.sol?.fecha_inicio_cobro_semanal
-    ? isSemanaDepositoMiAuto(ws, ctx.sol.fecha_inicio_cobro_semanal)
-    : false;
-  const pend = aplicarPisoColumnasPendienteCuota(row, d, round2(Math.max(0, d.cuota_final)), isPrimera, ctx);
+  const pend = miautoCuotaFinalDerivada(row, ctx);
   const dueY = ymdFromDbDate(cuotaRow.due_date);
   return miAutoOpenStatusSaldoVencimiento(dueY, pend, newPaid);
 }

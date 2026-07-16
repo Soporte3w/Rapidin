@@ -1,5 +1,5 @@
 import express from 'express';
-import { getLoans, getLoanById, getInstallmentSchedule, getLoansExportBundle } from '../services/loanService.js';
+import { getLoans, getLoanById, getInstallmentSchedule, getLoansExportBundle, getLoanFleetOptions } from '../services/loanService.js';
 import { sendEvolutionGoTextMessage } from '../../services/evolutionGoWhatsAppService.js';
 import {
   normalizeWhatsAppPhoneDigits,
@@ -68,6 +68,16 @@ router.get('/export', async (req, res) => {
     }
     logger.error('Error exportando préstamos:', error);
     return errorResponse(res, 'Error al exportar préstamos', 500);
+  }
+});
+
+router.get('/filter-options/fleets', async (req, res) => {
+  try {
+    const fleets = await getLoanFleetOptions(req.allowedCountries);
+    return successResponse(res, fleets);
+  } catch (error) {
+    logger.error('Error obteniendo flotas de préstamos:', error);
+    return errorResponse(res, 'Error obteniendo flotas', 500);
   }
 });
 

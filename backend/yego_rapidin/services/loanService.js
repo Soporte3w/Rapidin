@@ -189,6 +189,29 @@ export const getLoanRequests = async (filters = {}) => {
   return result.rows;
 };
 
+/** Lista las flotas presentes en solicitudes, sin depender de la página visible. */
+export const getLoanRequestFleetOptions = async (allowedCountries = []) => {
+  const params = [];
+  let countryClause = '';
+
+  if (Array.isArray(allowedCountries) && allowedCountries.length > 0) {
+    params.push(allowedCountries);
+    countryClause = ' AND r.country = ANY($1::text[])';
+  }
+
+  const result = await query(
+    `SELECT DISTINCT d.park_id
+     FROM module_rapidin_loan_requests r
+     INNER JOIN module_rapidin_drivers d ON d.id = r.driver_id
+     WHERE d.park_id IS NOT NULL
+       AND BTRIM(d.park_id) <> ''${countryClause}
+     ORDER BY d.park_id`,
+    params
+  );
+
+  return result.rows.map((row) => row.park_id);
+};
+
 export const getLoanRequestById = async (id) => {
   const result = await query(
     `SELECT r.*,
@@ -507,6 +530,29 @@ export const getLoans = async (filters = {}) => {
   return result.rows.map(({ _match_total: _t, ...row }) => row);
 };
 
+/** Lista las flotas presentes en préstamos, sin depender de la página visible. */
+export const getLoanFleetOptions = async (allowedCountries = []) => {
+  const params = [];
+  let countryClause = '';
+
+  if (Array.isArray(allowedCountries) && allowedCountries.length > 0) {
+    params.push(allowedCountries);
+    countryClause = ' AND l.country = ANY($1::text[])';
+  }
+
+  const result = await query(
+    `SELECT DISTINCT d.park_id
+     FROM module_rapidin_loans l
+     INNER JOIN module_rapidin_drivers d ON d.id = l.driver_id
+     WHERE d.park_id IS NOT NULL
+       AND BTRIM(d.park_id) <> ''${countryClause}
+     ORDER BY d.park_id`,
+    params
+  );
+
+  return result.rows.map((row) => row.park_id);
+};
+
 const LOANS_EXPORT_MAX = 50000;
 
 const buildLoanListFilterSql = (filters) => {
@@ -764,7 +810,6 @@ export const getInstallmentSchedule = async (loanId) => {
   });
   return rows;
 };
-
 
 
 

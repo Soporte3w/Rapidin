@@ -159,7 +159,7 @@ const Loans = () => {
   const debouncedDriver = useDebouncedValue(driverSearchInput, 400);
   const debouncedLoanId = useDebouncedValue(loanIdSearchInput, 400);
   const [partners, setPartners] = useState<{ id: string; name: string }[]>([]);
-  const [flotaOpciones, setFlotaOpciones] = useState<Set<string>>(new Set());
+  const [flotaOpciones, setFlotaOpciones] = useState<string[]>([]);
   const [page, setPage] = useState(isReturnFromDetail && searchState?.page != null ? searchState.page : 1);
   const [pageSize, setPageSize] = useState(isReturnFromDetail && searchState?.limit != null ? searchState.limit : 10);
   const returnConsumedRef = useRef(false);
@@ -356,13 +356,6 @@ const Loans = () => {
         else if (raw?.data && Array.isArray(raw.data)) chunk = raw.data;
         else if (response.data?.rows && Array.isArray(response.data.rows)) chunk = response.data.rows;
         setLoans(chunk);
-        if (!filters.flota) {
-          setFlotaOpciones(prev => {
-            const next = new Set(prev);
-            for (const l of chunk) { if (l.park_id) next.add(l.park_id); }
-            return next;
-          });
-        }
       } catch (err: unknown) {
         if (isAxiosAbortError(err)) return;
         console.error('Error fetching loans:', err);
@@ -403,6 +396,12 @@ const Loans = () => {
     api.get('/admin/partners').then(r => {
       if (Array.isArray(r.data?.data)) setPartners(r.data.data);
     }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    api.get('/loans/filter-options/fleets').then((r) => {
+      if (Array.isArray(r.data?.data)) setFlotaOpciones(r.data.data);
+    }).catch(() => setFlotaOpciones([]));
   }, []);
 
   const fetchPersonalCredits = useCallback(async () => {
@@ -1310,7 +1309,7 @@ const Loans = () => {
            <div className="flex-1 min-w-[150px]">
              <label htmlFor="flota" className="block text-xs font-semibold text-gray-900 mb-1.5">Flota</label>
              <select id="flota" value={filters.flota} onChange={e => setFilters({ ...filters, flota: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm">
-               <option value="">Todas</option>{[...flotaOpciones].map(parkId => <option key={parkId} value={parkId}>{partners.find(p => p.id === parkId)?.name || parkId}</option>)}
+               <option value="">Todas</option>{flotaOpciones.map(parkId => <option key={parkId} value={parkId}>{partners.find(p => p.id === parkId)?.name || parkId}</option>)}
              </select>
            </div>
           <div className="flex-1 min-w-[200px]">
@@ -1690,7 +1689,6 @@ const Loans = () => {
 };
 
 export default Loans;
-
 
 
 

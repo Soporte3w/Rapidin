@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import pool from '../../database/connection.js';
-import { getLoanRequests, getLoanRequestById, rejectLoanRequest, getLoanByRequestId, getInstallmentSchedule } from '../services/loanService.js';
+import { getLoanRequests, getLoanRequestById, rejectLoanRequest, getLoanByRequestId, getInstallmentSchedule, getLoanRequestFleetOptions } from '../services/loanService.js';
 import { getDocumentsByRequestId, getDocumentByIdAndRequestId } from '../../services/documentService.js';
 import { sendEvolutionGoTextMessage } from '../../services/evolutionGoWhatsAppService.js';
 import { getPartnerNameById } from '../../services/partnersService.js';
@@ -47,6 +47,16 @@ router.get('/', async (req, res) => {
   } catch (error) {
     logger.error('Error obteniendo solicitudes:', error);
     return errorResponse(res, 'Error obteniendo solicitudes', 500);
+  }
+});
+
+router.get('/filter-options/fleets', async (req, res) => {
+  try {
+    const fleets = await getLoanRequestFleetOptions(req.allowedCountries);
+    return successResponse(res, fleets);
+  } catch (error) {
+    logger.error('Error obteniendo flotas de solicitudes:', error);
+    return errorResponse(res, 'Error obteniendo flotas', 500);
   }
 });
 
@@ -242,7 +252,6 @@ router.post('/:id/send-message', validateUUID, verifyRole('analyst', 'approver',
 });
 
 export default router;
-
 
 
 

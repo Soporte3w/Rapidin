@@ -24,6 +24,7 @@ import {
   getCuotasToCharge,
   getCuotasToChargeForSolicitud,
   processCobroCuota,
+  processAdditionalExpenseFleetQueue,
   effectiveAmountDueForMiAutoFleetRowAsync,
 } from '../yego_miauto/services/cuotas/miautoFleetChargeService.js';
 import { generateWeeklyCharge } from '../yego_miauto/services/cobros/CobroEngine.js';
@@ -35,6 +36,10 @@ import {
 } from '../utils/miautoLimaWeekRange.js';
 import { appendMiautoFleetCobroJobAuditEvent } from '../utils/miautoFleetCobroAuditLog.js';
 import { acquireCronLock, releaseCronLock } from '../utils/cronLock.js';
+import {
+  generateExpenseCyclesForActiveContracts,
+  refreshAdditionalExpenseStatuses,
+} from '../yego_miauto/services/gastos/miautoOtrosGastosService.js';
 
 const TIMEZONE = 'America/Lima';
 const FLEET_MS_BETWEEN_COBROS = 1500;
@@ -608,6 +613,10 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       simulateReason: options.simulateReason || auditJob,
       cobroReferenciaSource: simulateFleetWithdraw ? 'fleet_7_10_simulado' : 'fleet_7_10',
     });
+    const additionalExpenses = await processAdditionalExpenseFleetQueue({
+      simulateFleetWithdraw,
+      simulateReason: options.simulateReason || auditJob,
+    });
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_fin',
       job: auditJob,
@@ -615,6 +624,7 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       success,
       partial,
       failed,
+      additional_expenses: additionalExpenses,
       simulate_fleet_withdraw: simulateFleetWithdraw,
     });
     logger.info('miauto.fleet_job.finish', {
@@ -622,6 +632,7 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       success,
       partial,
       failed,
+      additionalExpenses,
       executionId: lock.executionId,
       simulateFleetWithdraw,
     });
@@ -871,9 +882,20 @@ async function runDailyMora() {
   }
 }
 
+async function runDailyAdditionalExpenses() {
+  try {
+    const statuses = await refreshAdditionalExpenseStatuses();
+    const generation = await generateExpenseCyclesForActiveContracts();
+    logger.info('Mi Auto: gastos recurrentes diarios', { statuses, generation });
+  } catch (err) {
+    logger.error('Mi Auto gastos recurrentes diarios:', err);
+  }
+}
+
 export function startMiautoWeeklyChargeJob() {
   cron.schedule('0 1 * * *', runDailyMora, { timezone: TIMEZONE });
+  cron.schedule('15 2 * * *', runDailyAdditionalExpenses, { timezone: TIMEZONE });
   cron.schedule('0 6 * * 1', runWeeklyCuotaGenerationMonday, { timezone: TIMEZONE });
   cron.schedule('10 7 * * 1', runWeeklyFleetChargeMonday, { timezone: TIMEZONE });
-  logger.info('Mi Auto: mora 1:00 | lun 6:00 cuotas | lun 7:10 Fleet (Lima)');
+  logger.info('Mi Auto: mora 1:00 | gastos 2:15 | lun 6:00 cuotas | lun 7:10 Fleet (Lima)');
 }

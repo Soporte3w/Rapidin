@@ -324,6 +324,7 @@ export async function listForAdminValidation({ estado = 'pendiente', country, li
         cp.id,
         cp.solicitud_id,
         cp.cuota_semanal_id,
+        'cuota_semanal'::text AS tipo_comprobante,
         cp.monto,
         cp.moneda,
         cp.file_name,

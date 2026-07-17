@@ -35,7 +35,6 @@ export const ADMIN_PERMISSION_GROUPS: AdminPermissionGroup[] = [
       { key: 'miauto.nueva_solicitud', label: 'Nueva Solicitud' },
       { key: 'miauto.solicitudes', label: 'Solicitudes' },
       { key: 'miauto.alquiler_venta', label: 'Alquiler / Venta' },
-      { key: 'miauto.pagos', label: 'Pagos' },
       { key: 'miauto.validar_comprobantes', label: 'Validar comprobantes' },
       { key: 'miauto.mensajes', label: 'Mensajes' },
       { key: 'miauto.analisis', label: 'Análisis' },

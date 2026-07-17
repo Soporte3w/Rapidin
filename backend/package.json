@@ -15,7 +15,9 @@
     "miauto:regenerar-cuota": "node scripts/miauto-regenerar-cuota-semana-solicitud.js",
     "miauto:regenerar-cuota-fecha": "node scripts/miauto-regenerar-cuota-por-semana.js",
     "miauto:repair-mora": "node scripts/miauto-repair-mora-caps-solicitud.js",
-    "miauto:cobro-fleet": "node scripts/miauto-cobro-fleet-solicitud.js"
+    "miauto:cobro-fleet": "node scripts/miauto-cobro-fleet-solicitud.js",
+    "miauto:importar-gastos": "node scripts/miauto-import-otros-gastos-excel.js",
+    "test:miauto-gastos": "node --test tests/miautoGastoRules.test.js tests/miautoOtrosGastosDocument.test.js"
   },
   "keywords": [
     "rapidin",

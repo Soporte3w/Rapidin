@@ -40,12 +40,6 @@ type DateRange = { date_from: string; date_to: string };
 
 const HOURS_TARGET = 200;
 
-const stateMeta: Record<SupplyState, { label: string; color: string; badge: string }> = {
-  on_track: { label: 'Cumple', color: '#16a34a', badge: 'bg-green-100 text-green-800' },
-  near: { label: 'Por acelerar', color: '#eab308', badge: 'bg-yellow-100 text-yellow-800' },
-  behind: { label: 'Rezago', color: '#dc2626', badge: 'bg-red-100 text-red-800' },
-};
-
 function limaYmd() {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Lima',
@@ -124,20 +118,16 @@ function buildHeatmapPdf(data: SupplyHeatmapData | null, visibleDrivers: SupplyD
   return `<section class="heatmap"><h2>Mapa de calor de Supply</h2><p class="muted">Cada celda muestra horas Supply y viajes realizados. El color más intenso indica mayor actividad.</p><table><thead><tr><th>Conductor</th>${dates}</tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
-function exportSupplyPdf(drivers: SupplyDriver[], heatmapData: SupplyHeatmapData | null, dateRange: DateRange, target: number, closedPeriod: boolean) {
+function exportSupplyPdf(drivers: SupplyDriver[], heatmapData: SupplyHeatmapData | null, dateRange: DateRange, target: number) {
   const popup = window.open('', '_blank');
   if (!popup) return;
 
   popup.opener = null;
   const totalHours = drivers.reduce((sum, driver) => sum + driver.supply_hours, 0);
   const totalTrips = drivers.reduce((sum, driver) => sum + driver.completed_trips, 0);
-  const rows = drivers.map((driver) => {
-    const state = getSupplyState(driver.supply_hours, target, closedPeriod);
-    return `<tr><td>${escapeHtml(driver.name)}</td><td>${escapeHtml(driver.plate)}</td><td class="num">${driver.completed_trips.toLocaleString('es-PE')}</td><td class="num">${formatHours(driver.supply_hours)}</td><td>${stateMeta[state].label}</td></tr>`;
-  }).join('');
   const heatmap = buildHeatmapPdf(heatmapData, drivers);
 
-  popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Supply Mi Auto</title><style>@page{size:landscape;margin:12mm}body{font-family:Arial,sans-serif;color:#111827;margin:28px}h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:28px 0 4px}.muted{color:#6b7280;font-size:12px;margin:0 0 20px}.summary{display:flex;gap:18px;margin:0 0 20px}.summary div{border:1px solid #e5e7eb;padding:10px 12px;min-width:120px}.summary strong{display:block;font-size:18px;margin-top:3px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f3f4f6;text-align:left}th,td{border-bottom:1px solid #e5e7eb;padding:8px}.num{text-align:right}.heatmap{break-before:page;page-break-before:always}.heatmap table{font-size:8px;table-layout:fixed}.heatmap th,.heatmap td{padding:4px;text-align:center;border:1px solid #fff}.heatmap th:first-child{text-align:left;width:150px}.heatmap small{display:block;font-size:7px;font-weight:normal;margin-top:2px;opacity:.85}@media print{body{margin:0}}</style></head><body><h1>Yego Mi Auto · Análisis Supply</h1><p class="muted">Período: ${escapeHtml(dateRange.date_from)} a ${escapeHtml(dateRange.date_to)} · Meta: ${formatHours(target)}</p><div class="summary"><div>Conductores<strong>${drivers.length}</strong></div><div>Horas Supply<strong>${formatHours(totalHours)}</strong></div><div>Viajes completados<strong>${totalTrips.toLocaleString('es-PE')}</strong></div></div><table><thead><tr><th>Conductor</th><th>Placa</th><th class="num">Viajes</th><th class="num">Horas Supply</th><th>Estado</th></tr></thead><tbody>${rows}</tbody></table>${heatmap}<script>window.onload=()=>window.print()</script></body></html>`);
+  popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Supply Mi Auto</title><style>@page{size:landscape;margin:12mm}body{font-family:Arial,sans-serif;color:#111827;margin:28px}h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:28px 0 4px}.muted{color:#6b7280;font-size:12px;margin:0 0 20px}.summary{display:flex;gap:18px;margin:0 0 20px}.summary div{border:1px solid #e5e7eb;padding:10px 12px;min-width:120px}.summary strong{display:block;font-size:18px;margin-top:3px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f3f4f6;text-align:left}th,td{border-bottom:1px solid #e5e7eb;padding:8px}.heatmap{break-before:page;page-break-before:always}.heatmap table{font-size:8px;table-layout:fixed}.heatmap th,.heatmap td{padding:4px;text-align:center;border:1px solid #fff}.heatmap th:first-child{text-align:left;width:150px}.heatmap small{display:block;font-size:7px;font-weight:normal;margin-top:2px;opacity:.85}@media print{body{margin:0}}</style></head><body><h1>Yego Mi Auto · Análisis Supply</h1><p class="muted">Período: ${escapeHtml(dateRange.date_from)} a ${escapeHtml(dateRange.date_to)} · Meta: ${formatHours(target)}</p><div class="summary"><div>Conductores<strong>${drivers.length}</strong></div><div>Horas Supply<strong>${formatHours(totalHours)}</strong></div><div>Viajes completados<strong>${totalTrips.toLocaleString('es-PE')}</strong></div></div>${heatmap}<script>window.onload=()=>window.print()</script></body></html>`);
   popup.document.close();
 }
 
@@ -298,7 +288,7 @@ export default function YegoMiAutoAnalysis() {
 
   return (
     <div className="space-y-5">
-      <section className="rounded-lg bg-[#8B1A1A] p-4 lg:p-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-3"><div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[#6B1515]"><BarChart3 className="h-5 w-5 text-white" /></div><div><h1 className="text-lg font-bold leading-tight text-white lg:text-xl">Análisis Mi Auto</h1><p className="mt-0.5 text-xs text-white/90 lg:text-sm">Supply y viajes completados de conductores</p></div></div><button type="button" onClick={() => exportSupplyPdf(filteredDrivers, heatmapData, dateRange, target, closedPeriod)} disabled={!canExportPdf} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-white/30 bg-white px-3 text-sm font-semibold text-[#8B1A1A] hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"><Download className="h-4 w-4" />PDF</button></div></section>
+      <section className="rounded-lg bg-[#8B1A1A] p-4 lg:p-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-3"><div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[#6B1515]"><BarChart3 className="h-5 w-5 text-white" /></div><div><h1 className="text-lg font-bold leading-tight text-white lg:text-xl">Análisis Mi Auto</h1><p className="mt-0.5 text-xs text-white/90 lg:text-sm">Supply y viajes completados de conductores</p></div></div><button type="button" onClick={() => exportSupplyPdf(filteredDrivers, heatmapData, dateRange, target)} disabled={!canExportPdf} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-white/30 bg-white px-3 text-sm font-semibold text-[#8B1A1A] hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"><Download className="h-4 w-4" />PDF</button></div></section>
       <SupplyFilters dateRange={dateRange} query={query} stateFilter={stateFilter} loading={loading || heatmapLoading} closedPeriod={closedPeriod} onDateChange={setDateRange} onQueryChange={setQuery} onStateChange={setStateFilter} onRefresh={refresh} />
       {error && <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
       <SupplyHeatmap data={heatmapData} visibleDrivers={filteredDrivers} loading={heatmapLoading} />

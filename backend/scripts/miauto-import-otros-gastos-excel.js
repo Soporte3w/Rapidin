@@ -1,423 +1,314 @@
 /**
- * Importa "Otros Gastos" desde el Excel PAGOS POST ENTREGA.
- * Match por nombre del conductor contra tabla drivers (Yango),
- * luego busca la solicitud activa por driver_id_fleet.
+ * Importa el historial de PAGOS POST ENTREGA sin recalcular ni sobrescribir.
  *
- * Uso: node scripts/miauto-import-otros-gastos-excel.js [--dry-run]
+ * Uso:
+ *   node scripts/miauto-import-otros-gastos-excel.js archivo.xlsx --dry-run
+ *   node scripts/miauto-import-otros-gastos-excel.js archivo.xlsx --apply
  */
-import { query } from '../config/database.js';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import XLSX from 'xlsx';
+import pool, { getClient, query } from '../config/database.js';
 
-// ─── Helpers ──────────────────────────────────────────────────────────────
+const MONTHS = {
+  january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+  july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+};
 
-function normalizeName(s) {
-  return (s || '').toLowerCase().trim().replace(/\s+/g, ' ');
+function normalize(value) {
+  return String(value || '').trim().toUpperCase().replace(/\s+/g, ' ');
 }
 
-function excelSerialToYmd(serial) {
-  if (!serial || Number.isNaN(Number(serial))) return null;
-  const n = Math.floor(Number(serial));
-  const d = new Date(Date.UTC(1900, 0, 1));
-  d.setUTCDate(d.getUTCDate() + n - 2);
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(d.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+function digits(value) {
+  return String(value || '').replace(/\D/g, '');
 }
 
-function parseMonthYearHeader(header) {
-  // "July 2025", "August 2025", "January - 2026"...
-  const m = /^([a-z]+)\s*-?\s*(\d{4})$/i.exec(String(header || '').trim());
-  if (!m) return null;
-  const months = { january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12 };
-  const mm = months[m[1].toLowerCase()];
-  if (!mm) return null;
-  const yyyy = parseInt(m[2], 10);
-  return `${yyyy}-${String(mm).padStart(2, '0')}-01`;
+function money(value) {
+  const parsed = Number(String(value || '').replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : null;
 }
 
-function parseDayMonthHeader(header) {
-  // "02 - February", "16 - February", "09/03", etc.
-  let s = String(header || '').trim();
-  // Format "DD - Month"
-  let m2 = /^(\d{1,2})\s*-\s*([a-z]+)$/i.exec(s);
-  if (m2) {
-    const months = { january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12 };
-    const mm = months[m2[2].toLowerCase()];
-    if (!mm) return null;
-    return `2026-${String(mm).padStart(2, '0')}-${String(parseInt(m2[1],10)).padStart(2, '0')}`;
+function monthEnd(year, month) {
+  const day = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function parseDateHeader(value, fallbackYear = 2026, monthEndDate = false) {
+  const text = String(value || '').trim();
+  const monthYear = /^([a-z]+)\s*-?\s*(\d{4})$/i.exec(text);
+  if (monthYear) {
+    const month = MONTHS[monthYear[1].toLowerCase()];
+    return month ? (monthEndDate ? monthEnd(Number(monthYear[2]), month) : `${monthYear[2]}-${String(month).padStart(2, '0')}-01`) : null;
   }
-  // Format "DD/MM"
-  let m3 = /^(\d{1,2})\/(\d{1,2})$/.exec(s);
-  if (m3) {
-    return `2026-${String(parseInt(m3[2],10)).padStart(2, '0')}-${String(parseInt(m3[1],10)).padStart(2, '0')}`;
+  const dayMonthName = /^(\d{1,2})\s*-?\s*([a-z]+)$/i.exec(text.replace(/\s+/g, ' '));
+  if (dayMonthName) {
+    const month = MONTHS[dayMonthName[2].toLowerCase()];
+    return month ? `${fallbackYear}-${String(month).padStart(2, '0')}-${String(Number(dayMonthName[1])).padStart(2, '0')}` : null;
   }
-  // Format "Month Year" like "January - 2026"
-  let m4 = /^([a-z]+)\s*-\s*(\d{4})$/i.exec(s);
-  if (m4) {
-    const months = { january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12 };
-    const mm = months[m4[1].toLowerCase()];
-    if (!mm) return null;
-    return `${m4[2]}-${String(mm).padStart(2, '0')}-01`;
-  }
-  // Format "DD - Month" with year like "09 - February"
-  let m5 = /^(\d{1,2})\s*-\s*([a-z]+)$/i.exec(s);
-  if (m5) {
-    const months = { january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12 };
-    const mm = months[m5[1].toLowerCase()]; // Wait, m5[1] is day, m5[2] is month
-    const dd = parseInt(m5[1], 10);
-    const mn = months[m5[2].toLowerCase()];
-    if (!mn) return null;
-    return `2026-${String(mn).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
-  }
-  return null;
+  const dayMonth = /^(\d{1,2})\/(\d{1,2})$/.exec(text);
+  return dayMonth
+    ? `${fallbackYear}-${String(Number(dayMonth[2])).padStart(2, '0')}-${String(Number(dayMonth[1])).padStart(2, '0')}`
+    : null;
 }
 
-function mapStatusGPS(val) {
-  const s = String(val || '').toLowerCase().trim();
-  if (s === 'pagado') return 'paid';
-  if (s === 'pendiente') return 'overdue';
-  return 'pending'; // "Programado"
+function statusFromCell(value, dueDate) {
+  const status = normalize(value);
+  if (status === 'PAGADO' || status === 'TRUE' || status === 'SI' || status === 'SÍ') return 'paid';
+  const today = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Lima', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+  return dueDate < today ? 'overdue' : 'pending';
 }
 
-function mapStatusCheck(val) {
-  if (val === true || val === '✔' || val === '✓' || String(val).toLowerCase() === 'true') return 'paid';
-  return 'pending';
+function nonEmptyRows(sheet) {
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: false })
+    .filter((row) => Array.isArray(row) && row.some((cell) => String(cell || '').trim()));
 }
 
-// ─── Driver Lookup ─────────────────────────────────────────────────────────
+function buildRecords(workbook) {
+  const records = [];
+  const definitions = [
+    { sheet: 'GPS', concept: 'gps', currency: 'PEN', idType: 'plate', idIndex: 1, start: 3, monthEnd: true, amount: () => 47.2 },
+    { sheet: 'SOAT', concept: 'soat', currency: 'PEN', idType: 'plate', idIndex: 1, phoneIndex: 2, start: 5, step: 2, statusOffset: 1, amount: (row, index) => money(row[index]) },
+    { sheet: 'IMPUESTO VEHICULAR', concept: 'impuesto_vehicular', currency: 'PEN', idType: 'plate', idIndex: 2, phoneIndex: 3, start: 5, step: 2, statusOffset: 1, amount: (row, index) => money(row[index]) },
+    { sheet: 'STR + GPS', concept: 'str_gps', currency: 'USD', idType: 'license', idIndex: 1, phoneIndex: 2, start: 6, amount: (row) => money(row[3]) },
+    { sheet: 'Inicial Parcial', concept: 'inicial_parcial', currency: 'USD', idType: 'license', idIndex: 1, phoneIndex: 2, start: 6, amount: (row) => money(row[3]) },
+  ];
 
-async function findDriverByName(name) {
-  const norm = normalizeName(name);
-  if (norm.length < 5) return null;
-  // Fuzzy: buscar por palabras del nombre
-  const words = norm.split(' ').filter(w => w.length > 2);
-  if (words.length === 0) return null;
-  const likeClauses = words.map((w, i) => `LOWER(d.first_name || ' ' || d.last_name) LIKE $${i + 1}`).join(' AND ');
-  const params = words.map(w => `%${w}%`);
-  const res = await query(
-    `SELECT d.driver_id, d.first_name, d.last_name
-     FROM drivers d
-     WHERE d.work_status = 'working' AND ${likeClauses}
-     ORDER BY LENGTH(d.first_name || ' ' || d.last_name) ASC
-     LIMIT 1`,
-    params
+  for (const definition of definitions) {
+    const sheet = workbook.Sheets[definition.sheet];
+    if (!sheet) continue;
+    const rows = nonEmptyRows(sheet);
+    const header = rows[0] || [];
+    const step = definition.step || 1;
+    const dateColumns = [];
+    for (let index = definition.start; index < header.length; index += step) {
+      const dueDate = parseDateHeader(header[index], 2026, Boolean(definition.monthEnd));
+      if (dueDate) dateColumns.push({ index, dueDate });
+    }
+
+    for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+      const row = rows[rowIndex];
+      const driverName = String(row[0] || '').trim();
+      const identifier = String(row[definition.idIndex] || '').trim();
+      if (!driverName || !identifier) continue;
+      const positionByYear = new Map();
+      for (const column of dateColumns) {
+        const amount = definition.amount(row, column.index);
+        if (amount == null || amount <= 0) continue;
+        const periodYear = Number(column.dueDate.slice(0, 4));
+        const number = (positionByYear.get(periodYear) || 0) + 1;
+        positionByYear.set(periodYear, number);
+        const statusCell = definition.statusOffset ? row[column.index + definition.statusOffset] : row[column.index];
+        records.push({
+          sheet: definition.sheet,
+          concept: definition.concept,
+          currency: definition.currency,
+          idType: definition.idType,
+          identifier,
+          phone: definition.phoneIndex != null ? digits(row[definition.phoneIndex]) : null,
+          driverName,
+          number,
+          total: dateColumns.filter((item) => Number(item.dueDate.slice(0, 4)) === periodYear).length,
+          dueDate: column.dueDate,
+          periodYear,
+          amount,
+          status: statusFromCell(statusCell, column.dueDate),
+          sourceCell: `${definition.sheet}!R${rowIndex + 1}C${column.index + 1}`,
+        });
+      }
+    }
+  }
+  return records;
+}
+
+async function resolveSolicitud(record) {
+  const value = record.idType === 'phone' ? digits(record.identifier) : normalize(record.identifier).replace(/\s/g, '');
+  const result = await query(
+    record.idType === 'plate'
+      ? `SELECT id FROM module_miauto_solicitud
+         WHERE UPPER(REGEXP_REPLACE(COALESCE(placa_asignada, ''), '\\s', '', 'g')) = $1
+           AND status = 'aprobado' AND deleted_at IS NULL`
+      : `SELECT id FROM module_miauto_solicitud
+         WHERE UPPER(REGEXP_REPLACE(COALESCE(license_number, ''), '\\s', '', 'g')) = $1
+           AND status = 'aprobado' AND deleted_at IS NULL`,
+    [value]
   );
-  return res.rows[0] || null;
-}
-
-async function findSolicitudByDriver(driverId) {
-  const res = await query(
+  if (result.rows.length === 1) return { id: result.rows[0].id, matches: 1, matchedBy: record.idType };
+  if (result.rows.length > 1 || !record.phone) return { id: null, matches: result.rows.length };
+  const phone = digits(record.phone).slice(-9);
+  const phoneResult = await query(
     `SELECT id FROM module_miauto_solicitud
-     WHERE driver_id_fleet = $1 AND status = 'aprobado' AND deleted_at IS NULL
-     LIMIT 1`,
-    [driverId]
+     WHERE RIGHT(REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '', 'g'), 9) = $1
+       AND status = 'aprobado' AND deleted_at IS NULL`,
+    [phone]
   );
-  return res.rows[0]?.id || null;
+  return phoneResult.rows.length === 1
+    ? { id: phoneResult.rows[0].id, matches: 1, matchedBy: 'phone' }
+    : { id: null, matches: phoneResult.rows.length };
 }
 
-async function findSolicitudByPlaca(placa) {
-  if (!placa || String(placa).trim().length < 4) return null;
-  const res = await query(
-    `SELECT id FROM module_miauto_solicitud
-     WHERE UPPER(REGEXP_REPLACE(TRIM(placa_asignada), '\\s', '', 'g')) = 
-           UPPER(REGEXP_REPLACE(TRIM($1), '\\s', '', 'g'))
-       AND status = 'aprobado' AND deleted_at IS NULL
+async function importRecord(client, record, solicitudId, fileHash) {
+  const cycleLockKey = `miauto-import-cycle:${solicitudId}:${record.concept}:${record.periodYear}:${fileHash}:${record.sheet}`;
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [cycleLockKey]);
+  let cycle = await client.query(
+    `SELECT id
+     FROM module_miauto_gasto_ciclo
+     WHERE solicitud_id = $1::uuid
+       AND concepto = $2
+       AND periodo_anio = $3
+       AND config_snapshot->>'source_file_hash' = $4
+       AND config_snapshot->>'source_sheet' = $5
      LIMIT 1`,
-    [String(placa).trim()]
+    [solicitudId, record.concept, record.periodYear, fileHash, record.sheet]
   );
-  return res.rows[0]?.id || null;
-}
-
-// ─── Import Functions ──────────────────────────────────────────────────────
-
-async function importSheet(sheetName, rows, headerDates, tipo, moneda, getAmount, getStatusFn, dryRun, getPlaca = null) {
-  let created = 0;
-  let skipped = 0;
-  let notFound = 0;
-
-  for (const row of rows) {
-    const name = String(row.__names__ || row._name || '');
-    if (!name.trim()) { skipped++; continue; }
-
-    const driver = await findDriverByName(name);
-    let solId = null;
-
-    if (driver) {
-      solId = await findSolicitudByDriver(driver.driver_id);
-    }
-
-    // Fallback por PLACA si no encontró por nombre
-    if (!solId && getPlaca) {
-      const placa = getPlaca(row);
-      if (placa) {
-        solId = await findSolicitudByPlaca(placa);
-        if (solId) {
-          console.log(`  ✓ PLACA ${placa} → solicitud ${solId.slice(0,8)}...`);
-        }
-      }
-    }
-
-    if (!solId) {
-      if (getPlaca) {
-        const p = getPlaca(row);
-        console.log(`  ⚠ No encontrado: "${name}"${p ? ' (' + p + ')' : ''}`);
-      } else {
-        console.log(`  ⚠ No encontrado en Yango: "${name}"`);
-      }
-      notFound++;
-      continue;
-    }
-
-    console.log(`  ✓ ${driver ? driver.first_name + ' ' + driver.last_name : 'PLACA'} → solicitud ${solId.slice(0,8)}...`);
-
-    let weekIdx = 0;
-    for (const hdr of headerDates) {
-      const dueDate = hdr.date;
-      if (!dueDate) continue;
-      const rawVal = row[hdr.key];
-      const amount = getAmount(row, rawVal, weekIdx);
-      const status = getStatusFn(rawVal);
-
-      weekIdx++;
-
-      if (dryRun) {
-        console.log(`    [DRY] tipo=${tipo} wk=${weekIdx} due=${dueDate} amt=${amount} st=${status}`);
-        created++;
-        continue;
-      }
-
-      await query(
-        `INSERT INTO module_miauto_otros_gastos (solicitud_id, tipo, week_index, due_date, amount_due, status, moneda)
-         VALUES ($1, $2, $3, $4::date, $5, $6, $7)
-         ON CONFLICT (solicitud_id, week_index, tipo) DO UPDATE SET
-           amount_due = EXCLUDED.amount_due,
-           status = CASE WHEN module_miauto_otros_gastos.status = 'paid' THEN 'paid' ELSE EXCLUDED.status END,
-           due_date = EXCLUDED.due_date,
-           updated_at = NOW()`,
-        [solId, tipo, weekIdx, dueDate, amount, status, moneda]
-      );
-      created++;
-    }
+  if (!cycle.rows[0]) {
+    cycle = await client.query(
+      `INSERT INTO module_miauto_gasto_ciclo
+         (solicitud_id, concepto, periodo_anio, ciclo_numero, moneda, monto_total,
+          fecha_inicio, fecha_fin, numero_cuotas, estado, origen, config_snapshot)
+       SELECT $1::uuid, $2, $3, COALESCE(MAX(existing.ciclo_numero), 0) + 1,
+              $4, NULL, $5::date, $5::date, $6, 'activo', 'excel_import', $7::jsonb
+       FROM module_miauto_gasto_ciclo existing
+       WHERE existing.solicitud_id = $1::uuid
+         AND existing.concepto = $2
+         AND existing.periodo_anio = $3
+       RETURNING id`,
+      [solicitudId, record.concept, record.periodYear, record.currency, record.dueDate,
+        record.total, JSON.stringify({ source_file_hash: fileHash, source_sheet: record.sheet })]
+    );
+  } else {
+    await client.query(
+      `UPDATE module_miauto_gasto_ciclo
+       SET fecha_inicio = LEAST(fecha_inicio, $1::date),
+           fecha_fin = GREATEST(fecha_fin, $1::date),
+           numero_cuotas = GREATEST(numero_cuotas, $2),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3::uuid`,
+      [record.dueDate, record.total, cycle.rows[0].id]
+    );
   }
-
-  return { created, skipped, notFound };
+  const sourceKey = `excel:${fileHash}:${record.sheet}:${solicitudId}:${record.number}:${record.dueDate}`;
+  const expense = await client.query(
+    `INSERT INTO module_miauto_otros_gastos
+       (solicitud_id, ciclo_id, tipo, week_index, numero_cuota, total_cuotas,
+        periodo_anio, due_date, amount_due, paid_amount, status, moneda,
+        source_key, origen)
+     VALUES ($1::uuid, $2::uuid, $3, $4, $4, $5, $6, $7::date, $8,
+             CASE WHEN $9 = 'paid' THEN $8 ELSE 0 END, $9, $10, $11, 'excel_import')
+     ON CONFLICT DO NOTHING
+     RETURNING id`,
+    [solicitudId, cycle.rows[0].id, record.concept, record.number, record.total, record.periodYear,
+      record.dueDate, record.amount, record.status, record.currency, sourceKey]
+  );
+  if (!expense.rows[0]) return false;
+  if (record.status === 'paid') {
+    await client.query(
+      `INSERT INTO module_miauto_gasto_pago_aplicacion
+         (solicitud_id, otros_gastos_id, origen, source_key, monto_original,
+          moneda_original, tipo_cambio, monto_aplicado, moneda_aplicada, metadata)
+       VALUES ($1::uuid, $2::uuid, 'import', $3, $4, $5, 1, $4, $5, $6::jsonb)
+       ON CONFLICT (source_key) DO NOTHING`,
+      [solicitudId, expense.rows[0].id, `${sourceKey}:payment`, record.amount,
+        record.currency, JSON.stringify({ source_cell: record.sourceCell })]
+    );
+  }
+  return true;
 }
-
-// ─── MAIN ──────────────────────────────────────────────────────────────────
 
 async function main() {
-  const args = process.argv.slice(2);
-  const dryRun = args.includes('--dry-run');
-  const excelPath = args.find(a => a.endsWith('.xlsx')) || '../PAGOS POST ENTREGA (2) - GIOMAR 12-06-26.xlsx';
+  const fileArg = process.argv.find((arg) => arg.toLowerCase().endsWith('.xlsx'));
+  const apply = process.argv.includes('--apply');
+  if (!fileArg) throw new Error('Indica la ruta del archivo .xlsx');
+  const filePath = path.resolve(fileArg);
+  const fileHash = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  const records = buildRecords(XLSX.readFile(filePath));
+  const summary = {
+    records: records.length,
+    matched: 0,
+    inserted: 0,
+    duplicate: 0,
+    notFound: 0,
+    ambiguous: 0,
+    unresolved: [],
+  };
+  const resolutionCache = new Map();
+  const unresolvedKeys = new Set();
 
-  let XLSX;
-  try {
-    XLSX = (await import('xlsx')).default || (await import('xlsx'));
-  } catch {
-    console.error('Error: xlsx no disponible. npm install xlsx');
-    process.exit(1);
-  }
-
-  const wb = XLSX.readFile(excelPath);
-  const totals = {};
-
-  console.log(`\n📥 Importando Otros Gastos desde: ${excelPath}`);
-  console.log(dryRun ? '🔍 MODO DRY-RUN (sin escritura)\n' : '💾 MODO ESCRITURA\n');
-
-  // ── GPS ───────────────────────────────────────────────────────────────────
-  if (wb.SheetNames.includes('GPS')) {
-    console.log('📍 GPS...');
-    const ws = wb.Sheets['GPS'];
-    const allData = XLSX.utils.sheet_to_json(ws, { defval: '' });
-    // First row is header with month names
-    const headers = Object.keys(allData[0] || {});
-    const dateHeaders = [];
-    for (const h of headers) {
-      if (h.startsWith('__EMPTY') || h.includes('GPS')) continue;
-      const d = parseMonthYearHeader(h);
-      if (d) dateHeaders.push({ key: h, date: d });
+  for (const record of records) {
+    const cacheKey = `${record.idType}:${record.identifier}:${record.phone || ''}`;
+    let resolution = resolutionCache.get(cacheKey);
+    if (!resolution) {
+      resolution = await resolveSolicitud(record);
+      resolutionCache.set(cacheKey, resolution);
     }
-    // Map rows: col A = name, col C = fecha_serial, then monthly columns
-    const rows = allData.map(r => ({
-      __names__: r[Object.keys(r)[0]] || '', // first column = name
-      ...r,
-    }));
-    // Get amount from header: "GPS - s/47.20"
-    const gpsHeader = Object.keys(allData[0] || {})[0] || '';
-    const amtMatch = gpsHeader.match(/s\/\s*([\d.]+)/i);
-    const gpsAmount = amtMatch ? parseFloat(amtMatch[1]) : 47.20;
-    const gpsMoneda = gpsHeader.includes('$') ? 'USD' : 'PEN';
-
-    totals.gps = await importSheet('GPS', rows, dateHeaders, 'gps', gpsMoneda,
-      () => gpsAmount, mapStatusGPS, dryRun);
-  }
-
-  // ── Seguro RC ─────────────────────────────────────────────────────────────
-  if (wb.SheetNames.includes('Seguro RC')) {
-    console.log('\n🛡️ Seguro RC (SRC)...');
-    const ws = wb.Sheets['Seguro RC'];
-    const allData = XLSX.utils.sheet_to_json(ws, { defval: '' });
-    const headers = Object.keys(allData[0] || {});
-    const dateHeaders = [];
-    for (const h of headers) {
-      if (h.includes('SEGURO') || h === 'PLACA' || h === '#CEL.' || h === 'F. VENCIMIENTO' || h === 'MONTO A COBRAR' || h.startsWith('__EMPTY')) continue;
-      const d = parseMonthYearHeader(h);
-      if (d) dateHeaders.push({ key: h, date: d });
+    if (!resolution.id) {
+      if (resolution.matches > 1) summary.ambiguous += 1;
+      else summary.notFound += 1;
+      if (!unresolvedKeys.has(cacheKey)) {
+        unresolvedKeys.add(cacheKey);
+        summary.unresolved.push({
+          sheet: record.sheet,
+          driverName: record.driverName,
+          identifier: record.identifier,
+          phone: record.phone,
+          reason: resolution.matches > 1 ? 'ambiguous' : 'not_found',
+        });
+      }
+      continue;
     }
-    const rows = allData.map(r => ({
-      __names__: r[Object.keys(r)[0]] || '',
-      __check_cols__: dateHeaders.map(dh => dh.key),
-      ...r,
-    }));
-
-    totals.src = await importSheet('Seguro RC', rows, dateHeaders, 'src', 'PEN',
-      (row, rawVal, idx) => {
-        if (typeof rawVal === 'number' && rawVal > 0) return rawVal;
-        // Check adjacent __EMPTY columns for checkmark
-        const checkCols = row.__check_cols__ || [];
-        if (idx < checkCols.length) {
-          const chkCol = checkCols[idx];
-          const emptyCols = Object.keys(row).filter(k => k.startsWith('__EMPTY') && row[k] === true);
-          // Try to find matching __EMPTY with checkmark
-          for (const ec of emptyCols) {
-            const ecIdx = parseInt(ec.replace('__EMPTY', '').replace('_', '')) || 0;
-            if (ecIdx > 0) {
-              const hdrIdx = headers.indexOf(chkCol);
-              if (ecIdx === hdrIdx + 1 || ecIdx === hdrIdx + 2) return 13;
-            }
-          }
-        }
-        return 13;
-      },
-      (rawVal) => {
-        if (typeof rawVal === 'number' && rawVal > 0) return 'paid';
-        return 'pending';
-      }, dryRun);
-  }
-
-  // ── SOAT ──────────────────────────────────────────────────────────────────
-  if (wb.SheetNames.includes('SOAT')) {
-    console.log('\n🛡️ SOAT...');
-    const ws = wb.Sheets['SOAT'];
-    const allData = XLSX.utils.sheet_to_json(ws, { defval: '' });
-    const headers = Object.keys(allData[0] || {});
-    const dateHeaders = [];
-    for (const h of headers) {
-      if (h.includes('SOAT') || h === 'PLACA' || h === '#CEL.' || h === 'F. VENCIMIENTO' || h === 'MONTO A COBRAR' || h.startsWith('__EMPTY')) continue;
-      const d = parseDayMonthHeader(h);
-      if (d) dateHeaders.push({ key: h, date: d });
+    summary.matched += 1;
+    if (!apply) continue;
+    const client = await getClient();
+    try {
+      await client.query('BEGIN');
+      const inserted = await importRecord(client, record, resolution.id, fileHash);
+      await client.query('COMMIT');
+      if (inserted) summary.inserted += 1;
+      else summary.duplicate += 1;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
-    const rows = allData.map(r => ({
-      __names__: r[Object.keys(r)[0]] || '',
-      ...r,
-    }));
-
-    totals.soat = await importSheet('SOAT', rows, dateHeaders, 'soat', 'PEN',
-      () => 50,
-      (rawVal) => {
-        if (rawVal === true || rawVal === '✔' || rawVal === '✓') return 'paid';
-        if (typeof rawVal === 'number' && rawVal > 0) return 'paid';
-        return 'pending';
-      }, dryRun);
   }
 
-  // ── IMPUESTO VEHICULAR ────────────────────────────────────────────────────
-  if (wb.SheetNames.includes('IMPUESTO VEHICULAR')) {
-    console.log('\n🚗 Impuesto Vehicular...');
-    const ws = wb.Sheets['IMPUESTO VEHICULAR'];
-    const allData = XLSX.utils.sheet_to_json(ws, { defval: '' });
-    const headers = Object.keys(allData[0] || {});
-    const dateHeaders = [];
-    for (const h of headers) {
-      if (h.includes('IMPUESTO') || h === 'MODELO AUTO' || h === 'PLACA' || h === '#CEL.' || h === 'MONTO A COBRAR' || h.startsWith('__EMPTY')) continue;
-      const d = parseDayMonthHeader(h);
-      if (d) dateHeaders.push({ key: h, date: d });
-    }
-    const rows = allData.map(r => ({
-      __names__: r[Object.keys(r)[0]] || '',
-      ...r,
-    }));
-
-    totals.impuesto = await importSheet('IMPUESTO VEHICULAR', rows, dateHeaders, 'impuesto_vehicular', 'PEN',
-      (row, rawVal) => {
-        if (typeof rawVal === 'number' && rawVal > 0) return rawVal;
-        return 150; // fallback
-      },
-      (rawVal) => {
-        if (rawVal === true || rawVal === '✔' || rawVal === '✓') return 'paid';
-        if (typeof rawVal === 'number' && rawVal > 0) return 'paid';
-        return 'pending';
-      }, dryRun);
+  if (apply) {
+    const finalized = await query(
+      `UPDATE module_miauto_gasto_ciclo c
+       SET monto_total = totals.monto_total,
+           estado = CASE WHEN totals.pendientes = 0 THEN 'completado' ELSE 'activo' END,
+           updated_at = CURRENT_TIMESTAMP
+       FROM (
+         SELECT og.ciclo_id,
+                SUM(og.amount_due) AS monto_total,
+                COUNT(*) FILTER (
+                  WHERE COALESCE(og.paid_amount, 0) < COALESCE(og.amount_due, 0) - 0.005
+                ) AS pendientes
+         FROM module_miauto_otros_gastos og
+         JOIN module_miauto_gasto_ciclo source_cycle ON source_cycle.id = og.ciclo_id
+         WHERE source_cycle.config_snapshot->>'source_file_hash' = $1
+           AND og.deleted_at IS NULL
+         GROUP BY og.ciclo_id
+       ) totals
+       WHERE c.id = totals.ciclo_id
+       RETURNING c.id`,
+      [fileHash]
+    );
+    summary.cyclesFinalized = finalized.rowCount;
   }
 
-  // ── STR + GPS ─────────────────────────────────────────────────────────────
-  if (wb.SheetNames.includes('STR + GPS')) {
-    console.log('\n🚗 STR + GPS...');
-    const ws = wb.Sheets['STR + GPS'];
-    const allData = XLSX.utils.sheet_to_json(ws, { defval: '' });
-    const headers = Object.keys(allData[0] || {});
-    const dateHeaders = [];
-    for (const h of headers) {
-      if (h.includes('SEGURO') || h === 'LICENCIA' || h === '# CELULAR' || h === 'AUTO' || h === 'F. Entrega' || h === 'Cuotas pagadas') continue;
-      const d = parseDayMonthHeader(h);
-      if (d) dateHeaders.push({ key: h, date: d });
-    }
-    
-    const strMoneda = 'USD';
-    const strAmount = 23.38;
-
-    const rows = allData.map(r => ({
-      __names__: r[Object.keys(r)[0]] || '',
-      ...r,
-    }));
-
-    totals.strgps = await importSheet('STR + GPS', rows, dateHeaders, 'todo_riesgo_mas_gps_agrupado', strMoneda,
-      () => strAmount,
-      mapStatusGPS, dryRun);
-  }
-
-  // ── Inicial Parcial ───────────────────────────────────────────────────────
-  if (wb.SheetNames.includes('Inicial Parcial')) {
-    console.log('\n💰 Inicial Parcial...');
-    const ws = wb.Sheets['Inicial Parcial'];
-    const allData = XLSX.utils.sheet_to_json(ws, { defval: '' });
-    const headers = Object.keys(allData[0] || {});
-    const dateHeaders = [];
-    for (const h of headers) {
-      if (h.includes('Inicial') || h === 'LICENCIA' || h === '# CELULAR' || h === 'MONTO' || h === 'F. Entrega' || h === 'Cuotas pagadas') continue;
-      const d = parseDayMonthHeader(h);
-      if (d) dateHeaders.push({ key: h, date: d });
-    }
-    
-    const rows = allData.map(r => ({
-      __names__: r[Object.keys(r)[0]] || '',
-      ...r,
-    }));
-
-    totals.inicial = await importSheet('Inicial Parcial', rows, dateHeaders, 'inicial_parcial', 'USD',
-      (row) => {
-        const montoField = Object.keys(row).find(k => k === 'MONTO');
-        const val = montoField ? parseFloat(row[montoField]) : 0;
-        return val > 0 ? val : 19.23;
-      },
-      mapStatusGPS, dryRun);
-  }
-
-  // ── Report ────────────────────────────────────────────────────────────────
-  console.log('\n═══════════════════════════════════════════');
-  console.log('📊 RESUMEN');
-  console.log('═══════════════════════════════════════════');
-  let totalCreated = 0, totalSkipped = 0, totalNotFound = 0;
-  for (const [name, t] of Object.entries(totals)) {
-    console.log(`${name}: ${t.created} creadas, ${t.skipped} saltadas, ${t.notFound} no encontradas`);
-    totalCreated += t.created;
-    totalSkipped += t.skipped;
-    totalNotFound += t.notFound;
-  }
-  console.log('───────────────────────────────────────────');
-  console.log(`Total: ${totalCreated} creadas, ${totalSkipped} saltadas, ${totalNotFound} no encontradas`);
-  if (dryRun) console.log('\n⚠ DRY RUN — no se escribió nada en la BD');
-  console.log('');
+  console.log(JSON.stringify({ mode: apply ? 'apply' : 'dry-run', file: filePath, fileHash, summary }, null, 2));
+  if (!apply) console.log('Sin escrituras. Usa --apply despues de revisar el resumen.');
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+main()
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await pool.end();
+  });

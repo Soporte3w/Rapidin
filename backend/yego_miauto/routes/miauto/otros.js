@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { validateUUID } from '../../../middleware/validations.js';
 import { uploadVoucher } from '../../../middleware/upload.js';
 import { successResponse, errorResponse } from '../../../utils/responses.js';
-import { logger } from '../../../utils/logger.js';
+import { logger, businessLog } from '../../../utils/logger.js';
 import { getTipoCambioByCountry, setTipoCambio, listTiposCambio } from '../../services/tipo-cambio/miautoTipoCambioService.js';
 import { listBySolicitud, createAdjunto } from '../../services/adjuntos/miautoAdjuntoService.js';
 import { sendEvolutionGoMediaMessage, sendEvolutionGoTextMessage } from '../../../services/evolutionGoWhatsAppService.js';
@@ -11,8 +11,17 @@ import {
   refreshMiautoWhatsAppPhone,
   resolveMiautoWhatsAppPhone,
 } from '../../../services/whatsappPhoneSyncService.js';
-import { listBySolicitud as listOtrosGastosBySolicitud, updateOtroGastoStatus } from '../../services/gastos/miautoOtrosGastosService.js';
+import {
+  generateExpenseCycles,
+  getExpenseConfiguration,
+  listBySolicitud as listOtrosGastosBySolicitud,
+  updateExpenseConfiguration,
+} from '../../services/gastos/miautoOtrosGastosService.js';
 import { getSolicitudById } from '../../services/solicitud/miautoSolicitudService.js';
+import {
+  getAdditionalExpenseFleetChargePreview,
+  processSelectedAdditionalExpenseFleetCharges,
+} from '../../services/cuotas/miautoFleetChargeService.js';
 import pool from '../../../database/connection.js';
 
 const router = Router();
@@ -281,15 +290,82 @@ router.get('/solicitudes/:id/otros-gastos', validateUUID, async (req, res) => {
   }
 });
 
-router.put('/solicitudes/:id/otros-gastos/:ogId/estado', validateUUID, async (req, res) => {
+router.get('/solicitudes/:id/otros-gastos/cobro-fleet/preview', validateUUID, async (req, res) => {
   try {
-    const { status } = req.body;
-    if (!status) return errorResponse(res, 'Estado requerido', 400);
-    const cuota = await updateOtroGastoStatus(req.params.ogId, status, req.user?.id);
-    return successResponse(res, cuota, 'Estado actualizado');
+    if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para realizar cobros', 403);
+    const preview = await getAdditionalExpenseFleetChargePreview(req.params.id);
+    return successResponse(res, preview);
   } catch (error) {
-    logger.error('Error actualizando estado de otro gasto:', error);
-    return errorResponse(res, error.message, 400);
+    logger.error('Error consultando cobro Fleet de otros gastos:', error);
+    return errorResponse(res, error.message || 'Error al consultar el saldo Fleet', error.statusCode || 500);
+  }
+});
+
+router.post('/solicitudes/:id/otros-gastos/cobro-fleet', validateUUID, async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para realizar cobros', 403);
+    const result = await processSelectedAdditionalExpenseFleetCharges(
+      req.params.id,
+      req.body?.otros_gastos_ids,
+      { userId: req.user?.id || null }
+    );
+    businessLog('miauto.otros_gastos.fleet_charged_manually', {
+      solicitudId: req.params.id,
+      otrosGastosIds: req.body?.otros_gastos_ids,
+      summary: {
+        total: result.total,
+        success: result.success,
+        partial: result.partial,
+        failed: result.failed,
+        skipped: result.skipped,
+      },
+    }, {
+      entityType: 'module_miauto_solicitud',
+      entityId: req.params.id,
+      actorType: 'user',
+      actorId: req.user?.id || null,
+    });
+    return successResponse(res, result, 'Cobro Fleet procesado');
+  } catch (error) {
+    logger.error('Error cobrando otros gastos en Fleet:', error);
+    return errorResponse(res, error.message || 'Error al realizar el cobro Fleet', error.statusCode || 500);
+  }
+});
+
+router.get('/solicitudes/:id/otros-gastos/configuracion', validateUUID, async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para ver esta configuracion', 403);
+    return successResponse(res, await getExpenseConfiguration(req.params.id));
+  } catch (error) {
+    logger.error('Error obteniendo configuracion de otros gastos:', error);
+    return errorResponse(res, error.message || 'Error al obtener configuracion', 400);
+  }
+});
+
+router.patch('/solicitudes/:id/otros-gastos/configuracion', validateUUID, async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para configurar gastos', 403);
+    const config = await updateExpenseConfiguration(req.params.id, req.body || {}, req.user?.id || null);
+    return successResponse(res, config, 'Configuracion de gastos actualizada');
+  } catch (error) {
+    logger.error('Error actualizando configuracion de otros gastos:', error);
+    return errorResponse(res, error.message || 'Error al actualizar configuracion', 400);
+  }
+});
+
+router.post('/solicitudes/:id/otros-gastos/generar', validateUUID, async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para generar gastos', 403);
+    const result = await generateExpenseCycles(req.params.id, {
+      periodYear: req.body?.periodo_anio,
+      vehicleTaxTotal: req.body?.impuesto_vehicular_monto_total,
+      userId: req.user?.id || null,
+      forceManual: true,
+    });
+    return successResponse(res, result, 'Ciclos de gastos generados');
+  } catch (error) {
+    logger.error('Error generando otros gastos:', error);
+    return errorResponse(res, error.message || 'Error al generar gastos', 400);
   }
 });
 

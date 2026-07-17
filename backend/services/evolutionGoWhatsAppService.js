@@ -35,6 +35,19 @@ async function parseEvolutionGoResponse(response) {
 async function evolutionGoRequest(path, { token, tokenName, body }) {
     const tokenCheck = requireToken(token, tokenName);
     if (!tokenCheck.ok) return { success: false, error: tokenCheck.error };
+    if (String(process.env.ENABLE_WHATSAPP_SEND || 'true').toLowerCase() === 'false') {
+        logger.warn('WhatsApp deshabilitado por ENABLE_WHATSAPP_SEND=false', { path, number: body?.number });
+        return {
+            success: true,
+            dryRun: true,
+            data: {
+                dryRun: true,
+                provider: 'evolution-go',
+                path,
+                number: body?.number,
+            },
+        };
+    }
 
     const url = `${EVOLUTION_GO_BASE_URL}${path}`;
     try {

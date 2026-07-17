@@ -147,8 +147,6 @@ export interface Cronograma {
   tasa_interes_mora?: number;
   /** Si está activo, el bono por 4 pagos consecutivos a tiempo solo se concede si en cada una de esas 4 semanas el conductor tuvo ≥ 120 viajes */
   bono_tiempo_activo?: boolean;
-  /** Número de cuotas (semanas) en que se reparte el saldo pendiente de la cuota inicial (pago parcial). Solo aplica a nuevos contratos. */
-  cuotas_otros_gastos?: number;
   /** Tipo de vehículo del plan: nuevo / seminuevo / segundo uso (JSON en cronograma) */
   requisitos_vehiculo?: RequisitosVehiculo;
   vehicles: VehiculoCronograma[];
@@ -289,7 +287,6 @@ export default function YegoMiAutoConfig() {
     active: true,
     tasa_interes_mora: 0,
     bono_tiempo_activo: false,
-    cuotas_otros_gastos: 26,
     requisitos_vehiculo: createDefaultRequisitosVehiculo(),
     vehicles: [{ ...createEmptyVehicle() }],
     rules: [],
@@ -432,7 +429,6 @@ export default function YegoMiAutoConfig() {
       active: true,
       tasa_interes_mora: 0,
       bono_tiempo_activo: false,
-      cuotas_otros_gastos: 26,
       requisitos_vehiculo: createDefaultRequisitosVehiculo(),
       vehicles: [createEmptyVehicle()],
       rules: [createEmptyRule(1)],
@@ -470,7 +466,6 @@ export default function YegoMiAutoConfig() {
       active: c.active,
       tasa_interes_mora: c.tasa_interes_mora ?? 0,
       bono_tiempo_activo: c.bono_tiempo_activo ?? false,
-      cuotas_otros_gastos: c.cuotas_otros_gastos ?? 26,
       requisitos_vehiculo: mergeRequisitosFromApi(c.requisitos_vehiculo),
       vehicles,
       rules,
@@ -505,7 +500,6 @@ export default function YegoMiAutoConfig() {
         active: form.active,
         tasa_interes_mora: typeof form.tasa_interes_mora === 'number' ? form.tasa_interes_mora : 0,
         bono_tiempo_activo: form.bono_tiempo_activo ?? false,
-        cuotas_otros_gastos: typeof form.cuotas_otros_gastos === 'number' ? form.cuotas_otros_gastos : 26,
         requisitos_vehiculo: mergeRequisitosFromApi(form.requisitos_vehiculo),
         vehicles: form.vehicles.map((v) => ({
           ...v,
@@ -1136,36 +1130,6 @@ export default function YegoMiAutoConfig() {
                           </label>
                         </div>
 
-                        {/* Otros gastos (pago parcial) */}
-                        <div className="lg:pl-4 space-y-2 min-w-0 pt-2 border-t border-gray-200 lg:border-t-0 lg:pt-0">
-                          <h4 className="text-sm font-medium text-gray-900 leading-tight">
-                            Otros gastos
-                          </h4>
-                          <p className="text-[11px] text-gray-500 leading-snug" title="Pago parcial de cuota inicial">
-                            Semanas para repartir el saldo pendiente de la inicial (pago parcial). Contratos nuevos.
-                          </p>
-                          <div className="space-y-2">
-                            <label htmlFor="cuotas_otros_gastos" className="block text-xs text-gray-600">
-                              Semanas (cuotas)
-                            </label>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <input
-                                id="cuotas_otros_gastos"
-                                type="number"
-                                min={1}
-                                max={99}
-                                value={form.cuotas_otros_gastos ?? 26}
-                                onChange={(e) => {
-                                  const v = parseInt(e.target.value, 10);
-                                  setForm((f) => ({ ...f, cuotas_otros_gastos: Number.isNaN(v) || v < 1 ? 26 : Math.min(99, v) }));
-                                }}
-                                disabled={isViewMode}
-                                className={`w-24 rounded-lg border border-gray-300 px-2.5 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 ${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50 cursor-default' : 'bg-white'}`}
-                              />
-                              <span className="text-xs text-gray-500">1 — 99 semanas</span>
-                            </div>
-                          </div>
-                        </div>
                       </div>
                     </div>
                   </div>

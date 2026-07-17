@@ -2,7 +2,7 @@
  * Yego Mi Auto — cobro Fleet Yango: cuotas a retirar, proceso de retiro y saldo efectivo.
  * Extraído de miautoCuotaSemanalService.js (v5 — Mayo 2026).
  */
-import { query } from '../../../config/database.js';
+import { getClient, query } from '../../../config/database.js';
 import { logger } from '../../../utils/logger.js';
 import {
   fleetCookieCobroForMiAuto,
@@ -25,10 +25,12 @@ import {
   touchFechaUltimoAbonoCuota,
 } from './miautoCuotaSemanalService.js';
 import { computeAmountDueSemanal as computeAmountDueSemanalObj } from '../cobros/CuotaCalculator.js';
+import { applyPaymentToExpense } from '../gastos/miautoGastoPagoService.js';
 
 // --- Constantes -------------------------------------------------------------
 
 const PARTNER_FEES_PCT = 0.8333;
+const MAX_MANUAL_EXPENSE_CHARGES = 100;
 
 // --- Helpers SQL compartidos ------------------------------------------------
 
@@ -108,6 +110,93 @@ function fleetWithdrawRetryDelayMs() {
 
 function fleetWithdrawMaxAttempts() {
   return Math.max(1, Math.min(8, Number(process.env.MIAUTO_FLEET_WITHDRAW_RETRIES || 5)));
+}
+
+async function withdrawWithOngoingRetry({ externalDriverId, amount, description, cookie, parkId, logLabel }) {
+  const maxAttempts = fleetWithdrawMaxAttempts();
+  const delayMs = fleetWithdrawRetryDelayMs();
+  let attempt = 1;
+  let result = await withdrawFromContractor(externalDriverId, amount, description, cookie, parkId);
+  while (
+    !result.success &&
+    attempt < maxAttempts &&
+    isFleetOngoingTransactionsError(result.message || result.error)
+  ) {
+    logger.warn('miauto.fleet.withdraw_retry', {
+      label: logLabel,
+      externalDriverId,
+      parkId,
+      attempt,
+      maxAttempts,
+      delayMs,
+    });
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    attempt += 1;
+    result = await withdrawFromContractor(externalDriverId, amount, description, cookie, parkId);
+  }
+  return result;
+}
+
+async function reserveAdditionalExpenseFleetIntent(expense, intentData) {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    const lockedExpense = await client.query(
+      `SELECT amount_due, paid_amount
+       FROM module_miauto_otros_gastos
+       WHERE id = $1::uuid AND solicitud_id = $2::uuid AND deleted_at IS NULL
+       FOR UPDATE`,
+      [expense.id, expense.solicitud_id]
+    );
+    const current = lockedExpense.rows[0];
+    if (!current) {
+      await client.query('ROLLBACK');
+      return { skipped: true, reason: 'gasto_no_encontrado' };
+    }
+    const currentPending = round2(Math.max(0, Number(current.amount_due) - Number(current.paid_amount)));
+    if (currentPending <= 0.005) {
+      await client.query('ROLLBACK');
+      return { skipped: true, reason: 'sin_saldo_pendiente' };
+    }
+    if (Math.abs(Number(current.paid_amount) - Number(expense.paid_amount)) > 0.005) {
+      await client.query('ROLLBACK');
+      return { skipped: true, reason: 'saldo_actualizado_durante_cobro' };
+    }
+    const pendingReceipt = await client.query(
+      `SELECT 1 FROM module_miauto_comprobante_otros_gastos
+       WHERE otros_gastos_id = $1::uuid AND estado = 'pendiente'
+       LIMIT 1`,
+      [expense.id]
+    );
+    if (pendingReceipt.rows[0]) {
+      await client.query('ROLLBACK');
+      return { skipped: true, reason: 'comprobante_pendiente' };
+    }
+
+    const intent = await client.query(
+      `INSERT INTO module_miauto_gasto_cobro_fleet_intento
+         (solicitud_id, otros_gastos_id, source_key, monto_retiro, moneda_retiro,
+          monto_acreditar, moneda_acreditar, external_driver_id, park_id)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (source_key) DO UPDATE
+         SET estado = 'processing', error = NULL, response = NULL, completed_at = NULL
+         WHERE module_miauto_gasto_cobro_fleet_intento.estado = 'failed'
+       RETURNING id`,
+      [expense.solicitud_id, expense.id, intentData.sourceKey,
+        intentData.withdrawalAmount, intentData.localCurrency,
+        intentData.creditAmount, intentData.expenseCurrency,
+        intentData.externalDriverId, intentData.parkId]
+    );
+    await client.query('COMMIT');
+    return intent.rows[0]
+      ? { intentId: intent.rows[0].id }
+      : { skipped: true, reason: 'intento_ya_registrado' };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 // --- Helpers fecha ---------------------------------------------------------
@@ -217,6 +306,317 @@ function effectiveAmountDueForMiAutoFleetRow(cuotaRow) {
 }
 
 export { effectiveAmountDueForMiAutoFleetRow };
+
+export async function getAdditionalExpensesToCharge() {
+  const parkId = fleetParkIdForMiAuto();
+  const result = await query(
+    `SELECT og.id, og.solicitud_id, og.tipo, og.due_date, og.amount_due,
+            og.paid_amount, og.moneda, s.country,
+            ${sqlYangoDriverCoalesceColumns()}
+     FROM module_miauto_otros_gastos og
+     JOIN module_miauto_solicitud s ON s.id = og.solicitud_id
+     ${sqlYangoDriverLateralJoin(1)}
+     WHERE og.deleted_at IS NULL
+       AND s.deleted_at IS NULL
+       AND s.status = 'aprobado'
+       AND og.due_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
+       AND COALESCE(og.paid_amount, 0) < COALESCE(og.amount_due, 0) - 0.005
+       AND NOT EXISTS (
+         SELECT 1 FROM module_miauto_comprobante_otros_gastos cp
+         WHERE cp.otros_gastos_id = og.id AND cp.estado = 'pendiente'
+       )
+     ORDER BY og.due_date, og.id`,
+    [parkId]
+  );
+  return result.rows;
+}
+
+function assertUuidList(values) {
+  const ids = [...new Set((Array.isArray(values) ? values : []).map((value) => String(value).trim()))];
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (ids.length === 0) {
+    const error = new Error('Selecciona al menos una cuota de otros gastos');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (ids.length > MAX_MANUAL_EXPENSE_CHARGES || ids.some((id) => !uuidPattern.test(id))) {
+    const error = new Error('La seleccion de otros gastos no es valida');
+    error.statusCode = 400;
+    throw error;
+  }
+  return ids;
+}
+
+async function getOpenAdditionalExpensesForManualCharge(solicitudId, expenseIds = null) {
+  const parkId = fleetParkIdForMiAuto();
+  const ids = expenseIds == null ? null : assertUuidList(expenseIds);
+  const [expenseResult, contextResult] = await Promise.all([
+    query(
+      `SELECT og.id, og.solicitud_id, og.tipo, og.numero_cuota, og.total_cuotas,
+              og.periodo_anio, og.due_date, og.amount_due, og.paid_amount,
+              og.moneda, og.status
+       FROM module_miauto_otros_gastos og
+       WHERE og.solicitud_id = $1::uuid
+         AND og.deleted_at IS NULL
+         AND COALESCE(og.paid_amount, 0) < COALESCE(og.amount_due, 0) - 0.005
+         AND ($2::uuid[] IS NULL OR og.id = ANY($2::uuid[]))
+         AND NOT EXISTS (
+           SELECT 1 FROM module_miauto_comprobante_otros_gastos cp
+           WHERE cp.otros_gastos_id = og.id AND cp.estado = 'pendiente'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM module_miauto_gasto_cobro_fleet_intento fi
+           WHERE fi.otros_gastos_id = og.id AND fi.estado IN ('processing', 'reconcile')
+         )
+       ORDER BY og.due_date ASC NULLS LAST, COALESCE(og.numero_cuota, og.week_index), og.id`,
+      [solicitudId, ids]
+    ),
+    query(
+      `SELECT s.country,
+            ${sqlYangoDriverCoalesceColumns()}
+       FROM module_miauto_solicitud s
+     ${sqlYangoDriverLateralJoin(2)}
+       WHERE s.id = $1::uuid
+       AND s.deleted_at IS NULL
+       AND s.status = 'aprobado'
+       LIMIT 1`,
+      [solicitudId, parkId]
+    ),
+  ]);
+  const context = contextResult.rows[0];
+  if (!context) return [];
+  return expenseResult.rows.map((expense) => ({ ...expense, ...context }));
+}
+
+function fleetDriverDisplayName(fullName, fallbackRow) {
+  if (typeof fullName === 'string' && fullName.trim()) return fullName.trim();
+  if (fullName && typeof fullName === 'object') {
+    const resolved = [fullName.first_name, fullName.last_name].filter(Boolean).join(' ').trim();
+    if (resolved) return resolved;
+  }
+  return [fallbackRow.first_name, fallbackRow.last_name].filter(Boolean).join(' ').trim() || null;
+}
+
+export async function getAdditionalExpenseFleetChargePreview(solicitudId) {
+  const expenses = await getOpenAdditionalExpensesForManualCharge(solicitudId);
+  if (expenses.length === 0) {
+    return { balance: null, balance_currency: null, driver_name: null, expenses: [] };
+  }
+
+  const driver = expenses[0];
+  if (!driver.external_driver_id) {
+    const error = new Error('No se encontro el conductor de Fleet para consultar su saldo');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const parkId = fleetParkIdForMiAuto(driver.park_id);
+  const cookie = fleetCookieCobroForMiAuto();
+  const country = String(driver.country || 'PE').toUpperCase() === 'CO' ? 'CO' : 'PE';
+  const [balanceResult, exchange] = await Promise.all([
+    getContractorBalance(driver.external_driver_id, parkId, cookie),
+    tipoCambioUsdALocalEfectivo(country),
+  ]);
+  if (!balanceResult.success) {
+    const error = new Error(balanceResult.error || 'No se pudo consultar el saldo del conductor en Fleet');
+    error.statusCode = 502;
+    throw error;
+  }
+
+  return {
+    balance: round2(Math.max(0, Number(balanceResult.balance) || 0)),
+    balance_currency: exchange.monedaLocal,
+    driver_name: fleetDriverDisplayName(balanceResult.full_name, driver),
+    expenses: expenses.map((expense) => ({
+      id: expense.id,
+      tipo: expense.tipo,
+      numero_cuota: expense.numero_cuota,
+      total_cuotas: expense.total_cuotas,
+      periodo_anio: expense.periodo_anio,
+      due_date: ymdFromDbDate(expense.due_date),
+      amount_due: round2(Number(expense.amount_due) || 0),
+      paid_amount: round2(Number(expense.paid_amount) || 0),
+      pending_amount: round2(Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount))),
+      currency: normalizePenUsd(expense.moneda),
+      status: miAutoOpenStatusSaldoVencimiento(
+        ymdFromDbDate(expense.due_date),
+        Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount)),
+        Number(expense.paid_amount) || 0
+      ),
+    })),
+  };
+}
+
+export async function processSelectedAdditionalExpenseFleetCharges(solicitudId, expenseIds, options = {}) {
+  const ids = assertUuidList(expenseIds);
+  const expenses = await getOpenAdditionalExpensesForManualCharge(solicitudId, ids);
+  if (expenses.length !== ids.length) {
+    const error = new Error('Una o mas cuotas ya fueron pagadas, tienen comprobante pendiente o estan en proceso');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const results = [];
+  for (const [index, expense] of expenses.entries()) {
+    try {
+      const result = await processAdditionalExpenseFleetCharge(expense, options);
+      results.push({ expense_id: expense.id, ...result });
+    } catch (error) {
+      logger.error('miauto.gastos.manual_fleet_charge_failed', {
+        solicitudId,
+        expenseId: expense.id,
+        error: error.message,
+      });
+      results.push({ expense_id: expense.id, success: false, failed: true, reason: error.message });
+    }
+    if (!options.dryRun && index < expenses.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+
+  return {
+    total: results.length,
+    success: results.filter((result) => result.success && !result.skipped).length,
+    failed: results.filter((result) => !result.success).length,
+    skipped: results.filter((result) => result.skipped).length,
+    partial: results.filter((result) => result.partial).length,
+    results,
+  };
+}
+
+export async function processAdditionalExpenseFleetCharge(expense, options = {}) {
+  const dryRun = Boolean(options.dryRun || options.simulateFleetWithdraw);
+  const pending = round2(Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount)));
+  if (pending <= 0.005) return { success: true, skipped: true, reason: 'sin_saldo_pendiente' };
+  const externalDriverId = expense.external_driver_id;
+  if (!externalDriverId) return { success: false, failed: true, reason: 'Sin external_driver_id' };
+  const parkId = fleetParkIdForMiAuto(expense.park_id);
+  const cookie = fleetCookieCobroForMiAuto(options.cookieOverride);
+  const balanceResult = await getContractorBalance(externalDriverId, parkId, cookie);
+  if (!balanceResult.success) return { success: false, failed: true, reason: balanceResult.error };
+  const balance = round2(Math.max(0, Number(balanceResult.balance) || 0));
+  if (balance <= 0.005) return { success: false, failed: true, reason: 'Sin saldo disponible' };
+
+  const country = String(expense.country || 'PE').toUpperCase() === 'CO' ? 'CO' : 'PE';
+  const exchange = await tipoCambioUsdALocalEfectivo(country);
+  const localCurrency = exchange.monedaLocal;
+  const expenseCurrency = normalizePenUsd(expense.moneda);
+  const pendingLocal = expenseCurrency === 'USD'
+    ? round2(convertirMontoEntreMonedas(pending, 'USD', localCurrency, exchange.valorUsdALocal))
+    : expenseCurrency === localCurrency ? pending : null;
+  if (pendingLocal == null) {
+    return {
+      success: false,
+      failed: true,
+      reason: `La moneda ${expenseCurrency} no corresponde a la moneda Fleet ${localCurrency}`,
+    };
+  }
+  const withdrawalAmount = round2(Math.min(pendingLocal, balance));
+  const creditAmount = expenseCurrency === 'USD'
+    ? round2(convertirMontoEntreMonedas(withdrawalAmount, localCurrency, 'USD', exchange.valorUsdALocal))
+    : withdrawalAmount;
+  if (withdrawalAmount <= 0.005 || creditAmount <= 0.005) {
+    return { success: false, failed: true, reason: 'No se pudo convertir el monto para Fleet' };
+  }
+  const sourceKey = `fleet-gasto:${expense.id}:${limaTodayYmdSync()}:${Number(expense.paid_amount || 0).toFixed(2)}`;
+
+  if (dryRun) {
+    return {
+      success: true,
+      dryRun: true,
+      partial: creditAmount + 0.005 < pending,
+      expenseId: expense.id,
+      pending,
+      withdrawalAmount,
+      withdrawalCurrency: localCurrency,
+      creditAmount,
+      creditCurrency: expenseCurrency,
+    };
+  }
+
+  const reservation = await reserveAdditionalExpenseFleetIntent(expense, {
+    sourceKey,
+    withdrawalAmount,
+    localCurrency,
+    creditAmount,
+    expenseCurrency,
+    externalDriverId,
+    parkId,
+  });
+  if (reservation.skipped) return { success: true, skipped: true, reason: reservation.reason };
+  const intentId = reservation.intentId;
+
+  const withdrawal = await withdrawWithOngoingRetry({
+    externalDriverId,
+    amount: withdrawalAmount.toFixed(2),
+    description: `Mi Auto - ${expense.tipo || 'otro gasto'}`,
+    cookie,
+    parkId,
+    logLabel: `gasto:${expense.id}`,
+  });
+  if (!withdrawal.success) {
+    await query(
+      `UPDATE module_miauto_gasto_cobro_fleet_intento
+       SET estado = 'failed', error = $1, response = $2::jsonb, completed_at = CURRENT_TIMESTAMP
+       WHERE id = $3::uuid`,
+      [withdrawal.message || withdrawal.error || 'Error Fleet', JSON.stringify(withdrawal.data || {}), intentId]
+    );
+    return { success: false, failed: true, reason: withdrawal.message || withdrawal.error };
+  }
+
+  try {
+    const application = await applyPaymentToExpense({
+      solicitudId: expense.solicitud_id,
+      expenseId: expense.id,
+      source: 'fleet',
+      sourceKey,
+      originalAmount: withdrawalAmount,
+      originalCurrency: localCurrency,
+      appliedAmount: creditAmount,
+      appliedCurrency: expenseCurrency,
+      exchangeRate: localCurrency === expenseCurrency ? 1 : exchange.valorUsdALocal,
+      userId: options.userId || null,
+      metadata: { fleet_intent_id: intentId, fleet_response: withdrawal.data || {} },
+      rejectExcess: false,
+    });
+    await query(
+      `UPDATE module_miauto_gasto_cobro_fleet_intento
+       SET estado = 'success', response = $1::jsonb, completed_at = CURRENT_TIMESTAMP
+       WHERE id = $2::uuid`,
+      [JSON.stringify(withdrawal.data || {}), intentId]
+    );
+    return { success: true, partial: application.pendingAfter > 0.005, application };
+  } catch (error) {
+    await query(
+      `UPDATE module_miauto_gasto_cobro_fleet_intento
+       SET estado = 'reconcile', error = $1, response = $2::jsonb
+       WHERE id = $3::uuid`,
+      [error.message, JSON.stringify(withdrawal.data || {}), intentId]
+    );
+    throw error;
+  }
+}
+
+export async function processAdditionalExpenseFleetQueue(options = {}) {
+  const expenses = await getAdditionalExpensesToCharge();
+  const summary = { total: expenses.length, success: 0, partial: 0, failed: 0, skipped: 0 };
+  for (const expense of expenses) {
+    try {
+      const result = await processAdditionalExpenseFleetCharge(expense, options);
+      if (result.skipped) summary.skipped += 1;
+      else if (!result.success) summary.failed += 1;
+      else if (result.partial) summary.partial += 1;
+      else summary.success += 1;
+    } catch (error) {
+      summary.failed += 1;
+      logger.error('miauto.gastos.fleet_charge_failed', { expenseId: expense.id, error: error.message });
+    }
+    if (!options.simulateFleetWithdraw) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+  return summary;
+}
 
 async function cuotaRowWithPartnerFeesUsdNormalizedIfNeeded(solicitudId, r) {
   if (!r || String(r.moneda || 'PEN').toUpperCase() !== 'USD') return r;
@@ -620,34 +1020,14 @@ export async function processCobroCuota(
       monedaFleetLocal,
     });
   } else {
-    withdrawResult = await withdrawFromContractor(
+    withdrawResult = await withdrawWithOngoingRetry({
       externalDriverId,
-      amountToChargeFleet.toFixed(2),
-      'Cuota Mi Auto',
-      cookieMiAuto,
-      parkId
-    );
-    const maxW = fleetWithdrawMaxAttempts();
-    const delayMs = fleetWithdrawRetryDelayMs();
-    let wAttempt = 0;
-    while (
-      !withdrawResult.success &&
-      wAttempt < maxW - 1 &&
-      isFleetOngoingTransactionsError(withdrawResult.message || withdrawResult.error)
-    ) {
-      wAttempt += 1;
-      logger.warn(
-        `Yego Mi Auto cobro: retiro ${driverName} transacciones en curso — reintento ${wAttempt}/${maxW - 1} en ${delayMs}ms`
-      );
-      await new Promise((r) => setTimeout(r, delayMs));
-      withdrawResult = await withdrawFromContractor(
-        externalDriverId,
-        amountToChargeFleet.toFixed(2),
-        'Cuota Mi Auto',
-        cookieMiAuto,
-        parkId
-      );
-    }
+      amount: amountToChargeFleet.toFixed(2),
+      description: 'Cuota Mi Auto',
+      cookie: cookieMiAuto,
+      parkId,
+      logLabel: `cuota:${cuotaRow.id}:${driverName}`,
+    });
   }
 
   if (!withdrawResult.success) {

@@ -5,6 +5,7 @@
 import { query } from '../config/database.js';
 import { writeFileSync, appendFileSync } from 'fs';
 import {
+  buildPendingTotalMapForSolicitud,
   getSolicitudesParaCobroSemanal,
 } from '../yego_miauto/services/cuotas/miautoCuotaSemanalService.js';
 import { getCronogramaById } from '../yego_miauto/services/cronograma/miautoCronogramaService.js';
@@ -16,9 +17,10 @@ import {
   round2,
 } from '../yego_miauto/services/cobros/CuotaCalculator.js';
 import { computeLateFee } from '../yego_miauto/services/cobros/LateFeeCalculator.js';
-import { applyWaterfallPool } from '../yego_miauto/services/cobros/CascadaPoolManager.js';
+import { applyWaterfallPool, snapshotOrigenTrasCascada } from '../yego_miauto/services/cobros/CascadaPoolManager.js';
 import { computeDueDateForMiAutoCuota } from '../utils/miautoLimaWeekRange.js';
 import { getPreviousWeekIncomeRangeLima } from '../utils/miautoLimaWeekRange.js';
+import { partnerFeesYangoAMonedaCuota } from '../yego_miauto/services/utils/miautoMoneyUtils.js';
 
 const LOG = '/tmp/miauto-simulation.log';
 writeFileSync(LOG, '');
@@ -42,25 +44,36 @@ function limaTodayYmd() {
 }
 
 async function hayCuotaVencidaConSaldo(solicitudId) {
-  const res = await query(`SELECT 1 FROM module_miauto_cuota_semanal c WHERE c.solicitud_id = $1::uuid AND c.status = 'overdue' AND c.deleted_at IS NULL LIMIT 1`, [solicitudId]);
-  return (res.rows || []).length > 0;
+  return (await loadCuotasParaCascada(solicitudId)).some((c) => {
+    const dueYmd = ymdFromDb(c.due_date);
+    return String(c.status || '').toLowerCase() === 'overdue'
+      || (dueYmd && dueYmd < limaTodayYmd());
+  });
 }
 
 async function loadCuotasParaCascada(solicitudId) {
+  const pendingMap = await buildPendingTotalMapForSolicitud(solicitudId);
   const res = await query(
-    `SELECT id, due_date, week_start_date, amount_due, late_fee, paid_amount, status
-     FROM module_miauto_cuota_semanal WHERE solicitud_id = $1 AND status IN ('pending', 'overdue', 'partial') AND deleted_at IS NULL
+    `SELECT id, due_date, week_start_date, amount_due, late_fee, mora_extra, paid_amount, status, montos_fuente
+     FROM module_miauto_cuota_semanal
+     WHERE solicitud_id = $1
+       AND status IN ('pending', 'overdue', 'partial', 'paid')
+       AND deleted_at IS NULL
      ORDER BY due_date ASC NULLS LAST, id ASC`, [solicitudId]);
   return (res.rows || []).map(r => ({
     ...r,
-    pending: round2(round2(Number(r.amount_due)||0) + round2(Number(r.late_fee)||0) - round2(Number(r.paid_amount)||0)),
-  }));
+    late_fee: round2(Number(r.late_fee) || 0),
+    mora_extra: round2(Number(r.mora_extra) || 0),
+    paid_amount: round2(Number(r.paid_amount) || 0),
+    pending: round2(Number(pendingMap.get(String(r.id))) || 0),
+  })).filter((r) => r.pending > 0.005);
 }
 
 async function main() {
   const { cuotaWeekMonday } = (() => {
     const prev = getPreviousWeekIncomeRangeLima();
-    return { cuotaWeekMonday: prev.weekStartDate };
+    const override = String(process.env.MIAUTO_SIM_CUOTA_WEEK || '').trim().slice(0, 10);
+    return { cuotaWeekMonday: /^\d{4}-\d{2}-\d{2}$/.test(override) ? override : addDaysYmd(prev.weekStartDate, 7) };
   })();
 
   log('═══════════════════════════════════════════════');
@@ -93,8 +106,10 @@ async function main() {
   let totalMontoCascada = 0;
   let totalCuotaUSD = 0;
   let totalCuotaPEN = 0;
+  const limit = Number(process.env.MIAUTO_SIM_LIMIT || 5);
+  const solicitudesParaSimular = limit > 0 ? solicitudes.slice(0, limit) : solicitudes;
 
-  for (const sol of solicitudes.slice(0, 5)) {
+  for (const sol of solicitudesParaSimular) {
     const cronograma = await getCronogramaById(sol.cronograma_id);
     if (!cronograma) continue;
 
@@ -123,7 +138,10 @@ async function main() {
     log(`  Bono auto: ${plan.bonoAuto} | Comisión: ${plan.pctComision}% | Cobro saldo: ${plan.cobroSaldo}`);
 
     // Calcular cuota
-    const pfRaw = hayVencida ? 0 : scenario.pf;
+    let pfRaw = isPrimera ? 0 : scenario.pf;
+    if (pfRaw > 0.005) {
+      pfRaw = await partnerFeesYangoAMonedaCuota(sol.solicitud_id, pfRaw, plan.moneda);
+    }
     const cuotaCalc = computeAmountDueSemanal({
       cuotaSemanal: plan.cuotaSemanal,
       partnerFeesRaw: pfRaw,
@@ -165,7 +183,14 @@ async function main() {
     });
 
     // Resultado final
-    const amountDueFinal = cascadaResult.remainingPool > 0.005 ? Math.max(0, cuotaCalc.amountDue - cascadaResult.remainingPool) : cuotaCalc.amountDue;
+    const amountDueFinal = poolCascada.pool > 0.005
+      ? snapshotOrigenTrasCascada({
+          remainingPool: cascadaResult.remainingPool,
+          pctComision: plan.pctComision,
+          cuotaSemanal: plan.cuotaSemanal,
+          cobroSaldo: plan.cobroSaldo,
+        }).amountDue
+      : cuotaCalc.amountDue;
     const pendingTotal = round2(amountDueFinal + moraResult.moraTotal);
     
     log(`  amountDue final: ${amountDueFinal.toFixed(2)} ${plan.moneda}`);

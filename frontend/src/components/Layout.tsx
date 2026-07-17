@@ -61,7 +61,6 @@ const ADMIN_MENU: Record<AdminProduct, { newRequest?: MenuItem; sections: MenuSe
         { text: 'Nueva Solicitud', icon: PlusCircle, path: '/admin/yego-mi-auto/nueva-solicitud', permission: 'miauto.nueva_solicitud' },
         { text: 'Solicitudes', icon: FileText, path: '/admin/yego-mi-auto/requests', permission: 'miauto.solicitudes' },
         { text: 'Alquiler / Venta', icon: Banknote, path: '/admin/yego-mi-auto/rent-sale', permission: 'miauto.alquiler_venta' },
-        { text: 'Pagos', icon: CreditCard, path: '/admin/yego-mi-auto/payments', permission: 'miauto.pagos' },
         { text: 'Validar comprobantes', icon: ClipboardCheck, path: '/admin/yego-mi-auto/validar-comprobantes', permission: 'miauto.validar_comprobantes' },
         { text: 'Mensajes', icon: MessageCircle, path: '/admin/yego-mi-auto/mensajes', permission: 'miauto.mensajes' },
       ]},

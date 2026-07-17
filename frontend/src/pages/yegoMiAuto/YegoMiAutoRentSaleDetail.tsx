@@ -2,14 +2,20 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText, Download, RefreshCw } from 'lucide-react';
+import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText, Download, RefreshCw, Settings2 } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
 import { buildMiAutoMessage } from '../../utils/miautoWhatsAppMessageBuilder';
 import { TablePaginationBar } from '../../components/TablePaginationBar';
 import { useTablePagination } from '../../hooks/useTablePagination';
-import { type MiautoOtrosGastoRow } from '../../utils/miautoOtrosGastos';
+import {
+  canonicalOtrosGastoType,
+  labelOtrosGastoType,
+  labelOtrosGastoStatus,
+  type ComprobanteOtrosGastos,
+  type MiautoOtrosGastoRow,
+} from '../../utils/miautoOtrosGastos';
 import { monedaCuotasLabel, symMoneda } from '../../utils/miautoAlquilerVentaList';
 import { MIAUTO_NO_CACHE_HEADERS, emptyListIfNotAbort, isAxiosAbortError } from '../../utils/miautoApiUtils';
 import {
@@ -35,6 +41,11 @@ import {
 } from '../../utils/miautoRentSaleHelpers';
 import { MiautoComprobantesResumenSemana } from '../../components/yegoMiAuto/MiautoComprobantesResumenSemana';
 import { MiautoGenerarCuotaModal } from '../../components/yegoMiAuto/MiautoGenerarCuotaModal';
+import {
+  MiautoGastosConfigurationModal,
+  type MiautoGastoConfiguration,
+  type MiautoGastoGenerationInput,
+} from '../../components/yegoMiAuto/MiautoGastosConfigurationModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { roundToTwoDecimals } from '../../utils/currency';
 import {
@@ -42,22 +53,12 @@ import {
   resolveTipoCambioUsdALocalFromRows,
 } from '../../utils/miautoPenUsdConversion';
 
-const TIPO_OTROS_GASTOS_LABELS: Record<string, string> = {
-  gps: 'GPS',
-  src: 'Seguro RC (SRC)',
-  soat: 'SOAT',
-  impuesto_vehicular: 'Impuesto Vehicular',
-  todo_riesgo_mas_gps_agrupado: 'STR + GPS',
-  inicial_parcial: 'Inicial Parcial',
-  generico: 'Otros Gastos',
-};
-
 const TIPO_OTROS_GASTOS_ACCENT: Record<string, string> = {
   gps: 'border-l-blue-500',
   src: 'border-l-amber-500',
   soat: 'border-l-green-500',
   impuesto_vehicular: 'border-l-orange-500',
-  todo_riesgo_mas_gps_agrupado: 'border-l-purple-500',
+  str_gps: 'border-l-purple-500',
   inicial_parcial: 'border-l-teal-500',
   generico: 'border-l-gray-400',
 };
@@ -67,10 +68,18 @@ const TIPO_OTROS_GASTOS_BAR: Record<string, string> = {
   src: 'bg-amber-500',
   soat: 'bg-green-500',
   impuesto_vehicular: 'bg-orange-500',
-  todo_riesgo_mas_gps_agrupado: 'bg-purple-500',
+  str_gps: 'bg-purple-500',
   inicial_parcial: 'bg-teal-500',
   generico: 'bg-gray-400',
 };
+
+const MONTHS_SHORT = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+
+function formatOtrosGastoDueDate(dueDate: string, periodYear?: number | null): string {
+  const [year, month, day] = String(dueDate || '').slice(0, 10).split('-');
+  const monthLabel = MONTHS_SHORT[Number(month) - 1];
+  return year && monthLabel && day ? `${periodYear || year} · ${day}-${monthLabel}` : '—';
+}
 
 interface CuotaSemanal {
   id: string;
@@ -239,6 +248,27 @@ interface ContratoDocumentoMiAuto {
   activo?: boolean;
 }
 
+interface OtroGastoCobroFleetRow {
+  id: string;
+  tipo: string;
+  numero_cuota?: number | null;
+  total_cuotas?: number | null;
+  periodo_anio?: number | null;
+  due_date?: string | null;
+  amount_due: number;
+  paid_amount: number;
+  pending_amount: number;
+  currency: string;
+  status: string;
+}
+
+interface OtroGastoCobroFleetPreview {
+  balance: number | null;
+  balance_currency: string | null;
+  driver_name: string | null;
+  expenses: OtroGastoCobroFleetRow[];
+}
+
 /** Saldo pendiente numérico para conformidad admin: usa el saldo final del API/helper único de cuota semanal. */
 function pendienteRestanteConformidadCuota(c: CuotaSemanal): number {
   return roundToTwoDecimals(Math.max(0, miautoCuotaFinalCronogramaSemanal(c)));
@@ -285,6 +315,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const [solicitud, setSolicitud] = useState<SolicitudSummary | null>(null);
   const [cuotas, setCuotas] = useState<CuotaSemanal[]>([]);
   const [comprobantesPagos, setComprobantesPagos] = useState<ComprobanteCuotaSemanal[]>([]);
+  const [comprobantesOtrosGastos, setComprobantesOtrosGastos] = useState<ComprobanteOtrosGastos[]>([]);
   const [comprobantePreview, setComprobantePreview] = useState<{ url: string; fileName: string; isImage: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   /** Recarga tras validar/rechazar: solo overlay en cronograma (no pantalla entera). */
@@ -307,6 +338,22 @@ export default function YegoMiAutoRentSaleDetail() {
   const [bonoTiempoResumen, setBonoTiempoResumen] = useState<BonoTiempoResumen | null>(null);
   const [tabCronograma, setTabCronograma] = useState<'semanales' | 'otros_gastos'>('semanales');
   const [ogTipoFilterAdmin, setOgTipoFilterAdmin] = useState<string | null>(null);
+  const [gastoConfig, setGastoConfig] = useState<MiautoGastoConfiguration | null>(null);
+  const [loadingGastoConfig, setLoadingGastoConfig] = useState(false);
+  const [savingGastoConfig, setSavingGastoConfig] = useState(false);
+  const [generatingGastos, setGeneratingGastos] = useState(false);
+  const [showGastoConfigModal, setShowGastoConfigModal] = useState(false);
+  const [showGastoFleetChargeModal, setShowGastoFleetChargeModal] = useState(false);
+  const [loadingGastoFleetCharge, setLoadingGastoFleetCharge] = useState(false);
+  const [chargingGastoFleet, setChargingGastoFleet] = useState(false);
+  const [gastoFleetPreview, setGastoFleetPreview] = useState<OtroGastoCobroFleetPreview | null>(null);
+  const [gastosFleetSeleccionados, setGastosFleetSeleccionados] = useState<Record<string, boolean>>({});
+  const [gastoFleetTipoActivo, setGastoFleetTipoActivo] = useState<string | null>(null);
+  const [gastoComprobanteTarget, setGastoComprobanteTarget] = useState<MiautoOtrosGastoRow | null>(null);
+  const [gastoComprobanteMonto, setGastoComprobanteMonto] = useState('');
+  const [gastoComprobanteMoneda, setGastoComprobanteMoneda] = useState('PEN');
+  const [gastoComprobanteArchivo, setGastoComprobanteArchivo] = useState<File | null>(null);
+  const [subiendoGastoComprobante, setSubiendoGastoComprobante] = useState(false);
   const [subTabCuota, setSubTabCuota] = useState<Record<string, 'comprobantes' | 'evidencias'>>({});
   const [evidenciasFleet, setEvidenciasFleet] = useState<{ id: string; cuota_semanal_id: string; file_name: string; file_path: string; created_at: string }[]>([]);
   const [subiendoEvidenciaCuotaId, setSubiendoEvidenciaCuotaId] = useState<string | null>(null);
@@ -572,10 +619,11 @@ export default function YegoMiAutoRentSaleDetail() {
       else setLoading(true);
       setError('');
       const req = { signal, headers: MIAUTO_NO_CACHE_HEADERS };
-      const [resSol, resCuotas, resComp, resEvidencias, resNotasVenta, resContratos] = await Promise.all([
+      const [resSol, resCuotas, resComp, resCompOtros, resEvidencias, resNotasVenta, resContratos] = await Promise.all([
         api.get(`/miauto/solicitudes/${id}`, req),
         api.get(`/miauto/solicitudes/${id}/cuotas-semanales`, req),
         api.get(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal`, req).catch(emptyListIfNotAbort),
+        api.get(`/miauto/solicitudes/${id}/comprobantes-otros-gastos`, req).catch(emptyListIfNotAbort),
         api.get(`/miauto/solicitudes/${id}/evidencias-fleet`, req).catch(emptyListIfNotAbort),
         api.get(`/miauto/solicitudes/${id}/notas-venta`, req).catch(emptyListIfNotAbort),
         api.get(`/miauto/solicitudes/${id}/contratos`, req).catch(emptyListIfNotAbort),
@@ -585,12 +633,14 @@ export default function YegoMiAutoRentSaleDetail() {
       const cuotasEnvelope = resCuotas.data?.data ?? resCuotas.data ?? {};
       const bonoResumen = (cuotasEnvelope as { bono_tiempo?: BonoTiempoResumen }).bono_tiempo ?? null;
       const comp = resComp.data?.data ?? resComp.data ?? [];
+      const compOtros = resCompOtros.data?.data ?? resCompOtros.data ?? [];
       const evFleet = resEvidencias.data?.data ?? resEvidencias.data ?? [];
       const notas = resNotasVenta.data?.data ?? resNotasVenta.data ?? [];
       const contratosData = resContratos.data?.data ?? resContratos.data ?? [];
       setSolicitud(sol || null);
       setCuotas(rawCuotas as CuotaSemanal[]);
       setComprobantesPagos(Array.isArray(comp) ? comp : []);
+      setComprobantesOtrosGastos(Array.isArray(compOtros) ? compOtros : []);
       setNotasVenta(Array.isArray(notas) ? notas : []);
       setContratos(Array.isArray(contratosData) ? contratosData : []);
 
@@ -608,6 +658,7 @@ export default function YegoMiAutoRentSaleDetail() {
         setSolicitud(null);
         setCuotas([]);
         setComprobantesPagos([]);
+        setComprobantesOtrosGastos([]);
         setNotasVenta([]);
         setContratos([]);
   
@@ -875,16 +926,202 @@ export default function YegoMiAutoRentSaleDetail() {
     }
   };
 
-  const handleOtroGastoStatusChange = useCallback(async (ogId: string, newStatus: string) => {
+  useEffect(() => {
+    if (!id || tabCronograma !== 'otros_gastos' || gastoConfig) return;
+    let active = true;
+    setLoadingGastoConfig(true);
+    api.get(`/miauto/solicitudes/${id}/otros-gastos/configuracion`)
+      .then((response) => {
+        if (active) setGastoConfig(response.data?.data ?? response.data);
+      })
+      .catch((err) => {
+        if (active) toast.error(err.response?.data?.message || 'No se pudo cargar la configuracion de gastos');
+      })
+      .finally(() => {
+        if (active) setLoadingGastoConfig(false);
+      });
+    return () => { active = false; };
+  }, [id, tabCronograma, gastoConfig]);
+
+  const saveGastoConfiguration = useCallback(async (config: MiautoGastoConfiguration) => {
+    if (!id) return;
     try {
-      if (!id) return;
-      await api.put(`/miauto/solicitudes/${id}/otros-gastos/${ogId}/estado`, { status: newStatus });
-      toast.success('Estado actualizado');
-      fetchDetail(undefined, { refresh: true });
+      setSavingGastoConfig(true);
+      const response = await api.patch(`/miauto/solicitudes/${id}/otros-gastos/configuracion`, config);
+      setGastoConfig(response.data?.data ?? response.data);
+      toast.success('Configuracion guardada');
+      setShowGastoConfigModal(false);
     } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Error');
+      toast.error(err.response?.data?.message || 'No se pudo guardar la configuracion');
+    } finally {
+      setSavingGastoConfig(false);
     }
   }, [id]);
+
+  const saveAndGenerateAdditionalExpenses = useCallback(async (
+    config: MiautoGastoConfiguration,
+    generation: MiautoGastoGenerationInput,
+  ) => {
+    if (!id) return;
+    try {
+      setGeneratingGastos(true);
+      const configResponse = await api.patch(
+        `/miauto/solicitudes/${id}/otros-gastos/configuracion`,
+        config,
+      );
+      setGastoConfig(configResponse.data?.data ?? configResponse.data);
+      await api.post(`/miauto/solicitudes/${id}/otros-gastos/generar`, {
+        periodo_anio: generation.periodoAnio,
+        impuesto_vehicular_monto_total: generation.impuestoVehicularMontoTotal,
+      });
+      toast.success('Configuracion guardada y periodo generado');
+      setShowGastoConfigModal(false);
+      await fetchDetail(undefined, { refresh: true });
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'No se pudieron generar los gastos');
+    } finally {
+      setGeneratingGastos(false);
+    }
+  }, [id, fetchDetail]);
+
+  const loadAdditionalExpenseFleetCharge = useCallback(async () => {
+    if (!id) return;
+    try {
+      setLoadingGastoFleetCharge(true);
+      const response = await api.get(`/miauto/solicitudes/${id}/otros-gastos/cobro-fleet/preview`);
+      const preview = (response.data?.data ?? response.data) as OtroGastoCobroFleetPreview;
+      setGastoFleetPreview(preview);
+      setGastosFleetSeleccionados({});
+      setGastoFleetTipoActivo(canonicalOtrosGastoType(preview.expenses[0]?.tipo));
+    } catch (err: any) {
+      setGastoFleetPreview(null);
+      toast.error(err.response?.data?.message || 'No se pudo consultar el saldo Fleet');
+    } finally {
+      setLoadingGastoFleetCharge(false);
+    }
+  }, [id]);
+
+  const openAdditionalExpenseFleetCharge = useCallback(() => {
+    setShowGastoFleetChargeModal(true);
+    void loadAdditionalExpenseFleetCharge();
+  }, [loadAdditionalExpenseFleetCharge]);
+
+  const selectedAdditionalExpenseFleetIds = useMemo(
+    () => Object.entries(gastosFleetSeleccionados)
+      .filter(([, selected]) => selected)
+      .map(([expenseId]) => expenseId),
+    [gastosFleetSeleccionados]
+  );
+
+  const selectedAdditionalExpenseFleetTotals = useMemo(() => {
+    const selectedIds = new Set(selectedAdditionalExpenseFleetIds);
+    return (gastoFleetPreview?.expenses || []).reduce((totals, expense) => {
+      if (selectedIds.has(expense.id)) {
+        const currency = expense.currency || 'PEN';
+        totals[currency] = roundToTwoDecimals((totals[currency] || 0) + Number(expense.pending_amount || 0));
+      }
+      return totals;
+    }, {} as Record<string, number>);
+  }, [gastoFleetPreview, selectedAdditionalExpenseFleetIds]);
+
+  const additionalExpenseFleetGroups = useMemo(() => {
+    const groups = new Map<string, {
+      type: string;
+      label: string;
+      expenses: OtroGastoCobroFleetRow[];
+      totals: Record<string, number>;
+    }>();
+    for (const expense of gastoFleetPreview?.expenses || []) {
+      const type = canonicalOtrosGastoType(expense.tipo);
+      const current = groups.get(type) || {
+        type,
+        label: labelOtrosGastoType(type),
+        expenses: [],
+        totals: {},
+      };
+      current.expenses.push(expense);
+      const currency = expense.currency || 'PEN';
+      current.totals[currency] = roundToTwoDecimals(
+        (current.totals[currency] || 0) + Number(expense.pending_amount || 0)
+      );
+      groups.set(type, current);
+    }
+    return Array.from(groups.values());
+  }, [gastoFleetPreview]);
+
+  const activeAdditionalExpenseFleetGroup = useMemo(
+    () => additionalExpenseFleetGroups.find((group) => group.type === gastoFleetTipoActivo)
+      || additionalExpenseFleetGroups[0]
+      || null,
+    [additionalExpenseFleetGroups, gastoFleetTipoActivo]
+  );
+
+  const chargeSelectedAdditionalExpenses = useCallback(async () => {
+    if (!id || selectedAdditionalExpenseFleetIds.length === 0) return;
+    try {
+      setChargingGastoFleet(true);
+      const response = await api.post(`/miauto/solicitudes/${id}/otros-gastos/cobro-fleet`, {
+        otros_gastos_ids: selectedAdditionalExpenseFleetIds,
+      });
+      const result = response.data?.data ?? response.data;
+      const successCount = Number(result?.success || 0);
+      const partialCount = Number(result?.partial || 0);
+      const failedCount = Number(result?.failed || 0);
+      if (failedCount > 0) {
+        toast.error(`Cobro procesado: ${successCount} aplicados y ${failedCount} no realizados`);
+      } else if (partialCount > 0) {
+        toast.success(`Cobro aplicado parcialmente en ${partialCount} cuota${partialCount === 1 ? '' : 's'}`);
+      } else {
+        toast.success(`${successCount} cuota${successCount === 1 ? '' : 's'} cobrada${successCount === 1 ? '' : 's'}`);
+      }
+      setShowGastoFleetChargeModal(false);
+      setGastoFleetPreview(null);
+      setGastosFleetSeleccionados({});
+      await fetchDetail(undefined, { refresh: true });
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'No se pudo realizar el cobro Fleet');
+      await loadAdditionalExpenseFleetCharge();
+    } finally {
+      setChargingGastoFleet(false);
+    }
+  }, [fetchDetail, id, loadAdditionalExpenseFleetCharge, selectedAdditionalExpenseFleetIds]);
+
+  const openAdditionalExpenseReceipt = useCallback((expense: MiautoOtrosGastoRow) => {
+    const pending = Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount || 0));
+    setGastoComprobanteTarget(expense);
+    setGastoComprobanteMonto(pending.toFixed(2));
+    setGastoComprobanteMoneda(expense.moneda || 'PEN');
+    setGastoComprobanteArchivo(null);
+  }, []);
+
+  const uploadAdditionalExpenseReceipt = useCallback(async () => {
+    if (!id || !gastoComprobanteTarget || !gastoComprobanteArchivo) return;
+    const amount = Number(gastoComprobanteMonto.replace(',', '.'));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast.error('Ingresa un monto valido');
+      return;
+    }
+    try {
+      setSubiendoGastoComprobante(true);
+      const formData = new FormData();
+      formData.append('file', gastoComprobanteArchivo);
+      formData.append('monto', amount.toFixed(2));
+      formData.append('moneda', gastoComprobanteMoneda);
+      await api.post(
+        `/miauto/solicitudes/${id}/otros-gastos/${gastoComprobanteTarget.id}/comprobantes`,
+        formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      );
+      toast.success('Comprobante enviado para validacion');
+      setGastoComprobanteTarget(null);
+      setGastoComprobanteArchivo(null);
+      await fetchDetail(undefined, { refresh: true });
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'No se pudo subir el comprobante');
+    } finally {
+      setSubiendoGastoComprobante(false);
+    }
+  }, [id, gastoComprobanteTarget, gastoComprobanteArchivo, gastoComprobanteMonto, gastoComprobanteMoneda, fetchDetail]);
 
   const handleSubirEvidenciasFleetCuota = async (cuotaId: string) => {
     if (!id) return;
@@ -943,6 +1180,45 @@ export default function YegoMiAutoRentSaleDetail() {
     () => (Array.isArray(solicitud?.otros_gastos) ? solicitud.otros_gastos : []),
     [solicitud?.otros_gastos]
   );
+  const otrosGastosSummary = useMemo(() => otrosGastosRows.reduce((summary, expense) => {
+    const currency = expense.moneda || 'PEN';
+    summary.totals[currency] = roundToTwoDecimals(
+      (summary.totals[currency] || 0) + Number(expense.amount_due || 0)
+    );
+    if (expense.status === 'paid') summary.paid += 1;
+    else if (expense.status === 'overdue') summary.overdue += 1;
+    else if (expense.status === 'pending') summary.pending += 1;
+    return summary;
+  }, {
+    totals: {} as Record<string, number>,
+    paid: 0,
+    pending: 0,
+    overdue: 0,
+  }), [otrosGastosRows]);
+  const otrosGastosGroups = useMemo(() => {
+    const grouped = new Map<string, MiautoOtrosGastoRow[]>();
+    for (const expense of otrosGastosRows) {
+      const type = canonicalOtrosGastoType(expense.tipo);
+      const expenses = grouped.get(type) || [];
+      expenses.push(expense);
+      grouped.set(type, expenses);
+    }
+    return Array.from(grouped, ([type, expenses]) => ({
+      type,
+      expenses,
+      paid: expenses.filter((expense) => expense.status === 'paid').length,
+      periods: Array.from(new Set(expenses.map(
+        (expense) => expense.periodo_anio || String(expense.due_date || '').slice(0, 4) || 'Sin periodo'
+      ))).sort((a, b) => String(b).localeCompare(String(a))),
+      totals: expenses.reduce((totals, expense) => {
+        const currency = expense.moneda || 'PEN';
+        totals[currency] = roundToTwoDecimals(
+          (totals[currency] || 0) + Number(expense.amount_due || 0)
+        );
+        return totals;
+      }, {} as Record<string, number>),
+    }));
+  }, [otrosGastosRows]);
 
   const comprobantesByCuotaId = useMemo(() => {
     const by: Record<string, ComprobanteCuotaSemanal[]> = {};
@@ -989,7 +1265,18 @@ export default function YegoMiAutoRentSaleDetail() {
     ? monedaCuotaRow(cuotas[0])
     : (solicitud?.cronograma_vehiculo?.inicial_moneda === 'USD' ? 'USD' : 'PEN');
 
-  /** Comprobantes de otros gastos agrupados por otros_gastos_id */
+  const comprobantesOtrosGastosPorGasto = useMemo(() => {
+    const grouped = new Map<string, ComprobanteOtrosGastos[]>();
+    for (const receipt of comprobantesOtrosGastos) {
+      const current = grouped.get(receipt.otros_gastos_id) || [];
+      current.push(receipt);
+      grouped.set(receipt.otros_gastos_id, current);
+    }
+    for (const receipts of grouped.values()) {
+      receipts.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+    }
+    return grouped;
+  }, [comprobantesOtrosGastos]);
 
   if (loading) {
     return (
@@ -2245,6 +2532,30 @@ export default function YegoMiAutoRentSaleDetail() {
 
         {tabCronograma === 'otros_gastos' && (
         <>
+            <div className="flex flex-wrap justify-end gap-2 border-b border-gray-200 px-4 py-3">
+              <button
+                type="button"
+                onClick={openAdditionalExpenseFleetCharge}
+                className="inline-flex h-9 items-center gap-2 rounded-md bg-[#8B1A1A] px-3 text-sm font-semibold text-white hover:bg-[#741616]"
+              >
+                <Banknote className="h-4 w-4" />
+                Cobrar
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowGastoConfigModal(true)}
+                disabled={loadingGastoConfig || !gastoConfig}
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {loadingGastoConfig ? (
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Settings2 className="h-4 w-4" />
+                )}
+                {loadingGastoConfig ? 'Cargando...' : 'Configurar gastos'}
+              </button>
+            </div>
+
             {otrosGastosRows.length === 0 ? (
               <p className="text-sm text-gray-500 text-center py-8 px-4">No hay cuotas de otros gastos para este contrato.</p>
             ) : (
@@ -2252,23 +2563,18 @@ export default function YegoMiAutoRentSaleDetail() {
                 {/* Resumen general */}
                 <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
                   <span className="font-semibold text-gray-700">
-                    Total: {(() => {
-                      const syms = [...new Set(otrosGastosRows.map(og => symMoneda(og.moneda || 'PEN')))];
-                      if (syms.length === 1) {
-                        const total = otrosGastosRows.reduce((s, og) => s + Number(og.amount_due), 0);
-                        return `${syms[0]} ${total.toFixed(2)}`;
-                      }
-                      return otrosGastosRows.reduce((s, og) => s + Number(og.amount_due), 0).toFixed(2);
-                    })()}
+                    Total: {Object.entries(otrosGastosSummary.totals)
+                      .map(([currency, total]) => `${symMoneda(currency)} ${total.toFixed(2)} ${currency}`)
+                      .join(' · ')}
                   </span>
                   <span className="text-gray-300">·</span>
                   <span>{otrosGastosRows.length} cuotas</span>
                   <span className="text-gray-300">·</span>
-                  <span className="text-green-600">{otrosGastosRows.filter(og => og.status === 'paid').length} pagadas</span>
+                  <span className="text-green-600">{otrosGastosSummary.paid} pagadas</span>
                   <span className="text-gray-300">·</span>
-                  <span className="text-amber-600">{otrosGastosRows.filter(og => og.status === 'pending').length} pendientes</span>
+                  <span className="text-amber-600">{otrosGastosSummary.pending} pendientes</span>
                   <span className="text-gray-300">·</span>
-                  <span className="text-red-600">{otrosGastosRows.filter(og => og.status === 'overdue').length} vencidas</span>
+                  <span className="text-red-600">{otrosGastosSummary.overdue} vencidas</span>
                 </div>
 
                 {/* Filtros por tipo de gasto */}
@@ -2280,62 +2586,37 @@ export default function YegoMiAutoRentSaleDetail() {
                   >
                     Todos ({otrosGastosRows.length})
                   </button>
-                  {Array.from(new Set(otrosGastosRows.map((og) => og.tipo || 'generico'))).map((tipo) => {
-                    const count = otrosGastosRows.filter((og) => (og.tipo || 'generico') === tipo).length;
+                  {otrosGastosGroups.map(({ type, expenses }) => {
                     return (
                       <button
-                        key={tipo}
+                        key={type}
                         type="button"
-                        onClick={() => setOgTipoFilterAdmin(ogTipoFilterAdmin === tipo ? null : tipo)}
-                        className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${ogTipoFilterAdmin === tipo ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
+                        onClick={() => setOgTipoFilterAdmin(ogTipoFilterAdmin === type ? null : type)}
+                        className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${ogTipoFilterAdmin === type ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
                       >
-                        {TIPO_OTROS_GASTOS_LABELS[tipo] || tipo} ({count})
+                        {labelOtrosGastoType(type)} ({expenses.length})
                       </button>
                     );
                   })}
                 </div>
 
-                {/* Cards por categoría */}
-                <div className="space-y-4">
-                  {Object.entries(
-                    otrosGastosRows.reduce((acc, og) => {
-                      const t = og.tipo || 'generico';
-                      if (!acc[t]) acc[t] = [];
-                      acc[t].push(og);
-                      return acc;
-                    }, {} as Record<string, MiautoOtrosGastoRow[]>)
-                  ).map(([tipo, cuotas]) => {
-                    if (ogTipoFilterAdmin && ogTipoFilterAdmin !== tipo) return null;
-                    const filteredCuotas = cuotas;
-                    if (filteredCuotas.length === 0) return null;
+                <div className="divide-y divide-gray-200 border-y border-gray-200">
+                  {otrosGastosGroups.map(({ type, expenses, paid, periods, totals }) => {
+                    if (ogTipoFilterAdmin && ogTipoFilterAdmin !== type) return null;
 
-                    const isOpen = otrosTiposAbiertos[tipo] !== false;
-                    const totalTipo = cuotas.reduce((s, c) => s + Number(c.amount_due), 0);
-                    const cuotasFiltroCount = filteredCuotas.length;
-                    const cuotasTotal = cuotas.length;
-                    const paidCount = cuotas.filter(c => c.status === 'paid').length;
+                    const isOpen = otrosTiposAbiertos[type] !== false;
+                    const cuotasTotal = expenses.length;
+                    const paidCount = paid;
                     const pct = cuotasTotal > 0 ? Math.round((paidCount / cuotasTotal) * 100) : 0;
-                    const label = TIPO_OTROS_GASTOS_LABELS[tipo] || tipo;
-                    const moneda = cuotas[0]?.moneda || 'PEN';
-                    const sym = symMoneda(moneda);
-                    const accentBorder = TIPO_OTROS_GASTOS_ACCENT[tipo] || 'border-l-gray-400';
-                    const accentBar = TIPO_OTROS_GASTOS_BAR[tipo] || 'bg-gray-400';
-                    const months = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
-
-                    const formatCuotaDate = (dueDate: string) => {
-                      if (!dueDate) return '—';
-                      const parts = String(dueDate).slice(0,10).split('-');
-                      if (parts.length === 3) return parts[2] + '-' + months[parseInt(parts[1]) - 1];
-                      return '—';
-                    };
+                    const label = labelOtrosGastoType(type);
+                    const accentBorder = TIPO_OTROS_GASTOS_ACCENT[type] || 'border-l-gray-400';
+                    const accentBar = TIPO_OTROS_GASTOS_BAR[type] || 'bg-gray-400';
 
                     return (
-                      <div key={tipo} className={`rounded-xl border border-gray-200 overflow-hidden bg-white border-l-[3px] ${accentBorder}`}>
-
-                        {/* Header colapsable */}
+                      <section key={type} className={`bg-white border-l-[3px] ${accentBorder}`}>
                         <button
                           type="button"
-                          onClick={() => setOtrosTiposAbiertos(prev => ({ ...prev, [tipo]: prev[tipo] === false ? true : false }))}
+                          onClick={() => setOtrosTiposAbiertos(prev => ({ ...prev, [type]: prev[type] === false }))}
                           className="w-full flex items-center justify-between px-4 py-3 bg-gray-50/70 hover:bg-gray-100/80 transition-colors"
                         >
                           <div className="flex items-center gap-3 flex-1 min-w-0">
@@ -2343,7 +2624,8 @@ export default function YegoMiAutoRentSaleDetail() {
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="text-sm font-bold text-gray-900">{label}</span>
-                                <span className="text-[11px] text-gray-400">{cuotasFiltroCount}/{cuotasTotal} cuotas</span>
+                                <span className="text-xs font-semibold text-gray-500">{periods.join(', ')}</span>
+                                <span className="text-[11px] text-gray-400">{cuotasTotal} cuotas</span>
                               </div>
                               <div className="flex items-center gap-2 mt-1">
                                 <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden max-w-[120px]">
@@ -2353,50 +2635,117 @@ export default function YegoMiAutoRentSaleDetail() {
                               </div>
                             </div>
                           </div>
-                          <span className="text-sm font-semibold text-gray-900 ml-3 shrink-0">{sym} {totalTipo.toFixed(2)}</span>
+                          <span className="ml-3 shrink-0 text-sm font-semibold text-gray-900">
+                            {Object.entries(totals)
+                              .map(([currency, total]) => `${symMoneda(currency)} ${total.toFixed(2)}`)
+                              .join(' · ')}
+                          </span>
                         </button>
 
                         {isOpen && (
                           <div className="border-t border-gray-100 px-3 py-3">
-                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
-                              {filteredCuotas.map((og) => (
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                              {expenses.map((og) => {
+                                const gastoSym = symMoneda(og.moneda || 'PEN');
+                                const receipts = comprobantesOtrosGastosPorGasto.get(og.id) || [];
+                                const latestReceipt = receipts[0];
+                                const receiptStatus = String(latestReceipt?.estado || '').toLowerCase();
+                                const hasPendingReceipt = receipts.some(
+                                  (receipt) => String(receipt.estado || '').toLowerCase() === 'pendiente'
+                                );
+                                const canViewReceipt = Boolean(
+                                  latestReceipt?.file_path && latestReceipt.file_path !== 'manual'
+                                );
+                                const openReceiptPreview = () => {
+                                  if (!canViewReceipt || !latestReceipt) return;
+                                  const url = latestReceipt.file_path.startsWith('http')
+                                    ? latestReceipt.file_path
+                                    : getMiautoAdjuntoUrl(latestReceipt.file_path);
+                                  const isImage = !/\.pdf$/i.test(latestReceipt.file_name || '') &&
+                                    /\.(jpe?g|png|gif|webp)$/i.test(latestReceipt.file_name || '');
+                                  setComprobantePreview({
+                                    url,
+                                    fileName: latestReceipt.file_name || 'Comprobante de otros gastos',
+                                    isImage,
+                                  });
+                                };
+
+                                return (
                                 <div
                                   key={og.id}
-                                  className={`rounded-lg border p-2.5 flex flex-col items-center gap-1.5 ${
+                                  className={`grid min-h-24 grid-cols-[1fr_auto] gap-x-3 gap-y-1 rounded-md border p-3 ${
                                     og.status === 'paid' ? 'bg-green-50/50 border-green-200' :
                                     og.status === 'overdue' ? 'bg-red-50/50 border-red-200' :
                                     'bg-white border-gray-200'
                                   }`}
                                 >
-                                  <span className="text-[10px] text-gray-500 font-medium">
-                                    {formatCuotaDate(og.due_date)}
+                                  <span className="text-xs font-semibold text-gray-700">
+                                    Cuota {og.numero_cuota || og.week_index}{og.total_cuotas ? ` de ${og.total_cuotas}` : ''}
                                   </span>
-                                  <span className={`text-xs font-bold ${
+                                  <span className={`row-span-2 text-sm font-bold ${
                                     og.status === 'paid' ? 'text-green-700' :
                                     og.status === 'overdue' ? 'text-red-700' :
                                     'text-gray-900'
                                   }`}>
-                                    {sym} {Number(og.amount_due).toFixed(2)}
+                                    {gastoSym} {Number(og.amount_due).toFixed(2)}
                                   </span>
-                                  <select
-                                    value={og.status}
-                                    onChange={(e) => handleOtroGastoStatusChange(og.id, e.target.value)}
-                                    className={`text-[10px] border rounded px-1.5 py-0.5 font-medium cursor-pointer w-full text-center ${
-                                      og.status === 'paid' ? 'bg-green-50 border-green-300 text-green-700' :
-                                      og.status === 'overdue' ? 'bg-red-50 border-red-300 text-red-600' :
-                                      'bg-gray-50 border-gray-300 text-gray-600'
-                                    }`}
-                                  >
-                                    <option value="pending">Pendiente</option>
-                                    <option value="paid">Pagado</option>
-                                    <option value="overdue">Vencido</option>
-                                  </select>
+                                  <span className="text-[11px] text-gray-500">{formatOtrosGastoDueDate(og.due_date, og.periodo_anio)}</span>
+                                  <div className="col-span-2 mt-1 flex items-center justify-between border-t border-black/5 pt-2 text-[11px]">
+                                    <span className="text-green-700">Pagado: {gastoSym} {Number(og.paid_amount || 0).toFixed(2)}</span>
+                                    <span className="font-semibold text-gray-700">Saldo: {gastoSym} {Number(og.pending_amount ?? Math.max(0, Number(og.amount_due) - Number(og.paid_amount || 0))).toFixed(2)}</span>
+                                    {og.status === 'paid' ? (
+                                      <span className="rounded bg-green-100 px-1.5 py-0.5 font-semibold text-green-700">
+                                        {labelOtrosGastoStatus(og.status)}
+                                      </span>
+                                    ) : hasPendingReceipt ? (
+                                      <span className="rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700">
+                                        En validacion
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => openAdditionalExpenseReceipt(og)}
+                                        className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-1.5 py-0.5 font-semibold text-gray-700 hover:bg-gray-50"
+                                      >
+                                        <Upload className="h-3 w-3" />
+                                        Comprobante
+                                      </button>
+                                    )}
+                                  </div>
+                                  {latestReceipt && (
+                                    <div className="col-span-2 mt-1 flex items-center justify-between gap-2 border-t border-black/5 pt-2">
+                                      <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                                        receiptStatus === 'validado'
+                                          ? 'bg-green-100 text-green-700'
+                                          : receiptStatus === 'rechazado'
+                                            ? 'bg-red-100 text-red-700'
+                                            : 'bg-amber-100 text-amber-700'
+                                      }`}>
+                                        {receiptStatus === 'validado'
+                                          ? 'Validado banco'
+                                          : receiptStatus === 'rechazado'
+                                            ? 'Rechazado'
+                                            : 'Pendiente banco'}
+                                      </span>
+                                      {canViewReceipt && (
+                                        <button
+                                          type="button"
+                                          onClick={openReceiptPreview}
+                                          className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-2 py-1 text-[11px] font-semibold text-gray-700 hover:bg-gray-50"
+                                        >
+                                          <ExternalLink className="h-3 w-3" />
+                                          Ver comprobante
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           </div>
                         )}
-                      </div>
+                      </section>
                     );
                   })}
                 </div>
@@ -2418,6 +2767,316 @@ export default function YegoMiAutoRentSaleDetail() {
           </div>
         )}
       </div>
+
+      <MiautoGastosConfigurationModal
+        open={showGastoConfigModal}
+        config={gastoConfig}
+        saving={savingGastoConfig}
+        generating={generatingGastos}
+        onClose={() => setShowGastoConfigModal(false)}
+        onSave={saveGastoConfiguration}
+        onSaveAndGenerate={saveAndGenerateAdditionalExpenses}
+      />
+
+      {showGastoFleetChargeModal && createPortal(
+        <div
+          className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="gasto-fleet-charge-title"
+          onClick={() => !chargingGastoFleet && setShowGastoFleetChargeModal(false)}
+        >
+          <div
+            className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-gray-200 px-5 py-4">
+              <div>
+                <h3 id="gasto-fleet-charge-title" className="text-base font-bold text-gray-900">Cobrar otros gastos</h3>
+                <p className="mt-0.5 text-xs text-gray-500">Selecciona las cuotas que se retirarán del saldo Fleet.</p>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  disabled={loadingGastoFleetCharge || chargingGastoFleet}
+                  onClick={() => void loadAdditionalExpenseFleetCharge()}
+                  className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800 disabled:opacity-50"
+                  aria-label="Actualizar saldo"
+                  title="Actualizar saldo"
+                >
+                  <RefreshCw className={`h-4 w-4 ${loadingGastoFleetCharge ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                  type="button"
+                  disabled={chargingGastoFleet}
+                  onClick={() => setShowGastoFleetChargeModal(false)}
+                  className="rounded p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
+                  aria-label="Cerrar"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            {loadingGastoFleetCharge ? (
+              <div className="flex min-h-64 flex-col items-center justify-center gap-3 text-sm text-gray-500">
+                <RefreshCw className="h-6 w-6 animate-spin text-[#8B1A1A]" />
+                Consultando saldo Fleet...
+              </div>
+            ) : (
+              <>
+                <div className="border-b border-gray-200 bg-gray-50 px-5 py-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-medium text-gray-500">{gastoFleetPreview?.driver_name || 'Conductor'}</p>
+                    <p className="text-sm font-bold text-gray-900">
+                      Saldo disponible: {gastoFleetPreview?.balance == null
+                        ? 'No disponible'
+                        : `${symMoneda(gastoFleetPreview.balance_currency || 'PEN')} ${Number(gastoFleetPreview.balance).toFixed(2)} ${gastoFleetPreview.balance_currency || ''}`}
+                    </p>
+                  </div>
+                </div>
+
+                {(gastoFleetPreview?.expenses.length || 0) > 0 && (
+                  <div className="flex shrink-0 gap-1.5 overflow-x-auto border-b border-gray-200 bg-white px-5 py-2.5">
+                    {additionalExpenseFleetGroups.map((group) => {
+                      const selectedCount = group.expenses.filter(
+                        (expense) => gastosFleetSeleccionados[expense.id]
+                      ).length;
+                      const isActive = activeAdditionalExpenseFleetGroup?.type === group.type;
+                      return (
+                        <button
+                          key={group.type}
+                          type="button"
+                          onClick={() => setGastoFleetTipoActivo(group.type)}
+                          className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-xs font-semibold transition-colors ${
+                            isActive
+                              ? 'border-[#8B1A1A] bg-[#8B1A1A] text-white'
+                              : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                          }`}
+                        >
+                          {group.label}
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] ${
+                            isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-500'
+                          }`}>
+                            {selectedCount > 0 ? `${selectedCount}/` : ''}{group.expenses.length}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  {(gastoFleetPreview?.expenses.length || 0) === 0 ? (
+                    <div className="flex min-h-56 items-center justify-center px-5 text-center text-sm text-gray-500">
+                      No hay cuotas pendientes disponibles para cobro.
+                    </div>
+                  ) : (
+                    <div className="divide-y-4 divide-gray-100">
+                      {(activeAdditionalExpenseFleetGroup ? [activeAdditionalExpenseFleetGroup] : []).map((group) => {
+                        const selectedInGroup = group.expenses.filter(
+                          (expense) => gastosFleetSeleccionados[expense.id]
+                        ).length;
+                        const allSelected = selectedInGroup === group.expenses.length;
+                        return (
+                          <section key={group.type}>
+                            <div className="flex flex-wrap items-center justify-between gap-3 border-y border-gray-200 bg-gray-50 px-5 py-2.5">
+                              <label className="inline-flex cursor-pointer items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={allSelected}
+                                  onChange={(event) => {
+                                    const checked = event.target.checked;
+                                    setGastosFleetSeleccionados((current) => ({
+                                      ...current,
+                                      ...Object.fromEntries(group.expenses.map((expense) => [expense.id, checked])),
+                                    }));
+                                  }}
+                                  className="h-4 w-4 rounded border-gray-300 text-[#8B1A1A] focus:ring-[#8B1A1A]"
+                                />
+                                <span>
+                                  <span className="block text-sm font-bold text-gray-900">{group.label}</span>
+                                  <span className="block text-[11px] text-gray-500">
+                                    {selectedInGroup} de {group.expenses.length} seleccionadas
+                                  </span>
+                                </span>
+                              </label>
+                              <span className="text-xs font-bold text-gray-700">
+                                {Object.entries(group.totals)
+                                  .map(([currency, total]) => `${symMoneda(currency)} ${total.toFixed(2)} ${currency}`)
+                                  .join(' · ')}
+                              </span>
+                            </div>
+                            <div className="divide-y divide-gray-100">
+                              {group.expenses.map((expense) => (
+                                <label
+                                  key={expense.id}
+                                  className="grid cursor-pointer grid-cols-[auto_1fr_auto] items-center gap-3 px-5 py-3 hover:bg-gray-50"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(gastosFleetSeleccionados[expense.id])}
+                                    onChange={(event) => setGastosFleetSeleccionados((current) => ({
+                                      ...current,
+                                      [expense.id]: event.target.checked,
+                                    }))}
+                                    className="h-4 w-4 rounded border-gray-300 text-[#8B1A1A] focus:ring-[#8B1A1A]"
+                                  />
+                                  <span className="min-w-0">
+                                    <span className="block truncate text-sm font-semibold text-gray-900">
+                                      Cuota {expense.numero_cuota || '—'}{expense.total_cuotas ? ` de ${expense.total_cuotas}` : ''}
+                                    </span>
+                                    <span className="block text-xs text-gray-500">
+                                      {expense.periodo_anio || 'Sin periodo'}
+                                      {expense.due_date ? ` · ${formatDateUTC(expense.due_date, 'es-ES')}` : ''}
+                                    </span>
+                                  </span>
+                                  <span className="text-right">
+                                    <span className="block text-sm font-bold text-gray-900">
+                                      {symMoneda(expense.currency)} {Number(expense.pending_amount).toFixed(2)}
+                                    </span>
+                                    <span className={`text-[11px] font-semibold ${
+                                      expense.status === 'overdue' ? 'text-red-600' : 'text-amber-600'
+                                    }`}>
+                                      {labelOtrosGastoStatus(expense.status)}
+                                    </span>
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          </section>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="border-t border-gray-200 px-5 py-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm">
+                    <span className="font-medium text-gray-600">{selectedAdditionalExpenseFleetIds.length} seleccionadas</span>
+                    <span className="font-bold text-gray-900">
+                      {Object.entries(selectedAdditionalExpenseFleetTotals).length > 0
+                        ? Object.entries(selectedAdditionalExpenseFleetTotals)
+                          .map(([currency, total]) => `${symMoneda(currency)} ${total.toFixed(2)} ${currency}`)
+                          .join(' · ')
+                        : 'Total: —'}
+                    </span>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={chargingGastoFleet}
+                      onClick={() => setShowGastoFleetChargeModal(false)}
+                      className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={chargingGastoFleet || selectedAdditionalExpenseFleetIds.length === 0}
+                      onClick={() => void chargeSelectedAdditionalExpenses()}
+                      className="inline-flex h-9 items-center gap-2 rounded-md bg-[#8B1A1A] px-3 text-sm font-semibold text-white hover:bg-[#741616] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {chargingGastoFleet ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Banknote className="h-4 w-4" />}
+                      {chargingGastoFleet ? 'Cobrando...' : 'Confirmar cobro'}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {gastoComprobanteTarget && createPortal(
+        <div
+          className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="gasto-comprobante-title"
+          onClick={() => !subiendoGastoComprobante && setGastoComprobanteTarget(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-lg bg-white shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-gray-200 px-5 py-4">
+              <div>
+                <h3 id="gasto-comprobante-title" className="text-base font-bold text-gray-900">Subir comprobante</h3>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  {labelOtrosGastoType(gastoComprobanteTarget.tipo)} · Cuota {gastoComprobanteTarget.numero_cuota || gastoComprobanteTarget.week_index}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={subiendoGastoComprobante}
+                onClick={() => setGastoComprobanteTarget(null)}
+                className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
+                aria-label="Cerrar"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <div className="grid grid-cols-[1fr_7rem] gap-3">
+                <label className="text-xs font-medium text-gray-600">
+                  Monto enviado
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={gastoComprobanteMonto}
+                    onChange={(event) => setGastoComprobanteMonto(event.target.value)}
+                    className="mt-1 h-10 w-full rounded-md border border-gray-300 px-3 text-sm text-gray-900"
+                  />
+                </label>
+                <label className="text-xs font-medium text-gray-600">
+                  Moneda
+                  <select
+                    value={gastoComprobanteMoneda}
+                    onChange={(event) => setGastoComprobanteMoneda(event.target.value)}
+                    className="mt-1 h-10 w-full rounded-md border border-gray-300 px-2 text-sm text-gray-900"
+                  >
+                    <option value="PEN">PEN</option>
+                    <option value="USD">USD</option>
+                    <option value="COP">COP</option>
+                  </select>
+                </label>
+              </div>
+              <label className="block text-xs font-medium text-gray-600">
+                Archivo
+                <input
+                  type="file"
+                  accept=".pdf,image/*"
+                  onChange={(event) => setGastoComprobanteArchivo(event.target.files?.[0] || null)}
+                  className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 file:mr-3 file:border-0 file:bg-transparent file:text-sm file:font-semibold"
+                />
+              </label>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-gray-200 px-5 py-4">
+              <button
+                type="button"
+                disabled={subiendoGastoComprobante}
+                onClick={() => setGastoComprobanteTarget(null)}
+                className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={subiendoGastoComprobante || !gastoComprobanteArchivo}
+                onClick={uploadAdditionalExpenseReceipt}
+                className="inline-flex h-9 items-center gap-2 rounded-md bg-[#8B1A1A] px-3 text-sm font-semibold text-white hover:bg-[#741616] disabled:opacity-50"
+              >
+                {subiendoGastoComprobante ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                Subir
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
 
       {comprobantePreview && createPortal(
         <div

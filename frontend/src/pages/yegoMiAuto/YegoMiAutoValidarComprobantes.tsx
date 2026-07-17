@@ -14,6 +14,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { formatDate, formatDateTime } from '../../utils/date';
 import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError, unwrapApiData } from '../../utils/miautoApiUtils';
 import { getMiautoAdjuntoUrl } from '../../utils/miautoRentSaleHelpers';
+import { labelOtrosGastoType } from '../../utils/miautoOtrosGastos';
 
 type EstadoFiltro = 'pendiente' | 'validado' | 'rechazado' | 'todos';
 type MiautoMoneda = 'PEN' | 'COP' | 'USD';
@@ -25,13 +26,15 @@ type AccionModal =
 interface ComprobanteValidacion {
   id: string;
   solicitud_id: string;
-  cuota_semanal_id: string;
+  cuota_semanal_id?: string | null;
+  otros_gastos_id?: string | null;
+  tipo_comprobante?: 'cuota_semanal' | 'otros_gastos' | string;
   monto?: number | string | null;
   moneda?: MiautoMoneda | string | null;
   file_name?: string | null;
   file_path?: string | null;
   estado?: string | null;
-  origen?: 'conductor' | 'admin_confirmacion' | 'pago_manual' | string | null;
+  origen?: 'conductor' | 'admin' | 'admin_confirmacion' | 'pago_manual' | string | null;
   created_at?: string | null;
   validated_at?: string | null;
   rechazado_at?: string | null;
@@ -53,6 +56,10 @@ interface ComprobanteValidacion {
   late_fee?: number | string | null;
   cuota_status?: string | null;
   cuota_moneda?: MiautoMoneda | string | null;
+  gasto_tipo?: string | null;
+  numero_cuota?: number | null;
+  total_cuotas?: number | null;
+  periodo_anio?: number | null;
 }
 
 const ESTADOS: { value: EstadoFiltro; label: string }[] = [
@@ -78,11 +85,22 @@ function driverName(row: ComprobanteValidacion): string {
   return name || row.dni || 'Conductor sin nombre';
 }
 
-function origenLabel(origen?: string | null): string {
-  const o = String(origen || 'conductor').toLowerCase();
+function isOtherExpense(row: ComprobanteValidacion): boolean {
+  return row.tipo_comprobante === 'otros_gastos' || Boolean(row.otros_gastos_id);
+}
+
+function isPdfReceipt(row: ComprobanteValidacion): boolean {
+  const fileReference = `${row.file_name || ''} ${row.file_path || ''}`;
+  return /\.pdf(?:\s|$|[?#])/i.test(fileReference);
+}
+
+function origenLabel(row: ComprobanteValidacion): string {
+  const o = String(row.origen || 'conductor').toLowerCase();
+  const suffix = isOtherExpense(row) ? ' · Otros gastos' : '';
   if (o === 'pago_manual') return 'Pago manual';
   if (o === 'admin_confirmacion') return 'Pago con archivo';
-  return 'Conductor';
+  if (o === 'admin') return `Administrador${suffix}`;
+  return `Conductor${suffix}`;
 }
 
 function estadoClasses(estado?: string | null): string {
@@ -109,6 +127,7 @@ function ComprobanteThumbnail({
   const [imageError, setImageError] = useState(false);
   const hasFile = !!row.file_path && row.file_path !== 'manual';
   const fileUrl = hasFile ? getMiautoAdjuntoUrl(row.file_path || '') : '';
+  const isPdf = isPdfReceipt(row);
 
   if (!hasFile) {
     return (
@@ -125,7 +144,12 @@ function ComprobanteThumbnail({
       className="group relative block h-16 w-16 flex-shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 text-left focus:outline-none focus:ring-2 focus:ring-[#8B1A1A] focus:ring-offset-2"
       title="Ver comprobante"
     >
-      {!imageError ? (
+      {isPdf ? (
+        <div className="flex h-full w-full flex-col items-center justify-center gap-1 bg-red-50 text-[#8B1A1A]">
+          <FileText className="h-5 w-5" />
+          <span className="text-[10px] font-bold uppercase">PDF</span>
+        </div>
+      ) : !imageError ? (
         <img
           src={fileUrl}
           alt={row.file_name || 'Comprobante'}
@@ -159,7 +183,7 @@ export default function YegoMiAutoValidarComprobantes() {
     try {
       setLoading(true);
       setError('');
-      const res = await api.get('/miauto/comprobantes-cuota-semanal', {
+      const res = await api.get('/miauto/comprobantes-validacion', {
         signal,
         headers: MIAUTO_NO_CACHE_HEADERS,
         params: { estado, country, limit: 500 },
@@ -194,6 +218,7 @@ export default function YegoMiAutoValidarComprobantes() {
         row.file_name,
         row.cronograma_name,
         row.vehiculo_name,
+        row.gasto_tipo,
       ];
       return parts.some((part) => part != null && foldLower(String(part)).includes(q));
     });
@@ -236,7 +261,10 @@ export default function YegoMiAutoValidarComprobantes() {
     try {
       setSavingId(row.id);
       if (accion.tipo === 'confirmar') {
-        await api.patch(`/miauto/solicitudes/${row.solicitud_id}/comprobantes-cuota-semanal/${row.id}/confirmar`);
+        const endpoint = isOtherExpense(row)
+          ? `/miauto/solicitudes/${row.solicitud_id}/comprobantes-otros-gastos/${row.id}/validar`
+          : `/miauto/solicitudes/${row.solicitud_id}/comprobantes-cuota-semanal/${row.id}/confirmar`;
+        await api.patch(endpoint);
         toast.success('Comprobante validado en banco');
       } else if (accion.tipo === 'rechazar') {
         const motivo = rechazoMotivo.trim();
@@ -244,7 +272,10 @@ export default function YegoMiAutoValidarComprobantes() {
           toast.error('Indica un motivo breve');
           return;
         }
-        await api.patch(`/miauto/solicitudes/${row.solicitud_id}/comprobantes-cuota-semanal/${row.id}/rechazar`, {
+        const endpoint = isOtherExpense(row)
+          ? `/miauto/solicitudes/${row.solicitud_id}/comprobantes-otros-gastos/${row.id}/rechazar`
+          : `/miauto/solicitudes/${row.solicitud_id}/comprobantes-cuota-semanal/${row.id}/rechazar`;
+        await api.patch(endpoint, {
           motivo,
         });
         toast.success('Comprobante rechazado');
@@ -354,7 +385,7 @@ export default function YegoMiAutoValidarComprobantes() {
               <thead className="bg-gray-50">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
                   <th className="px-4 py-3">Conductor</th>
-                  <th className="px-4 py-3">Cuota</th>
+                  <th className="px-4 py-3">Concepto / cuota</th>
                   <th className="px-4 py-3">Comprobante</th>
                   <th className="px-4 py-3">Estado</th>
                   <th className="px-4 py-3 text-right">Acciones</th>
@@ -365,7 +396,7 @@ export default function YegoMiAutoValidarComprobantes() {
                   const estadoRow = String(row.estado || 'pendiente').toLowerCase();
                   const isPending = estadoRow === 'pendiente';
                   return (
-                    <tr key={row.id} className="hover:bg-gray-50">
+                    <tr key={`${row.tipo_comprobante || 'cuota'}:${row.id}`} className="hover:bg-gray-50">
                       <td className="px-4 py-3 align-top">
                         <p className="font-semibold text-gray-900">{driverName(row)}</p>
                         <p className="text-xs text-gray-500">
@@ -376,16 +407,34 @@ export default function YegoMiAutoValidarComprobantes() {
                         </p>
                       </td>
                       <td className="px-4 py-3 align-top">
-                        <p className="font-medium text-gray-900">
-                          {row.due_date ? formatDate(row.due_date, 'es-ES') : 'Sin vencimiento'}
-                        </p>
+                        {isOtherExpense(row) ? (
+                          <>
+                            <p className="font-semibold text-gray-900">
+                              {labelOtrosGastoType(row.gasto_tipo)}
+                            </p>
+                            <p className="text-xs text-gray-500">
+                              Cuota {row.numero_cuota || '—'}{row.total_cuotas ? ` de ${row.total_cuotas}` : ''}
+                              {row.periodo_anio ? ` · ${row.periodo_anio}` : ''}
+                            </p>
+                            <p className="text-xs text-gray-500">
+                              {row.due_date ? formatDate(row.due_date, 'es-ES') : 'Sin vencimiento'}
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <p className="font-semibold text-gray-900">Cuota semanal</p>
+                            <p className="text-xs text-gray-500">
+                              {row.due_date ? formatDate(row.due_date, 'es-ES') : 'Sin vencimiento'}
+                            </p>
+                          </>
+                        )}
                       </td>
                       <td className="px-4 py-3 align-top">
                         <div className="flex min-w-72 items-start gap-3">
                           <ComprobanteThumbnail row={row} onPreview={setPreviewRow} />
                           <div className="min-w-0">
                             <span className="inline-flex rounded-full border border-gray-200 px-2 py-0.5 text-xs font-medium text-gray-700">
-                              {origenLabel(row.origen)}
+                              {origenLabel(row)}
                             </span>
                             <p className="mt-1 max-w-xs truncate text-gray-900">{row.file_name || 'Pago manual'}</p>
                             <p className="text-xs text-gray-500">
@@ -467,11 +516,19 @@ export default function YegoMiAutoValidarComprobantes() {
               </button>
             </div>
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-gray-100 p-4">
-              <img
-                src={getMiautoAdjuntoUrl(previewRow.file_path)}
-                alt={previewRow.file_name || 'Comprobante'}
-                className="max-h-[76vh] max-w-full rounded-lg object-contain shadow-sm"
-              />
+              {isPdfReceipt(previewRow) ? (
+                <iframe
+                  src={`${getMiautoAdjuntoUrl(previewRow.file_path)}#toolbar=0&navpanes=0&view=FitH`}
+                  title={previewRow.file_name || 'Comprobante PDF'}
+                  className="h-[76vh] w-full rounded-lg border-0 bg-white shadow-sm"
+                />
+              ) : (
+                <img
+                  src={getMiautoAdjuntoUrl(previewRow.file_path)}
+                  alt={previewRow.file_name || 'Comprobante'}
+                  className="max-h-[76vh] max-w-full rounded-lg object-contain shadow-sm"
+                />
+              )}
             </div>
           </div>
         </div>
@@ -499,7 +556,9 @@ export default function YegoMiAutoValidarComprobantes() {
             <div className="space-y-3 px-4 py-4">
               {accion.tipo === 'confirmar' ? (
                 <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-3 text-sm text-blue-900">
-                  El comprobante ya afectó la cuota al registrarse. Esta acción solo marca que el dinero sí llegó al banco.
+                  {isOtherExpense(accion.comprobante)
+                    ? 'Al validar, el monto se aplicará al gasto seleccionado y quedará confirmado en banco.'
+                    : 'El comprobante ya afectó la cuota al registrarse. Esta acción solo marca que el dinero sí llegó al banco.'}
                 </div>
               ) : accion.tipo === 'rechazar' ? (
                 <>

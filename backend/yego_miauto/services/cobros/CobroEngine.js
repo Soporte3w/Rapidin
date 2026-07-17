@@ -45,6 +45,7 @@ import { buildPendingTotalMapForSolicitud, isSemanaDepositoMiAuto } from '../cuo
 import { computeDueDateForMiAutoCuota, isWeekYangoClosedForMiAutoCuotaMetrics } from '../../../utils/miautoLimaWeekRange.js';
 import { partnerFeesYangoAMonedaCuota } from '../utils/miautoMoneyUtils.js';
 import { aplicarBonoTiempoReservado } from '../bonos/miautoBonoTiempoService.js';
+import { applyPoolToAdditionalExpenses } from '../gastos/miautoGastoPagoService.js';
 
 function limaTodayYmd() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -354,7 +355,9 @@ export async function generateWeeklyCharge({
 
   // --- 5. Aplicar cascada ---
   let cascadaResult = { applied: 0, remainingPool: poolCascada.pool, allocations: [] };
+  let additionalExpenseCascade = { applied: 0, remainingPool: poolCascada.pool, allocations: [] };
   let cascadeHash = null;
+  let cascadeWasSkipped = false;
   if (usarCascada && poolCascada.pool > 0.005) {
     const rawCascadeKey = `${solicitudId}|${weekYmd}|${poolCascada.pool}|cascada`;
     cascadeHash = crypto.createHash('sha256').update(rawCascadeKey).digest('hex');
@@ -368,6 +371,7 @@ export async function generateWeeklyCharge({
     );
 
     if (existingCascade.rows.length > 0) {
+      cascadeWasSkipped = true;
       logger.debug('miauto.cascada.idempotent_skip', {
         solicitudId,
         weekStartDate: weekYmd,
@@ -408,11 +412,32 @@ export async function generateWeeklyCharge({
     }
   }
 
+  if (
+    usarCascada &&
+    !cascadeWasSkipped &&
+    cascadeHash &&
+    cascadaResult.remainingPool > 0.005
+  ) {
+    additionalExpenseCascade = await applyPoolToAdditionalExpenses({
+      solicitudId,
+      poolAmount: cascadaResult.remainingPool,
+      sourceKey: `cascada-gastos:${cascadeHash}`,
+      currency: moneda,
+      userId: actorId,
+    });
+    cascadaResult = {
+      ...cascadaResult,
+      applied: round2(cascadaResult.applied + additionalExpenseCascade.applied),
+      remainingPool: additionalExpenseCascade.remainingPool,
+    };
+  }
+
   auditSteps.cascada = {
     poolTotal: poolCascada.pool,
     poolDistribuido: cascadaResult.applied,
     remanente: cascadaResult.remainingPool,
     imputaciones: cascadaResult.allocations,
+    otrosGastos: additionalExpenseCascade,
   };
 
   // --- 6. Snap fila origen ---
@@ -422,6 +447,9 @@ export async function generateWeeklyCharge({
   let partnerFeesYangoStored;
   let saldoFavorInsert = 0;
   let cascadaJson = null;
+  const otrosGastosCascadaJson = additionalExpenseCascade.allocations.length > 0
+    ? JSON.stringify(additionalExpenseCascade.allocations)
+    : null;
 
   if (usarCascada && poolCascada.pool > 0.005) {
     const snap = snapshotOrigenTrasCascada({
@@ -511,14 +539,15 @@ export async function generateWeeklyCharge({
        SET num_viajes = $1, partner_fees_raw = $2, partner_fees_83 = $3, partner_fees_yango_raw = $4,
            partner_fees_cascada_destino = $5::jsonb, bono_auto = $6, cuota_semanal = $7,
            amount_due = $8, moneda = $9, pct_comision = $10, cobro_saldo = $11,
-           due_date = $12, saldo_favor_conductor = $13, montos_fuente = 'sistema',
-           updated_at = CURRENT_TIMESTAMP, updated_by = $14
-       WHERE id = $15`,
+           due_date = $12, saldo_favor_conductor = $13,
+           otros_gastos_cascada_destino = $14::jsonb, montos_fuente = 'sistema',
+           updated_at = CURRENT_TIMESTAMP, updated_by = $15
+       WHERE id = $16`,
       [
         numViajes, partnerFeesRawStored, partnerFees83Stored, partnerFeesYangoStored,
         cascadaJson, bonoAuto, cuotaSemanal, amountDueInsert,
         moneda, pctComision, cobroSaldo, dueDate, saldoFavorInsert,
-        actorId, cuotaId,
+        otrosGastosCascadaJson, actorId, cuotaId,
       ]
     );
   } else {
@@ -527,15 +556,15 @@ export async function generateWeeklyCharge({
        (solicitud_id, week_start_date, due_date, num_viajes, partner_fees_raw, partner_fees_83,
         partner_fees_yango_raw, partner_fees_cascada_destino, bono_auto, cuota_semanal,
         amount_due, paid_amount, status, moneda, pct_comision, cobro_saldo,
-        saldo_favor_conductor, montos_fuente, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,'sistema',$18)
+        saldo_favor_conductor, otros_gastos_cascada_destino, montos_fuente, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,'sistema',$19)
        RETURNING id`,
       [
         solicitudId, weekYmd, dueDate, numViajes,
         partnerFeesRawStored, partnerFees83Stored, partnerFeesYangoStored,
         cascadaJson, bonoAuto, cuotaSemanal, amountDueInsert,
         paidAmountInsert, statusInsert, moneda, pctComision, cobroSaldo,
-        saldoFavorInsert, actorId,
+        saldoFavorInsert, otrosGastosCascadaJson, actorId,
       ]
     );
     cuotaId = ins.rows[0]?.id;
@@ -622,6 +651,7 @@ export async function generateWeeklyCharge({
     isPrimera,
     forzarMaxCuota,
     cascadaAplicada: cascadaResult.applied,
+    cascadaOtrosGastosAplicada: additionalExpenseCascade.applied,
     saldoFavorConductor: saldoFavorInsert,
   });
 
@@ -642,6 +672,7 @@ export async function generateWeeklyCharge({
           pending_antes: a.pendingAntes,
           pending_despues: a.pendingDespues,
         })),
+        otros_gastos: additionalExpenseCascade.allocations,
       },
       generatedBy,
       actorId,

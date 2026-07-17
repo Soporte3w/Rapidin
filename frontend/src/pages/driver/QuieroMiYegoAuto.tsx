@@ -6,7 +6,12 @@ import api from '../../services/api';
 import { Car, FileText, Check, ShieldCheck, Phone, Mail, ChevronDown, ChevronRight, Upload, X, AlertCircle, ExternalLink, Sparkles, Zap, Eye } from 'lucide-react';
 import { TablePaginationBar } from '../../components/TablePaginationBar';
 import { useTablePagination } from '../../hooks/useTablePagination';
-import { type ComprobanteOtrosGastos, type MiautoOtrosGastoRow } from '../../utils/miautoOtrosGastos';
+import {
+  canonicalOtrosGastoType,
+  labelOtrosGastoType,
+  type ComprobanteOtrosGastos,
+  type MiautoOtrosGastoRow,
+} from '../../utils/miautoOtrosGastos';
 import { getStoredSession, getStoredRapidinDriverId, getStoredSelectedParkId } from '../../utils/authStorage';
 import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
@@ -138,7 +143,7 @@ interface Solicitud {
   total_validado?: number | null;
   fecha_inicio_cobro_semanal?: string | null;
   placa_asignada?: string | null;
-  otros_gastos?: { id: string; tipo?: string; week_index: number; due_date: string; amount_due: number; paid_amount: number; status: string }[];
+  otros_gastos?: MiautoOtrosGastoRow[];
 }
 
 type CuotasCacheEntry = {
@@ -243,16 +248,6 @@ function AprobadoBlock({
   cuotasLoading?: boolean;
   onInvalidateCuotas?: (solicitudId: string) => void;
 }) {
-  const OG_TIPO_LABELS: Record<string, string> = {
-    gps: 'GPS',
-    src: 'SRC',
-    soat: 'SOAT',
-    impuesto_vehicular: 'Imp. Vehicular',
-    todo_riesgo_mas_gps_agrupado: 'Todo Riesgo + GPS',
-    inicial_parcial: 'Inicial Parcial',
-    generico: 'Otro',
-  };
-
   const [comprobantePreview, setComprobantePreview] = useState<{ url: string; fileName: string; isImage: boolean } | null>(null);
   const [cuotaSheet, setCuotaSheet] = useState<CuotaSemanal | null>(null);
   const [comprobantesInicialAbierto, setComprobantesInicialAbierto] = useState(false);
@@ -535,8 +530,18 @@ function AprobadoBlock({
     () => (Array.isArray(cuotasData?.otrosGastos) ? cuotasData.otrosGastos : Array.isArray(solicitud.otros_gastos) ? solicitud.otros_gastos : []),
     [cuotasData?.otrosGastos, solicitud.otros_gastos]
   );
+  const otrosGastosTypes = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const expense of otrosGastosRows) {
+      const type = canonicalOtrosGastoType(expense.tipo);
+      counts.set(type, (counts.get(type) || 0) + 1);
+    }
+    return Array.from(counts, ([type, count]) => ({ type, count }));
+  }, [otrosGastosRows]);
   const filteredOgRows = useMemo(
-    () => !ogTipoFilter ? otrosGastosRows : otrosGastosRows.filter((og) => (og.tipo || 'generico') === ogTipoFilter),
+    () => !ogTipoFilter
+      ? otrosGastosRows
+      : otrosGastosRows.filter((og) => canonicalOtrosGastoType(og.tipo) === ogTipoFilter),
     [otrosGastosRows, ogTipoFilter]
   );
   const otrosPg = useTablePagination(filteredOgRows);
@@ -1588,11 +1593,15 @@ function AprobadoBlock({
                   </div>
                 )}
           {solicitud.fecha_inicio_cobro_semanal && otrosGastosDriverAbiertos && (() => {
-            const totalOg = filteredOgRows.reduce((s: number, og) => s + Number(og.amount_due ?? 0), 0);
-            const pagadoOg = filteredOgRows.reduce((s: number, og) => s + Number(og.paid_amount ?? 0), 0);
             const pendientesCount = filteredOgRows.filter((og) => og.status !== 'paid').length;
             const pagadasCount = filteredOgRows.filter((og) => og.status === 'paid').length;
-            const saldoOg = Math.max(0, totalOg - pagadoOg);
+            const totalsByCurrency = Object.values(filteredOgRows.reduce((acc, og) => {
+              const currency = og.moneda || 'PEN';
+              if (!acc[currency]) acc[currency] = { currency, paid: 0, balance: 0 };
+              acc[currency].paid += Number(og.paid_amount || 0);
+              acc[currency].balance += Math.max(0, Number(og.amount_due || 0) - Number(og.paid_amount || 0));
+              return acc;
+            }, {} as Record<string, { currency: string; paid: number; balance: number }>));
             return (
             <div className="px-4 sm:px-5 py-3">
               {loadingCuotas ? (
@@ -1608,16 +1617,12 @@ function AprobadoBlock({
                     <span className="font-bold text-gray-900">{pagadasCount}</span>
                     <span className="text-gray-300"> / {pagadasCount + pendientesCount}</span>
                   </span>
-                  <span className="hidden sm:inline text-gray-200">|</span>
-                  <span>
-                    <span className={saldoOg > 0 ? 'text-amber-500' : 'text-gray-400'}>Saldo </span>
-                    <span className={`font-bold ${saldoOg > 0 ? 'text-amber-600' : 'text-gray-700'}`}>{monedaSimbolo}{saldoOg.toFixed(2)}</span>
-                  </span>
-                  <span className="hidden sm:inline text-gray-200">|</span>
-                  <span>
-                    <span className="text-gray-400">Total pagado </span>
-                    <span className="font-bold text-emerald-700 tabular-nums">{monedaSimbolo}{pagadoOg.toFixed(2)}</span>
-                  </span>
+                  {totalsByCurrency.map((total) => (
+                    <span key={total.currency} className="inline-flex gap-3">
+                      <span><span className="text-amber-500">Saldo </span><strong className="text-amber-700">{symMoneda(total.currency)} {total.balance.toFixed(2)}</strong></span>
+                      <span><span className="text-gray-400">Pagado </span><strong className="text-emerald-700">{symMoneda(total.currency)} {total.paid.toFixed(2)}</strong></span>
+                    </span>
+                  ))}
                 </div>
                 {/* Filtros por tipo */}
                 <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-hide">
@@ -1628,16 +1633,15 @@ function AprobadoBlock({
                   >
                     Todos ({otrosGastosRows.length})
                   </button>
-                  {Array.from(new Set(otrosGastosRows.map((og) => og.tipo || 'generico'))).map((tipo) => {
-                    const count = otrosGastosRows.filter((og) => (og.tipo || 'generico') === tipo).length;
+                  {otrosGastosTypes.map(({ type, count }) => {
                     return (
                       <button
-                        key={tipo}
+                        key={type}
                         type="button"
-                        onClick={() => setOgTipoFilter(ogTipoFilter === tipo ? null : tipo)}
-                        className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${ogTipoFilter === tipo ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
+                        onClick={() => setOgTipoFilter(ogTipoFilter === type ? null : type)}
+                        className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${ogTipoFilter === type ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
                       >
-                        {OG_TIPO_LABELS[tipo] || tipo} ({count})
+                        {labelOtrosGastoType(type)} ({count})
                       </button>
                     );
                   })}
@@ -1659,9 +1663,9 @@ function AprobadoBlock({
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div>
-                            <p className="font-bold text-sm text-gray-900">Semana {og.week_index}</p>
+                            <p className="font-bold text-sm text-gray-900">Cuota {og.numero_cuota || og.week_index}{og.total_cuotas ? ` de ${og.total_cuotas}` : ''}</p>
                             <p className="text-[11px] text-gray-500 mt-0.5">
-                              {OG_TIPO_LABELS[og.tipo || 'generico']} · {formatDate(og.due_date, 'es-ES')}
+                              {labelOtrosGastoType(og.tipo)} {og.periodo_anio || String(og.due_date).slice(0, 4)} · {formatDate(og.due_date, 'es-ES')}
                             </p>
                           </div>
                           <span className={"px-2 py-0.5 rounded text-[10px] font-bold tracking-wider " + badge.bg + " " + badge.text}>
@@ -1671,15 +1675,15 @@ function AprobadoBlock({
                         <div className="grid grid-cols-3 gap-2 mt-3">
                           <div>
                             <p className="text-[10px] text-gray-400 uppercase tracking-wider">Monto</p>
-                            <p className="text-xs font-bold text-gray-900">{monedaSimbolo}{Number(og.amount_due).toFixed(2)}</p>
+                            <p className="text-xs font-bold text-gray-900">{symMoneda(og.moneda || 'PEN')} {Number(og.amount_due).toFixed(2)}</p>
                           </div>
                           <div>
                             <p className="text-[10px] text-gray-400 uppercase tracking-wider">Pagado</p>
-                            <p className="text-xs font-bold text-emerald-700">{monedaSimbolo}{Number(og.paid_amount).toFixed(2)}</p>
+                            <p className="text-xs font-bold text-emerald-700">{symMoneda(og.moneda || 'PEN')} {Number(og.paid_amount).toFixed(2)}</p>
                           </div>
                           <div>
                             <p className="text-[10px] text-gray-400 uppercase tracking-wider">Saldo</p>
-                            <p className="text-xs font-bold text-red-600">{monedaSimbolo}{Math.max(0, Number(og.amount_due) - Number(og.paid_amount)).toFixed(2)}</p>
+                            <p className="text-xs font-bold text-red-600">{symMoneda(og.moneda || 'PEN')} {Math.max(0, Number(og.amount_due) - Number(og.paid_amount)).toFixed(2)}</p>
                           </div>
                         </div>
                       </button>
@@ -1696,16 +1700,15 @@ function AprobadoBlock({
                   >
                     Todos ({otrosGastosRows.length})
                   </button>
-                  {Array.from(new Set(otrosGastosRows.map((og) => og.tipo || 'generico'))).map((tipo) => {
-                    const count = otrosGastosRows.filter((og) => (og.tipo || 'generico') === tipo).length;
+                  {otrosGastosTypes.map(({ type, count }) => {
                     return (
                       <button
-                        key={tipo}
+                        key={type}
                         type="button"
-                        onClick={() => setOgTipoFilter(ogTipoFilter === tipo ? null : tipo)}
-                        className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${ogTipoFilter === tipo ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
+                        onClick={() => setOgTipoFilter(ogTipoFilter === type ? null : type)}
+                        className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${ogTipoFilter === type ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
                       >
-                        {OG_TIPO_LABELS[tipo] || tipo} ({count})
+                        {labelOtrosGastoType(type)} ({count})
                       </button>
                     );
                   })}
@@ -1714,7 +1717,7 @@ function AprobadoBlock({
                   <table className="w-full text-sm border-collapse tabular-nums">
                     <thead>
                       <tr className="border-b-2 border-gray-200 bg-gradient-to-b from-gray-50 to-gray-100/60 text-gray-900">
-                        <th className="px-3 py-3 text-left text-xs font-bold uppercase tracking-wide align-bottom">Semana</th>
+                        <th className="px-3 py-3 text-left text-xs font-bold uppercase tracking-wide align-bottom">Cuota</th>
                         <th className="px-3 py-3 text-left text-xs font-bold uppercase tracking-wide align-bottom whitespace-nowrap">Tipo</th>
                         <th className="px-3 py-3 text-left text-xs font-bold uppercase tracking-wide align-bottom whitespace-nowrap">Vence</th>
                         <th className="px-3 py-3 text-right text-xs font-bold uppercase tracking-wide align-bottom">Monto</th>
@@ -1749,7 +1752,7 @@ function AprobadoBlock({
                                     ) : (
                                       <ChevronRight className="w-4 h-4 text-gray-600 flex-shrink-0" aria-hidden />
                                     )}
-                                    <span className="font-semibold text-[#8B1A1A] leading-tight">Semana {og.week_index}</span>
+                                    <span className="font-semibold text-[#8B1A1A] leading-tight">{og.numero_cuota || og.week_index}/{og.total_cuotas || '—'}</span>
                                     {compsOg.length > 0 && (
                                       <span className="inline-flex flex-shrink-0 items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-700 ring-1 ring-gray-200">
                                         {compsOg.length}
@@ -1757,18 +1760,18 @@ function AprobadoBlock({
                                     )}
                                   </button>
                                 ) : (
-                                  <span className="font-semibold text-[#8B1A1A] leading-tight">Semana {og.week_index}</span>
+                                  <span className="font-semibold text-[#8B1A1A] leading-tight">{og.numero_cuota || og.week_index}/{og.total_cuotas || '—'}</span>
                                 )}
                               </td>
                               <td className="px-3 py-3 align-top text-[13px] leading-tight font-medium text-gray-900">
-                                {OG_TIPO_LABELS[og.tipo || 'generico']}
+                                {labelOtrosGastoType(og.tipo)} <span className="text-xs text-gray-500">{og.periodo_anio || String(og.due_date).slice(0, 4)}</span>
                               </td>
                               <td className={`px-3 py-3 align-top text-[13px] leading-tight whitespace-nowrap ${ogStatusLow === 'overdue' ? 'text-[#8B1A1A] font-bold uppercase tracking-wide' : 'text-gray-800'}`}>{formatDate(og.due_date, 'es-ES')}</td>
                               <td className="px-3 py-3 align-top text-right tabular-nums font-medium text-gray-900 text-[13px] leading-tight">
-                                {monedaSimbolo}{Number(og.amount_due).toFixed(2)}
+                                {symMoneda(og.moneda || 'PEN')} {Number(og.amount_due).toFixed(2)}
                               </td>
                               <td className="px-3 py-3 align-top text-right tabular-nums text-emerald-700 font-medium text-[13px] leading-tight">
-                                {monedaSimbolo}{Number(og.paid_amount).toFixed(2)}
+                                {symMoneda(og.moneda || 'PEN')} {Number(og.paid_amount).toFixed(2)}
                               </td>
                               <td className="px-3 py-3 align-top text-center">
                                 {(() => {
@@ -1864,7 +1867,7 @@ function AprobadoBlock({
                                         <div className="min-w-0 flex-1">
                                           <p className="truncate text-sm font-semibold text-gray-900">{fileOgPreview.file.name}</p>
                                           <p className="text-xs text-gray-500">
-                                            Semana {og.week_index} · Pendiente {monedaSimbolo}{Math.max(0, Number(og.amount_due) - Number(og.paid_amount || 0)).toFixed(2)}
+                                            Cuota {og.numero_cuota || og.week_index} · Pendiente {symMoneda(og.moneda || 'PEN')} {Math.max(0, Number(og.amount_due) - Number(og.paid_amount || 0)).toFixed(2)}
                                           </p>
                                         </div>
                                         {previewOgFile && (
@@ -2037,17 +2040,18 @@ function AprobadoBlock({
             <BottomSheet
               isOpen={!!ogSheet}
               onClose={() => setOgSheet(null)}
-              title={`${OG_TIPO_LABELS[ogSheet.tipo || 'generico']} · Semana ${ogSheet.week_index}`}
+              title={`${labelOtrosGastoType(ogSheet.tipo)} · Cuota ${ogSheet.numero_cuota || ogSheet.week_index}`}
             >
               <div className="bg-gray-50 rounded-xl border border-gray-200 overflow-hidden">
                 <div className="grid grid-cols-2 gap-0 text-sm">
                   {(() => {
                     const rows = [
-                      ['Tipo', OG_TIPO_LABELS[ogSheet.tipo || 'generico']],
+                      ['Tipo', labelOtrosGastoType(ogSheet.tipo)],
+                      ['Periodo', String(ogSheet.periodo_anio || String(ogSheet.due_date).slice(0, 4))],
                       ['Vencimiento', formatDate(ogSheet.due_date, 'es-ES')],
-                      ['Monto', `${monedaSimbolo}${Number(ogSheet.amount_due).toFixed(2)}`],
-                      ['Pagado', `${monedaSimbolo}${Number(ogSheet.paid_amount).toFixed(2)}`],
-                      ['Saldo', `${monedaSimbolo}${Math.max(0, Number(ogSheet.amount_due) - Number(ogSheet.paid_amount)).toFixed(2)}`],
+                      ['Monto', `${symMoneda(ogSheet.moneda || 'PEN')} ${Number(ogSheet.amount_due).toFixed(2)}`],
+                      ['Pagado', `${symMoneda(ogSheet.moneda || 'PEN')} ${Number(ogSheet.paid_amount).toFixed(2)}`],
+                      ['Saldo', `${symMoneda(ogSheet.moneda || 'PEN')} ${Math.max(0, Number(ogSheet.amount_due) - Number(ogSheet.paid_amount)).toFixed(2)}`],
                       ['Estado', ogSheet.status === 'paid' ? 'Pagada' : ogSheet.status === 'overdue' ? 'Vencida' : ogSheet.status === 'partial' ? 'Parcial' : 'Pendiente'],
                     ];
                     return rows.map(([label, val], idx) => {
@@ -2111,7 +2115,7 @@ function AprobadoBlock({
                           </span>
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-semibold text-gray-900">{uploadActivo.file.name}</p>
-                            <p className="text-xs text-gray-500">Pendiente {monedaSimbolo}{pendiente.toFixed(2)}</p>
+                            <p className="text-xs text-gray-500">Pendiente {symMoneda(ogSheet.moneda || 'PEN')} {pendiente.toFixed(2)}</p>
                           </div>
                           {previewOgFile && (
                             <button

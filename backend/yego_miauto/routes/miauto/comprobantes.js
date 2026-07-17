@@ -13,7 +13,6 @@ import {
   confirmComprobanteCuotaSemanal,
   rejectComprobanteCuotaSemanal,
   addPagoManualCuotaSemanal,
-  listForAdminValidation as listComprobantesCuotaSemanalForAdminValidation,
 } from '../../services/comprobantes/miautoComprobanteCuotaSemanalService.js';
 import {
   listBySolicitud as listComprobantesOtrosGastos,
@@ -21,6 +20,7 @@ import {
   validateComprobanteOtrosGastos,
   rejectComprobanteOtrosGastos,
 } from '../../services/comprobantes/miautoComprobanteOtrosGastosService.js';
+import { listComprobantesForAdminValidation } from '../../services/comprobantes/miautoComprobanteValidationService.js';
 import pool from '../../../database/connection.js';
 
 const router = Router();
@@ -181,20 +181,20 @@ router.patch(
 
 // --- Cuotas semanales Mi Auto ---
 
-// GET /api/miauto/comprobantes-cuota-semanal
-router.get('/comprobantes-cuota-semanal', async (req, res) => {
+// GET /api/miauto/comprobantes-validacion
+router.get('/comprobantes-validacion', async (req, res) => {
   try {
     if (req.user?.role === 'driver') {
       return errorResponse(res, 'No autorizado', 403);
     }
-    const list = await listComprobantesCuotaSemanalForAdminValidation({
+    const list = await listComprobantesForAdminValidation({
       estado: req.query.estado,
       country: req.query.country,
       limit: req.query.limit,
     });
     return successResponse(res, list);
   } catch (error) {
-    logger.error('Error listando comprobantes cuota semanal para validación Mi Auto:', error);
+    logger.error('Error listando comprobantes para validacion Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al listar comprobantes', 500);
   }
 });
@@ -406,9 +406,12 @@ router.post(
         req.file,
         monto,
         moneda || 'PEN',
-        req.user?.id
+        {
+          userId: req.user?.id || null,
+          origin: req.user?.role === 'driver' ? 'conductor' : 'admin',
+        }
       );
-      return successResponse(res, list, 'Comprobante subido', 201);
+      return successResponse(res, list, 'Comprobante subido y aplicado al gasto', 201);
     } catch (error) {
       logger.error('Error subiendo comprobante otros gastos Mi Auto:', error);
       return errorResponse(res, error.message || 'Error al subir comprobante', 400);
@@ -422,13 +425,10 @@ router.patch(
   validateUUID,
   async (req, res) => {
     try {
-      const monto = req.body.monto != null ? parseFloat(req.body.monto) : undefined;
-      const moneda = trimOrUndefined(req.body.moneda);
       const list = await validateComprobanteOtrosGastos(
         req.params.id,
         req.params.comprobanteId,
-        req.user?.id,
-        (monto != null && !Number.isNaN(monto) && moneda) ? { monto, moneda: normalizeMiautoMonedaReq(moneda) } : {}
+        req.user?.id
       );
       return successResponse(res, list, 'Comprobante validado');
     } catch (error) {

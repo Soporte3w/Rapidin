@@ -4,7 +4,12 @@ import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../../../utils/
 import { generateWeeklyCharge } from '../cobros/CobroEngine.js';
 import { getLimaYmd, mondayOfWeekContainingYmd, addDaysYmd, limaWeekStartToMiAutoIncomeRange } from '../../../utils/miautoLimaWeekRange.js';
 import { getTotalValidado } from '../comprobantes/miautoComprobantePagoService.js';
-import { ensureOtroGastoForWeek, listBySolicitud as listOtrosGastosBySolicitud, listBySolicitudIds as listOtrosGastosBySolicitudIds } from '../gastos/miautoOtrosGastosService.js';
+import {
+  generateExpenseCycles,
+  listBySolicitud as listOtrosGastosBySolicitud,
+  listBySolicitudIds as listOtrosGastosBySolicitudIds,
+  updateExpenseConfiguration,
+} from '../gastos/miautoOtrosGastosService.js';
 import { logger } from '../../../utils/logger.js';
 import { getDriverIncome } from '../../../services/yangoService.js';
 import {
@@ -790,16 +795,6 @@ export const updateSolicitud = async (id, data, userId = null) => {
     params.push(p);
     n += 1;
   }
-  if (data.otros_gastos_saldo_total !== undefined) {
-    updates.push(`otros_gastos_saldo_total = $${n}`);
-    params.push(data.otros_gastos_saldo_total);
-    n += 1;
-  }
-  if (data.otros_gastos_num_cuotas !== undefined) {
-    updates.push(`otros_gastos_num_cuotas = $${n}`);
-    params.push(data.otros_gastos_num_cuotas);
-    n += 1;
-  }
   if (updates.length === 0) return getSolicitudById(id);
   if (userId) {
     updates.push(`updated_by = $${n}`);
@@ -902,7 +897,7 @@ export const noVinoRechazar = async (id, userId = null) => {
  * Opciones: `fecha_inicio_cobro_semanal` (YYYY-MM-DD) = fecha real del depósito; si no viene, se usa **hoy en Lima** (`getLimaYmd`).
  * La fila semanal usa `week_start_date` = lunes de la semana civil que contiene esa fecha (puede coincidir con el depósito si cae lunes).
  * Permitido si: aprobado, cronograma/vehículo asignados, y (pago_estado completo O pago parcial con al menos 500 USD validados).
- * Con pago parcial: crea 26 cuotas "otros gastos" (saldo pendiente); vencimientos en lunes desde semana 2 del plan.
+ * Con pago parcial: activa el ciclo fijo de inicial parcial ($19.23 por 26 semanas).
  */
 export const generarYegoMiAuto = async (id, options = {}) => {
   const row = await query(
@@ -1041,31 +1036,18 @@ export const generarYegoMiAuto = async (id, options = {}) => {
     }
   }
 
-  // Pago parcial: guardar saldo y N en solicitud; crear solo la fila de semana 2 (resto se crea lazy al listar).
-  if (!pagoCompleto && s.pago_tipo === 'parcial') {
-    const veh = await query(
-      'SELECT inicial FROM module_miauto_cronograma_vehiculo WHERE id = $1',
-      [s.cronograma_vehiculo_id]
-    );
-    const inicial = veh.rows[0] ? parseFloat(veh.rows[0].inicial) || 0 : 0;
-    const { total } = await getTotalValidado(id);
-    const saldo = Math.max(0, inicial - total);
-    if (saldo > 0) {
-      try {
-        const crono = await query(
-          'SELECT COALESCE(NULLIF(cuotas_otros_gastos, 0), 26) AS n FROM module_miauto_cronograma WHERE id = $1',
-          [s.cronograma_id]
-        );
-        const numCuotas = crono.rows[0] ? parseInt(crono.rows[0].n, 10) || 26 : 26;
-        await updateSolicitud(id, {
-          otros_gastos_saldo_total: saldo,
-          otros_gastos_num_cuotas: numCuotas,
-        });
-        await ensureOtroGastoForWeek(id, 2);
-      } catch (err) {
-        logger.warn('Mi Auto: no se pudieron configurar/crear cuota de otros gastos:', err.message);
-      }
-    }
+  try {
+    await updateExpenseConfiguration(id, {
+      fecha_entrega_vehiculo: fechaInicioStored,
+      inicial_parcial_activa: !pagoCompleto && s.pago_tipo === 'parcial',
+      gastos_automaticos_activos: true,
+    }, options.userId || null);
+    await generateExpenseCycles(id, {
+      periodYear: Number(fechaInicioStored.slice(0, 4)),
+      userId: options.userId || null,
+    });
+  } catch (err) {
+    logger.warn('Mi Auto: no se pudieron generar los ciclos de gastos adicionales:', err.message);
   }
 
   return updated;

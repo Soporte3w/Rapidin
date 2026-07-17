@@ -156,10 +156,13 @@ app.use(errorHandler);
 const server = app.listen(PORT, () => {
   logger.info(`Servidor escuchando en puerto ${PORT}`);
 
-  initializeJobs();
+  if (String(process.env.ENABLE_CRON || 'true').toLowerCase() === 'false') {
+    logger.warn('Jobs deshabilitados por ENABLE_CRON=false');
+  } else {
+    initializeJobs();
+  }
   initializeWebSocket(server);
   initializeDatabaseListener();
 });
 
 export default app;
-

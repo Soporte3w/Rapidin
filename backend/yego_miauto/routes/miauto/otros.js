@@ -19,8 +19,8 @@ import {
 } from '../../services/gastos/miautoOtrosGastosService.js';
 import { getSolicitudById } from '../../services/solicitud/miautoSolicitudService.js';
 import {
-  getAdditionalExpenseFleetChargePreview,
-  processSelectedAdditionalExpenseFleetCharges,
+  getAdditionalExpenseChargePreview,
+  chargeSelectedAdditionalExpensesWithReceipts,
 } from '../../services/cuotas/miautoFleetChargeService.js';
 import pool from '../../../database/connection.js';
 
@@ -290,10 +290,10 @@ router.get('/solicitudes/:id/otros-gastos', validateUUID, async (req, res) => {
   }
 });
 
-router.get('/solicitudes/:id/otros-gastos/cobro-fleet/preview', validateUUID, async (req, res) => {
+router.get('/solicitudes/:id/otros-gastos/cobrar/preview', validateUUID, async (req, res) => {
   try {
     if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para realizar cobros', 403);
-    const preview = await getAdditionalExpenseFleetChargePreview(req.params.id);
+    const preview = await getAdditionalExpenseChargePreview(req.params.id);
     return successResponse(res, preview);
   } catch (error) {
     logger.error('Error consultando cobro Fleet de otros gastos:', error);
@@ -301,15 +301,15 @@ router.get('/solicitudes/:id/otros-gastos/cobro-fleet/preview', validateUUID, as
   }
 });
 
-router.post('/solicitudes/:id/otros-gastos/cobro-fleet', validateUUID, async (req, res) => {
+router.post('/solicitudes/:id/otros-gastos/cobrar', validateUUID, async (req, res) => {
   try {
     if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para realizar cobros', 403);
-    const result = await processSelectedAdditionalExpenseFleetCharges(
+    const result = await chargeSelectedAdditionalExpensesWithReceipts(
       req.params.id,
       req.body?.otros_gastos_ids,
       { userId: req.user?.id || null }
     );
-    businessLog('miauto.otros_gastos.fleet_charged_manually', {
+    businessLog('miauto.otros_gastos.fleet_charge_confirmed', {
       solicitudId: req.params.id,
       otrosGastosIds: req.body?.otros_gastos_ids,
       summary: {
@@ -325,10 +325,10 @@ router.post('/solicitudes/:id/otros-gastos/cobro-fleet', validateUUID, async (re
       actorType: 'user',
       actorId: req.user?.id || null,
     });
-    return successResponse(res, result, 'Cobro Fleet procesado');
+    return successResponse(res, result, 'Cobro Fleet de otros gastos procesado');
   } catch (error) {
-    logger.error('Error cobrando otros gastos en Fleet:', error);
-    return errorResponse(res, error.message || 'Error al realizar el cobro Fleet', error.statusCode || 500);
+    logger.error('Error confirmando cobro Fleet de otros gastos:', error);
+    return errorResponse(res, error.message || 'Error al confirmar el cobro Fleet', error.statusCode || 500);
   }
 });
 

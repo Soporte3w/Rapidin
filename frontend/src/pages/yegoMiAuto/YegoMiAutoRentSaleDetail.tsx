@@ -260,6 +260,14 @@ interface OtroGastoCobroFleetRow {
   pending_amount: number;
   currency: string;
   status: string;
+  pending_receipt_id?: string | null;
+  pending_receipt_amount?: number | null;
+  pending_receipt_currency?: string | null;
+  pending_receipt_applied_amount?: number | null;
+  pending_receipt_applied_currency?: string | null;
+  pending_receipt_file_name?: string | null;
+  pending_receipt_file_path?: string | null;
+  pending_receipt_applied?: boolean;
 }
 
 interface OtroGastoCobroFleetPreview {
@@ -984,15 +992,19 @@ export default function YegoMiAutoRentSaleDetail() {
     }
   }, [id, fetchDetail]);
 
-  const loadAdditionalExpenseFleetCharge = useCallback(async () => {
+  const loadAdditionalExpenseFleetCharge = useCallback(async (preferredType?: string | null) => {
     if (!id) return;
     try {
       setLoadingGastoFleetCharge(true);
-      const response = await api.get(`/miauto/solicitudes/${id}/otros-gastos/cobro-fleet/preview`);
+      const response = await api.get(`/miauto/solicitudes/${id}/otros-gastos/cobrar/preview`);
       const preview = (response.data?.data ?? response.data) as OtroGastoCobroFleetPreview;
       setGastoFleetPreview(preview);
-      setGastosFleetSeleccionados({});
-      setGastoFleetTipoActivo(canonicalOtrosGastoType(preview.expenses[0]?.tipo));
+      setGastosFleetSeleccionados(Object.fromEntries(
+        preview.expenses
+          .filter((expense) => expense.pending_receipt_id && !expense.pending_receipt_applied)
+          .map((expense) => [expense.id, true])
+      ));
+      setGastoFleetTipoActivo(canonicalOtrosGastoType(preferredType || preview.expenses[0]?.tipo));
     } catch (err: any) {
       setGastoFleetPreview(null);
       toast.error(err.response?.data?.message || 'No se pudo consultar el saldo Fleet');
@@ -1002,9 +1014,18 @@ export default function YegoMiAutoRentSaleDetail() {
   }, [id]);
 
   const openAdditionalExpenseFleetCharge = useCallback(() => {
+    setGastoComprobanteTarget(null);
+    setGastoComprobanteArchivo(null);
     setShowGastoFleetChargeModal(true);
     void loadAdditionalExpenseFleetCharge();
   }, [loadAdditionalExpenseFleetCharge]);
+
+  const closeAdditionalExpenseFleetCharge = useCallback(() => {
+    if (chargingGastoFleet || subiendoGastoComprobante) return;
+    setShowGastoFleetChargeModal(false);
+    setGastoComprobanteTarget(null);
+    setGastoComprobanteArchivo(null);
+  }, [chargingGastoFleet, subiendoGastoComprobante]);
 
   const selectedAdditionalExpenseFleetIds = useMemo(
     () => Object.entries(gastosFleetSeleccionados)
@@ -1017,8 +1038,9 @@ export default function YegoMiAutoRentSaleDetail() {
     const selectedIds = new Set(selectedAdditionalExpenseFleetIds);
     return (gastoFleetPreview?.expenses || []).reduce((totals, expense) => {
       if (selectedIds.has(expense.id)) {
-        const currency = expense.currency || 'PEN';
-        totals[currency] = roundToTwoDecimals((totals[currency] || 0) + Number(expense.pending_amount || 0));
+        const currency = expense.pending_receipt_applied_currency || expense.currency || 'PEN';
+        const amount = Number(expense.pending_receipt_applied_amount || 0);
+        totals[currency] = roundToTwoDecimals((totals[currency] || 0) + amount);
       }
       return totals;
     }, {} as Record<string, number>);
@@ -1058,21 +1080,32 @@ export default function YegoMiAutoRentSaleDetail() {
 
   const chargeSelectedAdditionalExpenses = useCallback(async () => {
     if (!id || selectedAdditionalExpenseFleetIds.length === 0) return;
+    const selectedIds = new Set(selectedAdditionalExpenseFleetIds);
+    const hasExpenseWithoutReadyReceipt = (gastoFleetPreview?.expenses || []).some(
+      (expense) => selectedIds.has(expense.id)
+        && (!expense.pending_receipt_id || expense.pending_receipt_applied)
+    );
+    if (hasExpenseWithoutReadyReceipt) {
+      toast.error('Todas las cuotas seleccionadas deben tener un comprobante listo');
+      return;
+    }
     try {
       setChargingGastoFleet(true);
-      const response = await api.post(`/miauto/solicitudes/${id}/otros-gastos/cobro-fleet`, {
+      const response = await api.post(`/miauto/solicitudes/${id}/otros-gastos/cobrar`, {
         otros_gastos_ids: selectedAdditionalExpenseFleetIds,
       });
       const result = response.data?.data ?? response.data;
       const successCount = Number(result?.success || 0);
       const partialCount = Number(result?.partial || 0);
       const failedCount = Number(result?.failed || 0);
+      const fleetCount = Number(result?.fleet || 0);
       if (failedCount > 0) {
         toast.error(`Cobro procesado: ${successCount} aplicados y ${failedCount} no realizados`);
       } else if (partialCount > 0) {
         toast.success(`Cobro aplicado parcialmente en ${partialCount} cuota${partialCount === 1 ? '' : 's'}`);
       } else {
-        toast.success(`${successCount} cuota${successCount === 1 ? '' : 's'} cobrada${successCount === 1 ? '' : 's'}`);
+        const detail = fleetCount > 0 ? `${fleetCount} desde Fleet` : '';
+        toast.success(`${successCount} cuota${successCount === 1 ? '' : 's'} cobrada${successCount === 1 ? '' : 's'}${detail ? `: ${detail}` : ''}`);
       }
       setShowGastoFleetChargeModal(false);
       setGastoFleetPreview(null);
@@ -1084,7 +1117,7 @@ export default function YegoMiAutoRentSaleDetail() {
     } finally {
       setChargingGastoFleet(false);
     }
-  }, [fetchDetail, id, loadAdditionalExpenseFleetCharge, selectedAdditionalExpenseFleetIds]);
+  }, [fetchDetail, gastoFleetPreview, id, loadAdditionalExpenseFleetCharge, selectedAdditionalExpenseFleetIds]);
 
   const openAdditionalExpenseReceipt = useCallback((expense: MiautoOtrosGastoRow) => {
     const pending = Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount || 0));
@@ -1092,6 +1125,47 @@ export default function YegoMiAutoRentSaleDetail() {
     setGastoComprobanteMonto(pending.toFixed(2));
     setGastoComprobanteMoneda(expense.moneda || 'PEN');
     setGastoComprobanteArchivo(null);
+  }, []);
+
+  const openAdditionalExpenseReceiptFromCard = useCallback((expense: MiautoOtrosGastoRow) => {
+    openAdditionalExpenseReceipt(expense);
+    setShowGastoFleetChargeModal(true);
+    void loadAdditionalExpenseFleetCharge(expense.tipo);
+  }, [loadAdditionalExpenseFleetCharge, openAdditionalExpenseReceipt]);
+
+  const openFleetExpenseReceipt = useCallback((expense: OtroGastoCobroFleetRow) => {
+    setGastosFleetSeleccionados((current) => {
+      const next = { ...current };
+      delete next[expense.id];
+      return next;
+    });
+    openAdditionalExpenseReceipt({
+      id: expense.id,
+      tipo: expense.tipo,
+      periodo_anio: expense.periodo_anio,
+      numero_cuota: expense.numero_cuota ?? undefined,
+      total_cuotas: expense.total_cuotas,
+      week_index: expense.numero_cuota || 1,
+      due_date: expense.due_date || '',
+      amount_due: expense.amount_due,
+      paid_amount: expense.paid_amount,
+      pending_amount: expense.pending_amount,
+      status: expense.status,
+      moneda: expense.currency,
+    });
+  }, [openAdditionalExpenseReceipt]);
+
+  const openFleetExpenseReceiptPreview = useCallback((expense: OtroGastoCobroFleetRow) => {
+    if (!expense.pending_receipt_file_path) return;
+    const url = expense.pending_receipt_file_path.startsWith('http')
+      ? expense.pending_receipt_file_path
+      : getMiautoAdjuntoUrl(expense.pending_receipt_file_path);
+    const fileName = expense.pending_receipt_file_name || 'Comprobante de otros gastos';
+    setComprobantePreview({
+      url,
+      fileName,
+      isImage: !/\.pdf$/i.test(fileName) && /\.(jpe?g|png|gif|webp)$/i.test(fileName),
+    });
   }, []);
 
   const uploadAdditionalExpenseReceipt = useCallback(async () => {
@@ -1103,25 +1177,37 @@ export default function YegoMiAutoRentSaleDetail() {
     }
     try {
       setSubiendoGastoComprobante(true);
+      const expenseId = gastoComprobanteTarget.id;
       const formData = new FormData();
       formData.append('file', gastoComprobanteArchivo);
       formData.append('monto', amount.toFixed(2));
       formData.append('moneda', gastoComprobanteMoneda);
+      formData.append('defer_application', 'true');
       await api.post(
         `/miauto/solicitudes/${id}/otros-gastos/${gastoComprobanteTarget.id}/comprobantes`,
         formData,
         { headers: { 'Content-Type': 'multipart/form-data' } }
       );
-      toast.success('Comprobante enviado para validacion');
+      toast.success('Comprobante listo para confirmar cobro');
       setGastoComprobanteTarget(null);
       setGastoComprobanteArchivo(null);
       await fetchDetail(undefined, { refresh: true });
+      await loadAdditionalExpenseFleetCharge();
+      setGastosFleetSeleccionados((current) => ({ ...current, [expenseId]: true }));
     } catch (err: any) {
       toast.error(err.response?.data?.message || 'No se pudo subir el comprobante');
     } finally {
       setSubiendoGastoComprobante(false);
     }
-  }, [id, gastoComprobanteTarget, gastoComprobanteArchivo, gastoComprobanteMonto, gastoComprobanteMoneda, fetchDetail]);
+  }, [
+    id,
+    gastoComprobanteTarget,
+    gastoComprobanteArchivo,
+    gastoComprobanteMonto,
+    gastoComprobanteMoneda,
+    fetchDetail,
+    loadAdditionalExpenseFleetCharge,
+  ]);
 
   const handleSubirEvidenciasFleetCuota = async (cuotaId: string) => {
     if (!id) return;
@@ -2649,23 +2735,28 @@ export default function YegoMiAutoRentSaleDetail() {
                                 const gastoSym = symMoneda(og.moneda || 'PEN');
                                 const receipts = comprobantesOtrosGastosPorGasto.get(og.id) || [];
                                 const latestReceipt = receipts[0];
-                                const receiptStatus = String(latestReceipt?.estado || '').toLowerCase();
-                                const hasPendingReceipt = receipts.some(
+                                const pendingReceipt = receipts.find(
                                   (receipt) => String(receipt.estado || '').toLowerCase() === 'pendiente'
                                 );
+                                const displayedReceipt = pendingReceipt || latestReceipt;
+                                const receiptStatus = String(displayedReceipt?.estado || '').toLowerCase();
+                                const hasPendingReceipt = Boolean(pendingReceipt);
+                                const pendingReceiptApplied = receiptStatus === 'pendiente' && Boolean(
+                                  displayedReceipt?.pago_aplicado || Number(displayedReceipt?.monto_aplicado || 0) > 0.005
+                                );
                                 const canViewReceipt = Boolean(
-                                  latestReceipt?.file_path && latestReceipt.file_path !== 'manual'
+                                  displayedReceipt?.file_path && displayedReceipt.file_path !== 'manual'
                                 );
                                 const openReceiptPreview = () => {
-                                  if (!canViewReceipt || !latestReceipt) return;
-                                  const url = latestReceipt.file_path.startsWith('http')
-                                    ? latestReceipt.file_path
-                                    : getMiautoAdjuntoUrl(latestReceipt.file_path);
-                                  const isImage = !/\.pdf$/i.test(latestReceipt.file_name || '') &&
-                                    /\.(jpe?g|png|gif|webp)$/i.test(latestReceipt.file_name || '');
+                                  if (!canViewReceipt || !displayedReceipt) return;
+                                  const url = displayedReceipt.file_path.startsWith('http')
+                                    ? displayedReceipt.file_path
+                                    : getMiautoAdjuntoUrl(displayedReceipt.file_path);
+                                  const isImage = !/\.pdf$/i.test(displayedReceipt.file_name || '') &&
+                                    /\.(jpe?g|png|gif|webp)$/i.test(displayedReceipt.file_name || '');
                                   setComprobantePreview({
                                     url,
-                                    fileName: latestReceipt.file_name || 'Comprobante de otros gastos',
+                                    fileName: displayedReceipt.file_name || 'Comprobante de otros gastos',
                                     isImage,
                                   });
                                 };
@@ -2698,13 +2789,17 @@ export default function YegoMiAutoRentSaleDetail() {
                                         {labelOtrosGastoStatus(og.status)}
                                       </span>
                                     ) : hasPendingReceipt ? (
-                                      <span className="rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700">
-                                        En validacion
+                                      <span className={`rounded px-1.5 py-0.5 font-semibold ${
+                                        pendingReceiptApplied
+                                          ? 'bg-amber-100 text-amber-700'
+                                          : 'bg-green-100 text-green-700'
+                                      }`}>
+                                        {pendingReceiptApplied ? 'Pendiente banco' : 'Comprobante listo'}
                                       </span>
                                     ) : (
                                       <button
                                         type="button"
-                                        onClick={() => openAdditionalExpenseReceipt(og)}
+                                        onClick={() => openAdditionalExpenseReceiptFromCard(og)}
                                         className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-1.5 py-0.5 font-semibold text-gray-700 hover:bg-gray-50"
                                       >
                                         <Upload className="h-3 w-3" />
@@ -2712,7 +2807,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                       </button>
                                     )}
                                   </div>
-                                  {latestReceipt && (
+                                  {displayedReceipt && (
                                     <div className="col-span-2 mt-1 flex items-center justify-between gap-2 border-t border-black/5 pt-2">
                                       <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
                                         receiptStatus === 'validado'
@@ -2725,7 +2820,9 @@ export default function YegoMiAutoRentSaleDetail() {
                                           ? 'Validado banco'
                                           : receiptStatus === 'rechazado'
                                             ? 'Rechazado'
-                                            : 'Pendiente banco'}
+                                            : pendingReceiptApplied
+                                              ? 'Pendiente banco'
+                                              : 'Listo para cobrar'}
                                       </span>
                                       {canViewReceipt && (
                                         <button
@@ -2784,7 +2881,7 @@ export default function YegoMiAutoRentSaleDetail() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="gasto-fleet-charge-title"
-          onClick={() => !chargingGastoFleet && setShowGastoFleetChargeModal(false)}
+          onClick={closeAdditionalExpenseFleetCharge}
         >
           <div
             className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
@@ -2793,13 +2890,17 @@ export default function YegoMiAutoRentSaleDetail() {
             <div className="flex items-start justify-between border-b border-gray-200 px-5 py-4">
               <div>
                 <h3 id="gasto-fleet-charge-title" className="text-base font-bold text-gray-900">Cobrar otros gastos</h3>
-                <p className="mt-0.5 text-xs text-gray-500">Selecciona las cuotas que se retirarán del saldo Fleet.</p>
+                <p className="mt-0.5 text-xs text-gray-500">Sube un comprobante en cada cuota antes de confirmar el cobro.</p>
               </div>
               <div className="flex items-center gap-1">
                 <button
                   type="button"
                   disabled={loadingGastoFleetCharge || chargingGastoFleet}
-                  onClick={() => void loadAdditionalExpenseFleetCharge()}
+                  onClick={() => {
+                    setGastoComprobanteTarget(null);
+                    setGastoComprobanteArchivo(null);
+                    void loadAdditionalExpenseFleetCharge();
+                  }}
                   className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800 disabled:opacity-50"
                   aria-label="Actualizar saldo"
                   title="Actualizar saldo"
@@ -2808,8 +2909,8 @@ export default function YegoMiAutoRentSaleDetail() {
                 </button>
                 <button
                   type="button"
-                  disabled={chargingGastoFleet}
-                  onClick={() => setShowGastoFleetChargeModal(false)}
+                  disabled={chargingGastoFleet || subiendoGastoComprobante}
+                  onClick={closeAdditionalExpenseFleetCharge}
                   className="rounded p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
                   aria-label="Cerrar"
                 >
@@ -2877,30 +2978,15 @@ export default function YegoMiAutoRentSaleDetail() {
                         const selectedInGroup = group.expenses.filter(
                           (expense) => gastosFleetSeleccionados[expense.id]
                         ).length;
-                        const allSelected = selectedInGroup === group.expenses.length;
                         return (
                           <section key={group.type}>
                             <div className="flex flex-wrap items-center justify-between gap-3 border-y border-gray-200 bg-gray-50 px-5 py-2.5">
-                              <label className="inline-flex cursor-pointer items-center gap-2">
-                                <input
-                                  type="checkbox"
-                                  checked={allSelected}
-                                  onChange={(event) => {
-                                    const checked = event.target.checked;
-                                    setGastosFleetSeleccionados((current) => ({
-                                      ...current,
-                                      ...Object.fromEntries(group.expenses.map((expense) => [expense.id, checked])),
-                                    }));
-                                  }}
-                                  className="h-4 w-4 rounded border-gray-300 text-[#8B1A1A] focus:ring-[#8B1A1A]"
-                                />
-                                <span>
-                                  <span className="block text-sm font-bold text-gray-900">{group.label}</span>
-                                  <span className="block text-[11px] text-gray-500">
-                                    {selectedInGroup} de {group.expenses.length} seleccionadas
-                                  </span>
+                              <span>
+                                <span className="block text-sm font-bold text-gray-900">{group.label}</span>
+                                <span className="block text-[11px] text-gray-500">
+                                  {selectedInGroup} de {group.expenses.length} seleccionadas
                                 </span>
-                              </label>
+                              </span>
                               <span className="text-xs font-bold text-gray-700">
                                 {Object.entries(group.totals)
                                   .map(([currency, total]) => `${symMoneda(currency)} ${total.toFixed(2)} ${currency}`)
@@ -2908,20 +2994,36 @@ export default function YegoMiAutoRentSaleDetail() {
                               </span>
                             </div>
                             <div className="divide-y divide-gray-100">
-                              {group.expenses.map((expense) => (
-                                <label
-                                  key={expense.id}
-                                  className="grid cursor-pointer grid-cols-[auto_1fr_auto] items-center gap-3 px-5 py-3 hover:bg-gray-50"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={Boolean(gastosFleetSeleccionados[expense.id])}
-                                    onChange={(event) => setGastosFleetSeleccionados((current) => ({
-                                      ...current,
-                                      [expense.id]: event.target.checked,
-                                    }))}
-                                    className="h-4 w-4 rounded border-gray-300 text-[#8B1A1A] focus:ring-[#8B1A1A]"
-                                  />
+                              {group.expenses.map((expense) => {
+                                const receiptReady = Boolean(
+                                  expense.pending_receipt_id && !expense.pending_receipt_applied
+                                );
+                                const receiptApplied = Boolean(
+                                  expense.pending_receipt_id && expense.pending_receipt_applied
+                                );
+                                const hasReceiptFile = Boolean(expense.pending_receipt_file_path);
+                                return (
+                                  <div
+                                    key={expense.id}
+                                    className={`grid grid-cols-[auto_1fr_auto] items-center gap-3 px-5 py-3 sm:grid-cols-[auto_1fr_auto_auto] ${
+                                      receiptReady ? 'bg-green-50/60' : 'hover:bg-gray-50'
+                                    }`}
+                                  >
+                                  <label
+                                    className={`flex items-center ${receiptReady ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+                                    aria-label={`Seleccionar cuota ${expense.numero_cuota || ''}`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(gastosFleetSeleccionados[expense.id])}
+                                      disabled={!receiptReady || expense.id === gastoComprobanteTarget?.id || receiptApplied}
+                                      onChange={(event) => setGastosFleetSeleccionados((current) => ({
+                                        ...current,
+                                        [expense.id]: event.target.checked,
+                                      }))}
+                                      className="h-4 w-4 rounded border-gray-300 text-[#8B1A1A] focus:ring-[#8B1A1A] disabled:cursor-not-allowed disabled:opacity-40"
+                                    />
+                                  </label>
                                   <span className="min-w-0">
                                     <span className="block truncate text-sm font-semibold text-gray-900">
                                       Cuota {expense.numero_cuota || '—'}{expense.total_cuotas ? ` de ${expense.total_cuotas}` : ''}
@@ -2940,9 +3042,40 @@ export default function YegoMiAutoRentSaleDetail() {
                                     }`}>
                                       {labelOtrosGastoStatus(expense.status)}
                                     </span>
+                                    {receiptReady && (
+                                      <span className="mt-0.5 block text-[10px] font-semibold text-green-700">
+                                        Comprobante: {symMoneda(expense.pending_receipt_currency || expense.currency)} {Number(expense.pending_receipt_amount || 0).toFixed(2)}
+                                      </span>
+                                    )}
                                   </span>
-                                </label>
-                              ))}
+                                  <button
+                                    type="button"
+                                    onClick={() => expense.pending_receipt_id
+                                      ? openFleetExpenseReceiptPreview(expense)
+                                      : openFleetExpenseReceipt(expense)}
+                                    disabled={chargingGastoFleet || subiendoGastoComprobante}
+                                    className={`col-span-3 inline-flex h-8 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs font-semibold disabled:opacity-50 sm:col-span-1 ${
+                                      receiptReady
+                                        ? 'border-green-300 bg-green-50 text-green-700 hover:bg-green-100'
+                                        : receiptApplied
+                                          ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                                          : gastoComprobanteTarget?.id === expense.id
+                                        ? 'border-[#8B1A1A] bg-red-50 text-[#8B1A1A]'
+                                        : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-100'
+                                    }`}
+                                  >
+                                    {receiptReady || receiptApplied
+                                      ? <ExternalLink className="h-3.5 w-3.5" />
+                                      : <Upload className="h-3.5 w-3.5" />}
+                                    {receiptReady
+                                      ? (hasReceiptFile ? 'Listo para cobrar' : 'Comprobante listo')
+                                      : receiptApplied
+                                        ? 'Pendiente banco'
+                                        : 'Comprobante'}
+                                  </button>
+                                  </div>
+                                );
+                              })}
                             </div>
                           </section>
                         );
@@ -2952,6 +3085,73 @@ export default function YegoMiAutoRentSaleDetail() {
                 </div>
 
                 <div className="border-t border-gray-200 px-5 py-4">
+                  {gastoComprobanteTarget && (
+                    <div className="mb-4 rounded-md border border-red-200 bg-red-50/40 p-3">
+                      <div className="mb-3 flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-gray-900">Subir comprobante</p>
+                          <p className="truncate text-xs text-gray-500">
+                            {labelOtrosGastoType(gastoComprobanteTarget.tipo)} · Cuota {gastoComprobanteTarget.numero_cuota || gastoComprobanteTarget.week_index}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={subiendoGastoComprobante}
+                          onClick={() => {
+                            setGastoComprobanteTarget(null);
+                            setGastoComprobanteArchivo(null);
+                          }}
+                          className="rounded p-1 text-gray-400 hover:bg-white hover:text-gray-700 disabled:opacity-50"
+                          aria-label="Cerrar formulario de comprobante"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_6.5rem_minmax(0,1.4fr)_auto] sm:items-end">
+                        <label className="text-xs font-medium text-gray-600">
+                          Monto
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={gastoComprobanteMonto}
+                            onChange={(event) => setGastoComprobanteMonto(event.target.value)}
+                            className="mt-1 h-9 w-full rounded-md border border-gray-300 bg-white px-2.5 text-sm text-gray-900"
+                          />
+                        </label>
+                        <label className="text-xs font-medium text-gray-600">
+                          Moneda
+                          <select
+                            value={gastoComprobanteMoneda}
+                            onChange={(event) => setGastoComprobanteMoneda(event.target.value)}
+                            className="mt-1 h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-sm text-gray-900"
+                          >
+                            <option value="PEN">PEN</option>
+                            <option value="USD">USD</option>
+                            <option value="COP">COP</option>
+                          </select>
+                        </label>
+                        <label className="min-w-0 text-xs font-medium text-gray-600">
+                          Archivo
+                          <input
+                            type="file"
+                            accept=".pdf,image/*"
+                            onChange={(event) => setGastoComprobanteArchivo(event.target.files?.[0] || null)}
+                            className="mt-1 block h-9 w-full min-w-0 rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-600 file:mr-2 file:border-0 file:bg-transparent file:text-xs file:font-semibold"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          disabled={subiendoGastoComprobante || !gastoComprobanteArchivo}
+                          onClick={uploadAdditionalExpenseReceipt}
+                          className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-[#8B1A1A] px-3 text-xs font-semibold text-white hover:bg-[#741616] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {subiendoGastoComprobante ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                          Subir
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm">
                     <span className="font-medium text-gray-600">{selectedAdditionalExpenseFleetIds.length} seleccionadas</span>
                     <span className="font-bold text-gray-900">
@@ -2965,15 +3165,15 @@ export default function YegoMiAutoRentSaleDetail() {
                   <div className="flex justify-end gap-2">
                     <button
                       type="button"
-                      disabled={chargingGastoFleet}
-                      onClick={() => setShowGastoFleetChargeModal(false)}
+                      disabled={chargingGastoFleet || subiendoGastoComprobante}
+                      onClick={closeAdditionalExpenseFleetCharge}
                       className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                     >
                       Cancelar
                     </button>
                     <button
                       type="button"
-                      disabled={chargingGastoFleet || selectedAdditionalExpenseFleetIds.length === 0}
+                      disabled={chargingGastoFleet || Boolean(gastoComprobanteTarget) || selectedAdditionalExpenseFleetIds.length === 0}
                       onClick={() => void chargeSelectedAdditionalExpenses()}
                       className="inline-flex h-9 items-center gap-2 rounded-md bg-[#8B1A1A] px-3 text-sm font-semibold text-white hover:bg-[#741616] disabled:cursor-not-allowed disabled:opacity-50"
                     >
@@ -2984,95 +3184,6 @@ export default function YegoMiAutoRentSaleDetail() {
                 </div>
               </>
             )}
-          </div>
-        </div>,
-        document.body
-      )}
-
-      {gastoComprobanteTarget && createPortal(
-        <div
-          className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="gasto-comprobante-title"
-          onClick={() => !subiendoGastoComprobante && setGastoComprobanteTarget(null)}
-        >
-          <div
-            className="w-full max-w-md rounded-lg bg-white shadow-xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-start justify-between border-b border-gray-200 px-5 py-4">
-              <div>
-                <h3 id="gasto-comprobante-title" className="text-base font-bold text-gray-900">Subir comprobante</h3>
-                <p className="mt-0.5 text-xs text-gray-500">
-                  {labelOtrosGastoType(gastoComprobanteTarget.tipo)} · Cuota {gastoComprobanteTarget.numero_cuota || gastoComprobanteTarget.week_index}
-                </p>
-              </div>
-              <button
-                type="button"
-                disabled={subiendoGastoComprobante}
-                onClick={() => setGastoComprobanteTarget(null)}
-                className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
-                aria-label="Cerrar"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="space-y-4 px-5 py-4">
-              <div className="grid grid-cols-[1fr_7rem] gap-3">
-                <label className="text-xs font-medium text-gray-600">
-                  Monto enviado
-                  <input
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    value={gastoComprobanteMonto}
-                    onChange={(event) => setGastoComprobanteMonto(event.target.value)}
-                    className="mt-1 h-10 w-full rounded-md border border-gray-300 px-3 text-sm text-gray-900"
-                  />
-                </label>
-                <label className="text-xs font-medium text-gray-600">
-                  Moneda
-                  <select
-                    value={gastoComprobanteMoneda}
-                    onChange={(event) => setGastoComprobanteMoneda(event.target.value)}
-                    className="mt-1 h-10 w-full rounded-md border border-gray-300 px-2 text-sm text-gray-900"
-                  >
-                    <option value="PEN">PEN</option>
-                    <option value="USD">USD</option>
-                    <option value="COP">COP</option>
-                  </select>
-                </label>
-              </div>
-              <label className="block text-xs font-medium text-gray-600">
-                Archivo
-                <input
-                  type="file"
-                  accept=".pdf,image/*"
-                  onChange={(event) => setGastoComprobanteArchivo(event.target.files?.[0] || null)}
-                  className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 file:mr-3 file:border-0 file:bg-transparent file:text-sm file:font-semibold"
-                />
-              </label>
-            </div>
-            <div className="flex justify-end gap-2 border-t border-gray-200 px-5 py-4">
-              <button
-                type="button"
-                disabled={subiendoGastoComprobante}
-                onClick={() => setGastoComprobanteTarget(null)}
-                className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={subiendoGastoComprobante || !gastoComprobanteArchivo}
-                onClick={uploadAdditionalExpenseReceipt}
-                className="inline-flex h-9 items-center gap-2 rounded-md bg-[#8B1A1A] px-3 text-sm font-semibold text-white hover:bg-[#741616] disabled:opacity-50"
-              >
-                {subiendoGastoComprobante ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                Subir
-              </button>
-            </div>
           </div>
         </div>,
         document.body

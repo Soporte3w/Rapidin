@@ -24,6 +24,9 @@ export interface ComprobanteOtrosGastos {
   otros_gastos_id: string;
   monto: number | null;
   moneda: string;
+  monto_aplicado?: number | null;
+  moneda_aplicada?: string | null;
+  pago_aplicado?: boolean;
   file_name: string;
   file_path: string;
   estado: string;

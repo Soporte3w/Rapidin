@@ -5,6 +5,7 @@ import {
   buildSoatInstallments,
   buildVehicleTaxInstallments,
   buildWeeklyInstallments,
+  availableFleetCharge,
   expenseStatus,
   isVehicleTaxYearEligible,
   nextMonday,
@@ -57,4 +58,20 @@ test('otros gastos derivan estado por saldo y fecha, sin mora', () => {
   assert.equal(expenseStatus({ amountDue: 200, paidAmount: 50, dueDate: '2026-01-01', todayYmd: '2026-07-16' }), 'overdue');
   assert.equal(expenseStatus({ amountDue: 200, paidAmount: 50, dueDate: '2026-08-01', todayYmd: '2026-07-16' }), 'partial');
   assert.equal(expenseStatus({ amountDue: 200, paidAmount: 0, dueDate: '2026-08-01', todayYmd: '2026-07-16' }), 'pending');
+});
+
+test('cobro Fleet usa solo el saldo disponible y conserva el saldo pendiente', () => {
+  assert.equal(availableFleetCharge(200, 75.35), 75.35);
+  assert.equal(availableFleetCharge(50, 75.35), 50);
+  assert.equal(availableFleetCharge(200, 0), 0);
+  const firstCharge = availableFleetCharge(50, 75.35);
+  const secondCharge = availableFleetCharge(50, 75.35 - firstCharge);
+  assert.equal(firstCharge, 50);
+  assert.equal(secondCharge, 25.35);
+  assert.equal(expenseStatus({
+    amountDue: 200,
+    paidAmount: 75.35,
+    dueDate: '2026-07-01',
+    todayYmd: '2026-07-17',
+  }), 'overdue');
 });

@@ -25,6 +25,16 @@ function assertExpensePaymentAvailable(conflict) {
   }
 }
 
+function assertPaymentWithinExpenseBalance(payment, expense) {
+  const pending = round2(Math.max(
+    0,
+    Number(expense.amount_due) - Number(expense.paid_amount),
+  ));
+  if (payment.appliedAmount > pending + 0.005) {
+    throw new Error(`El monto supera el saldo pendiente (${pending.toFixed(2)} ${expense.moneda})`);
+  }
+}
+
 async function resolveExpensePayment({ solicitudId, amount, currency, expenseCurrency }) {
   const originalAmount = Number(amount);
   if (!Number.isFinite(originalAmount) || originalAmount <= 0) {
@@ -60,8 +70,12 @@ export async function listBySolicitud(solicitudId) {
             tipo_cambio, monto_aplicado, moneda_aplicada,
             file_name, file_path, estado, validated_at, validated_by,
             rechazado_at, rechazo_razon, rechazado_by, created_by,
-            COALESCE(origen, 'conductor') AS origen, created_at
-     FROM module_miauto_comprobante_otros_gastos
+            COALESCE(origen, 'conductor') AS origen, created_at,
+            EXISTS (
+              SELECT 1 FROM module_miauto_gasto_pago_aplicacion pa
+              WHERE pa.comprobante_id = cp.id AND pa.reversed_at IS NULL
+            ) OR COALESCE(monto_aplicado, 0) > 0.005 AS pago_aplicado
+     FROM module_miauto_comprobante_otros_gastos cp
      WHERE solicitud_id = $1::uuid
      ORDER BY created_at, id`,
     [solicitudId]
@@ -71,7 +85,13 @@ export async function listBySolicitud(solicitudId) {
 
 export async function listForAdminValidation({ estado = 'pendiente', country, limit = 300 } = {}) {
   const params = [];
-  const where = ['s.deleted_at IS NULL'];
+  const where = [
+    's.deleted_at IS NULL',
+    `(EXISTS (
+       SELECT 1 FROM module_miauto_gasto_pago_aplicacion pa
+       WHERE pa.comprobante_id = cp.id AND pa.reversed_at IS NULL
+     ) OR COALESCE(cp.monto_aplicado, 0) > 0.005)`,
+  ];
   const normalizedStatus = String(estado || 'pendiente').trim().toLowerCase();
   if (normalizedStatus && normalizedStatus !== 'todos') {
     params.push(normalizedStatus);
@@ -135,17 +155,18 @@ export async function listForAdminValidation({ estado = 'pendiente', country, li
   return result.rows;
 }
 
-/** Registra el comprobante pendiente de validacion bancaria y acredita el gasto de inmediato. */
+/** Registra un comprobante. Por defecto conserva el flujo existente de aplicacion inmediata. */
 export async function createComprobanteOtrosGastos(
   solicitudId,
   expenseId,
   file,
   amount,
   currency,
-  { userId = null, origin = 'conductor' } = {},
+  { userId = null, origin = 'conductor', applyImmediately = true } = {},
 ) {
   const expense = await query(
     `SELECT og.id, og.status, og.tipo, og.numero_cuota, og.week_index, og.due_date, og.moneda,
+            og.amount_due, og.paid_amount,
             s.dni,
             COALESCE(
               NULLIF(TRIM(CONCAT_WS(' ', rd.first_name, rd.last_name)), ''),
@@ -172,6 +193,7 @@ export async function createComprobanteOtrosGastos(
     currency,
     expenseCurrency: expenseRow.moneda,
   });
+  assertPaymentWithinExpenseBalance(payment, expenseRow);
 
   const existingConflict = await query(PAYMENT_CONFLICT_SQL, [expenseId]);
   assertExpensePaymentAvailable(existingConflict.rows[0]);
@@ -196,7 +218,7 @@ export async function createComprobanteOtrosGastos(
   try {
     await client.query('BEGIN');
     const lockedExpense = await client.query(
-      `SELECT id, status
+      `SELECT id, status, amount_due, paid_amount
        FROM module_miauto_otros_gastos
        WHERE id = $1::uuid AND solicitud_id = $2::uuid AND deleted_at IS NULL
        FOR UPDATE`,
@@ -204,6 +226,10 @@ export async function createComprobanteOtrosGastos(
     );
     if (!lockedExpense.rows[0]) throw new Error('Cuota de otros gastos no encontrada');
     if (lockedExpense.rows[0].status === 'paid') throw new Error('Esta cuota ya esta pagada');
+    assertPaymentWithinExpenseBalance(payment, {
+      ...lockedExpense.rows[0],
+      moneda: expenseRow.moneda,
+    });
 
     const conflict = await client.query(PAYMENT_CONFLICT_SQL, [expenseId]);
     assertExpensePaymentAvailable(conflict.rows[0]);
@@ -211,32 +237,36 @@ export async function createComprobanteOtrosGastos(
     const inserted = await client.query(
       `INSERT INTO module_miauto_comprobante_otros_gastos
        (solicitud_id, otros_gastos_id, monto, moneda, monto_original,
-          moneda_original, file_name, file_path, created_by, origen)
-       VALUES ($1::uuid, $2::uuid, $3, $4, $3, $4, $5, $6, $7, $8)
+          moneda_original, tipo_cambio, moneda_aplicada,
+          file_name, file_path, created_by, origen)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id`,
       [solicitudId, expenseId, payment.originalAmount, payment.originalCurrency,
+        payment.exchangeRate, payment.appliedCurrency,
         fileName, path, userId, normalizedOrigin]
     );
     const receiptId = inserted.rows[0]?.id;
     if (!receiptId) throw new Error('No se pudo registrar el comprobante');
 
-    const application = await applyPaymentToExpense({
-      client,
-      solicitudId,
-      expenseId,
-      receiptId,
-      source: 'comprobante',
-      sourceKey: `comprobante-otros:${receiptId}`,
-      ...payment,
-      userId,
-      metadata: { validation: 'pending_bank_confirmation', origin: normalizedOrigin },
-    });
-    await client.query(
-      `UPDATE module_miauto_comprobante_otros_gastos
-       SET tipo_cambio = $1, monto_aplicado = $2, moneda_aplicada = $3
-       WHERE id = $4::uuid`,
-      [payment.exchangeRate, application.applied, payment.appliedCurrency, receiptId]
-    );
+    if (applyImmediately) {
+      const application = await applyPaymentToExpense({
+        client,
+        solicitudId,
+        expenseId,
+        receiptId,
+        source: 'comprobante',
+        sourceKey: `comprobante-otros:${receiptId}`,
+        ...payment,
+        userId,
+        metadata: { validation: 'pending_bank_confirmation', origin: normalizedOrigin },
+      });
+      await client.query(
+        `UPDATE module_miauto_comprobante_otros_gastos
+         SET monto_aplicado = $1
+         WHERE id = $2::uuid`,
+        [application.applied, receiptId]
+      );
+    }
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -245,6 +275,70 @@ export async function createComprobanteOtrosGastos(
     client.release();
   }
   return listBySolicitud(solicitudId);
+}
+
+async function applyReceiptWithinTransaction({
+  client,
+  solicitudId,
+  receiptId,
+}) {
+  const receiptResult = await client.query(
+    `SELECT cp.id, cp.otros_gastos_id, cp.tipo_cambio,
+            cp.monto_aplicado, cp.moneda_aplicada, cp.estado,
+            og.moneda AS expense_currency
+     FROM module_miauto_comprobante_otros_gastos cp
+     INNER JOIN module_miauto_otros_gastos og
+       ON og.id = cp.otros_gastos_id AND og.deleted_at IS NULL
+     WHERE cp.solicitud_id = $1::uuid AND cp.id = $2::uuid
+     FOR UPDATE OF cp, og`,
+    [solicitudId, receiptId]
+  );
+  const receipt = receiptResult.rows[0];
+  if (!receipt) throw new Error('Comprobante no encontrado');
+  if (receipt.estado !== 'pendiente') throw new Error('El comprobante ya fue procesado');
+
+  const sourceKey = `comprobante-otros:${receipt.id}`;
+  const existingApplication = await client.query(
+    `SELECT id, monto_aplicado, tipo_cambio, moneda_aplicada
+     FROM module_miauto_gasto_pago_aplicacion
+     WHERE (comprobante_id = $1::uuid OR source_key = $2) AND reversed_at IS NULL
+     ORDER BY applied_at DESC
+     LIMIT 1`,
+    [receipt.id, sourceKey]
+  );
+  const legacyAppliedAmount = round2(Number(receipt.monto_aplicado) || 0);
+  if (!existingApplication.rows[0] && legacyAppliedAmount <= 0.005) {
+    throw new Error('Primero confirma el cobro asociado a este comprobante');
+  }
+
+  const existing = existingApplication.rows[0];
+  const applied = round2(Number(existing?.monto_aplicado) || legacyAppliedAmount);
+  const exchangeRate = existing?.tipo_cambio ?? receipt.tipo_cambio ?? null;
+  const appliedCurrency = existing?.moneda_aplicada
+    || receipt.moneda_aplicada
+    || receipt.expense_currency;
+  await client.query(
+    `UPDATE module_miauto_comprobante_otros_gastos
+     SET tipo_cambio = COALESCE(tipo_cambio, $1),
+         monto_aplicado = COALESCE(monto_aplicado, $2),
+         moneda_aplicada = COALESCE(moneda_aplicada, $3)
+     WHERE id = $4::uuid`,
+    [exchangeRate, applied, appliedCurrency, receipt.id]
+  );
+  const expenseResult = await client.query(
+    `SELECT amount_due, paid_amount, status
+     FROM module_miauto_otros_gastos
+     WHERE id = $1::uuid`,
+    [receipt.otros_gastos_id]
+  );
+  const expense = expenseResult.rows[0];
+  return {
+    receiptId: receipt.id,
+    expenseId: receipt.otros_gastos_id,
+    applied,
+    pendingAfter: round2(Math.max(0, Number(expense?.amount_due) - Number(expense?.paid_amount))),
+    statusAfter: expense?.status,
+  };
 }
 
 export async function rejectComprobanteOtrosGastos(solicitudId, receiptId, userId, { motivo } = {}) {
@@ -261,66 +355,21 @@ export async function rejectComprobanteOtrosGastos(solicitudId, receiptId, userI
 }
 
 export async function validateComprobanteOtrosGastos(solicitudId, receiptId, userId) {
-  const receiptResult = await query(
-    `SELECT id, otros_gastos_id, monto, moneda, monto_original, moneda_original, estado
-     FROM module_miauto_comprobante_otros_gastos
-     WHERE solicitud_id = $1::uuid AND id = $2::uuid`,
-    [solicitudId, receiptId]
-  );
-  const receipt = receiptResult.rows[0];
-  if (!receipt) throw new Error('Comprobante no encontrado');
-  if (receipt.estado === 'validado') throw new Error('El comprobante ya esta validado');
-  if (receipt.estado === 'rechazado') throw new Error('No se puede validar un comprobante rechazado');
-
-  const expenseResult = await query(
-    `SELECT id, moneda FROM module_miauto_otros_gastos
-     WHERE id = $1::uuid AND solicitud_id = $2::uuid AND deleted_at IS NULL`,
-    [receipt.otros_gastos_id, solicitudId]
-  );
-  const expense = expenseResult.rows[0];
-  if (!expense) throw new Error('Cuota de otros gastos no encontrada');
-
-  const payment = await resolveExpensePayment({
-    solicitudId,
-    amount: receipt.monto_original ?? receipt.monto,
-    currency: receipt.moneda_original || receipt.moneda,
-    expenseCurrency: expense.moneda,
-  });
-
   const client = await getClient();
   try {
     await client.query('BEGIN');
-    const lockedReceipt = await client.query(
-      `SELECT estado
-       FROM module_miauto_comprobante_otros_gastos
-       WHERE solicitud_id = $1::uuid AND id = $2::uuid
-       FOR UPDATE`,
-      [solicitudId, receiptId]
-    );
-    if (!lockedReceipt.rows[0]) throw new Error('Comprobante no encontrado');
-    if (lockedReceipt.rows[0].estado !== 'pendiente') {
-      throw new Error('El comprobante ya fue procesado');
-    }
-    const application = await applyPaymentToExpense({
+    const application = await applyReceiptWithinTransaction({
       client,
       solicitudId,
-      expenseId: receipt.otros_gastos_id,
       receiptId,
-      source: 'comprobante',
-      sourceKey: `comprobante-otros:${receiptId}`,
-      ...payment,
-      userId,
-      metadata: { validation: 'bank_confirmation' },
     });
     const updatedReceipt = await client.query(
       `UPDATE module_miauto_comprobante_otros_gastos
        SET estado = 'validado', validated_at = CURRENT_TIMESTAMP, validated_by = $1,
-           monto_original = $2, moneda_original = $3, tipo_cambio = $4,
-           monto_aplicado = $5, moneda_aplicada = $6
-       WHERE id = $7::uuid AND estado = 'pendiente'
+           monto_aplicado = COALESCE(monto_aplicado, $2)
+       WHERE id = $3::uuid AND estado = 'pendiente'
        RETURNING id`,
-      [userId, payment.originalAmount, payment.originalCurrency, payment.exchangeRate,
-        application.applied, payment.appliedCurrency, receiptId]
+      [userId, application.applied, receiptId]
     );
     if (!updatedReceipt.rows[0]) throw new Error('El comprobante ya fue procesado');
     await client.query('COMMIT');

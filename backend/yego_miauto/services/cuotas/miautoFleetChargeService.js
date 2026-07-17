@@ -26,6 +26,7 @@ import {
 } from './miautoCuotaSemanalService.js';
 import { computeAmountDueSemanal as computeAmountDueSemanalObj } from '../cobros/CuotaCalculator.js';
 import { applyPaymentToExpense } from '../gastos/miautoGastoPagoService.js';
+import { availableFleetCharge } from '../gastos/miautoGastoRules.js';
 
 // --- Constantes -------------------------------------------------------------
 
@@ -112,11 +113,26 @@ function fleetWithdrawMaxAttempts() {
   return Math.max(1, Math.min(8, Number(process.env.MIAUTO_FLEET_WITHDRAW_RETRIES || 5)));
 }
 
-async function withdrawWithOngoingRetry({ externalDriverId, amount, description, cookie, parkId, logLabel }) {
+async function withdrawWithOngoingRetry({
+  externalDriverId,
+  amount,
+  description,
+  cookie,
+  parkId,
+  logLabel,
+  condition,
+}) {
   const maxAttempts = fleetWithdrawMaxAttempts();
   const delayMs = fleetWithdrawRetryDelayMs();
   let attempt = 1;
-  let result = await withdrawFromContractor(externalDriverId, amount, description, cookie, parkId);
+  let result = await withdrawFromContractor(
+    externalDriverId,
+    amount,
+    description,
+    cookie,
+    parkId,
+    condition,
+  );
   while (
     !result.success &&
     attempt < maxAttempts &&
@@ -132,7 +148,14 @@ async function withdrawWithOngoingRetry({ externalDriverId, amount, description,
     });
     await new Promise((resolve) => setTimeout(resolve, delayMs));
     attempt += 1;
-    result = await withdrawFromContractor(externalDriverId, amount, description, cookie, parkId);
+    result = await withdrawFromContractor(
+      externalDriverId,
+      amount,
+      description,
+      cookie,
+      parkId,
+      condition,
+    );
   }
   return result;
 }
@@ -163,12 +186,25 @@ async function reserveAdditionalExpenseFleetIntent(expense, intentData) {
       return { skipped: true, reason: 'saldo_actualizado_durante_cobro' };
     }
     const pendingReceipt = await client.query(
-      `SELECT 1 FROM module_miauto_comprobante_otros_gastos
-       WHERE otros_gastos_id = $1::uuid AND estado = 'pendiente'
-       LIMIT 1`,
+      `SELECT cp.id,
+              EXISTS (
+                SELECT 1 FROM module_miauto_gasto_pago_aplicacion pa
+                WHERE pa.comprobante_id = cp.id AND pa.reversed_at IS NULL
+              ) OR COALESCE(cp.monto_aplicado, 0) > 0.005 AS pago_aplicado
+       FROM module_miauto_comprobante_otros_gastos cp
+       WHERE cp.otros_gastos_id = $1::uuid AND cp.estado = 'pendiente'
+       ORDER BY cp.created_at DESC, cp.id DESC
+       LIMIT 1
+       FOR UPDATE`,
       [expense.id]
     );
-    if (pendingReceipt.rows[0]) {
+    const receipt = pendingReceipt.rows[0];
+    if (intentData.requiredReceiptId) {
+      if (!receipt || receipt.id !== intentData.requiredReceiptId || receipt.pago_aplicado) {
+        await client.query('ROLLBACK');
+        return { skipped: true, reason: 'comprobante_no_disponible' };
+      }
+    } else if (receipt) {
       await client.query('ROLLBACK');
       return { skipped: true, reason: 'comprobante_pendiente' };
     }
@@ -347,30 +383,47 @@ function assertUuidList(values) {
   return ids;
 }
 
-async function getOpenAdditionalExpensesForManualCharge(solicitudId, expenseIds = null) {
+async function getOpenAdditionalExpenses(solicitudId, expenseIds = null) {
   const parkId = fleetParkIdForMiAuto();
   const ids = expenseIds == null ? null : assertUuidList(expenseIds);
-  const [expenseResult, contextResult] = await Promise.all([
-    query(
+  const expensePromise = query(
       `SELECT og.id, og.solicitud_id, og.tipo, og.numero_cuota, og.total_cuotas,
               og.periodo_anio, og.due_date, og.amount_due, og.paid_amount,
-              og.moneda, og.status
+              og.moneda, og.status,
+              pending_receipt.id AS pending_receipt_id,
+              pending_receipt.monto AS pending_receipt_amount,
+              pending_receipt.moneda AS pending_receipt_currency,
+              pending_receipt.tipo_cambio AS pending_receipt_exchange_rate,
+              pending_receipt.moneda_aplicada AS pending_receipt_applied_currency,
+              pending_receipt.file_name AS pending_receipt_file_name,
+              pending_receipt.file_path AS pending_receipt_file_path,
+              pending_receipt.pago_aplicado AS pending_receipt_applied
        FROM module_miauto_otros_gastos og
+       LEFT JOIN LATERAL (
+         SELECT cp.id, cp.monto, cp.moneda, cp.tipo_cambio, cp.moneda_aplicada,
+                cp.file_name, cp.file_path,
+                EXISTS (
+                  SELECT 1 FROM module_miauto_gasto_pago_aplicacion pa
+                  WHERE pa.comprobante_id = cp.id AND pa.reversed_at IS NULL
+                ) OR COALESCE(cp.monto_aplicado, 0) > 0.005 AS pago_aplicado
+         FROM module_miauto_comprobante_otros_gastos cp
+         WHERE cp.otros_gastos_id = og.id AND cp.estado = 'pendiente'
+         ORDER BY cp.created_at DESC, cp.id DESC
+         LIMIT 1
+       ) pending_receipt ON true
        WHERE og.solicitud_id = $1::uuid
          AND og.deleted_at IS NULL
          AND COALESCE(og.paid_amount, 0) < COALESCE(og.amount_due, 0) - 0.005
          AND ($2::uuid[] IS NULL OR og.id = ANY($2::uuid[]))
-         AND NOT EXISTS (
-           SELECT 1 FROM module_miauto_comprobante_otros_gastos cp
-           WHERE cp.otros_gastos_id = og.id AND cp.estado = 'pendiente'
-         )
          AND NOT EXISTS (
            SELECT 1 FROM module_miauto_gasto_cobro_fleet_intento fi
            WHERE fi.otros_gastos_id = og.id AND fi.estado IN ('processing', 'reconcile')
          )
        ORDER BY og.due_date ASC NULLS LAST, COALESCE(og.numero_cuota, og.week_index), og.id`,
       [solicitudId, ids]
-    ),
+    );
+  const [expenseResult, contextResult] = await Promise.all([
+    expensePromise,
     query(
       `SELECT s.country,
             ${sqlYangoDriverCoalesceColumns()}
@@ -397,8 +450,8 @@ function fleetDriverDisplayName(fullName, fallbackRow) {
   return [fallbackRow.first_name, fallbackRow.last_name].filter(Boolean).join(' ').trim() || null;
 }
 
-export async function getAdditionalExpenseFleetChargePreview(solicitudId) {
-  const expenses = await getOpenAdditionalExpensesForManualCharge(solicitudId);
+export async function getAdditionalExpenseChargePreview(solicitudId) {
+  const expenses = await getOpenAdditionalExpenses(solicitudId);
   if (expenses.length === 0) {
     return { balance: null, balance_currency: null, driver_name: null, expenses: [] };
   }
@@ -427,40 +480,91 @@ export async function getAdditionalExpenseFleetChargePreview(solicitudId) {
     balance: round2(Math.max(0, Number(balanceResult.balance) || 0)),
     balance_currency: exchange.monedaLocal,
     driver_name: fleetDriverDisplayName(balanceResult.full_name, driver),
-    expenses: expenses.map((expense) => ({
-      id: expense.id,
-      tipo: expense.tipo,
-      numero_cuota: expense.numero_cuota,
-      total_cuotas: expense.total_cuotas,
-      periodo_anio: expense.periodo_anio,
-      due_date: ymdFromDbDate(expense.due_date),
-      amount_due: round2(Number(expense.amount_due) || 0),
-      paid_amount: round2(Number(expense.paid_amount) || 0),
-      pending_amount: round2(Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount))),
-      currency: normalizePenUsd(expense.moneda),
-      status: miAutoOpenStatusSaldoVencimiento(
-        ymdFromDbDate(expense.due_date),
-        Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount)),
-        Number(expense.paid_amount) || 0
-      ),
-    })),
+    expenses: expenses.map((expense) => {
+      const pendingAmount = round2(Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount)));
+      const receiptAmount = round2(Number(expense.pending_receipt_amount) || 0);
+      const preparedAmount = expense.pending_receipt_id
+        ? pendingReceiptCreditAmount(expense)
+        : null;
+      return {
+        id: expense.id,
+        tipo: expense.tipo,
+        numero_cuota: expense.numero_cuota,
+        total_cuotas: expense.total_cuotas,
+        periodo_anio: expense.periodo_anio,
+        due_date: ymdFromDbDate(expense.due_date),
+        amount_due: round2(Number(expense.amount_due) || 0),
+        paid_amount: round2(Number(expense.paid_amount) || 0),
+        pending_amount: pendingAmount,
+        currency: normalizePenUsd(expense.moneda),
+        status: miAutoOpenStatusSaldoVencimiento(
+          ymdFromDbDate(expense.due_date),
+          pendingAmount,
+          Number(expense.paid_amount) || 0
+        ),
+        pending_receipt_id: expense.pending_receipt_id || null,
+        pending_receipt_amount: expense.pending_receipt_id ? receiptAmount : null,
+        pending_receipt_currency: expense.pending_receipt_currency || null,
+        pending_receipt_applied_amount: preparedAmount,
+        pending_receipt_applied_currency: expense.pending_receipt_applied_currency || null,
+        pending_receipt_file_name: expense.pending_receipt_file_name || null,
+        pending_receipt_file_path: expense.pending_receipt_file_path || null,
+        pending_receipt_applied: Boolean(expense.pending_receipt_applied),
+      };
+    }),
   };
 }
 
-export async function processSelectedAdditionalExpenseFleetCharges(solicitudId, expenseIds, options = {}) {
+function pendingReceiptCreditAmount(expense) {
+  const originalAmount = round2(Number(expense.pending_receipt_amount) || 0);
+  const exchangeRate = Number(expense.pending_receipt_exchange_rate);
+  if (originalAmount <= 0.005) return 0;
+  return round2(originalAmount * (Number.isFinite(exchangeRate) && exchangeRate > 0 ? exchangeRate : 1));
+}
+
+export async function chargeSelectedAdditionalExpensesWithReceipts(solicitudId, expenseIds, options = {}) {
   const ids = assertUuidList(expenseIds);
-  const expenses = await getOpenAdditionalExpensesForManualCharge(solicitudId, ids);
+  const expenses = await getOpenAdditionalExpenses(solicitudId, ids);
   if (expenses.length !== ids.length) {
-    const error = new Error('Una o mas cuotas ya fueron pagadas, tienen comprobante pendiente o estan en proceso');
+    const error = new Error('Una o mas cuotas ya fueron pagadas o estan en proceso');
+    error.statusCode = 409;
+    throw error;
+  }
+  if (expenses.some((expense) => !expense.pending_receipt_id || expense.pending_receipt_applied)) {
+    const error = new Error('Todas las cuotas seleccionadas deben tener un comprobante antes de confirmar');
     error.statusCode = 409;
     throw error;
   }
 
+  const sharedFleetCap = {
+    remaining: null,
+    externalDriverId: null,
+    parkId: null,
+    exchangeCountry: null,
+    exchange: null,
+    processed: 0,
+  };
   const results = [];
-  for (const [index, expense] of expenses.entries()) {
+  for (const expense of expenses) {
     try {
-      const result = await processAdditionalExpenseFleetCharge(expense, options);
-      results.push({ expense_id: expense.id, ...result });
+      const receiptCreditAmount = pendingReceiptCreditAmount(expense);
+      if (receiptCreditAmount <= 0.005) {
+        throw new Error('El comprobante no tiene un monto valido para cobrar');
+      }
+      const result = await processAdditionalExpenseFleetCharge(expense, {
+        ...options,
+        sharedFleetCap,
+        requiredReceiptId: expense.pending_receipt_id,
+        maxCreditAmount: receiptCreditAmount,
+        delayBeforeWithdrawMs: !options.dryRun && sharedFleetCap.processed > 0 ? 1500 : 0,
+      });
+      sharedFleetCap.processed += 1;
+      results.push({
+        ...result,
+        expense_id: expense.id,
+        receipt_id: expense.pending_receipt_id,
+        method: 'fleet_con_comprobante',
+      });
     } catch (error) {
       logger.error('miauto.gastos.manual_fleet_charge_failed', {
         solicitudId,
@@ -469,41 +573,83 @@ export async function processSelectedAdditionalExpenseFleetCharges(solicitudId, 
       });
       results.push({ expense_id: expense.id, success: false, failed: true, reason: error.message });
     }
-    if (!options.dryRun && index < expenses.length - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-    }
   }
 
-  return {
+  const summary = {
     total: results.length,
     success: results.filter((result) => result.success && !result.skipped).length,
     failed: results.filter((result) => !result.success).length,
     skipped: results.filter((result) => result.skipped).length,
     partial: results.filter((result) => result.partial).length,
+    fleet: results.filter((result) => result.success && !result.skipped).length,
     results,
   };
+  if (summary.success === 0) {
+    const firstFailure = results.find((result) => !result.success);
+    const error = new Error(
+      firstFailure?.reason
+      || (summary.skipped > 0 ? 'El cobro ya fue procesado o cambio de estado' : 'Fleet no realizo ningun cobro')
+    );
+    error.statusCode = /saldo disponible/i.test(error.message) ? 409 : 502;
+    throw error;
+  }
+  return summary;
 }
 
 export async function processAdditionalExpenseFleetCharge(expense, options = {}) {
   const dryRun = Boolean(options.dryRun || options.simulateFleetWithdraw);
   const pending = round2(Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount)));
   if (pending <= 0.005) return { success: true, skipped: true, reason: 'sin_saldo_pendiente' };
+  const maxCreditAmount = Number(options.maxCreditAmount);
+  const requestedCredit = Number.isFinite(maxCreditAmount) && maxCreditAmount > 0
+    ? round2(Math.min(pending, maxCreditAmount))
+    : pending;
   const externalDriverId = expense.external_driver_id;
   if (!externalDriverId) return { success: false, failed: true, reason: 'Sin external_driver_id' };
   const parkId = fleetParkIdForMiAuto(expense.park_id);
   const cookie = fleetCookieCobroForMiAuto(options.cookieOverride);
-  const balanceResult = await getContractorBalance(externalDriverId, parkId, cookie);
-  if (!balanceResult.success) return { success: false, failed: true, reason: balanceResult.error };
-  const balance = round2(Math.max(0, Number(balanceResult.balance) || 0));
-  if (balance <= 0.005) return { success: false, failed: true, reason: 'Sin saldo disponible' };
+  const sharedFleetCap = options.sharedFleetCap;
+  let balance;
+  if (sharedFleetCap && Number.isFinite(sharedFleetCap.remaining)) {
+    if (sharedFleetCap.externalDriverId !== externalDriverId || sharedFleetCap.parkId !== parkId) {
+      return { success: false, failed: true, reason: 'La seleccion mezcla conductores o flotas' };
+    }
+    balance = round2(Math.max(0, sharedFleetCap.remaining));
+  } else {
+    const balanceResult = await getContractorBalance(externalDriverId, parkId, cookie);
+    if (!balanceResult.success) return { success: false, failed: true, reason: balanceResult.error };
+    balance = round2(Math.max(0, Number(balanceResult.balance) || 0));
+    if (sharedFleetCap) {
+      sharedFleetCap.remaining = balance;
+      sharedFleetCap.externalDriverId = externalDriverId;
+      sharedFleetCap.parkId = parkId;
+    }
+  }
+  if (balance <= 0.005) {
+    return {
+      success: false,
+      failed: true,
+      partial: false,
+      reason: 'Sin saldo disponible; la cuota conserva su saldo pendiente',
+    };
+  }
 
   const country = String(expense.country || 'PE').toUpperCase() === 'CO' ? 'CO' : 'PE';
-  const exchange = await tipoCambioUsdALocalEfectivo(country);
+  let exchange = sharedFleetCap?.exchangeCountry === country
+    ? sharedFleetCap.exchange
+    : null;
+  if (!exchange) {
+    exchange = await tipoCambioUsdALocalEfectivo(country);
+    if (sharedFleetCap) {
+      sharedFleetCap.exchangeCountry = country;
+      sharedFleetCap.exchange = exchange;
+    }
+  }
   const localCurrency = exchange.monedaLocal;
   const expenseCurrency = normalizePenUsd(expense.moneda);
   const pendingLocal = expenseCurrency === 'USD'
-    ? round2(convertirMontoEntreMonedas(pending, 'USD', localCurrency, exchange.valorUsdALocal))
-    : expenseCurrency === localCurrency ? pending : null;
+    ? round2(convertirMontoEntreMonedas(requestedCredit, 'USD', localCurrency, exchange.valorUsdALocal))
+    : expenseCurrency === localCurrency ? requestedCredit : null;
   if (pendingLocal == null) {
     return {
       success: false,
@@ -511,16 +657,25 @@ export async function processAdditionalExpenseFleetCharge(expense, options = {})
       reason: `La moneda ${expenseCurrency} no corresponde a la moneda Fleet ${localCurrency}`,
     };
   }
-  const withdrawalAmount = round2(Math.min(pendingLocal, balance));
+  const withdrawalAmount = availableFleetCharge(pendingLocal, balance);
   const creditAmount = expenseCurrency === 'USD'
     ? round2(convertirMontoEntreMonedas(withdrawalAmount, localCurrency, 'USD', exchange.valorUsdALocal))
     : withdrawalAmount;
   if (withdrawalAmount <= 0.005 || creditAmount <= 0.005) {
     return { success: false, failed: true, reason: 'No se pudo convertir el monto para Fleet' };
   }
-  const sourceKey = `fleet-gasto:${expense.id}:${limaTodayYmdSync()}:${Number(expense.paid_amount || 0).toFixed(2)}`;
+  const requiredReceiptId = options.requiredReceiptId || null;
+  const fleetExchangeRate = localCurrency === expenseCurrency
+    ? 1
+    : Number((creditAmount / withdrawalAmount).toFixed(6));
+  const sourceKey = requiredReceiptId
+    ? `fleet-gasto:${expense.id}:comprobante:${requiredReceiptId}`
+    : `fleet-gasto:${expense.id}:${limaTodayYmdSync()}:${Number(expense.paid_amount || 0).toFixed(2)}`;
 
   if (dryRun) {
+    if (sharedFleetCap) {
+      sharedFleetCap.remaining = round2(Math.max(0, balance - withdrawalAmount));
+    }
     return {
       success: true,
       dryRun: true,
@@ -531,7 +686,13 @@ export async function processAdditionalExpenseFleetCharge(expense, options = {})
       withdrawalCurrency: localCurrency,
       creditAmount,
       creditCurrency: expenseCurrency,
+      receiptId: requiredReceiptId,
     };
+  }
+
+  const delayBeforeWithdrawMs = Math.max(0, Number(options.delayBeforeWithdrawMs) || 0);
+  if (delayBeforeWithdrawMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delayBeforeWithdrawMs));
   }
 
   const reservation = await reserveAdditionalExpenseFleetIntent(expense, {
@@ -542,6 +703,7 @@ export async function processAdditionalExpenseFleetCharge(expense, options = {})
     expenseCurrency,
     externalDriverId,
     parkId,
+    requiredReceiptId,
   });
   if (reservation.skipped) return { success: true, skipped: true, reason: reservation.reason };
   const intentId = reservation.intentId;
@@ -553,6 +715,7 @@ export async function processAdditionalExpenseFleetCharge(expense, options = {})
     cookie,
     parkId,
     logLabel: `gasto:${expense.id}`,
+    condition: { balance_min: '0' },
   });
   if (!withdrawal.success) {
     await query(
@@ -564,29 +727,57 @@ export async function processAdditionalExpenseFleetCharge(expense, options = {})
     return { success: false, failed: true, reason: withdrawal.message || withdrawal.error };
   }
 
+  if (sharedFleetCap) {
+    sharedFleetCap.remaining = round2(Math.max(0, balance - withdrawalAmount));
+  }
+
+  const client = await getClient();
   try {
+    await client.query('BEGIN');
     const application = await applyPaymentToExpense({
+      client,
       solicitudId: expense.solicitud_id,
       expenseId: expense.id,
+      receiptId: requiredReceiptId,
       source: 'fleet',
       sourceKey,
       originalAmount: withdrawalAmount,
       originalCurrency: localCurrency,
       appliedAmount: creditAmount,
       appliedCurrency: expenseCurrency,
-      exchangeRate: localCurrency === expenseCurrency ? 1 : exchange.valorUsdALocal,
+      exchangeRate: fleetExchangeRate,
       userId: options.userId || null,
-      metadata: { fleet_intent_id: intentId, fleet_response: withdrawal.data || {} },
+      metadata: {
+        fleet_intent_id: intentId,
+        fleet_response: withdrawal.data || {},
+        comprobante_id: requiredReceiptId,
+      },
       rejectExcess: false,
     });
-    await query(
+    if (requiredReceiptId) {
+      await client.query(
+        `UPDATE module_miauto_comprobante_otros_gastos
+         SET monto_aplicado = $1, moneda_aplicada = $2
+         WHERE id = $3::uuid AND otros_gastos_id = $4::uuid AND estado = 'pendiente'`,
+        [application.applied, expenseCurrency, requiredReceiptId, expense.id]
+      );
+    }
+    await client.query(
       `UPDATE module_miauto_gasto_cobro_fleet_intento
        SET estado = 'success', response = $1::jsonb, completed_at = CURRENT_TIMESTAMP
        WHERE id = $2::uuid`,
       [JSON.stringify(withdrawal.data || {}), intentId]
     );
-    return { success: true, partial: application.pendingAfter > 0.005, application };
+    await client.query('COMMIT');
+    return {
+      success: true,
+      partial: application.pendingAfter > 0.005,
+      withdrawalAmount,
+      withdrawalCurrency: localCurrency,
+      application,
+    };
   } catch (error) {
+    await client.query('ROLLBACK');
     await query(
       `UPDATE module_miauto_gasto_cobro_fleet_intento
        SET estado = 'reconcile', error = $1, response = $2::jsonb
@@ -594,15 +785,34 @@ export async function processAdditionalExpenseFleetCharge(expense, options = {})
       [error.message, JSON.stringify(withdrawal.data || {}), intentId]
     );
     throw error;
+  } finally {
+    client.release();
   }
 }
 
 export async function processAdditionalExpenseFleetQueue(options = {}) {
   const expenses = await getAdditionalExpensesToCharge();
   const summary = { total: expenses.length, success: 0, partial: 0, failed: 0, skipped: 0 };
+  const fleetCaps = new Map();
+  const dryRun = Boolean(options.dryRun || options.simulateFleetWithdraw);
   for (const expense of expenses) {
     try {
-      const result = await processAdditionalExpenseFleetCharge(expense, options);
+      const fleetKey = `${fleetParkIdForMiAuto(expense.park_id)}:${expense.external_driver_id || 'sin-driver'}`;
+      const sharedFleetCap = fleetCaps.get(fleetKey) || {
+        remaining: null,
+        externalDriverId: null,
+        parkId: null,
+        exchangeCountry: null,
+        exchange: null,
+        processed: 0,
+      };
+      fleetCaps.set(fleetKey, sharedFleetCap);
+      const result = await processAdditionalExpenseFleetCharge(expense, {
+        ...options,
+        sharedFleetCap,
+        delayBeforeWithdrawMs: !dryRun && sharedFleetCap.processed > 0 ? 1500 : 0,
+      });
+      sharedFleetCap.processed += 1;
       if (result.skipped) summary.skipped += 1;
       else if (!result.success) summary.failed += 1;
       else if (result.partial) summary.partial += 1;
@@ -610,9 +820,6 @@ export async function processAdditionalExpenseFleetQueue(options = {}) {
     } catch (error) {
       summary.failed += 1;
       logger.error('miauto.gastos.fleet_charge_failed', { expenseId: expense.id, error: error.message });
-    }
-    if (!options.simulateFleetWithdraw) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   }
   return summary;

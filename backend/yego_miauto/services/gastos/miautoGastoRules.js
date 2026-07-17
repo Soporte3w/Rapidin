@@ -102,3 +102,9 @@ export function expenseStatus({ amountDue, paidAmount, dueDate, todayYmd }) {
   if (Number(paidAmount) > 0.005) return 'partial';
   return 'pending';
 }
+
+export function availableFleetCharge(pendingAmount, fleetBalance) {
+  const pending = round2(Math.max(0, Number(pendingAmount) || 0));
+  const balance = round2(Math.max(0, Number(fleetBalance) || 0));
+  return round2(Math.min(pending, balance));
+}

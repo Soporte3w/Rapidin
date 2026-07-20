@@ -20,7 +20,7 @@ import {
 import { getSolicitudById } from '../../services/solicitud/miautoSolicitudService.js';
 import {
   getAdditionalExpenseChargePreview,
-  chargeSelectedAdditionalExpensesWithReceipts,
+  chargeSelectedAdditionalExpenses,
 } from '../../services/cuotas/miautoFleetChargeService.js';
 import pool from '../../../database/connection.js';
 
@@ -304,7 +304,7 @@ router.get('/solicitudes/:id/otros-gastos/cobrar/preview', validateUUID, async (
 router.post('/solicitudes/:id/otros-gastos/cobrar', validateUUID, async (req, res) => {
   try {
     if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para realizar cobros', 403);
-    const result = await chargeSelectedAdditionalExpensesWithReceipts(
+    const result = await chargeSelectedAdditionalExpenses(
       req.params.id,
       req.body?.otros_gastos_ids,
       { userId: req.user?.id || null }

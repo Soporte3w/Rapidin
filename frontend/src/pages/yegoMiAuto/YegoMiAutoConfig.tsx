@@ -78,28 +78,28 @@ export interface ItemGastoConCobro {
 export interface RequisitosGastosVehiculo {
   todo_riesgo_y_gps_modo: TodoRiesgoGpsModo;
   src: ItemGastoConCobro & { cobro?: { tipo?: string; meses_anticipo?: number } };
-  gps: ItemGastoConCobro & { cobro?: { tipo?: string; dia_mes?: number } };
-  soat: ItemGastoConCobro & { cobro?: { tipo?: string; meses_anticipo?: number } };
+  gps: ItemGastoConCobro & { cobro?: { tipo?: string } };
+  soat: ItemGastoConCobro & { cobro?: { tipo?: string; meses_anticipo?: number; cuotas?: number } };
   impuesto_vehicular: ItemGastoConCobro & {
     cobro?: { tipo?: string; mes_inicio?: number; cuotas?: number; anios_vigencia_tras_modelo?: number };
   };
-  todo_riesgo: ItemGastoConCobro & { cobro?: { tipo?: string; semanas?: number } };
   todo_riesgo_mas_gps_agrupado: ItemGastoConCobro & { cobro?: { tipo?: string; semanas?: number } };
+  inicial_parcial: ItemGastoConCobro & { cobro?: { tipo?: string; semanas?: number } };
 }
 
 export function createDefaultRequisitosGastosVehiculo(): RequisitosGastosVehiculo {
   return {
     todo_riesgo_y_gps_modo: 'separado',
-    src: { monto: 0, moneda: 'USD', cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 5 } },
-    gps: { monto: 0, moneda: 'PEN', cobro: { tipo: 'mensual', dia_mes: 28 } },
-    soat: { monto: 0, moneda: 'PEN', cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 5 } },
+    src: { monto: 0, moneda: 'USD', cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 0 } },
+    gps: { monto: 0, moneda: 'PEN', cobro: { tipo: 'fin_de_mes' } },
+    soat: { monto: 0, moneda: 'PEN', cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 0, cuotas: 0 } },
     impuesto_vehicular: {
       monto: 0,
       moneda: 'PEN',
-      cobro: { tipo: 'sat_febrero_cuotas', mes_inicio: 2, cuotas: 4, anios_vigencia_tras_modelo: 3 },
+      cobro: { tipo: 'sat_febrero_cuotas', mes_inicio: 0, cuotas: 0, anios_vigencia_tras_modelo: 0 },
     },
-    todo_riesgo: { monto: 0, moneda: 'PEN', cobro: { tipo: 'semanal', semanas: 26 } },
-    todo_riesgo_mas_gps_agrupado: { monto: 0, moneda: 'PEN', cobro: { tipo: 'semanal', semanas: 26 } },
+    todo_riesgo_mas_gps_agrupado: { monto: 0, moneda: 'PEN', cobro: { tipo: 'semanal', semanas: 0 } },
+    inicial_parcial: { monto: 0, moneda: 'USD', cobro: { tipo: 'semanal', semanas: 0 } },
   };
 }
 
@@ -118,11 +118,15 @@ export function mergeRequisitosGastosFromApi(raw: Partial<RequisitosGastosVehicu
       ...raw.impuesto_vehicular,
       cobro: { ...d.impuesto_vehicular.cobro, ...raw.impuesto_vehicular?.cobro },
     },
-    todo_riesgo: { ...d.todo_riesgo, ...raw.todo_riesgo, cobro: { ...d.todo_riesgo.cobro, ...raw.todo_riesgo?.cobro } },
     todo_riesgo_mas_gps_agrupado: {
       ...d.todo_riesgo_mas_gps_agrupado,
       ...raw.todo_riesgo_mas_gps_agrupado,
       cobro: { ...d.todo_riesgo_mas_gps_agrupado.cobro, ...raw.todo_riesgo_mas_gps_agrupado?.cobro },
+    },
+    inicial_parcial: {
+      ...d.inicial_parcial,
+      ...raw.inicial_parcial,
+      cobro: { ...d.inicial_parcial.cobro, ...raw.inicial_parcial?.cobro },
     },
   };
 }
@@ -677,9 +681,9 @@ export default function YegoMiAutoConfig() {
     }));
   };
 
-  const patchVehiculoGastoMonto = (
+  const patchVehiculoGasto = (
     vehicleIndex: number,
-    key: 'src' | 'gps' | 'soat' | 'impuesto_vehicular' | 'todo_riesgo' | 'todo_riesgo_mas_gps_agrupado',
+    key: 'src' | 'gps' | 'soat' | 'impuesto_vehicular' | 'todo_riesgo_mas_gps_agrupado' | 'inicial_parcial',
     field: Partial<ItemGastoConCobro>
   ) => {
     setForm((f) => ({
@@ -689,15 +693,28 @@ export default function YegoMiAutoConfig() {
         const cur = mergeRequisitosGastosFromApi(v.requisitos_gastos);
         const item = cur[key];
         if (typeof item !== 'object') return v;
+        const nextItem = {
+          ...item,
+          ...field,
+          ...(field.cobro ? { cobro: { ...(item.cobro || {}), ...field.cobro } } : {}),
+        };
         return {
           ...v,
           requisitos_gastos: mergeRequisitosGastosFromApi({
             ...cur,
-            [key]: { ...item, ...field },
+            [key]: nextItem,
           }),
         };
       }),
     }));
+  };
+
+  const patchVehiculoGastoCobro = (
+    vehicleIndex: number,
+    key: 'src' | 'soat' | 'impuesto_vehicular' | 'todo_riesgo_mas_gps_agrupado' | 'inicial_parcial',
+    cobroPatch: Record<string, number>
+  ) => {
+    patchVehiculoGasto(vehicleIndex, key, { cobro: cobroPatch });
   };
 
   const tipoCronograma = mergeRequisitosFromApi(form.requisitos_vehiculo).tipo_vehiculo;
@@ -1336,13 +1353,15 @@ export default function YegoMiAutoConfig() {
                               <div className="mb-2 min-h-0">
                                 <label className="block text-[10px] font-medium text-gray-700 leading-tight">SRC (resp. civil)</label>
                                 <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
-                                  Mensual · desde 5 meses antes del vencimiento
+                                  {rg.src.cobro?.meses_anticipo
+                                    ? `Mensual · desde ${rg.src.cobro.meses_anticipo} meses antes del vencimiento`
+                                    : 'Configura la anticipación en el cronograma'}
                                 </p>
                               </div>
                               <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
                                 <select
                                   value={rg.src.moneda}
-                                  onChange={(e) => patchVehiculoGastoMonto(i, 'src', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                  onChange={(e) => patchVehiculoGasto(i, 'src', { moneda: e.target.value as GastoRequisitoMoneda })}
                                   disabled={isViewMode}
                                   className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
                                 >
@@ -1354,11 +1373,23 @@ export default function YegoMiAutoConfig() {
                                   min={0}
                                   step={0.01}
                                   value={rg.src.monto}
-                                  onChange={(e) => patchVehiculoGastoMonto(i, 'src', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
+                                  onChange={(e) => patchVehiculoGasto(i, 'src', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
                                   readOnly={isViewMode}
                                   className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
                                 />
                               </div>
+                              <label className="mt-2 text-[10px] text-gray-500">
+                                Meses antes
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={12}
+                                  value={rg.src.cobro?.meses_anticipo || ''}
+                                  onChange={(e) => patchVehiculoGastoCobro(i, 'src', { meses_anticipo: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                  readOnly={isViewMode}
+                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
+                                />
+                              </label>
                             </div>
                           )}
 
@@ -1366,13 +1397,13 @@ export default function YegoMiAutoConfig() {
                             <div className="mb-2 min-h-0">
                               <label className="block text-[10px] font-medium text-gray-700 leading-tight">SOAT</label>
                               <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
-                                Monto total (se divide en cuotas) · desde 5 meses antes del vencimiento
+                                Monto por cuota · calendario previo al vencimiento
                               </p>
                             </div>
                             <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
                               <select
                                 value={rg.soat.moneda}
-                                onChange={(e) => patchVehiculoGastoMonto(i, 'soat', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                onChange={(e) => patchVehiculoGasto(i, 'soat', { moneda: e.target.value as GastoRequisitoMoneda })}
                                 disabled={isViewMode}
                                 className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
                               >
@@ -1384,10 +1415,36 @@ export default function YegoMiAutoConfig() {
                                 min={0}
                                 step={0.01}
                                 value={rg.soat.monto}
-                                onChange={(e) => patchVehiculoGastoMonto(i, 'soat', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
+                                onChange={(e) => patchVehiculoGasto(i, 'soat', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
                                 readOnly={isViewMode}
                                 className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
                               />
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-2">
+                              <label className="text-[10px] text-gray-500">
+                                Cuotas
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={12}
+                                  value={rg.soat.cobro?.cuotas || ''}
+                                  onChange={(e) => patchVehiculoGastoCobro(i, 'soat', { cuotas: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                  readOnly={isViewMode}
+                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
+                                />
+                              </label>
+                              <label className="text-[10px] text-gray-500">
+                                Meses antes
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={12}
+                                  value={rg.soat.cobro?.meses_anticipo || ''}
+                                  onChange={(e) => patchVehiculoGastoCobro(i, 'soat', { meses_anticipo: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                  readOnly={isViewMode}
+                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
+                                />
+                              </label>
                             </div>
                           </div>
 
@@ -1395,13 +1452,13 @@ export default function YegoMiAutoConfig() {
                             <div className="mb-2 min-h-0">
                               <label className="block text-[10px] font-medium text-gray-700 leading-tight">Impuesto vehicular</label>
                               <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
-                                SAT febrero · 4 cuotas · vigencia según año modelo
+                                Monto anual dividido según el calendario configurado
                               </p>
                             </div>
                             <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
                               <select
                                 value={rg.impuesto_vehicular.moneda}
-                                onChange={(e) => patchVehiculoGastoMonto(i, 'impuesto_vehicular', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                onChange={(e) => patchVehiculoGasto(i, 'impuesto_vehicular', { moneda: e.target.value as GastoRequisitoMoneda })}
                                 disabled={isViewMode}
                                 className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
                               >
@@ -1414,11 +1471,49 @@ export default function YegoMiAutoConfig() {
                                 step={0.01}
                                 value={rg.impuesto_vehicular.monto}
                                 onChange={(e) =>
-                                  patchVehiculoGastoMonto(i, 'impuesto_vehicular', { monto: Math.max(0, parseFloat(e.target.value) || 0) })
+                                  patchVehiculoGasto(i, 'impuesto_vehicular', { monto: Math.max(0, parseFloat(e.target.value) || 0) })
                                 }
                                 readOnly={isViewMode}
                                 className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
                               />
+                            </div>
+                            <div className="mt-2 grid grid-cols-3 gap-1.5">
+                              <label className="text-[10px] text-gray-500">
+                                Mes inicial
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={12}
+                                  value={rg.impuesto_vehicular.cobro?.mes_inicio || ''}
+                                  onChange={(e) => patchVehiculoGastoCobro(i, 'impuesto_vehicular', { mes_inicio: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                  readOnly={isViewMode}
+                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
+                                />
+                              </label>
+                              <label className="text-[10px] text-gray-500">
+                                Cuotas
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={12}
+                                  value={rg.impuesto_vehicular.cobro?.cuotas || ''}
+                                  onChange={(e) => patchVehiculoGastoCobro(i, 'impuesto_vehicular', { cuotas: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                  readOnly={isViewMode}
+                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
+                                />
+                              </label>
+                              <label className="text-[10px] text-gray-500">
+                                Años
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={10}
+                                  value={rg.impuesto_vehicular.cobro?.anios_vigencia_tras_modelo || ''}
+                                  onChange={(e) => patchVehiculoGastoCobro(i, 'impuesto_vehicular', { anios_vigencia_tras_modelo: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                  readOnly={isViewMode}
+                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
+                                />
+                              </label>
                             </div>
                           </div>
 
@@ -1428,13 +1523,13 @@ export default function YegoMiAutoConfig() {
                                 <div className="mb-2 min-h-0">
                                   <label className="block text-[10px] font-medium text-gray-700 leading-tight">GPS</label>
                                   <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
-                                    Mensual · día {rg.gps.cobro?.dia_mes ?? 28} de cada mes
+                                    Mensual · fin de mes
                                   </p>
                                 </div>
                               <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
                                 <select
                                   value={rg.gps.moneda}
-                                    onChange={(e) => patchVehiculoGastoMonto(i, 'gps', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                    onChange={(e) => patchVehiculoGasto(i, 'gps', { moneda: e.target.value as GastoRequisitoMoneda })}
                                     disabled={isViewMode}
                                     className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
                                   >
@@ -1446,7 +1541,7 @@ export default function YegoMiAutoConfig() {
                                     min={0}
                                     step={0.01}
                                     value={rg.gps.monto}
-                                    onChange={(e) => patchVehiculoGastoMonto(i, 'gps', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
+                                    onChange={(e) => patchVehiculoGasto(i, 'gps', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
                                     readOnly={isViewMode}
                                     className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
                                   />
@@ -1460,13 +1555,15 @@ export default function YegoMiAutoConfig() {
                                     Seguro de responsabilidad civil (SRC)
                                   </label>
                                   <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
-                                    Mensual · desde {rg.src.cobro?.meses_anticipo ?? 5} meses antes del vencimiento
+                                    {rg.src.cobro?.meses_anticipo
+                                      ? `Mensual · desde ${rg.src.cobro.meses_anticipo} meses antes del vencimiento`
+                                      : 'Configura la anticipación en el cronograma'}
                                   </p>
                                 </div>
                                 <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
                                   <select
                                     value={rg.src.moneda}
-                                    onChange={(e) => patchVehiculoGastoMonto(i, 'src', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                    onChange={(e) => patchVehiculoGasto(i, 'src', { moneda: e.target.value as GastoRequisitoMoneda })}
                                     disabled={isViewMode}
                                     className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
                                   >
@@ -1479,12 +1576,24 @@ export default function YegoMiAutoConfig() {
                                     step={0.01}
                                     value={rg.src.monto}
                                     onChange={(e) =>
-                                      patchVehiculoGastoMonto(i, 'src', { monto: Math.max(0, parseFloat(e.target.value) || 0) })
+                                      patchVehiculoGasto(i, 'src', { monto: Math.max(0, parseFloat(e.target.value) || 0) })
                                     }
                                     readOnly={isViewMode}
                                     className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
                                   />
                                 </div>
+                                <label className="mt-2 text-[10px] text-gray-500">
+                                  Meses antes
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={12}
+                                    value={rg.src.cobro?.meses_anticipo || ''}
+                                    onChange={(e) => patchVehiculoGastoCobro(i, 'src', { meses_anticipo: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                    readOnly={isViewMode}
+                                    className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
+                                  />
+                                </label>
                               </div>
                             </>
                           )}
@@ -1498,14 +1607,16 @@ export default function YegoMiAutoConfig() {
                                   Seguro todo riesgo + GPS (agrupado)
                                 </label>
                                 <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
-                                  Semanal en {rg.todo_riesgo_mas_gps_agrupado.cobro?.semanas ?? 26} semanas (referencia)
+                                  {rg.todo_riesgo_mas_gps_agrupado.cobro?.semanas
+                                    ? `Semanal en ${rg.todo_riesgo_mas_gps_agrupado.cobro.semanas} semanas`
+                                    : 'Configura las semanas en el cronograma'}
                                 </p>
                               </div>
                               <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
                                 <select
                                   value={rg.todo_riesgo_mas_gps_agrupado.moneda}
                                   onChange={(e) =>
-                                    patchVehiculoGastoMonto(i, 'todo_riesgo_mas_gps_agrupado', {
+                                    patchVehiculoGasto(i, 'todo_riesgo_mas_gps_agrupado', {
                                       moneda: e.target.value as GastoRequisitoMoneda,
                                     })
                                   }
@@ -1521,7 +1632,7 @@ export default function YegoMiAutoConfig() {
                                   step={0.01}
                                   value={rg.todo_riesgo_mas_gps_agrupado.monto}
                                   onChange={(e) =>
-                                    patchVehiculoGastoMonto(i, 'todo_riesgo_mas_gps_agrupado', {
+                                    patchVehiculoGasto(i, 'todo_riesgo_mas_gps_agrupado', {
                                       monto: Math.max(0, parseFloat(e.target.value) || 0),
                                     })
                                   }
@@ -1529,8 +1640,63 @@ export default function YegoMiAutoConfig() {
                                   className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
                                 />
                               </div>
+                              <label className="mt-2 text-[10px] text-gray-500">
+                                Semanas por ciclo
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={52}
+                                  value={rg.todo_riesgo_mas_gps_agrupado.cobro?.semanas || ''}
+                                  onChange={(e) => patchVehiculoGastoCobro(i, 'todo_riesgo_mas_gps_agrupado', { semanas: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                  readOnly={isViewMode}
+                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
+                                />
+                              </label>
                             </div>
                           )}
+
+                          <div className="col-span-2 flex flex-col min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
+                            <div className="mb-2">
+                              <label className="block text-[10px] font-medium text-gray-700">Inicial parcial</label>
+                              <p className="mt-0.5 text-[10px] text-gray-400">
+                                Solo se genera para contratos marcados con pago inicial parcial
+                              </p>
+                            </div>
+                            <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-2">
+                              <div className="flex min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
+                                <select
+                                  value={rg.inicial_parcial.moneda}
+                                  onChange={(e) => patchVehiculoGasto(i, 'inicial_parcial', { moneda: e.target.value as GastoRequisitoMoneda })}
+                                  disabled={isViewMode}
+                                  className="w-14 shrink-0 rounded-l-lg border-0 border-r border-gray-200 bg-gray-50 py-1.5 text-xs"
+                                >
+                                  <option value="USD">USD</option>
+                                  <option value="PEN">PEN</option>
+                                </select>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={0.01}
+                                  value={rg.inicial_parcial.monto}
+                                  onChange={(e) => patchVehiculoGasto(i, 'inicial_parcial', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
+                                  readOnly={isViewMode}
+                                  className={`min-w-0 flex-1 rounded-r-lg border-0 px-2 py-1.5 text-xs${INPUT_NUMBER_CLASS}`}
+                                />
+                              </div>
+                              <label className="text-[10px] text-gray-500">
+                                Semanas
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={52}
+                                  value={rg.inicial_parcial.cobro?.semanas || ''}
+                                  onChange={(e) => patchVehiculoGastoCobro(i, 'inicial_parcial', { semanas: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                  readOnly={isViewMode}
+                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
+                                />
+                              </label>
+                            </div>
+                          </div>
                         </div>
                       </div>
 

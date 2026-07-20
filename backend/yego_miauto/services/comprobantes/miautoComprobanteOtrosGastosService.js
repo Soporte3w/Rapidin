@@ -14,7 +14,12 @@ const PAYMENT_CONFLICT_SQL = `
   EXISTS (
     SELECT 1 FROM module_miauto_gasto_cobro_fleet_intento
     WHERE otros_gastos_id = $1::uuid AND estado IN ('processing', 'reconcile')
-  ) AS fleet_in_progress`;
+  ) AS fleet_in_progress,
+  EXISTS (
+    SELECT 1 FROM module_miauto_gasto_pago_aplicacion
+    WHERE otros_gastos_id = $1::uuid AND origen = 'fleet'
+      AND comprobante_id IS NULL AND reversed_at IS NULL
+  ) AS fleet_receipt_pending`;
 
 function assertExpensePaymentAvailable(conflict) {
   if (conflict?.pending_receipt) {
@@ -22,6 +27,9 @@ function assertExpensePaymentAvailable(conflict) {
   }
   if (conflict?.fleet_in_progress) {
     throw new Error('Esta cuota tiene un cobro Fleet en proceso; vuelve a intentarlo luego');
+  }
+  if (conflict?.fleet_receipt_pending) {
+    throw new Error('Primero sube el comprobante del cobro Fleet anterior');
   }
 }
 
@@ -155,14 +163,14 @@ export async function listForAdminValidation({ estado = 'pendiente', country, li
   return result.rows;
 }
 
-/** Registra un comprobante. Por defecto conserva el flujo existente de aplicacion inmediata. */
+/** Registra el comprobante y aplica el pago al gasto en una sola transaccion. */
 export async function createComprobanteOtrosGastos(
   solicitudId,
   expenseId,
   file,
   amount,
   currency,
-  { userId = null, origin = 'conductor', applyImmediately = true } = {},
+  { userId = null, origin = 'conductor' } = {},
 ) {
   const expense = await query(
     `SELECT og.id, og.status, og.tipo, og.numero_cuota, og.week_index, og.due_date, og.moneda,
@@ -213,7 +221,6 @@ export async function createComprobanteOtrosGastos(
     { ...file, originalname: objectName },
     { bucket: MIAUTO_OTROS_GASTOS_BUCKET },
   );
-  const fileName = displayName;
   const client = await getClient();
   try {
     await client.query('BEGIN');
@@ -243,30 +250,132 @@ export async function createComprobanteOtrosGastos(
        RETURNING id`,
       [solicitudId, expenseId, payment.originalAmount, payment.originalCurrency,
         payment.exchangeRate, payment.appliedCurrency,
-        fileName, path, userId, normalizedOrigin]
+        displayName, path, userId, normalizedOrigin]
     );
     const receiptId = inserted.rows[0]?.id;
     if (!receiptId) throw new Error('No se pudo registrar el comprobante');
 
-    if (applyImmediately) {
-      const application = await applyPaymentToExpense({
-        client,
-        solicitudId,
-        expenseId,
-        receiptId,
-        source: 'comprobante',
-        sourceKey: `comprobante-otros:${receiptId}`,
-        ...payment,
-        userId,
-        metadata: { validation: 'pending_bank_confirmation', origin: normalizedOrigin },
-      });
-      await client.query(
-        `UPDATE module_miauto_comprobante_otros_gastos
-         SET monto_aplicado = $1
-         WHERE id = $2::uuid`,
-        [application.applied, receiptId]
-      );
-    }
+    const application = await applyPaymentToExpense({
+      client,
+      solicitudId,
+      expenseId,
+      receiptId,
+      source: 'comprobante',
+      sourceKey: `comprobante-otros:${receiptId}`,
+      ...payment,
+      userId,
+      metadata: { validation: 'pending_bank_confirmation', origin: normalizedOrigin },
+    });
+    await client.query(
+      `UPDATE module_miauto_comprobante_otros_gastos
+       SET monto_aplicado = $1
+       WHERE id = $2::uuid`,
+      [application.applied, receiptId]
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+  return listBySolicitud(solicitudId);
+}
+
+/** Vincula evidencia a un cobro Fleet ya aplicado, sin volver a afectar el saldo del gasto. */
+export async function attachComprobanteToFleetExpensePayment(
+  solicitudId,
+  expenseId,
+  fleetApplicationId,
+  file,
+  { userId = null } = {},
+) {
+  const paymentResult = await query(
+    `SELECT pa.id, pa.comprobante_id,
+            og.tipo, og.numero_cuota, og.week_index, og.due_date,
+            s.dni,
+            COALESCE(
+              NULLIF(TRIM(CONCAT_WS(' ', rd.first_name, rd.last_name)), ''),
+              NULLIF(TRIM(CONCAT_WS(' ', d.first_name, d.last_name)), '')
+            ) AS driver_name
+     FROM module_miauto_gasto_pago_aplicacion pa
+     INNER JOIN module_miauto_otros_gastos og
+       ON og.id = pa.otros_gastos_id AND og.deleted_at IS NULL
+     INNER JOIN module_miauto_solicitud s ON s.id = pa.solicitud_id
+     LEFT JOIN module_rapidin_drivers rd ON rd.id::text = s.driver_id_fleet
+     LEFT JOIN LATERAL (
+       SELECT first_name, last_name
+       FROM drivers fleet_driver
+       WHERE fleet_driver.driver_id = s.driver_id_fleet
+       LIMIT 1
+     ) d ON true
+     WHERE pa.id = $1::uuid
+       AND pa.solicitud_id = $2::uuid
+       AND pa.otros_gastos_id = $3::uuid
+       AND pa.origen = 'fleet'
+       AND pa.reversed_at IS NULL`,
+    [fleetApplicationId, solicitudId, expenseId]
+  );
+  const payment = paymentResult.rows[0];
+  if (!payment) throw new Error('Cobro Fleet no encontrado');
+  if (payment.comprobante_id) throw new Error('Este cobro Fleet ya tiene comprobante');
+
+  const { displayName, objectName } = buildOtherExpenseDocumentName({
+    driverName: payment.driver_name,
+    dni: payment.dni,
+    expenseType: payment.tipo,
+    installmentNumber: payment.numero_cuota || payment.week_index,
+    dueDate: payment.due_date,
+    originalName: file.originalname,
+    mimeType: file.mimetype,
+    origin: 'admin',
+  });
+  const path = await uploadFileToMedia(
+    { ...file, originalname: objectName },
+    { bucket: MIAUTO_OTROS_GASTOS_BUCKET },
+  );
+
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    const lockedPayment = await client.query(
+      `SELECT id, monto_original, moneda_original, tipo_cambio,
+              monto_aplicado, moneda_aplicada, comprobante_id
+       FROM module_miauto_gasto_pago_aplicacion
+       WHERE id = $1::uuid AND solicitud_id = $2::uuid
+         AND otros_gastos_id = $3::uuid AND origen = 'fleet'
+         AND reversed_at IS NULL
+       FOR UPDATE`,
+      [fleetApplicationId, solicitudId, expenseId]
+    );
+    const locked = lockedPayment.rows[0];
+    if (!locked) throw new Error('Cobro Fleet no encontrado');
+    if (locked.comprobante_id) throw new Error('Este cobro Fleet ya tiene comprobante');
+
+    const inserted = await client.query(
+      `INSERT INTO module_miauto_comprobante_otros_gastos
+         (solicitud_id, otros_gastos_id, monto, moneda, monto_original,
+          moneda_original, tipo_cambio, monto_aplicado, moneda_aplicada,
+          file_name, file_path, created_by, origen)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $3, $4, $5, $6, $7, $8, $9, $10, 'admin')
+       RETURNING id`,
+      [solicitudId, expenseId, locked.monto_original, locked.moneda_original,
+        locked.tipo_cambio, locked.monto_aplicado, locked.moneda_aplicada,
+        displayName, path, userId]
+    );
+    const receiptId = inserted.rows[0]?.id;
+    if (!receiptId) throw new Error('No se pudo registrar el comprobante');
+
+    const linked = await client.query(
+      `UPDATE module_miauto_gasto_pago_aplicacion
+       SET comprobante_id = $1::uuid,
+           metadata = COALESCE(metadata, '{}'::jsonb)
+             || jsonb_build_object('receipt_attached_at', CURRENT_TIMESTAMP)
+       WHERE id = $2::uuid AND comprobante_id IS NULL
+       RETURNING id`,
+      [receiptId, fleetApplicationId]
+    );
+    if (!linked.rows[0]) throw new Error('El cobro Fleet ya fue vinculado por otro proceso');
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -342,15 +451,33 @@ async function applyReceiptWithinTransaction({
 }
 
 export async function rejectComprobanteOtrosGastos(solicitudId, receiptId, userId, { motivo } = {}) {
-  const result = await query(
-    `UPDATE module_miauto_comprobante_otros_gastos
-     SET estado = 'rechazado', rechazado_at = CURRENT_TIMESTAMP,
-         rechazo_razon = $1, rechazado_by = $2
-     WHERE solicitud_id = $3::uuid AND id = $4::uuid AND estado = 'pendiente'
-     RETURNING id`,
-    [motivo ? String(motivo).trim() : null, userId, solicitudId, receiptId]
-  );
-  if (!result.rows[0]) throw new Error('El comprobante no existe o ya fue procesado');
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE module_miauto_comprobante_otros_gastos
+       SET estado = 'rechazado', rechazado_at = CURRENT_TIMESTAMP,
+           rechazo_razon = $1, rechazado_by = $2
+       WHERE solicitud_id = $3::uuid AND id = $4::uuid AND estado = 'pendiente'
+       RETURNING id`,
+      [motivo ? String(motivo).trim() : null, userId, solicitudId, receiptId]
+    );
+    if (!result.rows[0]) throw new Error('El comprobante no existe o ya fue procesado');
+    await client.query(
+      `UPDATE module_miauto_gasto_pago_aplicacion
+       SET comprobante_id = NULL,
+           metadata = COALESCE(metadata, '{}'::jsonb)
+             || jsonb_build_object('receipt_rejected_at', CURRENT_TIMESTAMP)
+       WHERE comprobante_id = $1::uuid AND origen = 'fleet' AND reversed_at IS NULL`,
+      [receiptId]
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
   return listBySolicitud(solicitudId);
 }
 

@@ -15,6 +15,9 @@ export type MiautoOtrosGastoRow = {
   status: string;
   moneda?: string;
   origen?: string;
+  pending_fleet_application_id?: string | null;
+  pending_fleet_original_amount?: number | null;
+  pending_fleet_original_currency?: string | null;
 };
 
 /** Comprobante de pago subido por el conductor para una cuota de otros gastos */

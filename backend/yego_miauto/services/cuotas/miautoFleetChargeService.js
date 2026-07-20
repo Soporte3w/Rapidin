@@ -205,7 +205,7 @@ async function reserveAdditionalExpenseFleetIntent(expense, intentData) {
         await client.query('ROLLBACK');
         return { skipped: true, reason: 'comprobante_no_disponible' };
       }
-    } else if (receipt) {
+    } else if (receipt && !receipt.pago_aplicado) {
       await client.query('ROLLBACK');
       return { skipped: true, reason: 'comprobante_pendiente' };
     }
@@ -342,8 +342,6 @@ function effectiveAmountDueForMiAutoFleetRow(cuotaRow) {
   );
 }
 
-export { effectiveAmountDueForMiAutoFleetRow };
-
 function assertUuidList(values) {
   const ids = [...new Set((Array.isArray(values) ? values : []).map((value) => String(value).trim()))];
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -371,13 +369,15 @@ async function getOpenAdditionalExpenses(solicitudId, expenseIds = null) {
               pending_receipt.monto AS pending_receipt_amount,
               pending_receipt.moneda AS pending_receipt_currency,
               pending_receipt.tipo_cambio AS pending_receipt_exchange_rate,
-              pending_receipt.moneda_aplicada AS pending_receipt_applied_currency,
               pending_receipt.file_name AS pending_receipt_file_name,
               pending_receipt.file_path AS pending_receipt_file_path,
-              pending_receipt.pago_aplicado AS pending_receipt_applied
+              pending_receipt.pago_aplicado AS pending_receipt_applied,
+              pending_fleet_payment.id AS pending_fleet_application_id,
+              pending_fleet_payment.monto_original AS pending_fleet_original_amount,
+              pending_fleet_payment.moneda_original AS pending_fleet_original_currency
        FROM module_miauto_otros_gastos og
        LEFT JOIN LATERAL (
-         SELECT cp.id, cp.monto, cp.moneda, cp.tipo_cambio, cp.moneda_aplicada,
+         SELECT cp.id, cp.monto, cp.moneda, cp.tipo_cambio,
                 cp.file_name, cp.file_path,
                 EXISTS (
                   SELECT 1 FROM module_miauto_gasto_pago_aplicacion pa
@@ -388,9 +388,22 @@ async function getOpenAdditionalExpenses(solicitudId, expenseIds = null) {
          ORDER BY cp.created_at DESC, cp.id DESC
          LIMIT 1
        ) pending_receipt ON true
+       LEFT JOIN LATERAL (
+         SELECT pa.id, pa.monto_original, pa.moneda_original
+         FROM module_miauto_gasto_pago_aplicacion pa
+         WHERE pa.otros_gastos_id = og.id
+           AND pa.origen = 'fleet'
+           AND pa.reversed_at IS NULL
+           AND pa.comprobante_id IS NULL
+         ORDER BY pa.applied_at, pa.id
+         LIMIT 1
+       ) pending_fleet_payment ON true
        WHERE og.solicitud_id = $1::uuid
          AND og.deleted_at IS NULL
-         AND COALESCE(og.paid_amount, 0) < COALESCE(og.amount_due, 0) - 0.005
+         AND (
+           COALESCE(og.paid_amount, 0) < COALESCE(og.amount_due, 0) - 0.005
+           OR pending_fleet_payment.id IS NOT NULL
+         )
          AND ($2::uuid[] IS NULL OR og.id = ANY($2::uuid[]))
          AND NOT EXISTS (
            SELECT 1 FROM module_miauto_gasto_cobro_fleet_intento fi
@@ -434,35 +447,39 @@ export async function getAdditionalExpenseChargePreview(solicitudId) {
   }
 
   const driver = expenses[0];
-  if (!driver.external_driver_id) {
+  const hasChargeableExpense = expenses.some((expense) => (
+    !expense.pending_fleet_application_id
+    && Number(expense.paid_amount) < Number(expense.amount_due) - 0.005
+  ));
+  if (hasChargeableExpense && !driver.external_driver_id) {
     const error = new Error('No se encontro el conductor de Fleet para consultar su saldo');
     error.statusCode = 409;
     throw error;
   }
 
   const parkId = fleetParkIdForMiAuto(driver.park_id);
-  const cookie = fleetCookieCobroForMiAuto();
   const country = String(driver.country || 'PE').toUpperCase() === 'CO' ? 'CO' : 'PE';
-  const [balanceResult, exchange] = await Promise.all([
-    getContractorBalance(driver.external_driver_id, parkId, cookie),
-    tipoCambioUsdALocalEfectivo(country),
-  ]);
-  if (!balanceResult.success) {
-    const error = new Error(balanceResult.error || 'No se pudo consultar el saldo del conductor en Fleet');
-    error.statusCode = 502;
-    throw error;
+  let balanceResult = null;
+  if (hasChargeableExpense) {
+    balanceResult = await getContractorBalance(
+      driver.external_driver_id,
+      parkId,
+      fleetCookieCobroForMiAuto(),
+    );
+    if (!balanceResult.success) {
+      const error = new Error(balanceResult.error || 'No se pudo consultar el saldo del conductor en Fleet');
+      error.statusCode = 502;
+      throw error;
+    }
   }
 
   return {
-    balance: round2(Math.max(0, Number(balanceResult.balance) || 0)),
-    balance_currency: exchange.monedaLocal,
-    driver_name: fleetDriverDisplayName(balanceResult.full_name, driver),
+    balance: balanceResult ? round2(Math.max(0, Number(balanceResult.balance) || 0)) : null,
+    balance_currency: balanceResult ? (await tipoCambioUsdALocalEfectivo(country)).monedaLocal : null,
+    driver_name: fleetDriverDisplayName(balanceResult?.full_name, driver),
     expenses: expenses.map((expense) => {
       const pendingAmount = round2(Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount)));
       const receiptAmount = round2(Number(expense.pending_receipt_amount) || 0);
-      const preparedAmount = expense.pending_receipt_id
-        ? pendingReceiptCreditAmount(expense)
-        : null;
       return {
         id: expense.id,
         tipo: expense.tipo,
@@ -482,11 +499,14 @@ export async function getAdditionalExpenseChargePreview(solicitudId) {
         pending_receipt_id: expense.pending_receipt_id || null,
         pending_receipt_amount: expense.pending_receipt_id ? receiptAmount : null,
         pending_receipt_currency: expense.pending_receipt_currency || null,
-        pending_receipt_applied_amount: preparedAmount,
-        pending_receipt_applied_currency: expense.pending_receipt_applied_currency || null,
         pending_receipt_file_name: expense.pending_receipt_file_name || null,
         pending_receipt_file_path: expense.pending_receipt_file_path || null,
         pending_receipt_applied: Boolean(expense.pending_receipt_applied),
+        pending_fleet_application_id: expense.pending_fleet_application_id || null,
+        pending_fleet_original_amount: expense.pending_fleet_application_id
+          ? round2(Number(expense.pending_fleet_original_amount) || 0)
+          : null,
+        pending_fleet_original_currency: expense.pending_fleet_original_currency || null,
       };
     }),
   };
@@ -499,7 +519,7 @@ function pendingReceiptCreditAmount(expense) {
   return round2(originalAmount * (Number.isFinite(exchangeRate) && exchangeRate > 0 ? exchangeRate : 1));
 }
 
-export async function chargeSelectedAdditionalExpensesWithReceipts(solicitudId, expenseIds, options = {}) {
+export async function chargeSelectedAdditionalExpenses(solicitudId, expenseIds, options = {}) {
   const ids = assertUuidList(expenseIds);
   const expenses = await getOpenAdditionalExpenses(solicitudId, ids);
   if (expenses.length !== ids.length) {
@@ -507,8 +527,8 @@ export async function chargeSelectedAdditionalExpensesWithReceipts(solicitudId, 
     error.statusCode = 409;
     throw error;
   }
-  if (expenses.some((expense) => !expense.pending_receipt_id || expense.pending_receipt_applied)) {
-    const error = new Error('Todas las cuotas seleccionadas deben tener un comprobante antes de confirmar');
+  if (expenses.some((expense) => expense.pending_fleet_application_id)) {
+    const error = new Error('Primero sube el comprobante del cobro Fleet anterior');
     error.statusCode = 409;
     throw error;
   }
@@ -524,14 +544,15 @@ export async function chargeSelectedAdditionalExpensesWithReceipts(solicitudId, 
   const results = [];
   for (const expense of expenses) {
     try {
-      const receiptCreditAmount = pendingReceiptCreditAmount(expense);
-      if (receiptCreditAmount <= 0.005) {
-        throw new Error('El comprobante no tiene un monto valido para cobrar');
+      const legacyReceiptReady = expense.pending_receipt_id && !expense.pending_receipt_applied;
+      const receiptCreditAmount = legacyReceiptReady ? pendingReceiptCreditAmount(expense) : null;
+      if (legacyReceiptReady && receiptCreditAmount <= 0.005) {
+        throw new Error('El comprobante existente no tiene un monto valido para cobrar');
       }
       const result = await processAdditionalExpenseFleetCharge(expense, {
         ...options,
         sharedFleetCap,
-        requiredReceiptId: expense.pending_receipt_id,
+        requiredReceiptId: legacyReceiptReady ? expense.pending_receipt_id : null,
         maxCreditAmount: receiptCreditAmount,
         delayBeforeWithdrawMs: !options.dryRun && sharedFleetCap.processed > 0 ? 1500 : 0,
       });
@@ -539,8 +560,8 @@ export async function chargeSelectedAdditionalExpensesWithReceipts(solicitudId, 
       results.push({
         ...result,
         expense_id: expense.id,
-        receipt_id: expense.pending_receipt_id,
-        method: 'fleet_con_comprobante',
+        receipt_id: legacyReceiptReady ? expense.pending_receipt_id : null,
+        method: legacyReceiptReady ? 'fleet_comprobante_legacy' : 'fleet_pendiente_comprobante',
       });
     } catch (error) {
       logger.error('miauto.gastos.manual_fleet_charge_failed', {
@@ -573,7 +594,7 @@ export async function chargeSelectedAdditionalExpensesWithReceipts(solicitudId, 
   return summary;
 }
 
-export async function processAdditionalExpenseFleetCharge(expense, options = {}) {
+async function processAdditionalExpenseFleetCharge(expense, options = {}) {
   const dryRun = Boolean(options.dryRun || options.simulateFleetWithdraw);
   const pending = round2(Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount)));
   if (pending <= 0.005) return { success: true, skipped: true, reason: 'sin_saldo_pendiente' };

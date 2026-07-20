@@ -897,7 +897,7 @@ export const noVinoRechazar = async (id, userId = null) => {
  * Opciones: `fecha_inicio_cobro_semanal` (YYYY-MM-DD) = fecha real del depósito; si no viene, se usa **hoy en Lima** (`getLimaYmd`).
  * La fila semanal usa `week_start_date` = lunes de la semana civil que contiene esa fecha (puede coincidir con el depósito si cae lunes).
  * Permitido si: aprobado, cronograma/vehículo asignados, y (pago_estado completo O pago parcial con al menos 500 USD validados).
- * Con pago parcial: activa el ciclo fijo de inicial parcial ($19.23 por 26 semanas).
+ * Con pago parcial: activa el ciclo de inicial parcial configurado en el cronograma del vehiculo.
  */
 export const generarYegoMiAuto = async (id, options = {}) => {
   const row = await query(

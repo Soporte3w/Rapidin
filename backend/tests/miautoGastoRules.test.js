@@ -6,37 +6,71 @@ import {
   buildVehicleTaxInstallments,
   buildWeeklyInstallments,
   availableFleetCharge,
+  contractEndDate,
   expenseStatus,
+  installmentsWithinRange,
   isVehicleTaxYearEligible,
   nextMonday,
+  nextMonthEnd,
+  recurringReferenceDate,
   replaceYearClamped,
 } from '../yego_miauto/services/gastos/miautoGastoRules.js';
 
 test('GPS genera doce cierres mensuales con monto fijo', () => {
-  const installments = buildGpsInstallments(2027);
+  const installments = buildGpsInstallments(2027, 47.2);
   assert.equal(installments.length, 12);
   assert.deepEqual(installments[0], { number: 1, dueDate: '2027-01-31', amount: 47.2 });
   assert.deepEqual(installments[1], { number: 2, dueDate: '2027-02-28', amount: 47.2 });
   assert.deepEqual(installments[11], { number: 12, dueDate: '2027-12-31', amount: 47.2 });
 });
 
-test('SOAT genera cuatro cuotas de 50 antes del vencimiento', () => {
-  const installments = buildSoatInstallments('2027-06-30', 50);
+test('GPS inicia el mes siguiente y termina con el contrato', () => {
+  const endDate = contractEndDate('2026-06-22', 195);
+  assert.equal(endDate, '2030-03-11');
+  assert.equal(nextMonthEnd('2026-06-22'), '2026-07-31');
+  const firstPeriod = installmentsWithinRange(
+    buildGpsInstallments(2026, 47.2), nextMonthEnd('2026-06-22'), endDate
+  );
+  assert.deepEqual(firstPeriod.map((item) => item.dueDate), [
+    '2026-07-31', '2026-08-31', '2026-09-30', '2026-10-31', '2026-11-30', '2026-12-31',
+  ]);
+  assert.deepEqual(firstPeriod.map((item) => item.number), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(
+    installmentsWithinRange(buildGpsInstallments(2030, 47.2), nextMonthEnd('2026-06-22'), endDate)
+      .map((item) => item.dueDate),
+    ['2030-01-31', '2030-02-28']
+  );
+});
+
+test('SOAT genera el monto configurado en cada cuota antes del vencimiento', () => {
+  const installments = buildSoatInstallments('2027-06-30', 200, 4, 4);
   assert.deepEqual(installments.map((item) => item.dueDate), [
     '2027-02-28', '2027-03-30', '2027-04-30', '2027-05-30',
   ]);
-  assert.equal(installments.reduce((sum, item) => sum + item.amount, 0), 200);
+  assert.deepEqual(installments.map((item) => item.amount), [200, 200, 200, 200]);
+});
+
+test('SOAT conserva la primera referencia futura y luego renueva por aniversario', () => {
+  assert.equal(recurringReferenceDate('2027-06-30', 2026), '2027-06-30');
+  assert.equal(recurringReferenceDate('2027-06-30', 2028), '2028-06-30');
 });
 
 test('impuesto vehicular conserva el total exacto en cuatro meses', () => {
-  const installments = buildVehicleTaxInstallments(2027, 1000.01);
+  const installments = buildVehicleTaxInstallments(2027, 1000.01, 2, 4);
   assert.deepEqual(installments.map((item) => item.dueDate), [
     '2027-02-08', '2027-05-10', '2027-08-09', '2027-11-08',
   ]);
   assert.equal(installments.reduce((sum, item) => sum + item.amount, 0), 1000.01);
-  assert.equal(isVehicleTaxYearEligible(2026, 2027), true);
-  assert.equal(isVehicleTaxYearEligible(2026, 2029), true);
-  assert.equal(isVehicleTaxYearEligible(2026, 2030), false);
+  assert.equal(isVehicleTaxYearEligible(2026, 2027, 3), true);
+  assert.equal(isVehicleTaxYearEligible(2026, 2029, 3), true);
+  assert.equal(isVehicleTaxYearEligible(2026, 2030, 3), false);
+});
+
+test('impuesto vehicular rechaza calendarios que salen del periodo anual', () => {
+  assert.throws(
+    () => buildVehicleTaxInstallments(2027, 1000, 10, 4),
+    /excede el ano configurado/
+  );
 });
 
 test('STR e inicial empiezan el lunes siguiente y generan 26 semanas', () => {

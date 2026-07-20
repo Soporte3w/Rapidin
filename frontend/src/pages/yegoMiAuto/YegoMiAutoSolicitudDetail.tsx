@@ -823,7 +823,7 @@ export default function YegoMiAutoSolicitudDetail() {
                     <p className="text-xs text-amber-900/90 leading-relaxed">
                       {solicitud.pago_estado !== 'completo' && (solicitud.pago_tipo === 'parcial' || (solicitud.total_validado_usd ?? 0) >= 500) ? (
                         <>
-                          <strong className="text-amber-900">Nota:</strong> simulación informativa. Si al generar Yego Mi Auto aún <strong>falta saldo</strong> de la cuota inicial, ese monto se repartirá en <strong>26 cuotas</strong> en &quot;Otros gastos&quot;, con vencimientos en <strong>lunes</strong> desde la <strong>semana 2</strong> del plan. Indica la <strong>fecha real del depósito</strong> abajo; la primera cuota semanal vence ese día (si no indicas fecha, se usa el lunes de la semana actual en Lima).
+                          <strong className="text-amber-900">Nota:</strong> simulación informativa. Si al generar Yego Mi Auto aún <strong>falta saldo</strong> de la cuota inicial, se activará el ciclo de inicial parcial configurado para el vehículo en &quot;Otros gastos&quot;. Indica la <strong>fecha real del depósito</strong> abajo; la primera cuota semanal vence ese día (si no indicas fecha, se usa el día actual en Lima).
                         </>
                       ) : solicitud.pago_tipo === 'parcial' && solicitud.pago_estado === 'completo' ? (
                         <>

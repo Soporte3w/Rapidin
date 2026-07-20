@@ -17,6 +17,7 @@ import {
 import {
   listBySolicitud as listComprobantesOtrosGastos,
   createComprobanteOtrosGastos,
+  attachComprobanteToFleetExpensePayment,
   validateComprobanteOtrosGastos,
   rejectComprobanteOtrosGastos,
 } from '../../services/comprobantes/miautoComprobanteOtrosGastosService.js';
@@ -400,8 +401,23 @@ router.post(
       }
       const monto = req.body.monto != null ? parseFloat(req.body.monto) : null;
       const moneda = trimOrUndefined(req.body.moneda);
-      const deferred = req.user?.role !== 'driver'
-        && String(req.body.defer_application || '').toLowerCase() === 'true';
+      const fleetApplicationId = trimOrUndefined(req.body.fleet_application_id);
+      if (fleetApplicationId) {
+        if (req.user?.role === 'driver') {
+          return errorResponse(res, 'Sin permisos para vincular comprobantes de cobros Fleet', 403);
+        }
+        const list = await attachComprobanteToFleetExpensePayment(
+          req.params.id,
+          req.params.otrosGastosId,
+          fleetApplicationId,
+          req.file,
+          { userId: req.user?.id || null },
+        );
+        return successResponse(res, list, 'Comprobante vinculado al cobro Fleet', 201);
+      }
+      if (req.user?.role !== 'driver') {
+        return errorResponse(res, 'Primero realiza el cobro Fleet para habilitar el comprobante', 409);
+      }
       const list = await createComprobanteOtrosGastos(
         req.params.id,
         req.params.otrosGastosId,
@@ -411,15 +427,9 @@ router.post(
         {
           userId: req.user?.id || null,
           origin: req.user?.role === 'driver' ? 'conductor' : 'admin',
-          applyImmediately: !deferred,
         }
       );
-      return successResponse(
-        res,
-        list,
-        deferred ? 'Comprobante listo para confirmar' : 'Comprobante subido y aplicado al gasto',
-        201,
-      );
+      return successResponse(res, list, 'Comprobante subido y aplicado al gasto', 201);
     } catch (error) {
       logger.error('Error subiendo comprobante otros gastos Mi Auto:', error);
       return errorResponse(res, error.message || 'Error al subir comprobante', 400);

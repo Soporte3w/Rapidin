@@ -5,15 +5,14 @@ import {
   buildSoatInstallments,
   buildVehicleTaxInstallments,
   buildWeeklyInstallments,
+  contractEndDate,
+  installmentsWithinRange,
   isVehicleTaxYearEligible,
   nextMonday,
+  nextMonthEnd,
+  recurringReferenceDate,
   replaceYearClamped,
 } from './miautoGastoRules.js';
-
-const GPS_MONTHLY_AMOUNT = 47.2;
-const SOAT_INSTALLMENT_AMOUNT = 50;
-const INITIAL_PARTIAL_WEEKLY_AMOUNT = 19.23;
-const WEEKLY_INSTALLMENTS = 26;
 
 function limaTodayYmd() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -46,6 +45,16 @@ function numberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function positiveNumber(value) {
+  const number = numberOrNull(value);
+  return number != null && number > 0 ? number : null;
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
 function mapExpenseRow(row) {
   const amountDue = Number(row.amount_due) || 0;
   const paidAmount = Number(row.paid_amount) || 0;
@@ -66,6 +75,11 @@ function mapExpenseRow(row) {
     status: row.status,
     moneda: normalizeCurrency(row.moneda),
     origen: row.origen || row.ciclo_origen || 'legacy',
+    pending_fleet_application_id: row.pending_fleet_application_id || null,
+    pending_fleet_original_amount: row.pending_fleet_application_id
+      ? Number(row.pending_fleet_original_amount) || 0
+      : null,
+    pending_fleet_original_currency: row.pending_fleet_original_currency || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -76,9 +90,22 @@ const EXPENSE_SELECT = `
          og.numero_cuota, og.total_cuotas, og.periodo_anio, og.due_date,
          og.amount_due, og.paid_amount, og.status, og.moneda, og.origen,
          og.created_at, og.updated_at,
-         c.ciclo_numero, c.origen AS ciclo_origen
+         c.ciclo_numero, c.origen AS ciclo_origen,
+         pending_fleet_payment.id AS pending_fleet_application_id,
+         pending_fleet_payment.monto_original AS pending_fleet_original_amount,
+         pending_fleet_payment.moneda_original AS pending_fleet_original_currency
   FROM module_miauto_otros_gastos og
   LEFT JOIN module_miauto_gasto_ciclo c ON c.id = og.ciclo_id
+  LEFT JOIN LATERAL (
+    SELECT pa.id, pa.monto_original, pa.moneda_original
+    FROM module_miauto_gasto_pago_aplicacion pa
+    WHERE pa.otros_gastos_id = og.id
+      AND pa.origen = 'fleet'
+      AND pa.reversed_at IS NULL
+      AND pa.comprobante_id IS NULL
+    ORDER BY pa.applied_at, pa.id
+    LIMIT 1
+  ) pending_fleet_payment ON true
 `;
 
 /** Consulta pura. No genera ni modifica cuotas. */
@@ -86,8 +113,25 @@ export async function listBySolicitud(solicitudId) {
   const result = await query(
     `${EXPENSE_SELECT}
      WHERE og.solicitud_id = $1::uuid AND og.deleted_at IS NULL
-     ORDER BY COALESCE(og.periodo_anio, EXTRACT(YEAR FROM og.due_date)) DESC,
-              og.tipo, c.ciclo_numero, COALESCE(og.numero_cuota, og.week_index), og.due_date, og.id`,
+     ORDER BY
+       CASE
+         WHEN COALESCE(og.periodo_anio, EXTRACT(YEAR FROM og.due_date)) =
+              EXTRACT(YEAR FROM (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')) THEN 0
+         WHEN COALESCE(og.periodo_anio, EXTRACT(YEAR FROM og.due_date)) >
+              EXTRACT(YEAR FROM (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')) THEN 1
+         ELSE 2
+       END,
+       CASE
+         WHEN COALESCE(og.periodo_anio, EXTRACT(YEAR FROM og.due_date)) >=
+              EXTRACT(YEAR FROM (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima'))
+         THEN COALESCE(og.periodo_anio, EXTRACT(YEAR FROM og.due_date))
+       END ASC,
+       CASE
+         WHEN COALESCE(og.periodo_anio, EXTRACT(YEAR FROM og.due_date)) <
+              EXTRACT(YEAR FROM (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima'))
+         THEN COALESCE(og.periodo_anio, EXTRACT(YEAR FROM og.due_date))
+       END DESC,
+       og.tipo, c.ciclo_numero, COALESCE(og.numero_cuota, og.week_index), og.due_date, og.id`,
     [solicitudId]
   );
   return result.rows.map(mapExpenseRow);
@@ -116,7 +160,7 @@ export async function getExpenseConfiguration(solicitudId) {
             s.vehiculo_anio, s.soat_fecha_vencimiento,
             s.str_gps_monto_semanal, s.str_gps_moneda,
             s.inicial_parcial_activa, s.gastos_automaticos_activos,
-            cv.name AS vehiculo_name, cv.requisitos_gastos
+            cv.name AS vehiculo_name, cv.cuotas_semanales, cv.requisitos_gastos
      FROM module_miauto_solicitud s
      LEFT JOIN module_miauto_cronograma_vehiculo cv ON cv.id = s.cronograma_vehiculo_id
      WHERE s.id = $1::uuid AND s.deleted_at IS NULL`,
@@ -128,6 +172,7 @@ export async function getExpenseConfiguration(solicitudId) {
     ...row,
     fecha_entrega_vehiculo: ymd(row.fecha_entrega_vehiculo) || ymd(row.fecha_inicio_cobro_semanal),
     vehiculo_anio: row.vehiculo_anio != null ? Number(row.vehiculo_anio) : null,
+    cuotas_semanales: row.cuotas_semanales != null ? Number(row.cuotas_semanales) : null,
     str_gps_monto_semanal: numberOrNull(row.str_gps_monto_semanal),
     str_gps_moneda: normalizeCurrency(row.str_gps_moneda, 'USD'),
   };
@@ -200,20 +245,46 @@ async function upsertCycle(client, {
       referenceDate, installments.length, origin, JSON.stringify(config), userId]
   );
 
+  const created = Boolean(cycleResult.rows[0]?.id);
   let cycleId = cycleResult.rows[0]?.id;
-  if (!cycleId) {
+  let existingOrigin = null;
+  if (!created) {
     const existing = await client.query(
-      `SELECT id FROM module_miauto_gasto_ciclo
+      `SELECT id, origen FROM module_miauto_gasto_ciclo
        WHERE solicitud_id = $1::uuid AND concepto = $2 AND periodo_anio = $3 AND ciclo_numero = $4`,
       [solicitudId, concept, periodYear, cycleNumber]
     );
     cycleId = existing.rows[0]?.id;
-    return { created: false, cycleId, concept, periodYear, installments: 0 };
+    existingOrigin = existing.rows[0]?.origen || null;
+    if (concept !== 'gps') {
+      return { created: false, cycleId, concept, periodYear, installments: 0, origin: existingOrigin };
+    }
   }
 
+  if (!cycleId) throw new Error(`No se pudo resolver el ciclo ${concept} ${periodYear}`);
+
+  const currentRows = await client.query(
+    `SELECT id, numero_cuota, due_date::text
+     FROM module_miauto_otros_gastos
+     WHERE solicitud_id = $1::uuid AND tipo = $2 AND deleted_at IS NULL
+       AND EXTRACT(YEAR FROM due_date)::int = $3
+     ORDER BY due_date, id`,
+    [solicitudId, concept, periodYear]
+  );
+  const occupiedMonths = new Set(currentRows.rows.map((row) => String(row.due_date).slice(0, 7)));
+  const usedNumbers = new Set(currentRows.rows
+    .filter((row) => row.numero_cuota != null)
+    .map((row) => Number(row.numero_cuota)));
+  let nextNumber = usedNumbers.size ? Math.max(...usedNumbers) + 1 : 1;
+  let inserted = 0;
+
   for (const installment of installments) {
-    const sourceKey = `${solicitudId}:${concept}:${periodYear}:${cycleNumber}:${installment.number}`;
-    await client.query(
+    if (concept === 'gps' && occupiedMonths.has(installment.dueDate.slice(0, 7))) continue;
+    let installmentNumber = installment.number;
+    if (usedNumbers.has(installmentNumber)) installmentNumber = nextNumber++;
+    usedNumbers.add(installmentNumber);
+    const sourceKey = `${solicitudId}:${concept}:${periodYear}:${cycleNumber}:${installment.dueDate}`;
+    const result = await client.query(
       `INSERT INTO module_miauto_otros_gastos
          (solicitud_id, ciclo_id, tipo, week_index, numero_cuota, total_cuotas,
           periodo_anio, due_date, amount_due, paid_amount, status, moneda, source_key, origen)
@@ -221,11 +292,40 @@ async function upsertCycle(client, {
                CASE WHEN $7::date < (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date THEN 'overdue' ELSE 'pending' END,
                $9, $10, $11)
        ON CONFLICT (source_key) WHERE source_key IS NOT NULL AND deleted_at IS NULL DO NOTHING`,
-      [solicitudId, cycleId, concept, installment.number, installments.length, periodYear,
+      [solicitudId, cycleId, concept, installmentNumber, installments.length, periodYear,
         installment.dueDate, installment.amount, currency, sourceKey, origin]
     );
+    inserted += result.rowCount;
+    occupiedMonths.add(installment.dueDate.slice(0, 7));
   }
-  return { created: true, cycleId, concept, periodYear, installments: installments.length };
+
+  await client.query(
+    `UPDATE module_miauto_gasto_ciclo c
+     SET monto_total = totals.monto_total,
+         fecha_inicio = totals.fecha_inicio,
+         fecha_fin = totals.fecha_fin,
+         numero_cuotas = totals.numero_cuotas,
+         updated_at = CURRENT_TIMESTAMP
+     FROM (
+       SELECT ciclo_id, SUM(amount_due) AS monto_total, MIN(due_date) AS fecha_inicio,
+              MAX(due_date) AS fecha_fin, COUNT(*)::int AS numero_cuotas
+       FROM module_miauto_otros_gastos
+       WHERE ciclo_id = $1::uuid AND deleted_at IS NULL
+       GROUP BY ciclo_id
+     ) totals
+     WHERE c.id = totals.ciclo_id`,
+    [cycleId]
+  );
+  await client.query(
+    `UPDATE module_miauto_otros_gastos og
+     SET total_cuotas = c.numero_cuotas,
+         updated_at = CURRENT_TIMESTAMP
+     FROM module_miauto_gasto_ciclo c
+     WHERE c.id = $1::uuid AND og.ciclo_id = c.id AND og.deleted_at IS NULL
+       AND og.total_cuotas IS DISTINCT FROM c.numero_cuotas`,
+    [cycleId]
+  );
+  return { created, cycleId, concept, periodYear, installments: inserted, origin: existingOrigin || origin };
 }
 
 function requirementsObject(value) {
@@ -234,7 +334,7 @@ function requirementsObject(value) {
   try { return JSON.parse(value); } catch { return {}; }
 }
 
-/** Generacion explicita e idempotente. Nunca modifica ciclos ya creados. */
+/** Generacion explicita e idempotente. Completa solo periodos que aun no existen. */
 export async function generateExpenseCycles(solicitudId, options = {}) {
   const config = await getExpenseConfiguration(solicitudId);
   if (!config.gastos_automaticos_activos && !options.forceManual) {
@@ -245,14 +345,24 @@ export async function generateExpenseCycles(solicitudId, options = {}) {
   const periodYear = Number(options.periodYear || todayYear);
   const deliveryDate = config.fecha_entrega_vehiculo;
   if (!deliveryDate) throw new Error('Registra la fecha de entrega del vehiculo antes de generar gastos');
+  const endDate = contractEndDate(deliveryDate, config.cuotas_semanales);
+  if (endDate && periodYear > yearOf(endDate)) {
+    return { skipped: true, reason: 'contrato_finalizado', periodYear, contractEndDate: endDate, cycles: [] };
+  }
 
   const requirements = requirementsObject(config.requisitos_gastos);
-  const configuredStrAmount = numberOrNull(config.str_gps_monto_semanal)
-    ?? numberOrNull(requirements.todo_riesgo_mas_gps_agrupado?.monto);
+  const gpsRule = requirements.gps || {};
+  const soatRule = requirements.soat || {};
+  const taxRule = requirements.impuesto_vehicular || {};
+  const strRule = requirements.todo_riesgo_mas_gps_agrupado || {};
+  const initialPartialRule = requirements.inicial_parcial || {};
+  const configuredStrAmount = positiveNumber(config.str_gps_monto_semanal)
+    ?? positiveNumber(strRule.monto);
   const configuredStrCurrency = normalizeCurrency(
-    config.str_gps_moneda || requirements.todo_riesgo_mas_gps_agrupado?.moneda,
+    config.str_gps_moneda || strRule.moneda,
     'USD'
   );
+  const configuredStrWeeks = positiveInteger(strRule.cobro?.semanas);
 
   const client = await getClient();
   const cycles = [];
@@ -260,20 +370,50 @@ export async function generateExpenseCycles(solicitudId, options = {}) {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`miauto-gastos:${solicitudId}`]);
 
-    const gpsInstallments = buildGpsInstallments(periodYear, GPS_MONTHLY_AMOUNT)
-      .filter((item) => item.dueDate >= deliveryDate);
-    cycles.push(await upsertCycle(client, {
-      solicitudId, concept: 'gps', periodYear, currency: 'PEN', installments: gpsInstallments,
-      origin: 'sistema', config: { monthly_amount: GPS_MONTHLY_AMOUNT, schedule: 'month_end' }, userId: options.userId,
-    }));
+    const gpsAmount = positiveNumber(gpsRule.monto);
+    const separatedGps = requirements.todo_riesgo_y_gps_modo !== 'agrupado';
+    if (separatedGps && gpsAmount != null) {
+      const gpsInstallments = installmentsWithinRange(
+        buildGpsInstallments(periodYear, gpsAmount),
+        nextMonthEnd(deliveryDate),
+        endDate
+      );
+      cycles.push(await upsertCycle(client, {
+        solicitudId, concept: 'gps', periodYear,
+        currency: normalizeCurrency(gpsRule.moneda), installments: gpsInstallments,
+        origin: 'sistema', config: { monthly_amount: gpsAmount, schedule: 'month_end', contract_end: endDate }, userId: options.userId,
+      }));
+    }
 
     if (config.soat_fecha_vencimiento) {
-      const soatPeriodYear = yearOf(config.soat_fecha_vencimiento);
+      const soatInstallmentAmount = positiveNumber(soatRule.monto);
+      const soatInstallmentCount = positiveInteger(soatRule.cobro?.cuotas);
+      const soatMonthsBefore = positiveInteger(soatRule.cobro?.meses_anticipo);
+      if (!soatInstallmentAmount || !soatInstallmentCount || !soatMonthsBefore) {
+        throw new Error('Configura monto, cuotas y meses de anticipacion del SOAT en el cronograma');
+      }
+      const soatReferenceDate = recurringReferenceDate(config.soat_fecha_vencimiento, periodYear);
+      const soatPeriodYear = yearOf(soatReferenceDate);
       cycles.push(await upsertCycle(client, {
-        solicitudId, concept: 'soat', periodYear: soatPeriodYear, currency: 'PEN',
-        installments: buildSoatInstallments(config.soat_fecha_vencimiento, SOAT_INSTALLMENT_AMOUNT),
-        referenceDate: ymd(config.soat_fecha_vencimiento), origin: 'sistema',
-        config: { installment_amount: SOAT_INSTALLMENT_AMOUNT, months_before_expiration: 4 }, userId: options.userId,
+        solicitudId, concept: 'soat', periodYear: soatPeriodYear,
+        currency: normalizeCurrency(soatRule.moneda),
+        installments: installmentsWithinRange(
+          buildSoatInstallments(
+            soatReferenceDate,
+            soatInstallmentAmount,
+            soatInstallmentCount,
+            soatMonthsBefore
+          ),
+          deliveryDate,
+          endDate
+        ),
+        referenceDate: soatReferenceDate, origin: 'sistema',
+        config: {
+          installment_amount: soatInstallmentAmount,
+          installments: soatInstallmentCount,
+          months_before_expiration: soatMonthsBefore,
+        },
+        userId: options.userId,
       }));
     }
 
@@ -281,32 +421,71 @@ export async function generateExpenseCycles(solicitudId, options = {}) {
     if (taxTotal != null) {
       if (taxTotal <= 0) throw new Error('El impuesto vehicular debe ser mayor a cero');
       if (!config.vehiculo_anio) throw new Error('Registra el ano del vehiculo antes del impuesto vehicular');
-      if (!isVehicleTaxYearEligible(config.vehiculo_anio, periodYear)) {
+      const taxInstallmentCount = positiveInteger(taxRule.cobro?.cuotas);
+      const taxStartMonth = positiveInteger(taxRule.cobro?.mes_inicio);
+      const taxEligibleYears = positiveInteger(taxRule.cobro?.anios_vigencia_tras_modelo);
+      if (!taxInstallmentCount || !taxStartMonth || !taxEligibleYears) {
+        throw new Error('Configura cuotas, mes inicial y vigencia del impuesto vehicular en el cronograma');
+      }
+      if (!isVehicleTaxYearEligible(config.vehiculo_anio, periodYear, taxEligibleYears)) {
         throw new Error(`El impuesto ${periodYear} no corresponde al vehiculo ${config.vehiculo_anio}`);
       }
       cycles.push(await upsertCycle(client, {
-        solicitudId, concept: 'impuesto_vehicular', periodYear, currency: 'PEN',
-        installments: buildVehicleTaxInstallments(periodYear, taxTotal), origin: 'sistema',
-        config: { annual_total: taxTotal, months: [2, 5, 8, 11], rule: 'second_monday' }, userId: options.userId,
+        solicitudId, concept: 'impuesto_vehicular', periodYear,
+        currency: normalizeCurrency(taxRule.moneda),
+        installments: installmentsWithinRange(
+          buildVehicleTaxInstallments(periodYear, taxTotal, taxStartMonth, taxInstallmentCount),
+          deliveryDate,
+          endDate
+        ), origin: 'sistema',
+        config: {
+          annual_total: taxTotal,
+          installments: taxInstallmentCount,
+          start_month: taxStartMonth,
+          eligible_years: taxEligibleYears,
+          rule: 'second_monday',
+        },
+        userId: options.userId,
       }));
     }
 
-    if (configuredStrAmount != null && configuredStrAmount > 0) {
+    if (configuredStrAmount != null) {
+      if (!configuredStrWeeks) {
+        throw new Error('Configura la cantidad de semanas de STR + GPS en el cronograma');
+      }
       const deliveryYear = yearOf(deliveryDate);
       const anniversary = replaceYearClamped(deliveryDate, periodYear);
       const cycleStart = nextMonday(periodYear === deliveryYear ? deliveryDate : anniversary);
       cycles.push(await upsertCycle(client, {
         solicitudId, concept: 'str_gps', periodYear, currency: configuredStrCurrency,
-        installments: buildWeeklyInstallments(cycleStart, WEEKLY_INSTALLMENTS, configuredStrAmount),
-        origin: 'sistema', config: { weekly_amount: configuredStrAmount, weeks: WEEKLY_INSTALLMENTS }, userId: options.userId,
+        installments: installmentsWithinRange(
+          buildWeeklyInstallments(cycleStart, configuredStrWeeks, configuredStrAmount),
+          deliveryDate,
+          endDate
+        ),
+        origin: 'sistema',
+        config: { weekly_amount: configuredStrAmount, weeks: configuredStrWeeks, contract_end: endDate },
+        userId: options.userId,
       }));
     }
 
     if (config.inicial_parcial_activa && periodYear === yearOf(deliveryDate)) {
+      const initialPartialAmount = positiveNumber(initialPartialRule.monto);
+      const initialPartialWeeks = positiveInteger(initialPartialRule.cobro?.semanas);
+      if (!initialPartialAmount || !initialPartialWeeks) {
+        throw new Error('Configura el monto y las semanas de inicial parcial en el cronograma');
+      }
       cycles.push(await upsertCycle(client, {
-        solicitudId, concept: 'inicial_parcial', periodYear, currency: 'USD',
-        installments: buildWeeklyInstallments(nextMonday(deliveryDate), WEEKLY_INSTALLMENTS, INITIAL_PARTIAL_WEEKLY_AMOUNT),
-        origin: 'sistema', config: { weekly_amount: INITIAL_PARTIAL_WEEKLY_AMOUNT, weeks: WEEKLY_INSTALLMENTS }, userId: options.userId,
+        solicitudId, concept: 'inicial_parcial', periodYear,
+        currency: normalizeCurrency(initialPartialRule.moneda, 'USD'),
+        installments: installmentsWithinRange(
+          buildWeeklyInstallments(nextMonday(deliveryDate), initialPartialWeeks, initialPartialAmount),
+          deliveryDate,
+          endDate
+        ),
+        origin: 'sistema',
+        config: { weekly_amount: initialPartialAmount, weeks: initialPartialWeeks },
+        userId: options.userId,
       }));
     }
 
@@ -319,7 +498,7 @@ export async function generateExpenseCycles(solicitudId, options = {}) {
   }
 
   logger.info('miauto.gastos.cycles_generated', { solicitudId, periodYear, cycles });
-  return { skipped: false, periodYear, cycles, expenses: await listBySolicitud(solicitudId) };
+  return { skipped: false, periodYear, contractEndDate: endDate, cycles, expenses: await listBySolicitud(solicitudId) };
 }
 
 export async function generateExpenseCyclesForActiveContracts(options = {}) {

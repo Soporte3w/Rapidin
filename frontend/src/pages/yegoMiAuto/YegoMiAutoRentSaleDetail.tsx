@@ -75,10 +75,10 @@ const TIPO_OTROS_GASTOS_BAR: Record<string, string> = {
 
 const MONTHS_SHORT = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 
-function formatOtrosGastoDueDate(dueDate: string, periodYear?: number | null): string {
+function formatOtrosGastoDueDate(dueDate: string): string {
   const [year, month, day] = String(dueDate || '').slice(0, 10).split('-');
   const monthLabel = MONTHS_SHORT[Number(month) - 1];
-  return year && monthLabel && day ? `${periodYear || year} · ${day}-${monthLabel}` : '—';
+  return year && monthLabel && day ? `${year} · ${day}-${monthLabel}` : '—';
 }
 
 interface CuotaSemanal {
@@ -263,11 +263,12 @@ interface OtroGastoCobroFleetRow {
   pending_receipt_id?: string | null;
   pending_receipt_amount?: number | null;
   pending_receipt_currency?: string | null;
-  pending_receipt_applied_amount?: number | null;
-  pending_receipt_applied_currency?: string | null;
   pending_receipt_file_name?: string | null;
   pending_receipt_file_path?: string | null;
   pending_receipt_applied?: boolean;
+  pending_fleet_application_id?: string | null;
+  pending_fleet_original_amount?: number | null;
+  pending_fleet_original_currency?: string | null;
 }
 
 interface OtroGastoCobroFleetPreview {
@@ -361,6 +362,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const [gastoComprobanteMonto, setGastoComprobanteMonto] = useState('');
   const [gastoComprobanteMoneda, setGastoComprobanteMoneda] = useState('PEN');
   const [gastoComprobanteArchivo, setGastoComprobanteArchivo] = useState<File | null>(null);
+  const [gastoComprobanteFleetApplicationId, setGastoComprobanteFleetApplicationId] = useState<string | null>(null);
   const [subiendoGastoComprobante, setSubiendoGastoComprobante] = useState(false);
   const [subTabCuota, setSubTabCuota] = useState<Record<string, 'comprobantes' | 'evidencias'>>({});
   const [evidenciasFleet, setEvidenciasFleet] = useState<{ id: string; cuota_semanal_id: string; file_name: string; file_path: string; created_at: string }[]>([]);
@@ -999,11 +1001,7 @@ export default function YegoMiAutoRentSaleDetail() {
       const response = await api.get(`/miauto/solicitudes/${id}/otros-gastos/cobrar/preview`);
       const preview = (response.data?.data ?? response.data) as OtroGastoCobroFleetPreview;
       setGastoFleetPreview(preview);
-      setGastosFleetSeleccionados(Object.fromEntries(
-        preview.expenses
-          .filter((expense) => expense.pending_receipt_id && !expense.pending_receipt_applied)
-          .map((expense) => [expense.id, true])
-      ));
+      setGastosFleetSeleccionados({});
       setGastoFleetTipoActivo(canonicalOtrosGastoType(preferredType || preview.expenses[0]?.tipo));
     } catch (err: any) {
       setGastoFleetPreview(null);
@@ -1016,6 +1014,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const openAdditionalExpenseFleetCharge = useCallback(() => {
     setGastoComprobanteTarget(null);
     setGastoComprobanteArchivo(null);
+    setGastoComprobanteFleetApplicationId(null);
     setShowGastoFleetChargeModal(true);
     void loadAdditionalExpenseFleetCharge();
   }, [loadAdditionalExpenseFleetCharge]);
@@ -1025,6 +1024,7 @@ export default function YegoMiAutoRentSaleDetail() {
     setShowGastoFleetChargeModal(false);
     setGastoComprobanteTarget(null);
     setGastoComprobanteArchivo(null);
+    setGastoComprobanteFleetApplicationId(null);
   }, [chargingGastoFleet, subiendoGastoComprobante]);
 
   const selectedAdditionalExpenseFleetIds = useMemo(
@@ -1038,8 +1038,8 @@ export default function YegoMiAutoRentSaleDetail() {
     const selectedIds = new Set(selectedAdditionalExpenseFleetIds);
     return (gastoFleetPreview?.expenses || []).reduce((totals, expense) => {
       if (selectedIds.has(expense.id)) {
-        const currency = expense.pending_receipt_applied_currency || expense.currency || 'PEN';
-        const amount = Number(expense.pending_receipt_applied_amount || 0);
+        const currency = expense.currency || 'PEN';
+        const amount = Number(expense.pending_amount || 0);
         totals[currency] = roundToTwoDecimals((totals[currency] || 0) + amount);
       }
       return totals;
@@ -1081,12 +1081,11 @@ export default function YegoMiAutoRentSaleDetail() {
   const chargeSelectedAdditionalExpenses = useCallback(async () => {
     if (!id || selectedAdditionalExpenseFleetIds.length === 0) return;
     const selectedIds = new Set(selectedAdditionalExpenseFleetIds);
-    const hasExpenseWithoutReadyReceipt = (gastoFleetPreview?.expenses || []).some(
-      (expense) => selectedIds.has(expense.id)
-        && (!expense.pending_receipt_id || expense.pending_receipt_applied)
+    const hasUnresolvedFleetCharge = (gastoFleetPreview?.expenses || []).some(
+      (expense) => selectedIds.has(expense.id) && expense.pending_fleet_application_id
     );
-    if (hasExpenseWithoutReadyReceipt) {
-      toast.error('Todas las cuotas seleccionadas deben tener un comprobante listo');
+    if (hasUnresolvedFleetCharge) {
+      toast.error('Primero sube el comprobante del cobro Fleet anterior');
       return;
     }
     try {
@@ -1107,10 +1106,9 @@ export default function YegoMiAutoRentSaleDetail() {
         const detail = fleetCount > 0 ? `${fleetCount} desde Fleet` : '';
         toast.success(`${successCount} cuota${successCount === 1 ? '' : 's'} cobrada${successCount === 1 ? '' : 's'}${detail ? `: ${detail}` : ''}`);
       }
-      setShowGastoFleetChargeModal(false);
-      setGastoFleetPreview(null);
       setGastosFleetSeleccionados({});
       await fetchDetail(undefined, { refresh: true });
+      await loadAdditionalExpenseFleetCharge();
     } catch (err: any) {
       toast.error(err.response?.data?.message || 'No se pudo realizar el cobro Fleet');
       await loadAdditionalExpenseFleetCharge();
@@ -1119,27 +1117,25 @@ export default function YegoMiAutoRentSaleDetail() {
     }
   }, [fetchDetail, gastoFleetPreview, id, loadAdditionalExpenseFleetCharge, selectedAdditionalExpenseFleetIds]);
 
-  const openAdditionalExpenseReceipt = useCallback((expense: MiautoOtrosGastoRow) => {
-    const pending = Math.max(0, Number(expense.amount_due) - Number(expense.paid_amount || 0));
-    setGastoComprobanteTarget(expense);
-    setGastoComprobanteMonto(pending.toFixed(2));
-    setGastoComprobanteMoneda(expense.moneda || 'PEN');
-    setGastoComprobanteArchivo(null);
-  }, []);
-
   const openAdditionalExpenseReceiptFromCard = useCallback((expense: MiautoOtrosGastoRow) => {
-    openAdditionalExpenseReceipt(expense);
+    if (!expense.pending_fleet_application_id) return;
+    setGastoComprobanteTarget(expense);
+    setGastoComprobanteMonto(Number(expense.pending_fleet_original_amount || 0).toFixed(2));
+    setGastoComprobanteMoneda(expense.pending_fleet_original_currency || expense.moneda || 'PEN');
+    setGastoComprobanteArchivo(null);
+    setGastoComprobanteFleetApplicationId(expense.pending_fleet_application_id);
     setShowGastoFleetChargeModal(true);
     void loadAdditionalExpenseFleetCharge(expense.tipo);
-  }, [loadAdditionalExpenseFleetCharge, openAdditionalExpenseReceipt]);
+  }, [loadAdditionalExpenseFleetCharge]);
 
-  const openFleetExpenseReceipt = useCallback((expense: OtroGastoCobroFleetRow) => {
+  const openFleetChargeReceipt = useCallback((expense: OtroGastoCobroFleetRow) => {
+    if (!expense.pending_fleet_application_id) return;
     setGastosFleetSeleccionados((current) => {
       const next = { ...current };
       delete next[expense.id];
       return next;
     });
-    openAdditionalExpenseReceipt({
+    setGastoComprobanteTarget({
       id: expense.id,
       tipo: expense.tipo,
       periodo_anio: expense.periodo_anio,
@@ -1153,7 +1149,11 @@ export default function YegoMiAutoRentSaleDetail() {
       status: expense.status,
       moneda: expense.currency,
     });
-  }, [openAdditionalExpenseReceipt]);
+    setGastoComprobanteMonto(Number(expense.pending_fleet_original_amount || 0).toFixed(2));
+    setGastoComprobanteMoneda(expense.pending_fleet_original_currency || expense.currency || 'PEN');
+    setGastoComprobanteArchivo(null);
+    setGastoComprobanteFleetApplicationId(expense.pending_fleet_application_id);
+  }, []);
 
   const openFleetExpenseReceiptPreview = useCallback((expense: OtroGastoCobroFleetRow) => {
     if (!expense.pending_receipt_file_path) return;
@@ -1177,23 +1177,27 @@ export default function YegoMiAutoRentSaleDetail() {
     }
     try {
       setSubiendoGastoComprobante(true);
-      const expenseId = gastoComprobanteTarget.id;
       const formData = new FormData();
       formData.append('file', gastoComprobanteArchivo);
-      formData.append('monto', amount.toFixed(2));
-      formData.append('moneda', gastoComprobanteMoneda);
-      formData.append('defer_application', 'true');
+      if (gastoComprobanteFleetApplicationId) {
+        formData.append('fleet_application_id', gastoComprobanteFleetApplicationId);
+      } else {
+        formData.append('monto', amount.toFixed(2));
+        formData.append('moneda', gastoComprobanteMoneda);
+      }
       await api.post(
         `/miauto/solicitudes/${id}/otros-gastos/${gastoComprobanteTarget.id}/comprobantes`,
         formData,
         { headers: { 'Content-Type': 'multipart/form-data' } }
       );
-      toast.success('Comprobante listo para confirmar cobro');
+      toast.success(gastoComprobanteFleetApplicationId
+        ? 'Comprobante enviado a validacion'
+        : 'Comprobante subido y aplicado al gasto');
       setGastoComprobanteTarget(null);
       setGastoComprobanteArchivo(null);
+      setGastoComprobanteFleetApplicationId(null);
       await fetchDetail(undefined, { refresh: true });
       await loadAdditionalExpenseFleetCharge();
-      setGastosFleetSeleccionados((current) => ({ ...current, [expenseId]: true }));
     } catch (err: any) {
       toast.error(err.response?.data?.message || 'No se pudo subir el comprobante');
     } finally {
@@ -1205,6 +1209,7 @@ export default function YegoMiAutoRentSaleDetail() {
     gastoComprobanteArchivo,
     gastoComprobanteMonto,
     gastoComprobanteMoneda,
+    gastoComprobanteFleetApplicationId,
     fetchDetail,
     loadAdditionalExpenseFleetCharge,
   ]);
@@ -1295,7 +1300,7 @@ export default function YegoMiAutoRentSaleDetail() {
       paid: expenses.filter((expense) => expense.status === 'paid').length,
       periods: Array.from(new Set(expenses.map(
         (expense) => expense.periodo_anio || String(expense.due_date || '').slice(0, 4) || 'Sin periodo'
-      ))).sort((a, b) => String(b).localeCompare(String(a))),
+      ))),
       totals: expenses.reduce((totals, expense) => {
         const currency = expense.moneda || 'PEN';
         totals[currency] = roundToTwoDecimals(
@@ -2741,6 +2746,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                 const displayedReceipt = pendingReceipt || latestReceipt;
                                 const receiptStatus = String(displayedReceipt?.estado || '').toLowerCase();
                                 const hasPendingReceipt = Boolean(pendingReceipt);
+                                const awaitingFleetReceipt = Boolean(og.pending_fleet_application_id);
                                 const pendingReceiptApplied = receiptStatus === 'pendiente' && Boolean(
                                   displayedReceipt?.pago_aplicado || Number(displayedReceipt?.monto_aplicado || 0) > 0.005
                                 );
@@ -2765,6 +2771,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                 <div
                                   key={og.id}
                                   className={`grid min-h-24 grid-cols-[1fr_auto] gap-x-3 gap-y-1 rounded-md border p-3 ${
+                                    awaitingFleetReceipt ? 'border-amber-300 bg-amber-50/60' :
                                     og.status === 'paid' ? 'bg-green-50/50 border-green-200' :
                                     og.status === 'overdue' ? 'bg-red-50/50 border-red-200' :
                                     'bg-white border-gray-200'
@@ -2780,11 +2787,20 @@ export default function YegoMiAutoRentSaleDetail() {
                                   }`}>
                                     {gastoSym} {Number(og.amount_due).toFixed(2)}
                                   </span>
-                                  <span className="text-[11px] text-gray-500">{formatOtrosGastoDueDate(og.due_date, og.periodo_anio)}</span>
+                                  <span className="text-[11px] text-gray-500">{formatOtrosGastoDueDate(og.due_date)}</span>
                                   <div className="col-span-2 mt-1 flex items-center justify-between border-t border-black/5 pt-2 text-[11px]">
                                     <span className="text-green-700">Pagado: {gastoSym} {Number(og.paid_amount || 0).toFixed(2)}</span>
                                     <span className="font-semibold text-gray-700">Saldo: {gastoSym} {Number(og.pending_amount ?? Math.max(0, Number(og.amount_due) - Number(og.paid_amount || 0))).toFixed(2)}</span>
-                                    {og.status === 'paid' ? (
+                                    {awaitingFleetReceipt ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => openAdditionalExpenseReceiptFromCard(og)}
+                                        className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-800 hover:bg-amber-100"
+                                      >
+                                        <Upload className="h-3 w-3" />
+                                        Subir comprobante
+                                      </button>
+                                    ) : og.status === 'paid' ? (
                                       <span className="rounded bg-green-100 px-1.5 py-0.5 font-semibold text-green-700">
                                         {labelOtrosGastoStatus(og.status)}
                                       </span>
@@ -2797,14 +2813,9 @@ export default function YegoMiAutoRentSaleDetail() {
                                         {pendingReceiptApplied ? 'Pendiente banco' : 'Comprobante listo'}
                                       </span>
                                     ) : (
-                                      <button
-                                        type="button"
-                                        onClick={() => openAdditionalExpenseReceiptFromCard(og)}
-                                        className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-1.5 py-0.5 font-semibold text-gray-700 hover:bg-gray-50"
-                                      >
-                                        <Upload className="h-3 w-3" />
-                                        Comprobante
-                                      </button>
+                                      <span className="rounded bg-gray-100 px-1.5 py-0.5 font-semibold text-gray-500">
+                                        Pendiente de cobro
+                                      </span>
                                     )}
                                   </div>
                                   {displayedReceipt && (
@@ -2890,7 +2901,7 @@ export default function YegoMiAutoRentSaleDetail() {
             <div className="flex items-start justify-between border-b border-gray-200 px-5 py-4">
               <div>
                 <h3 id="gasto-fleet-charge-title" className="text-base font-bold text-gray-900">Cobrar otros gastos</h3>
-                <p className="mt-0.5 text-xs text-gray-500">Sube un comprobante en cada cuota antes de confirmar el cobro.</p>
+                <p className="mt-0.5 text-xs text-gray-500">Primero realiza el cobro; después adjunta su comprobante.</p>
               </div>
               <div className="flex items-center gap-1">
                 <button
@@ -2899,6 +2910,7 @@ export default function YegoMiAutoRentSaleDetail() {
                   onClick={() => {
                     setGastoComprobanteTarget(null);
                     setGastoComprobanteArchivo(null);
+                    setGastoComprobanteFleetApplicationId(null);
                     void loadAdditionalExpenseFleetCharge();
                   }}
                   className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800 disabled:opacity-50"
@@ -2995,6 +3007,7 @@ export default function YegoMiAutoRentSaleDetail() {
                             </div>
                             <div className="divide-y divide-gray-100">
                               {group.expenses.map((expense) => {
+                                const awaitingFleetReceipt = Boolean(expense.pending_fleet_application_id);
                                 const receiptReady = Boolean(
                                   expense.pending_receipt_id && !expense.pending_receipt_applied
                                 );
@@ -3006,17 +3019,19 @@ export default function YegoMiAutoRentSaleDetail() {
                                   <div
                                     key={expense.id}
                                     className={`grid grid-cols-[auto_1fr_auto] items-center gap-3 px-5 py-3 sm:grid-cols-[auto_1fr_auto_auto] ${
-                                      receiptReady ? 'bg-green-50/60' : 'hover:bg-gray-50'
+                                      awaitingFleetReceipt
+                                        ? 'bg-amber-50/60'
+                                        : receiptReady ? 'bg-green-50/60' : 'hover:bg-gray-50'
                                     }`}
                                   >
                                   <label
-                                    className={`flex items-center ${receiptReady ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+                                    className={`flex items-center ${!awaitingFleetReceipt && !receiptApplied && expense.pending_amount > 0.005 ? 'cursor-pointer' : 'cursor-not-allowed'}`}
                                     aria-label={`Seleccionar cuota ${expense.numero_cuota || ''}`}
                                   >
                                     <input
                                       type="checkbox"
                                       checked={Boolean(gastosFleetSeleccionados[expense.id])}
-                                      disabled={!receiptReady || expense.id === gastoComprobanteTarget?.id || receiptApplied}
+                                      disabled={awaitingFleetReceipt || expense.id === gastoComprobanteTarget?.id || receiptApplied || expense.pending_amount <= 0.005}
                                       onChange={(event) => setGastosFleetSeleccionados((current) => ({
                                         ...current,
                                         [expense.id]: event.target.checked,
@@ -3035,12 +3050,16 @@ export default function YegoMiAutoRentSaleDetail() {
                                   </span>
                                   <span className="text-right">
                                     <span className="block text-sm font-bold text-gray-900">
-                                      {symMoneda(expense.currency)} {Number(expense.pending_amount).toFixed(2)}
+                                      {awaitingFleetReceipt
+                                        ? `${symMoneda(expense.pending_fleet_original_currency || expense.currency)} ${Number(expense.pending_fleet_original_amount || 0).toFixed(2)}`
+                                        : `${symMoneda(expense.currency)} ${Number(expense.pending_amount).toFixed(2)}`}
                                     </span>
                                     <span className={`text-[11px] font-semibold ${
-                                      expense.status === 'overdue' ? 'text-red-600' : 'text-amber-600'
+                                      awaitingFleetReceipt
+                                        ? 'text-amber-700'
+                                        : expense.status === 'overdue' ? 'text-red-600' : 'text-amber-600'
                                     }`}>
-                                      {labelOtrosGastoStatus(expense.status)}
+                                      {awaitingFleetReceipt ? 'Cobrado · falta comprobante' : labelOtrosGastoStatus(expense.status)}
                                     </span>
                                     {receiptReady && (
                                       <span className="mt-0.5 block text-[10px] font-semibold text-green-700">
@@ -3050,28 +3069,32 @@ export default function YegoMiAutoRentSaleDetail() {
                                   </span>
                                   <button
                                     type="button"
-                                    onClick={() => expense.pending_receipt_id
-                                      ? openFleetExpenseReceiptPreview(expense)
-                                      : openFleetExpenseReceipt(expense)}
-                                    disabled={chargingGastoFleet || subiendoGastoComprobante}
+                                    onClick={() => awaitingFleetReceipt
+                                      ? openFleetChargeReceipt(expense)
+                                      : openFleetExpenseReceiptPreview(expense)}
+                                    disabled={chargingGastoFleet || subiendoGastoComprobante || (!awaitingFleetReceipt && !expense.pending_receipt_id)}
                                     className={`col-span-3 inline-flex h-8 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs font-semibold disabled:opacity-50 sm:col-span-1 ${
-                                      receiptReady
+                                      awaitingFleetReceipt
+                                        ? 'border-[#8B1A1A] bg-red-50 text-[#8B1A1A] hover:bg-red-100'
+                                        : receiptReady
                                         ? 'border-green-300 bg-green-50 text-green-700 hover:bg-green-100'
                                         : receiptApplied
                                           ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
-                                          : gastoComprobanteTarget?.id === expense.id
-                                        ? 'border-[#8B1A1A] bg-red-50 text-[#8B1A1A]'
                                         : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-100'
                                     }`}
                                   >
                                     {receiptReady || receiptApplied
                                       ? <ExternalLink className="h-3.5 w-3.5" />
-                                      : <Upload className="h-3.5 w-3.5" />}
-                                    {receiptReady
-                                      ? (hasReceiptFile ? 'Listo para cobrar' : 'Comprobante listo')
+                                      : awaitingFleetReceipt
+                                        ? <Upload className="h-3.5 w-3.5" />
+                                        : <Banknote className="h-3.5 w-3.5" />}
+                                    {awaitingFleetReceipt
+                                      ? 'Subir comprobante'
+                                      : receiptReady
+                                      ? (hasReceiptFile ? 'Comprobante anterior' : 'Comprobante listo')
                                       : receiptApplied
                                         ? 'Pendiente banco'
-                                        : 'Comprobante'}
+                                        : 'Listo para cobrar'}
                                   </button>
                                   </div>
                                 );
@@ -3100,6 +3123,7 @@ export default function YegoMiAutoRentSaleDetail() {
                           onClick={() => {
                             setGastoComprobanteTarget(null);
                             setGastoComprobanteArchivo(null);
+                            setGastoComprobanteFleetApplicationId(null);
                           }}
                           className="rounded p-1 text-gray-400 hover:bg-white hover:text-gray-700 disabled:opacity-50"
                           aria-label="Cerrar formulario de comprobante"
@@ -3116,7 +3140,8 @@ export default function YegoMiAutoRentSaleDetail() {
                             step="0.01"
                             value={gastoComprobanteMonto}
                             onChange={(event) => setGastoComprobanteMonto(event.target.value)}
-                            className="mt-1 h-9 w-full rounded-md border border-gray-300 bg-white px-2.5 text-sm text-gray-900"
+                            readOnly={Boolean(gastoComprobanteFleetApplicationId)}
+                            className="mt-1 h-9 w-full rounded-md border border-gray-300 bg-white px-2.5 text-sm text-gray-900 read-only:bg-gray-100"
                           />
                         </label>
                         <label className="text-xs font-medium text-gray-600">
@@ -3124,7 +3149,8 @@ export default function YegoMiAutoRentSaleDetail() {
                           <select
                             value={gastoComprobanteMoneda}
                             onChange={(event) => setGastoComprobanteMoneda(event.target.value)}
-                            className="mt-1 h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-sm text-gray-900"
+                            disabled={Boolean(gastoComprobanteFleetApplicationId)}
+                            className="mt-1 h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-sm text-gray-900 disabled:bg-gray-100"
                           >
                             <option value="PEN">PEN</option>
                             <option value="USD">USD</option>

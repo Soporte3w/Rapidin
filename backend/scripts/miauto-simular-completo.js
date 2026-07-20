@@ -17,7 +17,10 @@ import {
   round2,
 } from '../yego_miauto/services/cobros/CuotaCalculator.js';
 import { computeLateFee } from '../yego_miauto/services/cobros/LateFeeCalculator.js';
-import { applyWaterfallPool, snapshotOrigenTrasCascada } from '../yego_miauto/services/cobros/CascadaPoolManager.js';
+import {
+  applyPoolToCurrentWeeklyCharge,
+  applyWaterfallPool,
+} from '../yego_miauto/services/cobros/CascadaPoolManager.js';
 import { computeDueDateForMiAutoCuota } from '../utils/miautoLimaWeekRange.js';
 import { getPreviousWeekIncomeRangeLima } from '../utils/miautoLimaWeekRange.js';
 import { partnerFeesYangoAMonedaCuota } from '../yego_miauto/services/utils/miautoMoneyUtils.js';
@@ -183,17 +186,18 @@ async function main() {
     });
 
     // Resultado final
-    const amountDueFinal = poolCascada.pool > 0.005
-      ? snapshotOrigenTrasCascada({
-          remainingPool: cascadaResult.remainingPool,
-          pctComision: plan.pctComision,
+    const currentCharge = poolCascada.pool > 0.005
+      ? applyPoolToCurrentWeeklyCharge({
+          poolAmount: cascadaResult.remainingPool,
           cuotaSemanal: plan.cuotaSemanal,
           cobroSaldo: plan.cobroSaldo,
-        }).amountDue
-      : cuotaCalc.amountDue;
+        })
+      : { amountDue: cuotaCalc.amountDue, remainingPool: 0 };
+    const amountDueFinal = currentCharge.amountDue;
     const pendingTotal = round2(amountDueFinal + moraResult.moraTotal);
     
     log(`  amountDue final: ${amountDueFinal.toFixed(2)} ${plan.moneda}`);
+    log(`  saldo a favor: ${currentCharge.remainingPool.toFixed(2)} ${plan.moneda}`);
     log(`  Mora: ${moraResult.moraTotal.toFixed(2)} ${plan.moneda} (${moraResult.diasAtraso} días)`);
     log(`  PENDIENTE TOTAL: ${pendingTotal.toFixed(2)} ${plan.moneda}`);
     log(`  Status: ${pendingTotal <= 0.005 ? 'pagada' : (moraResult.diasAtraso > 0 ? 'overdue' : 'pending')}`);

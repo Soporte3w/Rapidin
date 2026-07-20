@@ -24,7 +24,6 @@ import {
   getCuotasToCharge,
   getCuotasToChargeForSolicitud,
   processCobroCuota,
-  processAdditionalExpenseFleetQueue,
   effectiveAmountDueForMiAutoFleetRowAsync,
 } from '../yego_miauto/services/cuotas/miautoFleetChargeService.js';
 import { generateWeeklyCharge } from '../yego_miauto/services/cobros/CobroEngine.js';
@@ -119,10 +118,8 @@ async function resolveTripsFromPlacaDriver(placa, driverIdFleet = null) {
 
 /**
  * Yango (o primera semana) + `generateWeeklyCharge`.
- * @param {{ incomeMaxAttempts?: number, incomeFallbackZeroOnFailure?: boolean }} [options]
+ * @param {{ incomeMaxAttempts?: number }} [options]
  *   incomeMaxAttempts: intentos a Yango por solicitud (default 1; regeneración manual 4–6).
- *   incomeFallbackZeroOnFailure: si Yango falla tras reintentos, igual generar cuota con 0 viajes y 0 PF (default true).
- *     Desactivar: `incomeFallbackZeroOnFailure: false` o env `MIAUTO_INCOME_FAIL_USE_ZERO=0`.
  */
 async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, options = {}) {
   const incomeMaxAttempts = Math.max(1, Math.min(12, Number(options.incomeMaxAttempts) || 1));
@@ -144,22 +141,21 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
   const sinDriverYango = !sol.external_driver_id || String(sol.external_driver_id).trim() === '';
 
   let incomeResult;
-  if (esPrimera || sinDriverYango) {
+  if (esPrimera) {
     incomeResult = { success: true, count_completed: 0, partner_fees: 0 };
-    if (sinDriverYango && !esPrimera) {
-      logger.debug('miauto.cuota.yango_sin_driver', {
-        solicitudId: sol.solicitud_id,
-        driverLabel,
-        placa: placaStr ? String(sol.placa_asignada).trim() : null,
-        action: 'generar_cuota_con_cero_viajes',
-      });
-    } else {
-      logger.debug('miauto.cuota.primera_sin_yango', {
-        solicitudId: sol.solicitud_id,
-        driverLabel,
-        placa: placaStr ? String(sol.placa_asignada).trim() : null,
-      });
-    }
+    logger.debug('miauto.cuota.primera_sin_yango', {
+      solicitudId: sol.solicitud_id,
+      driverLabel,
+      placa: placaStr ? String(sol.placa_asignada).trim() : null,
+    });
+  } else if (sinDriverYango) {
+    logger.error('miauto.cuota.yango_sin_driver', {
+      solicitudId: sol.solicitud_id,
+      driverLabel,
+      placa: placaStr ? String(sol.placa_asignada).trim() : null,
+      action: 'omitir_cuota_para_no_guardar_ingresos_en_cero',
+    });
+    return { outcome: 'income_failed', incomeError: 'driver_yango_no_resuelto' };
   } else {
     const placaTrips = await resolveTripsFromPlacaDriver(sol.placa_asignada, sol.external_driver_id);
     // Viajes: del conductor working de la placa. Si no hay → 0.
@@ -169,13 +165,35 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
       : { success: true, count_completed: 0, partner_fees: 0 };
     // Recaudo: del recaudo_driver_id si está seteado, sino del driver_id_fleet
     const recaudoDriver = sol.recaudo_driver_id || sol.external_driver_id;
-    const recaudo = await getDriverIncomeWithRetries(dateFrom, dateTo, recaudoDriver, sol.park_id, incomeMaxAttempts);
+    const mismaFuente = viajesSource &&
+      String(recaudoDriver || '').trim() === String(viajesSource.driver_id || '').trim() &&
+      fleetParkIdForMiAuto(sol.park_id) === fleetParkIdForMiAuto(viajesSource.park_id);
+    const recaudo = mismaFuente
+      ? viajes
+      : await getDriverIncomeWithRetries(dateFrom, dateTo, recaudoDriver, sol.park_id, incomeMaxAttempts);
+
+    const viajesFallaron = !!viajesSource && !viajes.success;
+    if (viajesFallaron || !recaudo.success) {
+      const incomeError = [
+        viajesFallaron ? `viajes: ${viajes.error || 'error'}` : null,
+        !recaudo.success ? `recaudo: ${recaudo.error || 'error'}` : null,
+      ].filter(Boolean).join(' | ');
+      logger.error('miauto.cuota.yango_income_failed', {
+        solicitudId: sol.solicitud_id,
+        driverLabel,
+        placa: placaStr ? String(sol.placa_asignada).trim() : null,
+        incomeError,
+        mismaFuente,
+        action: 'omitir_cuota_para_no_guardar_ingresos_en_cero',
+      });
+      return { outcome: 'income_failed', incomeError };
+    }
 
     incomeResult = {
-      success: (viajesSource ? viajes.success : true) || recaudo.success,
+      success: true,
       count_completed: (viajesSource && viajes.success) ? viajes.count_completed : 0,
-      partner_fees: recaudo.success ? recaudo.partner_fees : 0,
-      error: (!viajes.success || !recaudo.success) ? (viajes.error || recaudo.error) : null,
+      partner_fees: recaudo.partner_fees,
+      error: null,
     };
   }
 
@@ -613,10 +631,6 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       simulateReason: options.simulateReason || auditJob,
       cobroReferenciaSource: simulateFleetWithdraw ? 'fleet_7_10_simulado' : 'fleet_7_10',
     });
-    const additionalExpenses = await processAdditionalExpenseFleetQueue({
-      simulateFleetWithdraw,
-      simulateReason: options.simulateReason || auditJob,
-    });
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_fin',
       job: auditJob,
@@ -624,7 +638,6 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       success,
       partial,
       failed,
-      additional_expenses: additionalExpenses,
       simulate_fleet_withdraw: simulateFleetWithdraw,
     });
     logger.info('miauto.fleet_job.finish', {
@@ -632,7 +645,6 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       success,
       partial,
       failed,
-      additionalExpenses,
       executionId: lock.executionId,
       simulateFleetWithdraw,
     });

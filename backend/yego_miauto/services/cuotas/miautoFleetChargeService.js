@@ -343,30 +343,6 @@ function effectiveAmountDueForMiAutoFleetRow(cuotaRow) {
 
 export { effectiveAmountDueForMiAutoFleetRow };
 
-export async function getAdditionalExpensesToCharge() {
-  const parkId = fleetParkIdForMiAuto();
-  const result = await query(
-    `SELECT og.id, og.solicitud_id, og.tipo, og.due_date, og.amount_due,
-            og.paid_amount, og.moneda, s.country,
-            ${sqlYangoDriverCoalesceColumns()}
-     FROM module_miauto_otros_gastos og
-     JOIN module_miauto_solicitud s ON s.id = og.solicitud_id
-     ${sqlYangoDriverLateralJoin(1)}
-     WHERE og.deleted_at IS NULL
-       AND s.deleted_at IS NULL
-       AND s.status = 'aprobado'
-       AND og.due_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
-       AND COALESCE(og.paid_amount, 0) < COALESCE(og.amount_due, 0) - 0.005
-       AND NOT EXISTS (
-         SELECT 1 FROM module_miauto_comprobante_otros_gastos cp
-         WHERE cp.otros_gastos_id = og.id AND cp.estado = 'pendiente'
-       )
-     ORDER BY og.due_date, og.id`,
-    [parkId]
-  );
-  return result.rows;
-}
-
 function assertUuidList(values) {
   const ids = [...new Set((Array.isArray(values) ? values : []).map((value) => String(value).trim()))];
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -788,41 +764,6 @@ export async function processAdditionalExpenseFleetCharge(expense, options = {})
   } finally {
     client.release();
   }
-}
-
-export async function processAdditionalExpenseFleetQueue(options = {}) {
-  const expenses = await getAdditionalExpensesToCharge();
-  const summary = { total: expenses.length, success: 0, partial: 0, failed: 0, skipped: 0 };
-  const fleetCaps = new Map();
-  const dryRun = Boolean(options.dryRun || options.simulateFleetWithdraw);
-  for (const expense of expenses) {
-    try {
-      const fleetKey = `${fleetParkIdForMiAuto(expense.park_id)}:${expense.external_driver_id || 'sin-driver'}`;
-      const sharedFleetCap = fleetCaps.get(fleetKey) || {
-        remaining: null,
-        externalDriverId: null,
-        parkId: null,
-        exchangeCountry: null,
-        exchange: null,
-        processed: 0,
-      };
-      fleetCaps.set(fleetKey, sharedFleetCap);
-      const result = await processAdditionalExpenseFleetCharge(expense, {
-        ...options,
-        sharedFleetCap,
-        delayBeforeWithdrawMs: !dryRun && sharedFleetCap.processed > 0 ? 1500 : 0,
-      });
-      sharedFleetCap.processed += 1;
-      if (result.skipped) summary.skipped += 1;
-      else if (!result.success) summary.failed += 1;
-      else if (result.partial) summary.partial += 1;
-      else summary.success += 1;
-    } catch (error) {
-      summary.failed += 1;
-      logger.error('miauto.gastos.fleet_charge_failed', { expenseId: expense.id, error: error.message });
-    }
-  }
-  return summary;
 }
 
 async function cuotaRowWithPartnerFeesUsdNormalizedIfNeeded(solicitudId, r) {

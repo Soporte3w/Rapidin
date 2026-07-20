@@ -35,7 +35,11 @@ import {
   round2,
 } from './CuotaCalculator.js';
 import { computeLateFee } from './LateFeeCalculator.js';
-import { applyWaterfallPool, snapshotOrigenTrasCascada, mergeCascadaAllocations } from './CascadaPoolManager.js';
+import {
+  applyPoolToCurrentWeeklyCharge,
+  applyWaterfallPool,
+  mergeCascadaAllocations,
+} from './CascadaPoolManager.js';
 import { getCronogramaById } from '../cronograma/miautoCronogramaService.js';
 import {
   buildCobroAuditContext,
@@ -45,7 +49,6 @@ import { buildPendingTotalMapForSolicitud, isSemanaDepositoMiAuto } from '../cuo
 import { computeDueDateForMiAutoCuota, isWeekYangoClosedForMiAutoCuotaMetrics } from '../../../utils/miautoLimaWeekRange.js';
 import { partnerFeesYangoAMonedaCuota } from '../utils/miautoMoneyUtils.js';
 import { aplicarBonoTiempoReservado } from '../bonos/miautoBonoTiempoService.js';
-import { applyPoolToAdditionalExpenses } from '../gastos/miautoGastoPagoService.js';
 
 function limaTodayYmd() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -355,9 +358,13 @@ export async function generateWeeklyCharge({
 
   // --- 5. Aplicar cascada ---
   let cascadaResult = { applied: 0, remainingPool: poolCascada.pool, allocations: [] };
-  let additionalExpenseCascade = { applied: 0, remainingPool: poolCascada.pool, allocations: [] };
+  let currentChargeAllocation = {
+    applied: 0,
+    amountDue: round2(cuotaSemanal + cobroSaldo),
+    remainingPool: poolCascada.pool,
+    obligation: round2(cuotaSemanal + cobroSaldo),
+  };
   let cascadeHash = null;
-  let cascadeWasSkipped = false;
   if (usarCascada && poolCascada.pool > 0.005) {
     const rawCascadeKey = `${solicitudId}|${weekYmd}|${poolCascada.pool}|cascada`;
     cascadeHash = crypto.createHash('sha256').update(rawCascadeKey).digest('hex');
@@ -371,13 +378,20 @@ export async function generateWeeklyCharge({
     );
 
     if (existingCascade.rows.length > 0) {
-      cascadeWasSkipped = true;
       logger.debug('miauto.cascada.idempotent_skip', {
         solicitudId,
         weekStartDate: weekYmd,
         poolTotal: poolCascada.pool,
         executionHash: cascadeHash.slice(0, 12),
       });
+      return {
+        cuotaId: cuotaOrigenId,
+        weekStartDate: weekYmd,
+        idempotent: true,
+        skipped: true,
+        reason: 'cascade_already_applied',
+        executionHash,
+      };
     } else {
       const cuotasDebt = await loadCuotasParaCascada(solicitudId, cuotaOrigenId);
       cascadaResult = applyWaterfallPool({
@@ -412,23 +426,16 @@ export async function generateWeeklyCharge({
     }
   }
 
-  if (
-    usarCascada &&
-    !cascadeWasSkipped &&
-    cascadeHash &&
-    cascadaResult.remainingPool > 0.005
-  ) {
-    additionalExpenseCascade = await applyPoolToAdditionalExpenses({
-      solicitudId,
+  if (usarCascada && cascadaResult.remainingPool > 0.005) {
+    currentChargeAllocation = applyPoolToCurrentWeeklyCharge({
       poolAmount: cascadaResult.remainingPool,
-      sourceKey: `cascada-gastos:${cascadeHash}`,
-      currency: moneda,
-      userId: actorId,
+      cuotaSemanal,
+      cobroSaldo,
     });
     cascadaResult = {
       ...cascadaResult,
-      applied: round2(cascadaResult.applied + additionalExpenseCascade.applied),
-      remainingPool: additionalExpenseCascade.remainingPool,
+      applied: round2(cascadaResult.applied + currentChargeAllocation.applied),
+      remainingPool: currentChargeAllocation.remainingPool,
     };
   }
 
@@ -437,7 +444,8 @@ export async function generateWeeklyCharge({
     poolDistribuido: cascadaResult.applied,
     remanente: cascadaResult.remainingPool,
     imputaciones: cascadaResult.allocations,
-    otrosGastos: additionalExpenseCascade,
+    cuotaActual: currentChargeAllocation,
+    saldoFavorConductor: cascadaResult.remainingPool,
   };
 
   // --- 6. Snap fila origen ---
@@ -447,28 +455,20 @@ export async function generateWeeklyCharge({
   let partnerFeesYangoStored;
   let saldoFavorInsert = 0;
   let cascadaJson = null;
-  const otrosGastosCascadaJson = additionalExpenseCascade.allocations.length > 0
-    ? JSON.stringify(additionalExpenseCascade.allocations)
-    : null;
+  const otrosGastosCascadaJson = null;
 
   if (usarCascada && poolCascada.pool > 0.005) {
-    const snap = snapshotOrigenTrasCascada({
-      remainingPool: cascadaResult.remainingPool,
-      pctComision,
-      cuotaSemanal,
-      cobroSaldo,
-    });
-    if (cascadaResult.remainingPool <= 0.005) {
-      partnerFeesRawStored = 0;
-      partnerFees83Stored = 0;
-      partnerFeesYangoStored = null;
-    } else {
-      partnerFeesRawStored = snap.partnerFeesRaw;
-      partnerFees83Stored = snap.partnerFees83;
-      partnerFeesYangoStored = partnerFeesRaw > 0.005 ? partnerFeesRaw : null;
-    }
-    amountDueInsert = snap.amountDue;
-    saldoFavorInsert = snap.saldoFavorConductor;
+    // La fila muestra el recaudo que cubrio su propia cuota. El bruto original
+    // permanece en partner_fees_yango_raw aunque todo el pool se distribuya.
+    partnerFees83Stored = round2(
+      Math.min(currentChargeAllocation.applied, cuotaCalc.partnerFees83)
+    );
+    partnerFeesRawStored = partnerFees83Stored > 0.005
+      ? round2(partnerFees83Stored / 0.8333)
+      : 0;
+    partnerFeesYangoStored = partnerFeesRaw > 0.005 ? partnerFeesRaw : null;
+    amountDueInsert = currentChargeAllocation.amountDue;
+    saldoFavorInsert = round2(cascadaResult.remainingPool);
   } else {
     partnerFeesRawStored = partnerFeesRaw;
     partnerFees83Stored = cuotaCalc.partnerFees83;
@@ -651,7 +651,6 @@ export async function generateWeeklyCharge({
     isPrimera,
     forzarMaxCuota,
     cascadaAplicada: cascadaResult.applied,
-    cascadaOtrosGastosAplicada: additionalExpenseCascade.applied,
     saldoFavorConductor: saldoFavorInsert,
   });
 
@@ -666,13 +665,14 @@ export async function generateWeeklyCharge({
       billingContext: {
         pool_total: poolCascada.pool,
         pool_aplicado: cascadaResult.applied,
+        cuota_actual: currentChargeAllocation,
         imputaciones: cascadaResult.allocations.map(a => ({
           cuota_id: a.cuotaId,
           monto: a.montoAplicado,
           pending_antes: a.pendingAntes,
           pending_despues: a.pendingDespues,
         })),
-        otros_gastos: additionalExpenseCascade.allocations,
+        saldo_favor_conductor: cascadaResult.remainingPool,
       },
       generatedBy,
       actorId,

@@ -138,42 +138,19 @@ export function applyWaterfallPool({ poolAmount, cuotas, excludeCuotaId = null }
   };
 }
 
-/**
- * Calcula el snap de la fila origen tras aplicar cascada.
- * El remanente del pool que no cupo en cuotas más antiguas se refleja en las columnas de la fila origen.
- *
- * @returns {{ partnerFeesRaw, partnerFees83, partnerFeesYangoRaw, amountDue, saldoFavorConductor }}
- */
-export function snapshotOrigenTrasCascada({ remainingPool, pctComision, cuotaSemanal, cobroSaldo }) {
-  const rem = round2(Number(remainingPool) || 0);
-  const pct = round2(Number(pctComision) || 0);
-  const cs = round2(Number(cuotaSemanal) || 0);
-  const cobro = round2(Number(cobroSaldo) || 0);
-  const obligacionSemana = round2(cs + cobro);
-
-  const remCubreCuota = rem > 0.005 && rem >= obligacionSemana - 0.005;
-  const remEfectivo = remCubreCuota ? round2(Math.max(0, rem - obligacionSemana)) : rem;
-
-  const partnerFees83 = round2(remEfectivo);
-  const partnerFeesRaw = partnerFees83 > 0.005
-    ? round2(partnerFees83 / 0.8333)
-    : 0;
-
-  const amountDue = round2(Math.max(0, obligacionSemana - rem));
+/** Reserva el remanente del recaudo para la cuota actual y devuelve el excedente. */
+export function applyPoolToCurrentWeeklyCharge({ poolAmount, cuotaSemanal, cobroSaldo }) {
+  const pool = round2(Math.max(0, Number(poolAmount) || 0));
+  const obligation = round2(
+    Math.max(0, Number(cuotaSemanal) || 0) + Math.max(0, Number(cobroSaldo) || 0)
+  );
+  const applied = round2(Math.min(pool, obligation));
 
   return {
-    partnerFeesRaw,
-    partnerFees83,
-    partnerFeesYangoRaw: partnerFeesRaw > 0.005 ? partnerFeesRaw : null,
-    amountDue,
-    saldoFavorConductor: remCubreCuota ? round2(rem - obligacionSemana) : 0,
-    remCubreCuota,
-    breakdown: {
-      remainingPool: rem,
-      obligacionSemana,
-      remCubreCuota,
-      remEfectivo,
-    },
+    applied,
+    amountDue: round2(Math.max(0, obligation - applied)),
+    remainingPool: round2(Math.max(0, pool - applied)),
+    obligation,
   };
 }
 

@@ -18,6 +18,7 @@ import { logger } from '../../../utils/logger.js';
 import {
   computeAmountDueSemanal as _computeAmountDueSemanal,
 } from '../cobros/CuotaCalculator.js';
+import { paymentApplicableToBaseAfterSettledExtra } from '../cobros/CascadaPoolManager.js';
 import {
   montoComprobanteCuotaALaMonedaFila,
   partnerFeesRawDbNormalizeUsdFromYangoLocal,
@@ -2060,7 +2061,11 @@ function aplicarPisoColumnasPendienteCuota(cuotaRow, d, pendienteEconPrePiso, is
       capital: parseFloat(cuotaRow.amount_due) || 0,
       moraNormal: moraNormalBase,
       moraExtra: 0,
-      pagado: parseFloat(cuotaRow.paid_amount) || 0,
+      pagado: paymentApplicableToBaseAfterSettledExtra({
+        paidAmount: cuotaRow.paid_amount,
+        moraExtra: cuotaRow.mora_extra,
+        moraExtraTotal: cuotaRow.mora_extra_total,
+      }),
     }).total_pendiente;
     const saldoExcel = round2(saldoSinMoraExtra + moraExtraPendiente);
     return round2(Math.max(pendienteEconPrePiso, saldoExcel));
@@ -2240,7 +2245,11 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
           capital: amountDueExcel,
           moraNormal: moraNormalBaseExcel,
           moraExtra: 0,
-          pagado: paidAmountExcel,
+          pagado: paymentApplicableToBaseAfterSettledExtra({
+            paidAmount: r.paid_amount,
+            moraExtra: r.mora_extra,
+            moraExtraTotal: r.mora_extra_total,
+          }),
         });
     const lateFeeExcel = st === 'bonificada' ? 0 : imputacionExcel.mora_normal_pendiente;
     const moraExtraExcel = st === 'bonificada' ? 0 : moraExtraPendienteDbExcel;

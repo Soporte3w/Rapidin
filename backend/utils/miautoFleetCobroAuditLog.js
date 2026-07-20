@@ -61,6 +61,7 @@ function ymdFromDb(v) {
  * @param {number} p.paid_amount_despues
  * @param {number} p.pending_total_antes
  * @param {boolean} p.partial
+ * @param {object} [p.payment_allocation]
  * @param {object} [p.cuotaRow]
  * @param {object} [p.fleet_withdraw_response] — respuesta API Yango (sin cookies)
  */
@@ -90,6 +91,7 @@ export async function appendMiautoFleetCobroAuditLog(p) {
     paid_amount_antes: p.paid_amount_antes,
     paid_amount_despues: p.paid_amount_despues,
     pending_total_antes: p.pending_total_antes,
+    payment_allocation: p.payment_allocation || null,
     cobro_parcial: !!p.partial,
     fleet_api_response: sanitizeFleetResponse(p.fleet_withdraw_response),
   };

@@ -143,7 +143,8 @@ async function hayCuotaVencidaConSaldo(solicitudId) {
 async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
   const pendingMap = await buildPendingTotalMapForSolicitud(solicitudId);
 
-  let sql = `SELECT id, due_date, week_start_date, amount_due, late_fee, mora_extra, paid_amount, status
+  let sql = `SELECT id, due_date, week_start_date, amount_due, late_fee, mora_extra, mora_extra_total,
+                    mora_extra_desde, paid_amount, status, montos_fuente
      FROM module_miauto_cuota_semanal
      WHERE solicitud_id = $1
        AND status IN ('pending', 'overdue', 'partial', 'paid')
@@ -165,6 +166,7 @@ async function loadCuotasParaCascada(solicitudId, excludeCuotaId = null) {
         ...r,
         late_fee: round2(Number(r.late_fee) || 0),
         mora_extra: round2(Number(r.mora_extra) || 0),
+        mora_extra_total: round2(Number(r.mora_extra_total) || 0),
         paid_amount: round2(Number(r.paid_amount) || 0),
         pending,
       });
@@ -405,13 +407,35 @@ export async function generateWeeklyCharge({
           `UPDATE module_miauto_cuota_semanal
            SET paid_amount = $1,
                status = $2,
+               mora_extra = CASE
+                 WHEN $5::numeric IS NULL THEN mora_extra
+                 ELSE $5::numeric
+               END,
+               mora_extra_total = CASE
+                 WHEN $5::numeric IS NULL THEN mora_extra_total
+                 ELSE GREATEST(COALESCE(mora_extra_total, 0), $6::numeric)
+               END,
+               mora_extra_desde = CASE
+                 WHEN $5::numeric IS NOT NULL AND $5::numeric <= 0.005
+                      AND $7::numeric > 0.005 THEN $4::date
+                 WHEN $5::numeric IS NOT NULL AND $5::numeric <= 0.005 THEN NULL
+                 ELSE mora_extra_desde
+               END,
                fecha_ultimo_abono = CASE
                  WHEN $1::numeric > COALESCE(paid_amount, 0)::numeric + 0.005 THEN $4::date
                  ELSE fecha_ultimo_abono
                END,
                updated_at = CURRENT_TIMESTAMP
            WHERE id = $3`,
-          [alloc.paidDespues, alloc.statusDespues, alloc.cuotaId, limaTodayYmd()]
+          [
+            alloc.paidDespues,
+            alloc.statusDespues,
+            alloc.cuotaId,
+            limaTodayYmd(),
+            alloc.montosFuenteExcel ? alloc.moraExtraDespues : null,
+            alloc.moraExtraTotal,
+            alloc.pendingDespues,
+          ]
         );
       }
       logger.info('miauto.cascada.applied', {

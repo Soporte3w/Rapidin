@@ -50,13 +50,65 @@ function statusTrasCascada(cuota, pendingDespues, paidDespues, todayYmd) {
   return paidDespues > 0.005 ? 'partial' : (cuota?.status || 'pending');
 }
 
+/** Distribuye un pago sin mezclar el saldo de mora con el capital. */
+export function allocatePaymentByPriority({
+  payment,
+  pendingTotal,
+  moraNormal = 0,
+  moraExtra = 0,
+}) {
+  const pending = round2(Math.max(0, Number(pendingTotal) || 0));
+  const applied = round2(Math.min(Math.max(0, Number(payment) || 0), pending));
+  const normalBefore = round2(Math.min(Math.max(0, Number(moraNormal) || 0), pending));
+  const extraBefore = round2(Math.min(
+    Math.max(0, Number(moraExtra) || 0),
+    Math.max(0, pending - normalBefore)
+  ));
+  const capitalBefore = round2(Math.max(0, pending - normalBefore - extraBefore));
+
+  const normalApplied = round2(Math.min(applied, normalBefore));
+  const afterNormal = round2(Math.max(0, applied - normalApplied));
+  const extraApplied = round2(Math.min(afterNormal, extraBefore));
+  const capitalApplied = round2(Math.min(
+    Math.max(0, afterNormal - extraApplied),
+    capitalBefore
+  ));
+
+  return {
+    applied,
+    pendingAfter: round2(Math.max(0, pending - applied)),
+    moraNormalApplied: normalApplied,
+    moraNormalAfter: round2(Math.max(0, normalBefore - normalApplied)),
+    moraExtraApplied: extraApplied,
+    moraExtraAfter: round2(Math.max(0, extraBefore - extraApplied)),
+    capitalApplied,
+    capitalAfter: round2(Math.max(0, capitalBefore - capitalApplied)),
+  };
+}
+
+/** Evita volver a imputar contra capital la parte del pago que ya cubrio mora extra. */
+export function paymentApplicableToBaseAfterSettledExtra({
+  paidAmount,
+  moraExtra,
+  moraExtraTotal,
+}) {
+  const paid = round2(Math.max(0, Number(paidAmount) || 0));
+  const extraPending = round2(Math.max(0, Number(moraExtra) || 0));
+  const extraHistorical = round2(Math.max(
+    extraPending,
+    Number(moraExtraTotal) || 0
+  ));
+  const extraSettled = round2(Math.max(0, extraHistorical - extraPending));
+  return round2(Math.max(0, paid - extraSettled));
+}
+
 /**
  * Aplica un pool a un conjunto de cuotas (en memoria).
  * Devuelve las imputaciones sin modificar la base de datos.
  *
  * @param {object} params
  * @param {number} params.poolAmount - Monto total del pool a distribuir
- * @param {Array} params.cuotas - Array de cuotas con { id, due_date, amount_due, late_fee, mora_extra, paid_amount, status, pending }
+ * @param {Array} params.cuotas - Array de cuotas con { id, due_date, amount_due, late_fee, mora_extra, mora_extra_total, paid_amount, status, pending, montos_fuente }
  * @param {string} [params.excludeCuotaId] - ID de la fila origen (no recibe pool)
  * @returns {{ applied: number, remainingPool: number, allocations: Array<{cuotaId, pendingAntes, montoAplicado, pendingDespues, statusDespues}> }}
  */
@@ -104,10 +156,27 @@ export function applyWaterfallPool({ poolAmount, cuotas, excludeCuotaId = null }
 
     if (pending <= 0.005) continue;
 
-    const applyAmt = round2(Math.min(pool, pending));
+    const allocation = allocatePaymentByPriority({
+      payment: pool,
+      pendingTotal: pending,
+      moraNormal: lateFee,
+      moraExtra,
+    });
+    const applyAmt = allocation.applied;
     const newPaid = round2(paid + applyAmt);
-    const newPending = round2(Math.max(0, pending - applyAmt));
+    const newPending = allocation.pendingAfter;
     const newStatus = statusTrasCascada(cuota, newPending, newPaid, todayYmd);
+    const montosFuenteExcel = String(cuota.montos_fuente || '').trim().toLowerCase() === 'excel';
+    const moraExtraDespues = montosFuenteExcel
+      ? allocation.moraExtraAfter
+      : moraExtra;
+    const moraExtraAplicada = montosFuenteExcel
+      ? allocation.moraExtraApplied
+      : 0;
+    const moraExtraTotal = round2(Math.max(
+      Number(cuota.mora_extra_total) || 0,
+      moraExtra
+    ));
 
     allocations.push({
       cuotaId: String(cuota.id),
@@ -116,8 +185,14 @@ export function applyWaterfallPool({ poolAmount, cuotas, excludeCuotaId = null }
       amountDue,
       lateFee,
       moraExtra,
+      moraExtraTotal,
       moraNormalBase: lateFee,
       moraExtraBase: moraExtra,
+      moraNormalAplicada: allocation.moraNormalApplied,
+      moraExtraAplicada,
+      moraExtraDespues,
+      capitalAplicado: allocation.capitalApplied,
+      montosFuenteExcel,
       pendingAntes: pending,
       montoAplicado: applyAmt,
       pendingDespues: newPending,
@@ -166,6 +241,18 @@ export function mergeCascadaAllocations(allocLists) {
       const existing = map.get(a.cuotaId);
       if (existing) {
         existing.montoAplicado = round2(existing.montoAplicado + (a.montoAplicado || 0));
+        existing.mora_extra_aplicada = round2(
+          existing.mora_extra_aplicada + (a.moraExtraAplicada || 0)
+        );
+        existing.mora_normal_aplicada = round2(
+          existing.mora_normal_aplicada + (a.moraNormalAplicada || 0)
+        );
+        existing.capital_aplicado = round2(
+          existing.capital_aplicado + (a.capitalAplicado || 0)
+        );
+        if (a.montosFuenteExcel) {
+          existing.mora_extra_pendiente_despues = round2(a.moraExtraDespues || 0);
+        }
       } else {
         map.set(a.cuotaId, {
           cuota_semanal_id: a.cuotaId,
@@ -173,6 +260,12 @@ export function mergeCascadaAllocations(allocLists) {
           monto: a.montoAplicado || 0,
           mora_normal_base: a.moraNormalBase || 0,
           mora_extra_base: a.moraExtraBase || 0,
+          mora_normal_aplicada: a.moraNormalAplicada || 0,
+          mora_extra_aplicada: a.moraExtraAplicada || 0,
+          capital_aplicado: a.capitalAplicado || 0,
+          ...(a.montosFuenteExcel
+            ? { mora_extra_pendiente_despues: round2(a.moraExtraDespues || 0) }
+            : {}),
         });
       }
     }

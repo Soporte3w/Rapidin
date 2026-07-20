@@ -25,6 +25,7 @@ import {
   touchFechaUltimoAbonoCuota,
 } from './miautoCuotaSemanalService.js';
 import { computeAmountDueSemanal as computeAmountDueSemanalObj } from '../cobros/CuotaCalculator.js';
+import { allocatePaymentByPriority } from '../cobros/CascadaPoolManager.js';
 import { applyPaymentToExpense } from '../gastos/miautoGastoPagoService.js';
 import { availableFleetCharge } from '../gastos/miautoGastoRules.js';
 
@@ -808,7 +809,8 @@ async function pendingTotalMapsForSolicitudIdsBatched(solicitudIds, batchSize = 
 
 export async function getCuotasToCharge() {
   const res = await query(
-    `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.mora_extra, c.status,
+    `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.mora_extra,
+            c.mora_extra_total, c.mora_extra_desde, c.montos_fuente, c.status,
             c.cuota_semanal, c.bono_auto, c.cobro_saldo, c.pct_comision, c.partner_fees_raw, c.moneda,
             c.fecha_ultimo_abono, c.fecha_primer_comprobante,
             s.cronograma_id, s.fecha_inicio_cobro_semanal, s.placa_asignada, s.license_number,
@@ -840,7 +842,8 @@ export async function getCuotasToCharge() {
 
 export async function getCuotasToChargeForSolicitud(solicitudId) {
   const res = await query(
-    `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.mora_extra, c.status,
+    `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.mora_extra,
+            c.mora_extra_total, c.mora_extra_desde, c.montos_fuente, c.status,
             c.cuota_semanal, c.bono_auto, c.cobro_saldo, c.pct_comision, c.partner_fees_raw, c.moneda,
             c.fecha_ultimo_abono, c.fecha_primer_comprobante,
             s.cronograma_id, s.fecha_inicio_cobro_semanal, s.placa_asignada, s.license_number,
@@ -1110,6 +1113,18 @@ export async function processCobroCuota(
   newPaid = round2(Math.min(newPaid, totalDueCap));
   const pendAfter = round2(Math.max(0, totalDueCap - newPaid));
   const newStatus = miAutoOpenStatusSaldoVencimiento(ymdFromDbDate(cuotaRow.due_date), pendAfter, newPaid);
+  const paymentAllocation = allocatePaymentByPriority({
+    payment: creditCuotaMoneda,
+    pendingTotal: pendingAmount,
+    moraNormal: lateFee,
+    moraExtra,
+  });
+  const isExcel = String(cuotaRow.montos_fuente || '').trim().toLowerCase() === 'excel';
+  const moraExtraAfter = isExcel ? paymentAllocation.moraExtraAfter : moraExtra;
+  const moraExtraTotalAfter = round2(Math.max(
+    Number(cuotaRow.mora_extra_total) || 0,
+    moraExtra
+  ));
 
   if (dryRun) {
     if (sharedFleetCap != null) {
@@ -1137,6 +1152,7 @@ export async function processCobroCuota(
       balance_fleet_consultado: balance,
       retiro_simulado_fleet: amountToChargeFleet,
       acreditado_en_cuota: creditCuotaMoneda,
+      payment_allocation: paymentAllocation,
       despues_paid_simulado: newPaid,
       despues_status_simulado: newStatus,
       external_driver_id: externalDriverId,
@@ -1200,9 +1216,28 @@ export async function processCobroCuota(
     `UPDATE module_miauto_cuota_semanal SET
        paid_amount = $1,
        status = $2,
+       mora_extra = CASE WHEN $4::boolean THEN $5::numeric ELSE mora_extra END,
+       mora_extra_total = CASE
+         WHEN $4::boolean THEN GREATEST(COALESCE(mora_extra_total, 0), $6::numeric)
+         ELSE mora_extra_total
+       END,
+       mora_extra_desde = CASE
+         WHEN $4::boolean AND $5::numeric <= 0.005 AND $7::numeric > 0.005
+           THEN (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
+         WHEN $4::boolean AND $5::numeric <= 0.005 THEN NULL
+         ELSE mora_extra_desde
+       END,
        updated_at = CURRENT_TIMESTAMP
      WHERE id = $3::uuid`,
-    [newPaid, newStatus, cuotaRow.id]
+    [
+      newPaid,
+      newStatus,
+      cuotaRow.id,
+      isExcel,
+      moraExtraAfter,
+      moraExtraTotalAfter,
+      pendAfter,
+    ]
   );
   await touchFechaUltimoAbonoCuota(cuotaRow.id, paid, newPaid);
 
@@ -1226,6 +1261,7 @@ export async function processCobroCuota(
     paid_amount_antes: paid,
     paid_amount_despues: newPaid,
     pending_total_antes: pendingAmount,
+    payment_allocation: paymentAllocation,
     partial: creditCuotaMoneda < pendingAmount - 0.005,
     fleet_withdraw_response: withdrawResult.data,
   });

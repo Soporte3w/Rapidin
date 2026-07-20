@@ -7,6 +7,7 @@ import {
   Copy,
   Filter,
   MessageCircle,
+  PencilLine,
   Phone,
   RefreshCw,
   Users,
@@ -46,7 +47,7 @@ interface ProgressItem {
   id: string;
   name: string;
   phone: string;
-  status: 'pending' | 'preparing' | 'sending' | 'sent' | 'failed';
+  status: 'pending' | 'preparing' | 'sending' | 'queued' | 'failed';
   error?: string;
 }
 
@@ -62,11 +63,13 @@ interface PreviewItem {
   name: string;
   phone: string;
   message: string;
+  generatedMessage: string;
   error?: string;
 }
 
 const PAGE_SIZES = [10, 20, 50, 100];
 const HISTORY_PAGE_SIZE = 50;
+const RENT_SALE_API_PAGE_SIZE = 100;
 
 function cleanPhone(phone?: string) {
   return String(phone || '').replace(/[^\d+]/g, '');
@@ -84,7 +87,7 @@ function safeName(row?: Pick<SolicitudRow, 'first_name'>) {
 function statusLabel(status: ProgressItem['status']) {
   if (status === 'preparing') return 'Preparando';
   if (status === 'sending') return 'Enviando';
-  if (status === 'sent') return 'Enviado';
+  if (status === 'queued') return 'Programado';
   if (status === 'failed') return 'Fallido';
   return 'Pendiente';
 }
@@ -108,6 +111,7 @@ const MiautoWhatsApp: React.FC = () => {
   const [showProgress, setShowProgress] = useState(false);
   const [progressItems, setProgressItems] = useState<ProgressItem[]>([]);
   const [previewItems, setPreviewItems] = useState<PreviewItem[]>([]);
+  const [messageOverrides, setMessageOverrides] = useState<Record<string, string>>({});
   const [activePreviewIndex, setActivePreviewIndex] = useState(0);
   const [showPreview, setShowPreview] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -122,8 +126,26 @@ const MiautoWhatsApp: React.FC = () => {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await api.get('/miauto/solicitudes', { params: { active: true, country: 'PE', limit: 500 } });
-      const raw = res.data?.data || [];
+      const firstResponse = await api.get('/miauto/alquiler-venta', {
+        params: { country: 'PE', page: 1, limit: RENT_SALE_API_PAGE_SIZE },
+      });
+      const firstPage = Array.isArray(firstResponse.data?.data) ? firstResponse.data.data : [];
+      const totalPages = Math.max(1, Number(firstResponse.data?.pagination?.totalPages) || 1);
+      const remainingResponses = totalPages > 1
+        ? await Promise.all(
+            Array.from({ length: totalPages - 1 }, (_, index) =>
+              api.get('/miauto/alquiler-venta', {
+                params: { country: 'PE', page: index + 2, limit: RENT_SALE_API_PAGE_SIZE },
+              })
+            )
+          )
+        : [];
+      const raw = [
+        ...firstPage,
+        ...remainingResponses.flatMap((response) =>
+          Array.isArray(response.data?.data) ? response.data.data : []
+        ),
+      ];
       const rows: SolicitudRow[] = raw.map((s: any) => ({
         id: s.id,
         first_name: s.driver_name || s.working_driver_name || s.full_name || '',
@@ -132,8 +154,12 @@ const MiautoWhatsApp: React.FC = () => {
         cronograma_id: s.cronograma?.id || s.cronograma_id || '',
         vehiculo_name: s.vehiculo?.name || s.vehiculo_name || s.cronograma_vehiculo?.name || '',
       }));
+      const availableIds = new Set(rows.map((row) => row.id));
       setSolicitudes(rows);
-      setSelectedIds((current) => new Set([...current].filter((id) => rows.some((s) => s.id === id))));
+      setSelectedIds((current) => new Set([...current].filter((id) => availableIds.has(id))));
+      setMessageOverrides((current) => Object.fromEntries(
+        Object.entries(current).filter(([id]) => availableIds.has(id))
+      ));
     } catch {
       toast.error('Error cargando conductores');
     } finally {
@@ -197,11 +223,11 @@ const MiautoWhatsApp: React.FC = () => {
   }, [cronogramas, filtroCronograma]);
 
   const progressStats = useMemo(() => {
-    const sent = progressItems.filter((i) => i.status === 'sent').length;
+    const queued = progressItems.filter((i) => i.status === 'queued').length;
     const failed = progressItems.filter((i) => i.status === 'failed').length;
-    const done = sent + failed;
+    const done = queued + failed;
     const total = progressItems.length;
-    return { sent, failed, done, total, percent: total ? Math.round((done / total) * 100) : 0 };
+    return { queued, failed, done, total, percent: total ? Math.round((done / total) * 100) : 0 };
   }, [progressItems]);
 
   const activePreview = previewItems[activePreviewIndex] || null;
@@ -210,6 +236,14 @@ const MiautoWhatsApp: React.FC = () => {
   const previewErrorCount = previewItems.length - previewReadyCount;
   const hasMultiplePreview = previewItems.length > 1;
   const previewText = useMemo(() => previewItems.map(formatPreviewMessage).join('\n\n'), [previewItems]);
+  const previewMatchesSelection = useMemo(() => {
+    if (previewItems.length === 0 || previewItems.length !== selectedEligibleRows.length) return false;
+    return previewItems.every((item) => selectedIds.has(item.id));
+  }, [previewItems, selectedEligibleRows.length, selectedIds]);
+  const editedPreviewCount = useMemo(
+    () => previewItems.filter((item) => !item.error && item.message !== item.generatedMessage).length,
+    [previewItems]
+  );
   const previewActionLabel = previewLoading
     ? 'Generando...'
     : selectedEligibleRows.length > 1
@@ -296,7 +330,8 @@ const MiautoWhatsApp: React.FC = () => {
             id: item.solicitud_id,
             name: item.driver_name,
             phone: item.phone,
-            message: item.message,
+            message: messageOverrides[item.solicitud_id] ?? item.message,
+            generatedMessage: item.message,
           };
           items.push(preview);
         } catch (error: any) {
@@ -305,6 +340,7 @@ const MiautoWhatsApp: React.FC = () => {
             name: safeName(itemRow),
             phone: itemRow.phone,
             message: '',
+            generatedMessage: '',
             error: error?.message || 'Error',
           };
           items.push(preview);
@@ -314,6 +350,22 @@ const MiautoWhatsApp: React.FC = () => {
     } finally {
       setPreviewLoading(false);
     }
+  }
+
+  function updatePreviewMessage(id: string, message: string) {
+    setPreviewItems((items) => items.map((item) => (item.id === id ? { ...item, message } : item)));
+    setMessageOverrides((current) => ({ ...current, [id]: message }));
+  }
+
+  function resetPreviewMessage(item: PreviewItem) {
+    setPreviewItems((items) => items.map((current) => (
+      current.id === item.id ? { ...current, message: current.generatedMessage } : current
+    )));
+    setMessageOverrides((current) => {
+      const next = { ...current };
+      delete next[item.id];
+      return next;
+    });
   }
 
   async function copyPreview() {
@@ -354,7 +406,18 @@ const MiautoWhatsApp: React.FC = () => {
     for (const row of selectedEligibleRows) {
       updateProgress(row.id, { status: 'preparing' });
       try {
-        items.push(await buildItem(row));
+        const editedMessage = messageOverrides[row.id];
+        if (editedMessage !== undefined) {
+          if (!editedMessage.trim()) throw new Error('El mensaje editado está vacío');
+          items.push({
+            solicitud_id: row.id,
+            phone: row.phone,
+            driver_name: safeName(row),
+            message: editedMessage.trim(),
+          });
+        } else {
+          items.push(await buildItem(row));
+        }
         updateProgress(row.id, { status: 'sending' });
       } catch (error: any) {
         const message = error?.response?.data?.message || error?.message || 'No se pudo generar el mensaje';
@@ -371,25 +434,33 @@ const MiautoWhatsApp: React.FC = () => {
 
     try {
       const res = await api.post('/miauto/admin/whatsapp/enviar', { items });
-      const result = res.data?.data || { sent: [], failed: [] };
-      const sent = Array.isArray(result.sent) ? result.sent : [];
+      const result = res.data?.data || { queued: [], failed: [] };
+      const queued = Array.isArray(result.queued) ? result.queued : [];
       const apiFailed = Array.isArray(result.failed) ? result.failed : [];
 
-      sent.forEach((item: any) => updateProgress(item.solicitudId, { status: 'sent' }));
+      queued.forEach((item: any) => updateProgress(item.solicitudId, { status: 'queued' }));
       apiFailed.forEach((item: any) => updateProgress(item.solicitudId, {
         status: 'failed',
         error: item.error || 'Error al enviar',
       }));
 
       const allFailed = [...failed, ...apiFailed];
-      if (sent.length > 0) {
+      if (queued.length > 0) {
         setSelectedIds((current) => {
           const next = new Set(current);
-          sent.forEach((item: any) => next.delete(item.solicitudId));
+          queued.forEach((item: any) => next.delete(item.solicitudId));
+          return next;
+        });
+        setMessageOverrides((current) => {
+          const next = { ...current };
+          queued.forEach((item: any) => delete next[item.solicitudId]);
           return next;
         });
       }
-      toast.success(`Enviados: ${sent.length}. Fallidos: ${allFailed.length}`);
+      if (queued.length > 0) {
+        toast.success(`Programados: ${queued.length}. Se enviarán máximo 3 cada 2 minutos.`);
+      }
+      if (allFailed.length > 0) toast.error(`No programados: ${allFailed.length}`);
     } catch (error: any) {
       const message = error?.response?.data?.message || error?.message || 'Error al enviar';
       items.forEach((item) => updateProgress(item.solicitud_id, { status: 'failed', error: message }));
@@ -571,7 +642,7 @@ const MiautoWhatsApp: React.FC = () => {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 text-center">
           <MessageCircle className="w-10 h-10 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-bold text-gray-900 mb-1">Sin resultados</h3>
-          <p className="text-gray-600 text-sm">No hay conductores para los filtros actuales.</p>
+          <p className="text-gray-600 text-sm">No hay registros activos de Alquiler/Venta para los filtros actuales.</p>
         </div>
       ) : (
         <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm">
@@ -653,7 +724,15 @@ const MiautoWhatsApp: React.FC = () => {
           <div className={`${isSinglePreview ? 'max-w-2xl' : 'max-w-5xl'} bg-white rounded-lg shadow-xl w-full max-h-[min(92vh,760px)] flex flex-col`} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-3 border-b">
               <div>
-                <h2 className="text-lg font-bold text-gray-900">{isSinglePreview ? 'Mensaje del conductor' : 'Vista previa'}</h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-lg font-bold text-gray-900">{isSinglePreview ? 'Mensaje del conductor' : 'Vista previa'}</h2>
+                  {!previewLoading && previewReadyCount > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded border border-gray-200 bg-gray-50 px-2 py-0.5 text-xs font-semibold text-gray-600">
+                      <PencilLine className="h-3 w-3" />
+                      Editable
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs text-gray-500">
                   {previewLoading
                     ? 'Generando mensaje...'
@@ -773,21 +852,62 @@ const MiautoWhatsApp: React.FC = () => {
                         )}
                       </div>
                     </div>
-                    <div className="p-4 overflow-y-auto flex-1 bg-white max-h-[calc(min(92vh,760px)-170px)]">
+                    <div className="p-4 overflow-y-auto flex-1 bg-white max-h-[calc(min(92vh,760px)-190px)]">
                       {activePreview?.error ? (
                         <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
                           No se pudo generar este mensaje: {activePreview.error}
                         </div>
                       ) : (
-                        <pre className="text-sm leading-relaxed text-gray-800 bg-gray-50 rounded-lg p-4 whitespace-pre-wrap font-sans border border-gray-200">
-                          {activePreview?.message || 'Sin mensaje para mostrar.'}
-                        </pre>
+                        <div className="space-y-2">
+                          <textarea
+                            value={activePreview?.message || ''}
+                            onChange={(event) => activePreview && updatePreviewMessage(activePreview.id, event.target.value)}
+                            className="min-h-[320px] w-full resize-y rounded-lg border border-gray-300 bg-white p-4 text-sm leading-relaxed text-gray-800 outline-none focus:border-red-600 focus:ring-2 focus:ring-red-100"
+                            aria-label={`Editar mensaje de ${activePreview?.name || 'conductor'}`}
+                          />
+                          <div className="flex items-center justify-between gap-3 text-xs text-gray-500">
+                            <span>{activePreview?.message.length || 0} caracteres</span>
+                            {activePreview && activePreview.message !== activePreview.generatedMessage && (
+                              <button
+                                type="button"
+                                onClick={() => resetPreviewMessage(activePreview)}
+                                className="font-semibold text-[#8B1A1A] hover:underline"
+                              >
+                                Restaurar mensaje generado
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       )}
                     </div>
                   </section>
                 </div>
               )}
             </div>
+            {!previewLoading && previewMatchesSelection && (
+              <div className="flex flex-col gap-2 border-t bg-gray-50 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <span className="text-xs text-gray-600">
+                  {editedPreviewCount > 0
+                    ? `${editedPreviewCount} mensaje(s) editado(s); se enviarán con estos cambios.`
+                    : 'Los mensajes están listos para enviar.'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (previewItems.some((item) => item.error || !item.message.trim())) {
+                      toast.error('Corrige los mensajes vacíos o con error antes de continuar');
+                      return;
+                    }
+                    setShowPreview(false);
+                    setShowSendConfirm(true);
+                  }}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#128C7E] px-4 py-2 text-sm font-semibold text-white hover:bg-[#0f766b]"
+                >
+                  <FaPaperPlane className="h-4 w-4" />
+                  Continuar al envío
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -803,7 +923,8 @@ const MiautoWhatsApp: React.FC = () => {
                 <div>
                   <h2 className="text-lg font-bold text-gray-900">Confirmar envío</h2>
                   <p className="text-sm text-gray-600 mt-0.5">
-                    Se enviará WhatsApp a {selectedEligibleRows.length} conductor(es).
+                    Se programará WhatsApp para {selectedEligibleRows.length} conductor(es), con un máximo de 3 mensajes cada 2 minutos.
+                    {Object.keys(messageOverrides).some((id) => selectedIds.has(id)) && ' Se respetarán los mensajes editados.'}
                   </p>
                 </div>
               </div>
@@ -876,7 +997,7 @@ const MiautoWhatsApp: React.FC = () => {
                 className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-[#128C7E] rounded-lg hover:bg-[#0f766b] disabled:opacity-50"
               >
                 <FaPaperPlane className="w-4 h-4" />
-                {sending ? 'Enviando...' : `Enviar ${selectedEligibleRows.length}`}
+                {sending ? 'Programando...' : `Programar ${selectedEligibleRows.length}`}
               </button>
             </div>
           </div>
@@ -887,7 +1008,10 @@ const MiautoWhatsApp: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
           <div className="bg-white rounded-lg shadow-xl max-w-lg w-full" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-3 border-b">
-              <h2 className="text-lg font-bold text-gray-900">Envío de WhatsApp</h2>
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">Envío de WhatsApp</h2>
+                <p className="text-xs text-gray-500">Límite automático: 3 mensajes cada 2 minutos</p>
+              </div>
               {!sending && (
                 <button type="button" onClick={() => setShowProgress(false)} className={iconButtonClass}>
                   <X className="w-4 h-4" />
@@ -900,9 +1024,9 @@ const MiautoWhatsApp: React.FC = () => {
                   <div className="text-xl font-bold text-gray-900">{progressStats.total}</div>
                   <div className="text-xs text-gray-500">Total</div>
                 </div>
-                <div className="rounded-lg border border-green-200 bg-green-50 p-3">
-                  <div className="text-xl font-bold text-green-700">{progressStats.sent}</div>
-                  <div className="text-xs text-green-700">Enviados</div>
+                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                  <div className="text-xl font-bold text-blue-700">{progressStats.queued}</div>
+                  <div className="text-xs text-blue-700">Programados</div>
                 </div>
                 <div className="rounded-lg border border-red-200 bg-red-50 p-3">
                   <div className="text-xl font-bold text-red-700">{progressStats.failed}</div>
@@ -913,7 +1037,7 @@ const MiautoWhatsApp: React.FC = () => {
                 <div className="w-full bg-gray-200 rounded-full h-2.5">
                   <div className="bg-[#128C7E] h-2.5 rounded-full transition-all duration-300" style={{ width: `${progressStats.percent}%` }} />
                 </div>
-                <p className="mt-2 text-sm text-gray-600 text-center">{progressStats.done} de {progressStats.total} procesados</p>
+                <p className="mt-2 text-sm text-gray-600 text-center">{progressStats.done} de {progressStats.total} programados o revisados</p>
               </div>
               <ul className="space-y-1.5 max-h-72 overflow-y-auto">
                 {progressItems.map((item) => (
@@ -925,7 +1049,7 @@ const MiautoWhatsApp: React.FC = () => {
                     <div className="flex items-center gap-2 text-xs shrink-0">
                       {item.status === 'pending' && <Clock className="w-4 h-4 text-gray-400" />}
                       {(item.status === 'preparing' || item.status === 'sending') && <div className="w-4 h-4 border-2 border-[#128C7E] border-t-transparent rounded-full animate-spin" />}
-                      {item.status === 'sent' && <CheckCircle2 className="w-4 h-4 text-green-600" />}
+                      {item.status === 'queued' && <Clock className="w-4 h-4 text-blue-600" />}
                       {item.status === 'failed' && <AlertTriangle className="w-4 h-4 text-red-600" />}
                       <span className={item.status === 'failed' ? 'text-red-700 max-w-[160px] truncate' : 'text-gray-600'}>
                         {item.status === 'failed' ? item.error || 'Fallido' : statusLabel(item.status)}
@@ -981,6 +1105,8 @@ const MiautoWhatsApp: React.FC = () => {
                   className="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white text-gray-700"
                 >
                   <option value="">Todos</option>
+                  <option value="pending">Programados</option>
+                  <option value="processing">En proceso</option>
                   <option value="sent">Enviados</option>
                   <option value="failed">Fallidos</option>
                 </select>
@@ -1000,6 +1126,7 @@ const MiautoWhatsApp: React.FC = () => {
                   const date = h.sent_at || h.created_at;
                   const sent = h.status === 'sent';
                   const failed = h.status === 'failed';
+                  const processing = h.status === 'processing';
                   return (
                     <div key={h.id} className="rounded-lg border border-gray-200 p-3 hover:bg-gray-50">
                       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1007,9 +1134,9 @@ const MiautoWhatsApp: React.FC = () => {
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="font-semibold text-gray-900">{h.driver_name || '-'}</span>
                             <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                              sent ? 'bg-green-100 text-green-800' : failed ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'
+                              sent ? 'bg-green-100 text-green-800' : failed ? 'bg-red-100 text-red-800' : processing ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-700'
                             }`}>
-                              {sent ? 'Enviado' : failed ? 'Fallido' : 'Pendiente'}
+                              {sent ? 'Enviado' : failed ? 'Fallido' : processing ? 'En proceso' : 'Programado'}
                             </span>
                           </div>
                           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">

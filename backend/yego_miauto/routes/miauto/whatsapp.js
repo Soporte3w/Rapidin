@@ -3,7 +3,7 @@
  * /api/miauto/admin/whatsapp/*
  */
 import { Router } from 'express';
-import { sendBulkWhatsApp, getWhatsAppLog } from '../../services/miautoWhatsAppService.js';
+import { enqueueBulkWhatsApp, getWhatsAppLog } from '../../services/miautoWhatsAppService.js';
 import { errorResponse, successResponse } from '../../../utils/responses.js';
 import { logger } from '../../../utils/logger.js';
 
@@ -11,7 +11,7 @@ const router = Router();
 
 /**
  * POST /api/miauto/admin/whatsapp/enviar
- * Envía mensajes WhatsApp pre-armados por el frontend.
+ * Programa mensajes WhatsApp pre-armados por el frontend.
  * Body: { items: [{ solicitud_id, phone, driver_name, message }] }
  */
 router.post('/admin/whatsapp/enviar', async (req, res) => {
@@ -26,12 +26,12 @@ router.post('/admin/whatsapp/enviar', async (req, res) => {
     }
 
     const userId = req.user?.id || null;
-    const results = await sendBulkWhatsApp(items, userId);
+    const results = await enqueueBulkWhatsApp(items, userId);
 
     return successResponse(
       res,
       results,
-      `Enviados: ${results.sent.length}. Fallidos: ${results.failed.length}. Total: ${results.total}`
+      `Programados: ${results.queued.length}. Rechazados: ${results.failed.length}. Total: ${results.total}`
     );
   } catch (error) {
     logger.error('Error en envío masivo WhatsApp:', error);

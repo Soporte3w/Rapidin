@@ -4,7 +4,12 @@
  * Mismo código que openWhatsAppModal en YegoMiAutoRentSaleDetail.tsx.
  */
 import { symMoneda } from './miautoAlquilerVentaList';
-import { miautoCuotaFinalCronogramaSemanal, miautoNum, miautoSemanaOrdinalPorVencimiento } from './miautoRentSaleHelpers';
+import {
+  miautoCobroSaldoDisplay,
+  miautoCuotaFinalCronogramaSemanal,
+  miautoNum,
+  miautoSemanaOrdinalPorVencimiento,
+} from './miautoRentSaleHelpers';
 import { roundToTwoDecimals } from './currency';
 import { CUENTAS_BANCARIAS_WHATSAPP } from '../pages/yegoRapidin/LoanDetail';
 
@@ -27,7 +32,6 @@ interface CuotaRow {
   mora_acumulada?: number;
   moneda?: string;
   status?: string;
-  saldo_favor_conductor?: number;
   cobro_saldo?: number;
   cobro_desde_saldo_conductor?: number;
   partner_fees_yango_raw?: number;
@@ -106,14 +110,12 @@ export function buildMiAutoMessage(input: BuildMessageInput): BuildMessageResult
 
     const pfYangoRaw = Number(cuotaReciente?.partner_fees_yango_raw || 0);
     const pf83Real = pfYangoRaw > 0.01 ? roundToTwoDecimals(pfYangoRaw * 0.8333) : 0;
-    const cobroDesdeSaldo = Number(cuotaReciente?.cobro_desde_saldo_conductor || 0);
-    const cobroSaldoRegla = Number(cuotaReciente?.cobro_saldo || 0);
+    const cobroSaldoApp = miautoCobroSaldoDisplay(cuotaReciente || {});
 
     let descuentos = '\nDESCUENTOS:\n';
     let hasDescuentos = false;
     if (pf83Real > 0.01) { descuentos += `🔹 Cobro por ingresos (83.33%): ${sym} ${pf83Real.toFixed(2)}\n`; hasDescuentos = true; }
-    if (cobroSaldoRegla > 0.01) { descuentos += `🔹 Cobro de saldo: ${sym} ${cobroSaldoRegla.toFixed(2)}\n`; hasDescuentos = true; }
-    if (cobroDesdeSaldo > 0.01) { descuentos += `🔹 Cobro Fleet aplicado a esta cuota: ${sym} ${cobroDesdeSaldo.toFixed(2)}\n`; hasDescuentos = true; }
+    if (cobroSaldoApp > 0.01) { descuentos += `🔹 Cobro saldo del app: ${sym} ${cobroSaldoApp.toFixed(2)}\n`; hasDescuentos = true; }
     if (!hasDescuentos) descuentos += '🔹 Sin descuentos esta semana\n';
 
     const cascadaRef = cuotaReciente?.partner_fees_cascada_aplicado_a;
@@ -148,10 +150,7 @@ export function buildMiAutoMessage(input: BuildMessageInput): BuildMessageResult
     const cuotaSemanal = Number(cuotaReciente.cuota_semanal || cuotaReciente.amount_due || 0);
     const pfYangoRaw = Number(cuotaReciente.partner_fees_yango_raw || 0);
     const pf83Real = roundToTwoDecimals(pfYangoRaw * 0.8333);
-    const cobroSaldoRegla = Number(cuotaReciente.cobro_saldo || 0);
-    const cobroDesdeSaldo = Number(cuotaReciente.cobro_desde_saldo_conductor || 0);
-    const saldoFavor = Number(cuotaReciente.saldo_favor_conductor || 0);
-    const pagado = Number(cuotaReciente.paid_amount || 0);
+    const cobroSaldoApp = miautoCobroSaldoDisplay(cuotaReciente);
     const pendingTotalCuota = cuotaPendienteWhatsApp(cuotaReciente);
     const semana = miautoSemanaOrdinalPorVencimiento(cuotas, cuotaReciente.due_date, cuotaReciente.week_start_date);
     const cubierto = pendingTotalCuota <= 0.01;
@@ -161,8 +160,7 @@ export function buildMiAutoMessage(input: BuildMessageInput): BuildMessageResult
     let descuentos = '\nDESCUENTOS:\n';
     let hasDescuentos = false;
     if (pf83Real > 0.01) { descuentos += `🔹 Cobro por ingresos (83.33%): ${sym} ${pf83Real.toFixed(2)}\n`; hasDescuentos = true; }
-    if (cobroSaldoRegla > 0.01) { descuentos += `🔹 Cobro de saldo: ${sym} ${cobroSaldoRegla.toFixed(2)}\n`; hasDescuentos = true; }
-    if (cobroDesdeSaldo > 0.01) { descuentos += `🔹 Cobro Fleet aplicado a esta cuota: ${sym} ${cobroDesdeSaldo.toFixed(2)}\n`; hasDescuentos = true; }
+    if (cobroSaldoApp > 0.01) { descuentos += `🔹 Cobro saldo del app: ${sym} ${cobroSaldoApp.toFixed(2)}\n`; hasDescuentos = true; }
     if (!hasDescuentos) descuentos += '🔹 Sin descuentos esta semana\n';
 
     const cascadaRefSingle = cuotaReciente?.partner_fees_cascada_aplicado_a;
@@ -175,11 +173,7 @@ export function buildMiAutoMessage(input: BuildMessageInput): BuildMessageResult
     }
 
     if (cubierto) {
-      let pagadoText = '\n------------------------------------------------------------------------\nPAGADO:\n';
-      if (pagado > 0.01) pagadoText += `🔹 Pagado: ${sym} ${pagado.toFixed(2)} ✅\n`;
-      pagadoText += '\n🔸 ¡Cuota cubierta! ✅\n';
-      if (saldoFavor > 0.01) pagadoText += `\nSaldo a tu favor: ${sym} ${saldoFavor.toFixed(2)} 🎉`;
-      defaultText = `${header}${descuentos}${pagadoText}\n\nCualquier consulta quedamos atentos 👍`;
+      defaultText = `${header}${descuentos}\n------------------------------------------------------------------------\n\n🔸 ¡Cuota cubierta! ✅\n\nCualquier consulta quedamos atentos 👍`;
     } else {
       defaultText = `${header}${descuentos}\n------------------------------------------------------------------------\nPENDIENTE:\n🔹 Semana ${semana}: ${sym} ${pendingTotalCuota.toFixed(2)}${lineSuffixMora(sym, cuotaReciente)} 🚨\n\nCualquier consulta quedamos atentos 👍\n\n${CUENTAS_BANCARIAS_WHATSAPP}`;
     }

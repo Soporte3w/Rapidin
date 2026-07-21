@@ -31,8 +31,9 @@ function trimOrUndefined(x) {
 const cronogramasListCache = new Map();
 const CRONOGRAMAS_CACHE_TTL_MS = 60 * 1000;
 
-function getCronogramasCacheKey(country, active) {
-  return `${String(country ?? '')}:${active === undefined || active === null ? '' : String(active)}`;
+function getCronogramasCacheKey(country, active, isLite) {
+  const activeKey = active === undefined || active === null ? '' : String(active);
+  return `${String(country ?? '')}:${activeKey}:${isLite ? 'lite' : 'full'}`;
 }
 
 function invalidateCronogramasListCache() {

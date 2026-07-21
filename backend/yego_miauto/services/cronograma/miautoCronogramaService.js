@@ -1,10 +1,14 @@
 import { query } from '../../../config/database.js';
-import { syncUnpaidExpenseAmountsForCronogramaVehicles } from '../gastos/miautoOtrosGastosService.js';
+import { syncUnpaidExpenseAmountsForCronogramaVehicles } from '../gastos/miautoGastoConfigSyncService.js';
 
 const TIPOS_VEHICULO = ['nuevo', 'seminuevo', 'semiusado'];
+const TIPOS_PAGO_INICIAL = ['completo', 'parcial'];
 
 function defaultRequisitosVehiculo() {
-  return { tipo_vehiculo: 'nuevo' };
+  return {
+    tipo_vehiculo: 'nuevo',
+    modalidades_pago_inicial: { completo: true, parcial: true },
+  };
 }
 
 /** @param {any} raw - JSONB u objeto desde DB (cronograma): solo tipo_vehiculo por plan */
@@ -31,7 +35,49 @@ function mergeRequisitosVehiculo(partial) {
     else if (tc.semiusado) tipo = 'semiusado';
   }
   if (!tipo) tipo = 'nuevo';
-  return { tipo_vehiculo: tipo };
+  const rawPaymentTypes = partial.modalidades_pago_inicial;
+  const paymentTypes = rawPaymentTypes && typeof rawPaymentTypes === 'object'
+    ? {
+        completo: rawPaymentTypes.completo === true,
+        parcial: rawPaymentTypes.parcial === true,
+      }
+    : defaultRequisitosVehiculo().modalidades_pago_inicial;
+  return {
+    tipo_vehiculo: tipo,
+    modalidades_pago_inicial: paymentTypes,
+  };
+}
+
+export function getTiposPagoInicialPermitidos(rawRequirements) {
+  const paymentTypes = parseRequisitosVehiculo(rawRequirements).modalidades_pago_inicial;
+  return TIPOS_PAGO_INICIAL.filter((type) => paymentTypes[type]);
+}
+
+export function cronogramaPermitePagoInicial(rawRequirements, pagoTipo) {
+  return TIPOS_PAGO_INICIAL.includes(pagoTipo)
+    && getTiposPagoInicialPermitidos(rawRequirements).includes(pagoTipo);
+}
+
+function assertModalidadesPagoInicialValidas(requirements) {
+  if (getTiposPagoInicialPermitidos(requirements).length === 0) {
+    throw new Error('El cronograma debe permitir al menos una modalidad de pago inicial');
+  }
+}
+
+export async function assertCronogramaPermitePagoInicial(cronogramaId, pagoTipo) {
+  if (!cronogramaId || pagoTipo == null || pagoTipo === '') return;
+  if (!TIPOS_PAGO_INICIAL.includes(pagoTipo)) {
+    throw new Error('La modalidad de pago inicial debe ser completo o parcial');
+  }
+  const result = await query(
+    'SELECT requisitos_vehiculo FROM module_miauto_cronograma WHERE id = $1',
+    [cronogramaId]
+  );
+  if (result.rows.length === 0) throw new Error('Cronograma no encontrado');
+  if (!cronogramaPermitePagoInicial(result.rows[0].requisitos_vehiculo, pagoTipo)) {
+    const label = pagoTipo === 'parcial' ? 'inicial parcial' : 'inicial completa';
+    throw new Error(`El cronograma seleccionado no permite ${label}`);
+  }
 }
 
 function defaultRequisitosGastosVehiculo() {
@@ -50,7 +96,7 @@ function defaultRequisitosGastosVehiculo() {
     soat: {
       monto: 0,
       moneda: 'PEN',
-      cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 0, cuotas: 0 },
+      cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 0 },
     },
     impuesto_vehicular: {
       monto: 0,
@@ -110,10 +156,12 @@ function mergeRequisitosGastosVehiculo(partial) {
     if (x.cobro && typeof x.cobro === 'object') {
       const c = x.cobro;
       if (key === 'src' || key === 'soat') {
+        const monthsBefore = key === 'soat'
+          ? c.meses_anticipo || c.cuotas
+          : c.meses_anticipo;
         d[key].cobro = {
           tipo: c.tipo || 'mensual_antes_vencimiento',
-          meses_anticipo: boundedInteger(c.meses_anticipo, 12),
-          ...(key === 'soat' ? { cuotas: boundedInteger(c.cuotas, 12) } : {}),
+          meses_anticipo: boundedInteger(monthsBefore, 12),
         };
       } else if (key === 'gps') {
         d[key].cobro = { tipo: 'fin_de_mes' };
@@ -327,12 +375,13 @@ export async function listCronogramasLite(filters = {}) {
     n += 1;
   }
   const listRes = await query(
-    `SELECT c.id, c.name FROM module_miauto_cronograma c ${where} ORDER BY c.name`,
+    `SELECT c.id, c.name, c.requisitos_vehiculo FROM module_miauto_cronograma c ${where} ORDER BY c.name`,
     params
   );
   return (listRes.rows || []).map((row) => ({
     id: row.id,
     name: row.name,
+    requisitos_vehiculo: parseRequisitosVehiculo(row.requisitos_vehiculo),
   }));
 }
 
@@ -561,7 +610,9 @@ export async function createCronograma(data) {
     rules = [],
   } = data;
   const tasa = normalizeTasaInteresMora(tasa_interes_mora);
-  const reqJson = JSON.stringify(mergeRequisitosVehiculo(reqRaw && typeof reqRaw === 'object' ? reqRaw : {}));
+  const requirements = mergeRequisitosVehiculo(reqRaw && typeof reqRaw === 'object' ? reqRaw : {});
+  assertModalidadesPagoInicialValidas(requirements);
+  const reqJson = JSON.stringify(requirements);
   const ins = await query(
     'INSERT INTO module_miauto_cronograma (name, country, active, tasa_interes_mora, bono_tiempo_activo, requisitos_vehiculo) VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING id',
     [String(name).trim() || 'Sin nombre', country, !!active, tasa, !!bono_tiempo_activo, reqJson]
@@ -651,8 +702,10 @@ export async function updateCronograma(id, data, userId = null) {
     params.push(!!bono_tiempo_activo);
   }
   if (reqRaw !== undefined) {
+    const requirements = mergeRequisitosVehiculo(reqRaw && typeof reqRaw === 'object' ? reqRaw : {});
+    assertModalidadesPagoInicialValidas(requirements);
     updates.push(`requisitos_vehiculo = $${p++}::jsonb`);
-    params.push(JSON.stringify(mergeRequisitosVehiculo(reqRaw && typeof reqRaw === 'object' ? reqRaw : {})));
+    params.push(JSON.stringify(requirements));
   }
   await query(`UPDATE module_miauto_cronograma SET ${updates.join(', ')} WHERE id = $1`, params);
 

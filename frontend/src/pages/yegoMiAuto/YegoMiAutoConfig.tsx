@@ -19,149 +19,45 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
-/** Moneda de la cuota inicial */
-export type MonedaInicial = 'USD' | 'PEN';
+import {
+  EXPENSE_LABELS,
+  MONTH_OPTIONS,
+  TIPO_VEHICULO_OPTIONS,
+  configuredExpenseKeys,
+  countConfiguredExpenses,
+  createDefaultRequisitosGastosVehiculo,
+  createDefaultRequisitosVehiculo,
+  createEmptyRule,
+  createEmptyVehicle,
+  expenseScheduleLabel,
+  formatExpenseAmount,
+  incompleteExpenseKeys,
+  isExpenseScheduleComplete,
+  mergeRequisitosFromApi,
+  mergeRequisitosGastosFromApi,
+  validateCronogramaForm,
+  type BonoAutoMoneda,
+  type Cronograma,
+  type GastoRequisitoMoneda,
+  type ItemGastoConCobro,
+  type MonedaInicial,
+  type PagoInicialTipo,
+  type RequisitosGastosVehiculo,
+  type TipoVehiculoCronograma,
+  type TodoRiesgoGpsModo,
+  type VehiculoCronograma,
+} from './miautoCronogramaConfigDomain';
 
-/** Moneda del bono mi auto por fila */
-export type BonoAutoMoneda = 'USD' | 'PEN';
-
-/** Fila del cronograma: viajes, bono auto y cuota semanal por cada carro */
-export interface CronogramaRule {
-  /** Intervalo de viajes, ej: "0 - 119" = entre 0 y 119 viajes usan este bono y estas cuotas por carro */
-  viajes: string;
-  bono_auto: number;
-  /** Moneda del bono: USD ($) o PEN (S/.) */
-  bono_auto_moneda?: BonoAutoMoneda;
-  cuotas_por_vehiculo: number[];
-  /** Moneda de cada cuota por carro: USD ($) o PEN (S/.) */
-  cuota_moneda_por_vehiculo?: BonoAutoMoneda[];
-  pct_comision?: number;
-  cobro_saldo?: number;
-}
-
-export type GastoRequisitoMoneda = 'USD' | 'PEN';
-
-/** Nuevo / seminuevo / segundo uso (semiusado) — un solo valor por cronograma */
-export type TipoVehiculoCronograma = 'nuevo' | 'seminuevo' | 'semiusado';
-
-export interface RequisitosVehiculo {
-  tipo_vehiculo: TipoVehiculoCronograma;
-}
-
-export function createDefaultRequisitosVehiculo(): RequisitosVehiculo {
-  return { tipo_vehiculo: 'nuevo' };
-}
-
-export function mergeRequisitosFromApi(raw: Partial<RequisitosVehiculo> & { tipos_condicion?: { nuevo?: boolean; semiusado?: boolean; seminuevo?: boolean } } | undefined | null): RequisitosVehiculo {
-  const d = createDefaultRequisitosVehiculo();
-  if (!raw || typeof raw !== 'object') return d;
-  const tipos: TipoVehiculoCronograma[] = ['nuevo', 'seminuevo', 'semiusado'];
-  if (raw.tipo_vehiculo && tipos.includes(raw.tipo_vehiculo)) {
-    d.tipo_vehiculo = raw.tipo_vehiculo;
-    return d;
-  }
-  if (raw.tipos_condicion && typeof raw.tipos_condicion === 'object') {
-    const tc = raw.tipos_condicion;
-    if (tc.nuevo) d.tipo_vehiculo = 'nuevo';
-    else if (tc.seminuevo) d.tipo_vehiculo = 'seminuevo';
-    else if (tc.semiusado) d.tipo_vehiculo = 'semiusado';
-  }
-  return d;
-}
-
-export type TodoRiesgoGpsModo = 'agrupado' | 'separado';
-
-export interface ItemGastoConCobro {
-  monto: number;
-  moneda: GastoRequisitoMoneda;
-  cobro?: Record<string, unknown>;
-}
-
-/** Gastos variables por carro (montos + metadatos de reglas de cobro) */
-export interface RequisitosGastosVehiculo {
-  todo_riesgo_y_gps_modo: TodoRiesgoGpsModo;
-  src: ItemGastoConCobro & { cobro?: { tipo?: string; meses_anticipo?: number } };
-  gps: ItemGastoConCobro & { cobro?: { tipo?: string } };
-  soat: ItemGastoConCobro & { cobro?: { tipo?: string; meses_anticipo?: number; cuotas?: number } };
-  impuesto_vehicular: ItemGastoConCobro & {
-    cobro?: { tipo?: string; mes_inicio?: number; cuotas?: number; anios_vigencia_tras_modelo?: number };
-  };
-  todo_riesgo_mas_gps_agrupado: ItemGastoConCobro & { cobro?: { tipo?: string; semanas?: number } };
-  inicial_parcial: ItemGastoConCobro & { cobro?: { tipo?: string; semanas?: number } };
-}
-
-export function createDefaultRequisitosGastosVehiculo(): RequisitosGastosVehiculo {
-  return {
-    todo_riesgo_y_gps_modo: 'separado',
-    src: { monto: 0, moneda: 'USD', cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 0 } },
-    gps: { monto: 0, moneda: 'PEN', cobro: { tipo: 'fin_de_mes' } },
-    soat: { monto: 0, moneda: 'PEN', cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 4, cuotas: 4 } },
-    impuesto_vehicular: {
-      monto: 0,
-      moneda: 'PEN',
-      cobro: { tipo: 'sat_febrero_cuotas', mes_inicio: 2, cuotas: 4, anios_vigencia_tras_modelo: 3 },
-    },
-    todo_riesgo_mas_gps_agrupado: { monto: 0, moneda: 'PEN', cobro: { tipo: 'semanal', semanas: 26 } },
-    inicial_parcial: { monto: 0, moneda: 'USD', cobro: { tipo: 'semanal', semanas: 26 } },
-  };
-}
-
-export function mergeRequisitosGastosFromApi(raw: Partial<RequisitosGastosVehiculo> | undefined | null): RequisitosGastosVehiculo {
-  const d = createDefaultRequisitosGastosVehiculo();
-  if (!raw || typeof raw !== 'object') return d;
-  return {
-    ...d,
-    ...raw,
-    todo_riesgo_y_gps_modo: raw.todo_riesgo_y_gps_modo === 'agrupado' ? 'agrupado' : 'separado',
-    src: { ...d.src, ...raw.src, cobro: { ...d.src.cobro, ...raw.src?.cobro } },
-    gps: { ...d.gps, ...raw.gps, cobro: { ...d.gps.cobro, ...raw.gps?.cobro } },
-    soat: { ...d.soat, ...raw.soat, cobro: { ...d.soat.cobro, ...raw.soat?.cobro } },
-    impuesto_vehicular: {
-      ...d.impuesto_vehicular,
-      ...raw.impuesto_vehicular,
-      cobro: { ...d.impuesto_vehicular.cobro, ...raw.impuesto_vehicular?.cobro },
-    },
-    todo_riesgo_mas_gps_agrupado: {
-      ...d.todo_riesgo_mas_gps_agrupado,
-      ...raw.todo_riesgo_mas_gps_agrupado,
-      cobro: { ...d.todo_riesgo_mas_gps_agrupado.cobro, ...raw.todo_riesgo_mas_gps_agrupado?.cobro },
-    },
-    inicial_parcial: {
-      ...d.inicial_parcial,
-      ...raw.inicial_parcial,
-      cobro: { ...d.inicial_parcial.cobro, ...raw.inicial_parcial?.cobro },
-    },
-  };
-}
-
-/** Carro ofrecido en el cronograma: inicial + cuotas + foto + gastos variables por carro */
-export interface VehiculoCronograma {
-  id: string;
-  name: string;
-  inicial: number;
-  inicial_moneda: MonedaInicial;
-  cuotas_semanales: number;
-  image?: string;
-  requisitos_gastos?: RequisitosGastosVehiculo;
-}
-
-export interface Cronograma {
-  id: string;
-  name: string;
-  country: string;
-  active: boolean;
-  /** Tasa de interés por mora (ej. 0.05 = 5%). Interés por día = (cuota_semanal * tasa) / 7 */
-  tasa_interes_mora?: number;
-  /** Si está activo, el bono por 4 pagos consecutivos a tiempo solo se concede si en cada una de esas 4 semanas el conductor tuvo ≥ 120 viajes */
-  bono_tiempo_activo?: boolean;
-  /** Tipo de vehículo del plan: nuevo / seminuevo / segundo uso (JSON en cronograma) */
-  requisitos_vehiculo?: RequisitosVehiculo;
-  vehicles: VehiculoCronograma[];
-  rules: CronogramaRule[];
-}
+export {
+  createDefaultRequisitosGastosVehiculo,
+  createDefaultRequisitosVehiculo,
+  getRuleForTripCount,
+  mergeRequisitosFromApi,
+  mergeRequisitosGastosFromApi,
+  parseViajesInterval,
+} from './miautoCronogramaConfigDomain';
 
 type CronogramaModalTab = 'general' | 'vehicles' | 'rules';
-type GastoConfigurable = Exclude<keyof RequisitosGastosVehiculo, 'todo_riesgo_y_gps_modo'>;
 
 const MODAL_TABS: Array<{
   id: CronogramaModalTab;
@@ -173,279 +69,14 @@ const MODAL_TABS: Array<{
   { id: 'rules', label: 'Reglas de cuotas', icon: TableProperties },
 ];
 
-const MONTH_OPTIONS = [
-  'Enero',
-  'Febrero',
-  'Marzo',
-  'Abril',
-  'Mayo',
-  'Junio',
-  'Julio',
-  'Agosto',
-  'Septiembre',
-  'Octubre',
-  'Noviembre',
-  'Diciembre',
-].map((label, index) => ({ label, value: index + 1 }));
-
-const EXPENSE_LABELS: Record<GastoConfigurable, string> = {
-  src: 'Seguro de responsabilidad civil',
-  gps: 'GPS',
-  soat: 'SOAT',
-  impuesto_vehicular: 'Impuesto vehicular',
-  todo_riesgo_mas_gps_agrupado: 'Seguro todo riesgo + GPS',
-  inicial_parcial: 'Inicial parcial',
-};
-
-function isExpenseScheduleComplete(key: GastoConfigurable, item: ItemGastoConCobro) {
-  const cobro = item.cobro || {};
-  if (key === 'gps') return true;
-  if (key === 'soat') {
-    const installments = Number(cobro.cuotas);
-    return installments > 0 && Number(cobro.meses_anticipo) >= installments;
-  }
-  if (key === 'impuesto_vehicular') {
-    const startMonth = Number(cobro.mes_inicio);
-    const installments = Number(cobro.cuotas);
-    const eligibleYears = Number(cobro.anios_vigencia_tras_modelo);
-    return startMonth >= 1 && startMonth <= 12
-      && installments > 0
-      && 12 % installments === 0
-      && startMonth - 1 + (installments - 1) * (12 / installments) <= 11
-      && eligibleYears > 0;
-  }
-  if (key === 'src') return Number(cobro.meses_anticipo) > 0;
-  return Number(cobro.semanas) > 0;
-}
-
-function expenseScheduleLabel(key: GastoConfigurable, item: ItemGastoConCobro) {
-  if (!isExpenseScheduleComplete(key, item)) return 'Calendario pendiente';
-  const cobro = item.cobro || {};
-  if (key === 'gps') return 'Mensual · fin de mes';
-  if (key === 'soat') return `${Number(cobro.cuotas)} cuotas · ${Number(cobro.meses_anticipo)} meses antes`;
-  if (key === 'impuesto_vehicular') {
-    return `${Number(cobro.cuotas)} cuotas desde mes ${Number(cobro.mes_inicio)} · ${Number(cobro.anios_vigencia_tras_modelo)} años`;
-  }
-  if (key === 'src') return `Mensual · ${Number(cobro.meses_anticipo)} meses antes`;
-  return `${Number(cobro.semanas)} cuotas semanales`;
-}
-
-function formatExpenseAmount(item: ItemGastoConCobro) {
-  const symbol = item.moneda === 'USD' ? '$' : 'S/.';
-  return `${symbol} ${Number(item.monto || 0).toFixed(2)}`;
-}
-
-function configuredExpenseKeys(
-  requirements: RequisitosGastosVehiculo,
-  vehicleType: TipoVehiculoCronograma,
-): GastoConfigurable[] {
-  const keys: GastoConfigurable[] = ['soat', 'impuesto_vehicular', 'inicial_parcial'];
-  if (requirements.todo_riesgo_y_gps_modo === 'agrupado') {
-    keys.push('todo_riesgo_mas_gps_agrupado');
-    if (vehicleType !== 'nuevo') keys.push('src');
-  } else {
-    keys.push('gps', 'src');
-  }
-  return keys.filter((key) => Number(requirements[key]?.monto) > 0);
-}
-
-function countConfiguredExpenses(vehicle: VehiculoCronograma, vehicleType: TipoVehiculoCronograma) {
-  return configuredExpenseKeys(mergeRequisitosGastosFromApi(vehicle.requisitos_gastos), vehicleType).length;
-}
-
-function incompleteExpenseKeys(vehicle: VehiculoCronograma, vehicleType: TipoVehiculoCronograma) {
-  const requirements = mergeRequisitosGastosFromApi(vehicle.requisitos_gastos);
-  return configuredExpenseKeys(requirements, vehicleType).filter(
-    (key) => !isExpenseScheduleComplete(key, requirements[key]),
-  );
-}
-
-function validateExpenseConfiguration(
-  vehicle: VehiculoCronograma,
-  index: number,
-  vehicleType: TipoVehiculoCronograma,
-): string | null {
-  const expenses = mergeRequisitosGastosFromApi(vehicle.requisitos_gastos);
-  const vehicleLabel = vehicle.name.trim() || `Vehículo ${index + 1}`;
-  const configuredKeys = new Set(configuredExpenseKeys(expenses, vehicleType));
-
-  if (configuredKeys.has('soat')) {
-    const installments = Number(expenses.soat.cobro?.cuotas);
-    const monthsBefore = Number(expenses.soat.cobro?.meses_anticipo);
-    if (!Number.isInteger(installments) || installments <= 0) return `${vehicleLabel}: indica las cuotas del SOAT.`;
-    if (!Number.isInteger(monthsBefore) || monthsBefore < installments) {
-      return `${vehicleLabel}: los meses de anticipación del SOAT deben cubrir todas sus cuotas.`;
-    }
-  }
-
-  if (configuredKeys.has('impuesto_vehicular')) {
-    const startMonth = Number(expenses.impuesto_vehicular.cobro?.mes_inicio);
-    const installments = Number(expenses.impuesto_vehicular.cobro?.cuotas);
-    const eligibleYears = Number(expenses.impuesto_vehicular.cobro?.anios_vigencia_tras_modelo);
-    if (!Number.isInteger(startMonth) || startMonth < 1 || startMonth > 12) return `${vehicleLabel}: indica el mes inicial del impuesto vehicular.`;
-    if (!Number.isInteger(installments) || installments <= 0 || 12 % installments !== 0) return `${vehicleLabel}: las cuotas del impuesto deben distribuirse uniformemente en el año.`;
-    if (startMonth - 1 + (installments - 1) * (12 / installments) > 11) return `${vehicleLabel}: el calendario del impuesto excede el año.`;
-    if (!Number.isInteger(eligibleYears) || eligibleYears <= 0) return `${vehicleLabel}: indica los años de vigencia del impuesto vehicular.`;
-  }
-
-  if (configuredKeys.has('src') && Number(expenses.src.cobro?.meses_anticipo) <= 0) {
-    return `${vehicleLabel}: indica la anticipación del SRC.`;
-  }
-  if (configuredKeys.has('todo_riesgo_mas_gps_agrupado') && Number(expenses.todo_riesgo_mas_gps_agrupado.cobro?.semanas) <= 0) {
-    return `${vehicleLabel}: indica las semanas del seguro todo riesgo + GPS.`;
-  }
-  if (configuredKeys.has('inicial_parcial') && Number(expenses.inicial_parcial.cobro?.semanas) <= 0) {
-    return `${vehicleLabel}: indica las semanas de la inicial parcial.`;
-  }
-  return null;
-}
-
-function generateId() {
-  return Math.random().toString(36).slice(2, 11);
-}
-
-function createEmptyRule(vehicleCount: number): CronogramaRule {
-  return {
-    viajes: '',
-    bono_auto: 0,
-    bono_auto_moneda: 'PEN',
-    cuotas_por_vehiculo: Array(vehicleCount).fill(0),
-    cuota_moneda_por_vehiculo: Array(vehicleCount).fill('PEN'),
-  };
-}
-
-function createEmptyVehicle(): VehiculoCronograma {
-  return {
-    id: generateId(),
-    name: '',
-    inicial: 0,
-    inicial_moneda: 'USD',
-    cuotas_semanales: 261,
-    requisitos_gastos: createDefaultRequisitosGastosVehiculo(),
-  };
-}
-
-function validateCronogramaForm(form: Omit<Cronograma, 'id'>): string | null {
-  if (!form.name.trim()) return 'Ingresa el nombre del cronograma.';
-  if (form.vehicles.length === 0) return 'Agrega al menos un vehículo.';
-  if (form.rules.length === 0) return 'Agrega al menos una regla de cuotas.';
-
-  const vehicleType = mergeRequisitosFromApi(form.requisitos_vehiculo).tipo_vehiculo;
-  for (let index = 0; index < form.vehicles.length; index += 1) {
-    const vehicle = form.vehicles[index];
-    if (!vehicle.name.trim()) return `Completa el nombre del vehículo ${index + 1}.`;
-    if (!Number.isInteger(Number(vehicle.cuotas_semanales)) || Number(vehicle.cuotas_semanales) <= 0) {
-      return `${vehicle.name}: la cantidad de cuotas semanales debe ser mayor a cero.`;
-    }
-    const expenseError = validateExpenseConfiguration(vehicle, index, vehicleType);
-    if (expenseError) return expenseError;
-  }
-
-  for (let index = 0; index < form.rules.length; index += 1) {
-    const rule = form.rules[index];
-    if (!parseViajesInterval(rule.viajes)) return `La regla ${index + 1} tiene un rango de viajes inválido.`;
-    if (rule.cuotas_por_vehiculo.length !== form.vehicles.length) {
-      return `La regla ${index + 1} no tiene una cuota para cada vehículo.`;
-    }
-  }
-  return null;
-}
-
 /** Clases para inputs numéricos sin spinners y sin cambio por rueda */
 const INPUT_NUMBER_CLASS =
   ' [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:m-0 [&::-webkit-inner-spin-button]:m-0';
-
-const TIPO_VEHICULO_OPTIONS: { value: TipoVehiculoCronograma; label: string; hint: string }[] = [
-  { value: 'nuevo', label: 'Nuevo', hint: 'Plan para autos nuevos' },
-  { value: 'seminuevo', label: 'Seminuevo', hint: 'Condición intermedia' },
-  { value: 'semiusado', label: 'Segundo uso', hint: 'Semi-usado / usado' },
-];
 
 function getCountryBadgeClass(country: string): string {
   if (country === 'PE') return 'bg-red-100 text-red-700';
   if (country === 'CO') return 'bg-amber-100 text-amber-800';
   return 'bg-gray-100 text-gray-600';
-}
-
-/** Parsea "viajes" (ej: "0 - 119", "400+") a intervalo [min, max]. Usado para saber qué fila aplica según número de viajes. */
-export function parseViajesInterval(viajesStr: string): { min: number; max: number } | null {
-  if (!viajesStr || typeof viajesStr !== 'string') return null;
-  const s = viajesStr.trim();
-  if (!s) return null;
-  const plusMatch = s.match(/^(\d+)\s*\+$/);
-  if (plusMatch) {
-    const min = parseInt(plusMatch[1], 10);
-    if (Number.isNaN(min) || min < 0) return null;
-    return { min, max: Infinity };
-  }
-  const parts = s.split(/\s*-\s*/).map((p) => p.trim());
-  if (parts.length >= 2) {
-    const min = parseInt(parts[0], 10);
-    const max = parseInt(parts[1], 10);
-    if (!Number.isNaN(min) && !Number.isNaN(max) && min >= 0 && max >= min) return { min, max };
-  }
-  const single = parseInt(s, 10);
-  if (!Number.isNaN(single) && single >= 0) return { min: single, max: single };
-  return null;
-}
-
-function getMinViajesForRule(rule: CronogramaRule): number | null {
-  const interval = parseViajesInterval(rule.viajes);
-  return interval ? interval.min : null;
-}
-
-function isThresholdOnlyViajesLabel(viajesStr: string): boolean {
-  const s = viajesStr.trim();
-  if (!s) return false;
-  if (/^\d+\s*\+$/.test(s)) return false;
-  if (s.includes('-')) return false;
-  const n = parseInt(s, 10);
-  return !Number.isNaN(n) && n >= 0;
-}
-
-/** "120-120" guardado en UI: mismo criterio que backend (umbral hasta el siguiente tramo). */
-function isCollapsedPointRange(viajesStr: string, interval: { min: number; max: number }): boolean {
-  if (!viajesStr.includes('-')) return false;
-  return interval.min === interval.max;
-}
-
-function shouldExpandPointRuleToNextSegment(viajesStr: string, interval: { min: number; max: number }): boolean {
-  if (interval.min !== interval.max) return false;
-  return isThresholdOnlyViajesLabel(viajesStr) || isCollapsedPointRange(viajesStr, interval);
-}
-
-function getNextSegmentMinAfter(rules: CronogramaRule[], excludeIndex: number, currentMin: number): number | null {
-  let best: number | null = null;
-  for (let j = 0; j < rules.length; j++) {
-    if (j === excludeIndex) continue;
-    const m = getMinViajesForRule(rules[j]);
-    if (typeof m === 'number' && m > currentMin) {
-      if (best == null || m < best) best = m;
-    }
-  }
-  return best;
-}
-
-/** Devuelve la regla cuyo intervalo de viajes contiene a numViajes (bono auto y cuotas por carro aplican). */
-export function getRuleForTripCount(rules: CronogramaRule[], numViajes: number): CronogramaRule | null {
-  if (!Array.isArray(rules) || rules.length === 0 || numViajes == null || numViajes < 0) return null;
-  const n = Number(numViajes);
-  if (Number.isNaN(n)) return null;
-  for (let i = 0; i < rules.length; i++) {
-    const rule = rules[i];
-    let interval = parseViajesInterval(rule.viajes);
-    if (!interval) continue;
-    if (shouldExpandPointRuleToNextSegment(rule.viajes, interval)) {
-      const nextMin = getNextSegmentMinAfter(rules, i, interval.min);
-      if (nextMin != null) {
-        interval = { min: interval.min, max: nextMin - 1 };
-      } else {
-        interval = { min: interval.min, max: Number.POSITIVE_INFINITY };
-      }
-    }
-    if (n >= interval.min && n <= interval.max) return rule;
-  }
-  return null;
 }
 
 export default function YegoMiAutoConfig() {
@@ -853,6 +484,22 @@ export default function YegoMiAutoConfig() {
     }));
   };
 
+  const setModalidadPagoInicial = (type: PagoInicialTipo, enabled: boolean) => {
+    setForm((current) => {
+      const requirements = mergeRequisitosFromApi(current.requisitos_vehiculo);
+      return {
+        ...current,
+        requisitos_vehiculo: {
+          ...requirements,
+          modalidades_pago_inicial: {
+            ...requirements.modalidades_pago_inicial,
+            [type]: enabled,
+          },
+        },
+      };
+    });
+  };
+
   const updateVehicleRequisitosGastos = (vehicleIndex: number, patch: Partial<RequisitosGastosVehiculo>) => {
     setForm((f) => ({
       ...f,
@@ -900,7 +547,8 @@ export default function YegoMiAutoConfig() {
     patchVehiculoGasto(vehicleIndex, key, { cobro: cobroPatch });
   };
 
-  const tipoCronograma = mergeRequisitosFromApi(form.requisitos_vehiculo).tipo_vehiculo;
+  const requisitosCronograma = mergeRequisitosFromApi(form.requisitos_vehiculo);
+  const tipoCronograma = requisitosCronograma.tipo_vehiculo;
   const configuredExpenseTotal = useMemo(
     () => form.vehicles.reduce((total, vehicle) => total + countConfiguredExpenses(vehicle, tipoCronograma), 0),
     [form.vehicles, tipoCronograma],
@@ -1387,6 +1035,35 @@ export default function YegoMiAutoConfig() {
                         </div>
 
                       </div>
+                      <div className="mt-4 border-t border-gray-200 pt-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="min-w-0">
+                            <h4 className="text-sm font-medium leading-tight text-gray-900">Modalidad de pago inicial</h4>
+                            <p className="mt-1 text-[11px] leading-snug text-gray-500">
+                              Nueva Solicitud mostrará únicamente las modalidades habilitadas aquí.
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-4">
+                            {([
+                              ['completo', 'Inicial completa'],
+                              ['parcial', 'Inicial parcial'],
+                            ] as const).map(([type, label]) => {
+                              return (
+                                <label key={type} className="inline-flex cursor-pointer select-none items-center gap-2.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={requisitosCronograma.modalidades_pago_inicial[type]}
+                                    onChange={(event) => setModalidadPagoInicial(type, event.target.checked)}
+                                    disabled={isViewMode}
+                                    className="h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                                  />
+                                  <span className="text-sm text-gray-800">{label}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1444,16 +1121,16 @@ export default function YegoMiAutoConfig() {
                     const configuredCount = configuredKeys.length;
                     const incompleteCount = incompleteExpenseKeys(v, tipoCronograma).length;
                     const srcConfigurationEditor = (
-                      <div className="col-span-2 min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-3 shadow-sm">
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(9rem,1fr)_minmax(11rem,1fr)_7rem] sm:items-end">
-                          <div className="min-w-0 sm:self-center">
-                            <label className="block text-[10px] font-medium leading-tight text-gray-700">
-                              Seguro de responsabilidad civil (SRC)
-                            </label>
-                            <p className="mt-0.5 text-[10px] leading-snug text-gray-400">
-                              Cobro mensual previo al vencimiento
-                            </p>
-                          </div>
+                      <div className="order-2 min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-3 shadow-sm">
+                        <div className="mb-2 min-w-0">
+                          <label className="block text-[10px] font-medium leading-tight text-gray-700">
+                            Seguro de responsabilidad civil (SRC)
+                          </label>
+                          <p className="mt-0.5 text-[10px] leading-snug text-gray-400">
+                            Cobro mensual previo al vencimiento
+                          </p>
+                        </div>
+                        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_5.5rem] items-end gap-2">
                           <label className="min-w-0 text-[10px] text-gray-500">
                             Monto
                             <div className="mt-1 flex min-w-0 rounded-md border border-gray-200 bg-white shadow-sm">
@@ -1674,11 +1351,11 @@ export default function YegoMiAutoConfig() {
                           </div>
                           {tipoCronograma !== 'nuevo' && modoAgr && srcConfigurationEditor}
 
-                          <div className="flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
+                          <div className="order-1 flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
                             <div className="mb-2 min-h-0">
                               <label className="block text-[10px] font-medium text-gray-700 leading-tight">SOAT</label>
                               <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
-                                Monto por cuota · calendario previo al vencimiento
+                                Monto total distribuido antes del vencimiento
                               </p>
                             </div>
                             <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
@@ -1701,21 +1378,9 @@ export default function YegoMiAutoConfig() {
                                 className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
                               />
                             </div>
-                            <div className="mt-2 grid grid-cols-2 gap-2">
+                            <div className="mt-2">
                               <label className="text-[10px] text-gray-500">
-                                Cuotas
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={12}
-                                  value={rg.soat.cobro?.cuotas || ''}
-                                  onChange={(e) => patchVehiculoGastoCobro(i, 'soat', { cuotas: Math.max(0, parseInt(e.target.value, 10) || 0) })}
-                                  readOnly={isViewMode}
-                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
-                                />
-                              </label>
-                              <label className="text-[10px] text-gray-500">
-                                Meses antes
+                                Meses antes (n.º de cobros)
                                 <input
                                   type="number"
                                   min={1}
@@ -1729,7 +1394,7 @@ export default function YegoMiAutoConfig() {
                             </div>
                           </div>
 
-                          <div className="flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
+                          <div className="order-1 flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
                             <div className="mb-2 min-h-0">
                               <label className="block text-[10px] font-medium text-gray-700 leading-tight">Impuesto vehicular</label>
                               <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
@@ -1803,7 +1468,7 @@ export default function YegoMiAutoConfig() {
 
                           {!modoAgr && (
                             <>
-                              <div className="flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
+                              <div className="order-3 flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
                                 <div className="mb-2 min-h-0">
                                   <label className="block text-[10px] font-medium text-gray-700 leading-tight">GPS</label>
                                   <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
@@ -1837,7 +1502,7 @@ export default function YegoMiAutoConfig() {
 
                           {modoAgr && (
                             <div
-                              className={`flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm ${tipoCronograma === 'nuevo' ? 'col-span-2' : ''}`}
+                              className={`order-3 flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm ${tipoCronograma === 'nuevo' ? 'col-span-2' : ''}`}
                             >
                               <div className="mb-2 min-h-0">
                                 <label className="block text-[10px] font-medium text-gray-700 leading-tight">
@@ -1897,7 +1562,7 @@ export default function YegoMiAutoConfig() {
                             </div>
                           )}
 
-                          <div className="col-span-2 min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-3 shadow-sm">
+                          <div className={`order-2 min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-3 shadow-sm ${tipoCronograma === 'nuevo' && modoAgr ? 'col-span-2' : ''}`}>
                             <div className="mb-2 min-w-0">
                               <label className="block text-[10px] font-medium leading-tight text-gray-700">Inicial parcial</label>
                               <p className="mt-0.5 text-[10px] leading-snug text-gray-400">

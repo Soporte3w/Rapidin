@@ -7,6 +7,7 @@ import YegoMiAutoNuevaSolicitudConductor from './YegoMiAutoNuevaSolicitudConduct
 import type { YangoSuggestion } from './YegoMiAutoNuevaSolicitudConductor';
 import YegoMiAutoNuevaSolicitudConfig from './YegoMiAutoNuevaSolicitudConfig';
 import YegoMiAutoNuevaSolicitudRevisar from './YegoMiAutoNuevaSolicitudRevisar';
+import type { RequisitosVehiculo } from './miautoCronogramaConfigDomain';
 
 export type NuevaSolicitudState = {
   conductor: YangoSuggestion | null;
@@ -20,7 +21,7 @@ export type NuevaSolicitudState = {
   fileComprobante: File | null;
 };
 
-type Cronograma = { id: string; name: string };
+type Cronograma = { id: string; name: string; requisitos_vehiculo?: Partial<RequisitosVehiculo> | null };
 type Vehiculo = { id: string; name: string };
 
 type TabName = 'conductor' | 'configurar' | 'revisar';

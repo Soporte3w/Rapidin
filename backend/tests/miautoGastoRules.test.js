@@ -42,12 +42,18 @@ test('GPS inicia el mes siguiente y termina con el contrato', () => {
   );
 });
 
-test('SOAT genera el monto configurado en cada cuota antes del vencimiento', () => {
-  const installments = buildSoatInstallments('2027-06-30', 200, 4, 4);
+test('SOAT divide el monto total entre los meses previos al vencimiento', () => {
+  const installments = buildSoatInstallments('2027-06-30', 200, 5);
   assert.deepEqual(installments.map((item) => item.dueDate), [
-    '2027-02-28', '2027-03-30', '2027-04-30', '2027-05-30',
+    '2027-01-30', '2027-02-28', '2027-03-30', '2027-04-30', '2027-05-30',
   ]);
-  assert.deepEqual(installments.map((item) => item.amount), [200, 200, 200, 200]);
+  assert.deepEqual(installments.map((item) => item.amount), [40, 40, 40, 40, 40]);
+});
+
+test('SOAT conserva exactamente el monto total cuando hay centavos', () => {
+  const installments = buildSoatInstallments('2027-06-30', 200.03, 5);
+  assert.deepEqual(installments.map((item) => item.amount), [40.01, 40.01, 40.01, 40, 40]);
+  assert.equal(installments.reduce((sum, item) => sum + item.amount, 0), 200.03);
 });
 
 test('SOAT conserva la primera referencia futura y luego renueva por aniversario', () => {

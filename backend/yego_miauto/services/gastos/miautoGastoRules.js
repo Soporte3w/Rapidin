@@ -90,22 +90,16 @@ export function buildGpsInstallments(year, amount) {
   }));
 }
 
-export function buildSoatInstallments(
-  expirationDate,
-  installmentAmount,
-  installmentCount,
-  monthsBeforeExpiration
-) {
-  const count = Number(installmentCount);
+export function buildSoatInstallments(expirationDate, totalAmount, monthsBeforeExpiration) {
   const monthsBefore = Number(monthsBeforeExpiration);
-  if (!Number.isInteger(count) || count <= 0) throw new Error('Cantidad de cuotas SOAT invalida');
-  if (!Number.isInteger(monthsBefore) || monthsBefore < count) {
+  if (!Number.isInteger(monthsBefore) || monthsBefore <= 0) {
     throw new Error('Meses de anticipacion SOAT invalidos');
   }
-  return Array.from({ length: count }, (_, index) => ({
+  const amounts = splitExact(totalAmount, monthsBefore);
+  return amounts.map((amount, index) => ({
     number: index + 1,
     dueDate: addMonthsClamped(expirationDate, index - monthsBefore),
-    amount: round2(installmentAmount),
+    amount,
   }));
 }
 

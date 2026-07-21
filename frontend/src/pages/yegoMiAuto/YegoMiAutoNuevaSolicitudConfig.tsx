@@ -1,7 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../../services/api';
 import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError } from '../../utils/miautoApiUtils';
 import type { NuevaSolicitudState } from './YegoMiAutoNuevaSolicitud';
+import {
+  getPagoInicialTiposPermitidos,
+  type PagoInicialTipo,
+  type RequisitosVehiculo,
+} from './miautoCronogramaConfigDomain';
 
 const COUNTRY_OPTIONS = [
   { value: 'PE', label: 'Peru' },
@@ -15,8 +20,13 @@ const APPS_OPTIONS = [
   { code: 'didii', name: 'Didi' },
 ];
 
-type Cronograma = { id: string; name: string };
+type Cronograma = { id: string; name: string; requisitos_vehiculo?: Partial<RequisitosVehiculo> | null };
 type Vehiculo = { id: string; name: string };
+
+const PAYMENT_TYPE_LABELS: Record<PagoInicialTipo, string> = {
+  completo: 'Completo',
+  parcial: 'Parcial',
+};
 
 type Props = {
   state: NuevaSolicitudState;
@@ -29,17 +39,17 @@ type Props = {
 
 export default function YegoMiAutoNuevaSolicitudConfig({ state, onChange, cronogramas, vehiculos, onCronogramasLoaded, onVehiculosLoaded }: Props) {
   const [loadingVehiculos, setLoadingVehiculos] = useState(false);
-  const [lastCountry, setLastCountry] = useState(state.country);
+  const previousCountry = useRef(state.country);
 
-  // Cache cronogramas: solo recargar si cambia el país
   useEffect(() => {
-    if (lastCountry !== state.country) {
-      setLastCountry(state.country);
+    const countryChanged = previousCountry.current !== state.country;
+    if (countryChanged) {
+      previousCountry.current = state.country;
       onCronogramasLoaded([]);
       onVehiculosLoaded([]);
       onChange({ cronogramaId: '', cronogramaName: '', vehiculoId: '', vehiculoName: '' });
     }
-    if (cronogramas.length > 0) return;
+    if (!countryChanged && cronogramas.length > 0) return;
     const ac = new AbortController();
     const qs = new URLSearchParams();
     if (state.country) qs.set('country', state.country);
@@ -49,16 +59,18 @@ export default function YegoMiAutoNuevaSolicitudConfig({ state, onChange, cronog
       .then((res) => {
         const data = res.data?.data ?? res.data;
         const list = Array.isArray(data) ? data : [];
-        onCronogramasLoaded(list.map((c: { id: string; name: string }) => ({ id: c.id, name: c.name })));
+        onCronogramasLoaded(list.map((c: Cronograma) => ({
+          id: c.id,
+          name: c.name,
+          requisitos_vehiculo: c.requisitos_vehiculo,
+        })));
       })
       .catch((e) => { if (!isAxiosAbortError(e)) onCronogramasLoaded([]); });
     return () => ac.abort();
-  }, [state.country, cronogramas.length]);
+  }, [state.country]);
 
-  // Cache vehiculos: solo recargar si cambia el cronograma
   useEffect(() => {
     if (!state.cronogramaId) { onVehiculosLoaded([]); onChange({ vehiculoId: '', vehiculoName: '' }); return; }
-    if (vehiculos.length > 0 && vehiculos[0]?.id !== '__loading__') return;
     const ac = new AbortController();
     setLoadingVehiculos(true);
     api.get(`/miauto/cronogramas/${state.cronogramaId}`, { signal: ac.signal, headers: MIAUTO_NO_CACHE_HEADERS })
@@ -66,8 +78,17 @@ export default function YegoMiAutoNuevaSolicitudConfig({ state, onChange, cronog
         const data = res.data?.data ?? res.data;
         const vehicles = data?.vehicles ?? data?.vehiculos ?? [];
         const list = Array.isArray(vehicles) ? vehicles.map((v: { id: string; name: string }) => ({ id: v.id, name: v.name })) : [];
+        const allowedPaymentTypes = getPagoInicialTiposPermitidos(data);
         onVehiculosLoaded(list);
-        if (list.length === 1) onChange({ vehiculoId: list[0].id, vehiculoName: list[0].name });
+        const patch: Partial<NuevaSolicitudState> = {};
+        if (list.length === 1) {
+          patch.vehiculoId = list[0].id;
+          patch.vehiculoName = list[0].name;
+        }
+        if (!allowedPaymentTypes.includes(state.pagoTipo) && allowedPaymentTypes[0]) {
+          patch.pagoTipo = allowedPaymentTypes[0];
+        }
+        if (Object.keys(patch).length > 0) onChange(patch);
       })
       .catch((e) => { if (!isAxiosAbortError(e)) onVehiculosLoaded([]); })
       .finally(() => setLoadingVehiculos(false));
@@ -75,6 +96,10 @@ export default function YegoMiAutoNuevaSolicitudConfig({ state, onChange, cronog
   }, [state.cronogramaId]);
 
   const inputClass = 'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm';
+  const selectedCronograma = cronogramas.find((cronograma) => cronograma.id === state.cronogramaId);
+  const allowedPaymentTypes = selectedCronograma
+    ? getPagoInicialTiposPermitidos(selectedCronograma)
+    : (['completo', 'parcial'] as PagoInicialTipo[]);
 
   return (
     <div className="space-y-6">
@@ -96,7 +121,20 @@ export default function YegoMiAutoNuevaSolicitudConfig({ state, onChange, cronog
           <label className="block text-xs font-semibold text-gray-900 mb-1.5">Cronograma</label>
           <select
             value={state.cronogramaId}
-            onChange={(e) => onChange({ cronogramaId: e.target.value, cronogramaName: cronogramas.find(c => c.id === e.target.value)?.name || '' })}
+            onChange={(e) => {
+              const cronograma = cronogramas.find((candidate) => candidate.id === e.target.value);
+              const paymentTypes = cronograma ? getPagoInicialTiposPermitidos(cronograma) : [];
+              onVehiculosLoaded([]);
+              onChange({
+                cronogramaId: e.target.value,
+                cronogramaName: cronograma?.name || '',
+                vehiculoId: '',
+                vehiculoName: '',
+                ...(paymentTypes[0] && !paymentTypes.includes(state.pagoTipo)
+                  ? { pagoTipo: paymentTypes[0] }
+                  : {}),
+              });
+            }}
             className={inputClass}
           >
             <option value="">Seleccionar...</option>
@@ -147,29 +185,23 @@ export default function YegoMiAutoNuevaSolicitudConfig({ state, onChange, cronog
       <div className="border-t border-gray-200 pt-6">
         <p className="text-xs font-semibold text-gray-900 mb-3">Pago inicial</p>
 
-        <div className="flex gap-6 mb-4">
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="radio"
-              name="pagoTipo"
-              value="completo"
-              checked={state.pagoTipo === 'completo'}
-              onChange={() => onChange({ pagoTipo: 'completo' })}
-              className="text-red-600 focus:ring-red-500"
-            />
-            <span className="text-sm text-gray-700">Completo</span>
-          </label>
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="radio"
-              name="pagoTipo"
-              value="parcial"
-              checked={state.pagoTipo === 'parcial'}
-              onChange={() => onChange({ pagoTipo: 'parcial' })}
-              className="text-red-600 focus:ring-red-500"
-            />
-            <span className="text-sm text-gray-700">Parcial</span>
-          </label>
+        <div className="mb-4 flex gap-6">
+          {allowedPaymentTypes.map((type) => (
+            <label key={type} className="inline-flex cursor-pointer items-center gap-2">
+              <input
+                type="radio"
+                name="pagoTipo"
+                value={type}
+                checked={state.pagoTipo === type}
+                onChange={() => onChange({ pagoTipo: type })}
+                className="text-red-600 focus:ring-red-500"
+              />
+              <span className="text-sm text-gray-700">{PAYMENT_TYPE_LABELS[type]}</span>
+            </label>
+          ))}
+          {selectedCronograma && allowedPaymentTypes.length === 1 && (
+            <span className="text-xs text-gray-500">Modalidad definida por el cronograma</span>
+          )}
         </div>
 
         <div>

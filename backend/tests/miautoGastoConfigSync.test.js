@@ -7,7 +7,7 @@ import {
 
 const requirements = {
   gps: { monto: 63.75 },
-  soat: { monto: 200 },
+  soat: { monto: 200, cobro: { meses_anticipo: 5 } },
   src: { monto: 45 },
   impuesto_vehicular: { monto: 990, cobro: { cuotas: 4 } },
   todo_riesgo_mas_gps_agrupado: { monto: 31.5 },
@@ -16,11 +16,18 @@ const requirements = {
 
 test('resuelve montos directos configurados por concepto', () => {
   assert.equal(configuredExpenseAmount(requirements, { tipo: 'gps' }), 63.75);
-  assert.equal(configuredExpenseAmount(requirements, { tipo: 'soat' }), 200);
   assert.equal(configuredExpenseAmount(requirements, { tipo: 'src' }), 45);
   assert.equal(configuredExpenseAmount(requirements, { tipo: 'str_gps' }), 31.5);
   assert.equal(configuredExpenseAmount(requirements, { tipo: 'todo_riesgo_mas_gps_agrupado' }), 31.5);
   assert.equal(configuredExpenseAmount(requirements, { tipo: 'inicial_parcial' }), 19.23);
+});
+
+test('divide el monto total del SOAT entre los meses configurados', () => {
+  const amounts = Array.from({ length: 5 }, (_, index) => configuredExpenseAmount(requirements, {
+    tipo: 'soat', numero_cuota: index + 1, total_cuotas: 5,
+  }));
+  assert.deepEqual(amounts, [40, 40, 40, 40, 40]);
+  assert.equal(amounts.reduce((sum, amount) => sum + amount, 0), 200);
 });
 
 test('divide el impuesto entre las cuotas existentes sin perder centavos', () => {

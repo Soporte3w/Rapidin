@@ -1,11 +1,32 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseRequisitosGastosVehiculo } from '../yego_miauto/services/cronograma/miautoCronogramaService.js';
+import {
+  cronogramaPermitePagoInicial,
+  getTiposPagoInicialPermitidos,
+  parseRequisitosGastosVehiculo,
+  parseRequisitosVehiculo,
+} from '../yego_miauto/services/cronograma/miautoCronogramaService.js';
+
+test('cronogramas antiguos mantienen ambas modalidades de pago inicial', () => {
+  const requirements = parseRequisitosVehiculo({ tipo_vehiculo: 'nuevo' });
+  assert.deepEqual(requirements.modalidades_pago_inicial, { completo: true, parcial: true });
+  assert.deepEqual(getTiposPagoInicialPermitidos(requirements), ['completo', 'parcial']);
+});
+
+test('respeta la unica modalidad de pago inicial configurada', () => {
+  const requirements = parseRequisitosVehiculo({
+    tipo_vehiculo: 'seminuevo',
+    modalidades_pago_inicial: { completo: false, parcial: true },
+  });
+  assert.equal(requirements.tipo_vehiculo, 'seminuevo');
+  assert.deepEqual(getTiposPagoInicialPermitidos(requirements), ['parcial']);
+  assert.equal(cronogramaPermitePagoInicial(requirements, 'parcial'), true);
+  assert.equal(cronogramaPermitePagoInicial(requirements, 'completo'), false);
+});
 
 test('no inventa montos ni plazos cuando el cronograma no los configura', () => {
   const config = parseRequisitosGastosVehiculo(null);
   assert.equal(config.gps.monto, 0);
-  assert.equal(config.soat.cobro.cuotas, 0);
   assert.equal(config.soat.cobro.meses_anticipo, 0);
   assert.equal(config.impuesto_vehicular.cobro.cuotas, 0);
   assert.equal(config.todo_riesgo_mas_gps_agrupado.cobro.semanas, 0);
@@ -42,7 +63,6 @@ test('conserva la configuracion de negocio persistida por vehiculo', () => {
   assert.deepEqual(config.soat.cobro, {
     tipo: 'mensual_antes_vencimiento',
     meses_anticipo: 6,
-    cuotas: 5,
   });
   assert.deepEqual(config.impuesto_vehicular.cobro, {
     tipo: 'sat_febrero_cuotas',

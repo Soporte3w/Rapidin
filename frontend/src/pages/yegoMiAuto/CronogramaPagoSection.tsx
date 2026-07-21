@@ -1,17 +1,38 @@
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Car, ChevronDown, ChevronRight, ChevronLeft, Calendar, CheckCircle, File, FileText, X, PlusCircle, Wallet } from 'lucide-react';
+import {
+  getPagoInicialTiposPermitidos,
+  type PagoInicialTipo,
+  type RequisitosVehiculo,
+} from './miautoCronogramaConfigDomain';
 
 export type PasoCP = 1 | 2 | 3;
-export type PagoTipo = 'completo' | 'parcial';
+export type PagoTipo = PagoInicialTipo;
+
+type CronogramaWizardVehicle = {
+  id: string | number;
+  name?: string;
+  inicial?: number;
+  inicial_moneda?: 'PEN' | 'USD';
+  cuotas_semanales?: number;
+  image?: string;
+};
+
+type CronogramaWizardOption = {
+  id: string;
+  name?: string;
+  requisitos_vehiculo?: Partial<RequisitosVehiculo> | null;
+  vehicles?: CronogramaWizardVehicle[];
+};
 
 export interface CronogramaPagoSectionProps {
   solicitud: any;
-  cronogramasList: any[];
+  cronogramasList: CronogramaWizardOption[];
   loadingCronogramas: boolean;
   tipoCambio: { moneda_local: string; valor_usd_a_local: number } | null;
-  selectedCronogramaForVehicles: any;
-  setSelectedCronogramaForVehicles: (c: any) => void;
+  selectedCronogramaForVehicles: CronogramaWizardOption | null;
+  setSelectedCronogramaForVehicles: (c: CronogramaWizardOption | null) => void;
   selectedVehiculoId: string | number | null;
   setSelectedVehiculoId: (id: string | number | null) => void;
   pendingPagoTipo: PagoTipo;
@@ -159,11 +180,11 @@ function WizardSinAsignacion({
   onGuardarCronogramaPago,
   getAdjuntoUrl,
 }: {
-  cronogramasList: any[];
+  cronogramasList: CronogramaWizardOption[];
   loadingCronogramas: boolean;
   tipoCambio: { moneda_local: string; valor_usd_a_local: number } | null;
-  selectedCronogramaForVehicles: any;
-  setSelectedCronogramaForVehicles: (c: any) => void;
+  selectedCronogramaForVehicles: CronogramaWizardOption | null;
+  setSelectedCronogramaForVehicles: (c: CronogramaWizardOption | null) => void;
   selectedVehiculoId: string | number | null;
   setSelectedVehiculoId: (id: string | number | null) => void;
   pendingPagoTipo: PagoTipo;
@@ -182,6 +203,18 @@ function WizardSinAsignacion({
     );
   }
 
+  const allowedPaymentTypes = selectedCronogramaForVehicles
+    ? getPagoInicialTiposPermitidos(selectedCronogramaForVehicles)
+    : [];
+  const selectCronograma = (cronograma: CronogramaWizardOption) => {
+    const paymentTypes = getPagoInicialTiposPermitidos(cronograma);
+    setSelectedCronogramaForVehicles(cronograma);
+    setSelectedVehiculoId(null);
+    if (!paymentTypes.includes(pendingPagoTipo) && paymentTypes[0]) {
+      setPendingPagoTipo(paymentTypes[0]);
+    }
+  };
+
   return (
     <>
       <StepperCP paso={pasoCronogramaPago} />
@@ -189,19 +222,22 @@ function WizardSinAsignacion({
       {pasoCronogramaPago === 1 && (
         <div className="space-y-3">
           <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-            {cronogramasList.map((c: any) => {
+            {cronogramasList.map((c) => {
               const isSelected = selectedCronogramaForVehicles?.id === c.id;
               return (
                 <button
                   key={c.id}
                   type="button"
-                  onClick={() => setSelectedCronogramaForVehicles(c)}
+                  onClick={() => selectCronograma(c)}
                   className={`flex items-start gap-3 p-3 sm:p-4 rounded-xl border text-left transition-all duration-200 shadow-sm hover:shadow min-w-0 ${isSelected ? 'border-[#8B1A1A] bg-red-50/30' : 'border-gray-200 bg-white hover:border-[#8B1A1A] hover:bg-red-50/20'}`}
                 >
                   {isSelected && <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#8B1A1A] text-white mt-0.5"><CheckCircle className="w-3 h-3" /></span>}
                   <div className="min-w-0 flex-1">
                     <h3 className="text-[9px] sm:text-[10px] font-bold text-gray-900 leading-snug break-words">{c.name || 'Sin nombre'}</h3>
                     <p className="text-[10px] text-gray-500 mt-0.5">{c.vehicles?.length ?? 0} carro(s) disponibles</p>
+                    <p className="mt-1 text-[10px] text-gray-500">
+                      Inicial: {getPagoInicialTiposPermitidos(c).map((type) => type === 'completo' ? 'completa' : 'parcial').join(' / ')}
+                    </p>
                   </div>
                 </button>
               );
@@ -217,7 +253,7 @@ function WizardSinAsignacion({
             <span className="font-semibold truncate">{selectedCronogramaForVehicles.name || 'Cronograma'}</span>
           </div>
           <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-            {(selectedCronogramaForVehicles.vehicles || []).map((v: any) => {
+            {(selectedCronogramaForVehicles.vehicles || []).map((v) => {
               const equivUsd = v.inicial_moneda === 'USD' && tipoCambio?.valor_usd_a_local ? Number(v.inicial) * tipoCambio.valor_usd_a_local : null;
               const equivSym = tipoCambio?.moneda_local === 'COP' ? 'COP' : 'S/.';
               const isSelected = selectedVehiculoId === v.id;
@@ -253,22 +289,22 @@ function WizardSinAsignacion({
 
       {pasoCronogramaPago === 3 && (
         <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-2">
-            <label className={`cursor-pointer rounded-lg border p-2.5 sm:p-3 transition-all duration-200 flex items-center gap-2 bg-white min-w-0 ${pendingPagoTipo === 'completo' ? 'border-[#8B1A1A] bg-red-50/30' : 'border-gray-200 hover:border-gray-300'}`}>
-              <span className={`flex h-3.5 w-3.5 shrink-0 rounded-full border flex items-center justify-center ${pendingPagoTipo === 'completo' ? 'border-[#8B1A1A] bg-[#8B1A1A]' : 'border-gray-400'}`}>
-                {pendingPagoTipo === 'completo' && <span className="h-1 w-1 rounded-full bg-white" />}
-              </span>
-              <span className={`text-xs sm:text-sm font-medium truncate ${pendingPagoTipo === 'completo' ? 'text-[#8B1A1A]' : 'text-gray-700'}`}>Pago completo</span>
-              <input type="radio" name="pending_pago_tipo" checked={pendingPagoTipo === 'completo'} onChange={() => setPendingPagoTipo('completo')} className="sr-only" />
-            </label>
-            <label className={`cursor-pointer rounded-lg border p-2.5 sm:p-3 transition-all duration-200 flex items-center gap-2 bg-white min-w-0 ${pendingPagoTipo === 'parcial' ? 'border-[#8B1A1A] bg-red-50/30' : 'border-gray-200 hover:border-gray-300'}`}>
-              <span className={`flex h-3.5 w-3.5 shrink-0 rounded-full border flex items-center justify-center ${pendingPagoTipo === 'parcial' ? 'border-[#8B1A1A] bg-[#8B1A1A]' : 'border-gray-400'}`}>
-                {pendingPagoTipo === 'parcial' && <span className="h-1 w-1 rounded-full bg-white" />}
-              </span>
-              <span className={`text-xs sm:text-sm font-medium truncate ${pendingPagoTipo === 'parcial' ? 'text-[#8B1A1A]' : 'text-gray-700'}`}>Pago parcial</span>
-              <input type="radio" name="pending_pago_tipo" checked={pendingPagoTipo === 'parcial'} onChange={() => setPendingPagoTipo('parcial')} className="sr-only" />
-            </label>
+          <div className={`grid gap-2 ${allowedPaymentTypes.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            {allowedPaymentTypes.map((type) => (
+              <label key={type} className={`cursor-pointer rounded-lg border p-2.5 sm:p-3 transition-all duration-200 flex items-center gap-2 bg-white min-w-0 ${pendingPagoTipo === type ? 'border-[#8B1A1A] bg-red-50/30' : 'border-gray-200 hover:border-gray-300'}`}>
+                <span className={`flex h-3.5 w-3.5 shrink-0 rounded-full border items-center justify-center ${pendingPagoTipo === type ? 'border-[#8B1A1A] bg-[#8B1A1A]' : 'border-gray-400'}`}>
+                  {pendingPagoTipo === type && <span className="h-1 w-1 rounded-full bg-white" />}
+                </span>
+                <span className={`truncate text-xs font-medium sm:text-sm ${pendingPagoTipo === type ? 'text-[#8B1A1A]' : 'text-gray-700'}`}>
+                  Pago {type === 'completo' ? 'completo' : 'parcial'}
+                </span>
+                <input type="radio" name="pending_pago_tipo" checked={pendingPagoTipo === type} onChange={() => setPendingPagoTipo(type)} className="sr-only" />
+              </label>
+            ))}
           </div>
+          {allowedPaymentTypes.length === 1 && (
+            <p className="text-xs text-gray-500">Esta es la única modalidad habilitada por el cronograma.</p>
+          )}
         </div>
       )}
 
@@ -293,7 +329,7 @@ function WizardSinAsignacion({
               Siguiente <ChevronRight className="w-4 h-4" />
             </button>
           ) : (
-            <button type="button" onClick={onGuardarCronogramaPago} disabled={actionLoading || !selectedVehiculoId} className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+            <button type="button" onClick={onGuardarCronogramaPago} disabled={actionLoading || !selectedVehiculoId || allowedPaymentTypes.length === 0} className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#8B1A1A] text-white rounded-lg hover:bg-[#6B1515] text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
               Guardar
             </button>
           )}

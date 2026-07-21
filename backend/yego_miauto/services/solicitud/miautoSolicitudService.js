@@ -1,5 +1,9 @@
 import { query } from '../../../config/database.js';
-import { getCronogramasByIds, getMonedaCuotaSemanalPorVehiculo } from '../cronograma/miautoCronogramaService.js';
+import {
+  assertCronogramaPermitePagoInicial,
+  getCronogramasByIds,
+  getMonedaCuotaSemanalPorVehiculo,
+} from '../cronograma/miautoCronogramaService.js';
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../../../utils/helpers.js';
 import { generateWeeklyCharge } from '../cobros/CobroEngine.js';
 import { getLimaYmd, mondayOfWeekContainingYmd, addDaysYmd, limaWeekStartToMiAutoIncomeRange } from '../../../utils/miautoLimaWeekRange.js';
@@ -681,7 +685,23 @@ export async function getActiveSolicitudInfo(phone, driverCountry, rapidinDriver
 }
 
 export const createSolicitud = async (data, userId = null) => {
-  const { country, dni, phone, email, license_number, description, apps = [], driver_id_fleet } = data;
+  const {
+    country,
+    dni,
+    phone,
+    email,
+    license_number,
+    description,
+    apps = [],
+    driver_id_fleet,
+    cronograma_id = null,
+    cronograma_vehiculo_id = null,
+    pago_tipo = null,
+    pago_estado = 'pendiente',
+    fecha_inicio_cobro_semanal = null,
+    placa_asignada = null,
+    status = 'pendiente',
+  } = data;
   let rapidinDriverIdVal = trimOrUndefined(driver_id_fleet) ?? null;
   if (!rapidinDriverIdVal && dni) {
     rapidinDriverIdVal = await resolveFleetDriverIdFromDni(dni);
@@ -690,17 +710,50 @@ export const createSolicitud = async (data, userId = null) => {
   const activeInfo = await getActiveSolicitudInfo(phone, driverCountry, rapidinDriverIdVal);
   if (activeInfo) throw new ActiveSolicitudError(activeInfo.status, activeInfo.park_id);
 
+  await assertCronogramaPermitePagoInicial(cronograma_id, pago_tipo);
   const appsArr = normalizeAppsToCodes(apps);
   const result = await query(
-    `INSERT INTO module_miauto_solicitud (country, dni, phone, email, license_number, description, apps_trabajadas, driver_id_fleet, updated_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
+    `INSERT INTO module_miauto_solicitud
+       (country, dni, phone, email, license_number, description, apps_trabajadas,
+        driver_id_fleet, cronograma_id, cronograma_vehiculo_id, pago_tipo, pago_estado,
+        fecha_inicio_cobro_semanal, placa_asignada, status, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      RETURNING *`,
-    [country || 'PE', dni || null, phone || null, email || null, license_number || null, description || null, JSON.stringify(appsArr), rapidinDriverIdVal, userId]
+    [
+      country || 'PE',
+      dni || null,
+      phone || null,
+      email || null,
+      license_number || null,
+      description || null,
+      JSON.stringify(appsArr),
+      rapidinDriverIdVal,
+      cronograma_id,
+      cronograma_vehiculo_id,
+      pago_tipo,
+      pago_estado || 'pendiente',
+      fecha_inicio_cobro_semanal,
+      placa_asignada ? normalizePlacaAsignada(placa_asignada) : null,
+      status || 'pendiente',
+      userId,
+    ]
   );
   return getSolicitudById(result.rows[0].id);
 };
 
 export const updateSolicitud = async (id, data, userId = null) => {
+  if (data.cronograma_id !== undefined || data.pago_tipo !== undefined) {
+    const currentResult = await query(
+      'SELECT cronograma_id, pago_tipo FROM module_miauto_solicitud WHERE id = $1',
+      [id]
+    );
+    if (currentResult.rows.length === 0) return null;
+    const current = currentResult.rows[0];
+    const cronogramaId = data.cronograma_id !== undefined ? data.cronograma_id : current.cronograma_id;
+    const pagoTipo = data.pago_tipo !== undefined ? data.pago_tipo : current.pago_tipo;
+    await assertCronogramaPermitePagoInicial(cronogramaId, pagoTipo);
+  }
+
   const updates = [];
   const params = [];
   let n = 1;

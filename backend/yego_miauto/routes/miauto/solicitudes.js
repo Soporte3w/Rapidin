@@ -160,6 +160,8 @@ router.post('/solicitudes', async (req, res) => {
   try {
     const { country, dni, phone, email, license_number, description, driver_id_fleet } = req.body;
     if (!dni || !country) return errorResponse(res, 'country y dni son requeridos', 400);
+    const cronogramaId = trimOrUndefined(req.body.cronograma_id);
+    const pagoTipo = trimOrUndefined(req.body.pago_tipo);
 
     const solicitud = await createSolicitud({
       country,
@@ -170,19 +172,14 @@ router.post('/solicitudes', async (req, res) => {
       description,
       apps: getAppsFromBody(req.body),
       driver_id_fleet,
+      cronograma_id: cronogramaId,
+      cronograma_vehiculo_id: trimOrUndefined(req.body.cronograma_vehiculo_id),
+      placa_asignada: trimOrUndefined(req.body.placa_asignada),
+      fecha_inicio_cobro_semanal: trimOrUndefined(req.body.fecha_inicio_cobro_semanal)?.slice(0, 10),
+      pago_tipo: pagoTipo,
+      pago_estado: trimOrUndefined(req.body.pago_estado),
+      status: trimOrUndefined(req.body.status),
     }, req.user?.id);
-    const config = {};
-    if (req.body.cronograma_id) config.cronograma_id = trimOrUndefined(req.body.cronograma_id) || null;
-    if (req.body.cronograma_vehiculo_id) config.cronograma_vehiculo_id = trimOrUndefined(req.body.cronograma_vehiculo_id) || null;
-    if (req.body.placa_asignada) config.placa_asignada = String(req.body.placa_asignada).trim();
-    if (req.body.fecha_inicio_cobro_semanal) config.fecha_inicio_cobro_semanal = String(req.body.fecha_inicio_cobro_semanal).trim().slice(0, 10);
-    if (req.body.pago_tipo) config.pago_tipo = String(req.body.pago_tipo).trim();
-    if (req.body.pago_estado) config.pago_estado = String(req.body.pago_estado).trim();
-    if (req.body.status) config.status = String(req.body.status).trim();
-    if (req.body.apps) config.apps = getAppsFromBody(req.body);
-    if (Object.keys(config).length > 0) {
-      await updateSolicitud(solicitud.id, config, req.user?.id);
-    }
     auditMiautoMutation('solicitud.created', 'solicitud', solicitud?.id, { country, dni });
     return successResponse(res, solicitud, 'Solicitud creada', 201);
   } catch (error) {

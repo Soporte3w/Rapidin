@@ -37,7 +37,14 @@ export function configuredExpenseAmount(requirementsValue, expense) {
   const installmentNumber = positiveInteger(expense?.numero_cuota) || 1;
 
   if (concept === 'gps') return positiveNumber(requirements.gps?.monto);
-  if (concept === 'soat') return positiveNumber(requirements.soat?.monto);
+  if (concept === 'soat') {
+    const total = positiveNumber(requirements.soat?.monto);
+    const configuredCount = positiveInteger(requirements.soat?.cobro?.meses_anticipo);
+    const existingCount = positiveInteger(expense?.total_cuotas);
+    const count = existingCount || configuredCount;
+    if (!total || !count || installmentNumber > count) return null;
+    return splitTotalInstallment(total, count, installmentNumber);
+  }
   if (concept === 'src') return positiveNumber(requirements.src?.monto);
   if (concept === 'inicial_parcial') return positiveNumber(requirements.inicial_parcial?.monto);
   if (concept === 'str_gps' || concept === 'todo_riesgo_mas_gps_agrupado') {

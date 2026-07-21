@@ -1,4 +1,5 @@
 import { query } from '../../../config/database.js';
+import { syncUnpaidExpenseAmountsForCronogramaVehicles } from '../gastos/miautoOtrosGastosService.js';
 
 const TIPOS_VEHICULO = ['nuevo', 'seminuevo', 'semiusado'];
 
@@ -627,7 +628,7 @@ export async function createCronograma(data) {
   return getCronogramaById(cronogramaId);
 }
 
-export async function updateCronograma(id, data) {
+export async function updateCronograma(id, data, userId = null) {
   const existing = await query('SELECT id, name, country, active, tasa_interes_mora, bono_tiempo_activo FROM module_miauto_cronograma WHERE id = $1', [id]);
   if (existing.rows.length === 0) return null;
   const row = existing.rows[0];
@@ -657,16 +658,27 @@ export async function updateCronograma(id, data) {
 
   // ACTUALIZAR vehículos existentes en vez de borrar y recrear
   // (borrar+recrear cambia los IDs y deja huérfanas las solicitudes)
-  const existingVehicles = await query('SELECT id FROM module_miauto_cronograma_vehiculo WHERE cronograma_id = $1 ORDER BY orden', [id]);
+  const existingVehicles = await query(
+    'SELECT id, requisitos_gastos FROM module_miauto_cronograma_vehiculo WHERE cronograma_id = $1 ORDER BY orden',
+    [id]
+  );
   const existingIds = new Set(existingVehicles.rows.map(r => r.id));
+  const previousExpensesByVehicle = new Map(existingVehicles.rows.map((vehicle) => [
+    String(vehicle.id),
+    parseRequisitosGastosVehiculo(vehicle.requisitos_gastos),
+  ]));
 
   const keptIds = new Set();
+  const changedExpenseVehicleIds = [];
   for (let i = 0; i < vehicles.length; i++) {
     const v = vehicles[i];
     const reqG = mergeRequisitosGastosVehiculo(v.requisitos_gastos && typeof v.requisitos_gastos === 'object' ? v.requisitos_gastos : {});
     if (v.id && existingIds.has(v.id)) {
       // UPDATE vehículo existente (conserva ID)
       keptIds.add(v.id);
+      if (JSON.stringify(previousExpensesByVehicle.get(String(v.id))) !== JSON.stringify(reqG)) {
+        changedExpenseVehicleIds.push(v.id);
+      }
       await query(
         `UPDATE module_miauto_cronograma_vehiculo SET name=$1, inicial=$2, inicial_moneda=$3, cuotas_semanales=$4, image=$5, orden=$6, requisitos_gastos=$7::jsonb, updated_at=CURRENT_TIMESTAMP WHERE id=$8`,
         [(v.name && String(v.name).trim()) || '', parseFloat(v.inicial) || 0, v.inicial_moneda === 'PEN' ? 'PEN' : 'USD', parseInt(v.cuotas_semanales, 10) || 0, v.image || null, i, JSON.stringify(reqG), v.id]
@@ -725,7 +737,11 @@ export async function updateCronograma(id, data) {
     }
   }
 
-  return { cronograma: await getCronogramaById(id), skippedVehicles: skippedVehicles.length > 0 ? skippedVehicles : undefined };
+  await syncUnpaidExpenseAmountsForCronogramaVehicles(changedExpenseVehicleIds, userId);
+  return {
+    cronograma: await getCronogramaById(id),
+    skippedVehicles: skippedVehicles.length > 0 ? skippedVehicles : undefined,
+  };
 }
 
 export async function deleteCronograma(id) {

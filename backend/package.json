@@ -19,7 +19,7 @@
     "miauto:cobro-fleet": "node scripts/miauto-cobro-fleet-solicitud.js",
     "miauto:importar-gastos": "node scripts/miauto-import-otros-gastos-excel.js",
     "test:miauto-cobros": "node --test tests/miautoWeeklyPoolPriority.test.js",
-    "test:miauto-gastos": "node --test tests/miautoGastoRules.test.js tests/miautoCronogramaGastosConfig.test.js tests/miautoOtrosGastosDocument.test.js tests/miautoOtrosGastosExcelImport.test.js"
+    "test:miauto-gastos": "node --test tests/miautoGastoRules.test.js tests/miautoCronogramaGastosConfig.test.js tests/miautoGastoConfigSync.test.js tests/miautoOtrosGastosDocument.test.js tests/miautoOtrosGastosExcelImport.test.js"
   },
   "keywords": [
     "rapidin",

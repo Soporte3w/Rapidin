@@ -90,7 +90,7 @@ router.post('/cronogramas', async (req, res) => {
 // PUT /api/miauto/cronogramas/:id
 router.put('/cronogramas/:id', validateUUID, async (req, res) => {
   try {
-    const result = await updateCronograma(req.params.id, req.body);
+    const result = await updateCronograma(req.params.id, req.body, req.user?.id || null);
     if (!result) return errorResponse(res, 'Cronograma no encontrado', 404);
     const { cronograma, skippedVehicles } = result;
     invalidateCronogramasListCache();

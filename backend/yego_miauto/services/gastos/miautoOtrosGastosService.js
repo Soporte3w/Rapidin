@@ -13,6 +13,11 @@ import {
   recurringReferenceDate,
   replaceYearClamped,
 } from './miautoGastoRules.js';
+import {
+  amountChanged,
+  configuredExpenseAmount,
+  parseExpenseRequirements,
+} from './miautoGastoConfigSync.js';
 
 function limaTodayYmd() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -216,6 +221,99 @@ export async function updateExpenseConfiguration(solicitudId, data, userId = nul
   return getExpenseConfiguration(solicitudId);
 }
 
+/**
+ * Propaga cambios de monto del cronograma solo a cuotas sin movimientos.
+ * Pagos, comprobantes y cobros Fleet en curso conservan su importe historico.
+ */
+export async function syncUnpaidExpenseAmountsForCronogramaVehicles(vehicleIds, userId = null) {
+  const ids = [...new Set((vehicleIds || []).filter(Boolean).map(String))];
+  if (ids.length === 0) return { scanned: 0, updated: 0, cycles: 0 };
+
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `SELECT og.id, og.ciclo_id, og.tipo, og.numero_cuota, og.total_cuotas,
+              og.amount_due, cv.requisitos_gastos
+       FROM module_miauto_otros_gastos og
+       INNER JOIN module_miauto_solicitud s
+         ON s.id = og.solicitud_id AND s.deleted_at IS NULL
+       INNER JOIN module_miauto_cronograma_vehiculo cv
+         ON cv.id = s.cronograma_vehiculo_id
+       WHERE s.cronograma_vehiculo_id = ANY($1::uuid[])
+         AND og.deleted_at IS NULL
+         AND og.origen = 'sistema'
+         AND LOWER(COALESCE(og.status, 'pending')) <> 'paid'
+         AND COALESCE(og.paid_amount, 0) <= 0.005
+         AND NOT EXISTS (
+           SELECT 1 FROM module_miauto_gasto_pago_aplicacion pa
+           WHERE pa.otros_gastos_id = og.id AND pa.reversed_at IS NULL
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM module_miauto_comprobante_otros_gastos cp
+           WHERE cp.otros_gastos_id = og.id AND cp.estado <> 'rechazado'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM module_miauto_gasto_cobro_fleet_intento fi
+           WHERE fi.otros_gastos_id = og.id AND fi.estado IN ('processing', 'reconcile')
+         )
+       FOR UPDATE OF og`,
+      [ids]
+    );
+
+    const changes = result.rows.flatMap((row) => {
+      const amount = configuredExpenseAmount(row.requisitos_gastos, row);
+      return amountChanged(row.amount_due, amount) ? [{ id: row.id, amount }] : [];
+    });
+
+    let changedCycles = [];
+    if (changes.length > 0) {
+      const updateResult = await client.query(
+        `UPDATE module_miauto_otros_gastos og
+         SET amount_due = change.amount,
+             updated_by = $2,
+             updated_at = CURRENT_TIMESTAMP
+         FROM jsonb_to_recordset($1::jsonb) AS change(id uuid, amount numeric)
+         WHERE og.id = change.id
+         RETURNING og.ciclo_id`,
+        [JSON.stringify(changes), userId]
+      );
+      changedCycles = [...new Set(updateResult.rows.map((row) => row.ciclo_id).filter(Boolean))];
+
+      if (changedCycles.length > 0) {
+        await client.query(
+          `UPDATE module_miauto_gasto_ciclo c
+           SET monto_total = totals.monto_total,
+               estado = CASE WHEN totals.pending_count = 0 THEN 'completado' ELSE 'activo' END,
+               updated_by = $2,
+               updated_at = CURRENT_TIMESTAMP
+           FROM (
+             SELECT ciclo_id, SUM(amount_due) AS monto_total,
+                    COUNT(*) FILTER (
+                      WHERE COALESCE(paid_amount, 0) < COALESCE(amount_due, 0) - 0.005
+                    ) AS pending_count
+             FROM module_miauto_otros_gastos
+             WHERE ciclo_id = ANY($1::uuid[]) AND deleted_at IS NULL
+             GROUP BY ciclo_id
+           ) totals
+           WHERE c.id = totals.ciclo_id`,
+          [changedCycles, userId]
+        );
+      }
+    }
+
+    await client.query('COMMIT');
+    const summary = { scanned: result.rows.length, updated: changes.length, cycles: changedCycles.length };
+    logger.info('miauto.gastos.cronograma_amounts_synced', { vehicleIds: ids, ...summary });
+    return summary;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function upsertCycle(client, {
   solicitudId,
   concept,
@@ -328,12 +426,6 @@ async function upsertCycle(client, {
   return { created, cycleId, concept, periodYear, installments: inserted, origin: existingOrigin || origin };
 }
 
-function requirementsObject(value) {
-  if (!value) return {};
-  if (typeof value === 'object') return value;
-  try { return JSON.parse(value); } catch { return {}; }
-}
-
 /** Generacion explicita e idempotente. Completa solo periodos que aun no existen. */
 export async function generateExpenseCycles(solicitudId, options = {}) {
   const config = await getExpenseConfiguration(solicitudId);
@@ -350,7 +442,7 @@ export async function generateExpenseCycles(solicitudId, options = {}) {
     return { skipped: true, reason: 'contrato_finalizado', periodYear, contractEndDate: endDate, cycles: [] };
   }
 
-  const requirements = requirementsObject(config.requisitos_gastos);
+  const requirements = parseExpenseRequirements(config.requisitos_gastos);
   const gpsRule = requirements.gps || {};
   const soatRule = requirements.soat || {};
   const taxRule = requirements.impuesto_vehicular || {};
@@ -417,7 +509,7 @@ export async function generateExpenseCycles(solicitudId, options = {}) {
       }));
     }
 
-    const taxTotal = numberOrNull(options.vehicleTaxTotal);
+    const taxTotal = numberOrNull(options.vehicleTaxTotal) ?? positiveNumber(taxRule.monto);
     if (taxTotal != null) {
       if (taxTotal <= 0) throw new Error('El impuesto vehicular debe ser mayor a cero');
       if (!config.vehiculo_anio) throw new Error('Registra el ano del vehiculo antes del impuesto vehicular');

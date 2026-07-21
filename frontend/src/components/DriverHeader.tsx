@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Menu } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { LogOut, Menu } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { getStoredFlotaName, getStoredSelectedParkId, setStoredFlotaName } from '../utils/authStorage';
 import api from '../services/api';
@@ -9,8 +10,14 @@ interface DriverHeaderProps {
 }
 
 export default function DriverHeader({ onMenuClick }: DriverHeaderProps) {
-  const { user } = useAuth();
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
   const [flotaName, setFlotaName] = useState<string | null>(getStoredFlotaName());
+
+  const handleLogout = () => {
+    logout();
+    navigate('/driver/login', { replace: true });
+  };
 
   // Si hay park_id en sesión pero no tenemos nombre, obtenerlo por API de partners y guardarlo en sesión
   useEffect(() => {
@@ -62,21 +69,30 @@ export default function DriverHeader({ onMenuClick }: DriverHeaderProps) {
         
         <div className="flex-1 lg:flex-none" />
 
-        <div className="flex items-center">
-          {/* User Account Info - siempre visible */}
-          <div className="flex items-center space-x-3">
-            <div className="flex flex-col min-w-0 text-right">
-              <p className="text-xs font-semibold text-white lg:text-gray-900 leading-tight mt-0.5">
+        <div className="flex min-w-0 items-center gap-2">
+          {/* En móvil compacto se priorizan el avatar y la acción de salida. */}
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <div className="hidden min-w-0 flex-col text-right sm:flex">
+              <p className="max-w-28 truncate text-xs font-semibold leading-tight text-white sm:max-w-44 lg:max-w-none lg:text-gray-900">
                 {user?.first_name} {user?.last_name} 
               </p>
               {flotaName ? (
-                <p className="text-xs text-white/70 lg:text-gray-500 font-medium leading-tight">{flotaName}</p>
+                <p className="max-w-28 truncate text-xs font-medium leading-tight text-white/70 sm:max-w-44 lg:max-w-none lg:text-gray-500">{flotaName}</p>
               ) : null}
             </div>
             <div className="w-9 h-9 lg:w-10 lg:h-10 bg-white/20 lg:bg-red-600 rounded-full flex items-center justify-center text-white font-semibold text-sm lg:text-base flex-shrink-0">
               {user?.first_name?.charAt(0) || 'U'}
             </div>
           </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-white transition-colors hover:bg-white/15 active:bg-white/25 lg:hidden"
+            aria-label="Cerrar sesión"
+            title="Cerrar sesión"
+          >
+            <LogOut className="h-5 w-5" />
+          </button>
         </div>
       </div>
     </header>

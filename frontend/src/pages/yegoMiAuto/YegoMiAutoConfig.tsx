@@ -13,6 +13,9 @@ import {
   Search,
   SlidersHorizontal,
   Car,
+  ClipboardList,
+  ShieldCheck,
+  TableProperties,
 } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
@@ -92,14 +95,14 @@ export function createDefaultRequisitosGastosVehiculo(): RequisitosGastosVehicul
     todo_riesgo_y_gps_modo: 'separado',
     src: { monto: 0, moneda: 'USD', cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 0 } },
     gps: { monto: 0, moneda: 'PEN', cobro: { tipo: 'fin_de_mes' } },
-    soat: { monto: 0, moneda: 'PEN', cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 0, cuotas: 0 } },
+    soat: { monto: 0, moneda: 'PEN', cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 4, cuotas: 4 } },
     impuesto_vehicular: {
       monto: 0,
       moneda: 'PEN',
-      cobro: { tipo: 'sat_febrero_cuotas', mes_inicio: 0, cuotas: 0, anios_vigencia_tras_modelo: 0 },
+      cobro: { tipo: 'sat_febrero_cuotas', mes_inicio: 2, cuotas: 4, anios_vigencia_tras_modelo: 3 },
     },
-    todo_riesgo_mas_gps_agrupado: { monto: 0, moneda: 'PEN', cobro: { tipo: 'semanal', semanas: 0 } },
-    inicial_parcial: { monto: 0, moneda: 'USD', cobro: { tipo: 'semanal', semanas: 0 } },
+    todo_riesgo_mas_gps_agrupado: { monto: 0, moneda: 'PEN', cobro: { tipo: 'semanal', semanas: 26 } },
+    inicial_parcial: { monto: 0, moneda: 'USD', cobro: { tipo: 'semanal', semanas: 26 } },
   };
 }
 
@@ -157,6 +160,146 @@ export interface Cronograma {
   rules: CronogramaRule[];
 }
 
+type CronogramaModalTab = 'general' | 'vehicles' | 'rules';
+type GastoConfigurable = Exclude<keyof RequisitosGastosVehiculo, 'todo_riesgo_y_gps_modo'>;
+
+const MODAL_TABS: Array<{
+  id: CronogramaModalTab;
+  label: string;
+  icon: typeof ClipboardList;
+}> = [
+  { id: 'general', label: 'General', icon: ClipboardList },
+  { id: 'vehicles', label: 'Vehículos y coberturas', icon: ShieldCheck },
+  { id: 'rules', label: 'Reglas de cuotas', icon: TableProperties },
+];
+
+const MONTH_OPTIONS = [
+  'Enero',
+  'Febrero',
+  'Marzo',
+  'Abril',
+  'Mayo',
+  'Junio',
+  'Julio',
+  'Agosto',
+  'Septiembre',
+  'Octubre',
+  'Noviembre',
+  'Diciembre',
+].map((label, index) => ({ label, value: index + 1 }));
+
+const EXPENSE_LABELS: Record<GastoConfigurable, string> = {
+  src: 'Seguro de responsabilidad civil',
+  gps: 'GPS',
+  soat: 'SOAT',
+  impuesto_vehicular: 'Impuesto vehicular',
+  todo_riesgo_mas_gps_agrupado: 'Seguro todo riesgo + GPS',
+  inicial_parcial: 'Inicial parcial',
+};
+
+function isExpenseScheduleComplete(key: GastoConfigurable, item: ItemGastoConCobro) {
+  const cobro = item.cobro || {};
+  if (key === 'gps') return true;
+  if (key === 'soat') {
+    const installments = Number(cobro.cuotas);
+    return installments > 0 && Number(cobro.meses_anticipo) >= installments;
+  }
+  if (key === 'impuesto_vehicular') {
+    const startMonth = Number(cobro.mes_inicio);
+    const installments = Number(cobro.cuotas);
+    const eligibleYears = Number(cobro.anios_vigencia_tras_modelo);
+    return startMonth >= 1 && startMonth <= 12
+      && installments > 0
+      && 12 % installments === 0
+      && startMonth - 1 + (installments - 1) * (12 / installments) <= 11
+      && eligibleYears > 0;
+  }
+  if (key === 'src') return Number(cobro.meses_anticipo) > 0;
+  return Number(cobro.semanas) > 0;
+}
+
+function expenseScheduleLabel(key: GastoConfigurable, item: ItemGastoConCobro) {
+  if (!isExpenseScheduleComplete(key, item)) return 'Calendario pendiente';
+  const cobro = item.cobro || {};
+  if (key === 'gps') return 'Mensual · fin de mes';
+  if (key === 'soat') return `${Number(cobro.cuotas)} cuotas · ${Number(cobro.meses_anticipo)} meses antes`;
+  if (key === 'impuesto_vehicular') {
+    return `${Number(cobro.cuotas)} cuotas desde mes ${Number(cobro.mes_inicio)} · ${Number(cobro.anios_vigencia_tras_modelo)} años`;
+  }
+  if (key === 'src') return `Mensual · ${Number(cobro.meses_anticipo)} meses antes`;
+  return `${Number(cobro.semanas)} cuotas semanales`;
+}
+
+function formatExpenseAmount(item: ItemGastoConCobro) {
+  const symbol = item.moneda === 'USD' ? '$' : 'S/.';
+  return `${symbol} ${Number(item.monto || 0).toFixed(2)}`;
+}
+
+function configuredExpenseKeys(
+  requirements: RequisitosGastosVehiculo,
+  vehicleType: TipoVehiculoCronograma,
+): GastoConfigurable[] {
+  const keys: GastoConfigurable[] = ['soat', 'impuesto_vehicular', 'inicial_parcial'];
+  if (requirements.todo_riesgo_y_gps_modo === 'agrupado') {
+    keys.push('todo_riesgo_mas_gps_agrupado');
+    if (vehicleType !== 'nuevo') keys.push('src');
+  } else {
+    keys.push('gps', 'src');
+  }
+  return keys.filter((key) => Number(requirements[key]?.monto) > 0);
+}
+
+function countConfiguredExpenses(vehicle: VehiculoCronograma, vehicleType: TipoVehiculoCronograma) {
+  return configuredExpenseKeys(mergeRequisitosGastosFromApi(vehicle.requisitos_gastos), vehicleType).length;
+}
+
+function incompleteExpenseKeys(vehicle: VehiculoCronograma, vehicleType: TipoVehiculoCronograma) {
+  const requirements = mergeRequisitosGastosFromApi(vehicle.requisitos_gastos);
+  return configuredExpenseKeys(requirements, vehicleType).filter(
+    (key) => !isExpenseScheduleComplete(key, requirements[key]),
+  );
+}
+
+function validateExpenseConfiguration(
+  vehicle: VehiculoCronograma,
+  index: number,
+  vehicleType: TipoVehiculoCronograma,
+): string | null {
+  const expenses = mergeRequisitosGastosFromApi(vehicle.requisitos_gastos);
+  const vehicleLabel = vehicle.name.trim() || `Vehículo ${index + 1}`;
+  const configuredKeys = new Set(configuredExpenseKeys(expenses, vehicleType));
+
+  if (configuredKeys.has('soat')) {
+    const installments = Number(expenses.soat.cobro?.cuotas);
+    const monthsBefore = Number(expenses.soat.cobro?.meses_anticipo);
+    if (!Number.isInteger(installments) || installments <= 0) return `${vehicleLabel}: indica las cuotas del SOAT.`;
+    if (!Number.isInteger(monthsBefore) || monthsBefore < installments) {
+      return `${vehicleLabel}: los meses de anticipación del SOAT deben cubrir todas sus cuotas.`;
+    }
+  }
+
+  if (configuredKeys.has('impuesto_vehicular')) {
+    const startMonth = Number(expenses.impuesto_vehicular.cobro?.mes_inicio);
+    const installments = Number(expenses.impuesto_vehicular.cobro?.cuotas);
+    const eligibleYears = Number(expenses.impuesto_vehicular.cobro?.anios_vigencia_tras_modelo);
+    if (!Number.isInteger(startMonth) || startMonth < 1 || startMonth > 12) return `${vehicleLabel}: indica el mes inicial del impuesto vehicular.`;
+    if (!Number.isInteger(installments) || installments <= 0 || 12 % installments !== 0) return `${vehicleLabel}: las cuotas del impuesto deben distribuirse uniformemente en el año.`;
+    if (startMonth - 1 + (installments - 1) * (12 / installments) > 11) return `${vehicleLabel}: el calendario del impuesto excede el año.`;
+    if (!Number.isInteger(eligibleYears) || eligibleYears <= 0) return `${vehicleLabel}: indica los años de vigencia del impuesto vehicular.`;
+  }
+
+  if (configuredKeys.has('src') && Number(expenses.src.cobro?.meses_anticipo) <= 0) {
+    return `${vehicleLabel}: indica la anticipación del SRC.`;
+  }
+  if (configuredKeys.has('todo_riesgo_mas_gps_agrupado') && Number(expenses.todo_riesgo_mas_gps_agrupado.cobro?.semanas) <= 0) {
+    return `${vehicleLabel}: indica las semanas del seguro todo riesgo + GPS.`;
+  }
+  if (configuredKeys.has('inicial_parcial') && Number(expenses.inicial_parcial.cobro?.semanas) <= 0) {
+    return `${vehicleLabel}: indica las semanas de la inicial parcial.`;
+  }
+  return null;
+}
+
 function generateId() {
   return Math.random().toString(36).slice(2, 11);
 }
@@ -180,6 +323,32 @@ function createEmptyVehicle(): VehiculoCronograma {
     cuotas_semanales: 261,
     requisitos_gastos: createDefaultRequisitosGastosVehiculo(),
   };
+}
+
+function validateCronogramaForm(form: Omit<Cronograma, 'id'>): string | null {
+  if (!form.name.trim()) return 'Ingresa el nombre del cronograma.';
+  if (form.vehicles.length === 0) return 'Agrega al menos un vehículo.';
+  if (form.rules.length === 0) return 'Agrega al menos una regla de cuotas.';
+
+  const vehicleType = mergeRequisitosFromApi(form.requisitos_vehiculo).tipo_vehiculo;
+  for (let index = 0; index < form.vehicles.length; index += 1) {
+    const vehicle = form.vehicles[index];
+    if (!vehicle.name.trim()) return `Completa el nombre del vehículo ${index + 1}.`;
+    if (!Number.isInteger(Number(vehicle.cuotas_semanales)) || Number(vehicle.cuotas_semanales) <= 0) {
+      return `${vehicle.name}: la cantidad de cuotas semanales debe ser mayor a cero.`;
+    }
+    const expenseError = validateExpenseConfiguration(vehicle, index, vehicleType);
+    if (expenseError) return expenseError;
+  }
+
+  for (let index = 0; index < form.rules.length; index += 1) {
+    const rule = form.rules[index];
+    if (!parseViajesInterval(rule.viajes)) return `La regla ${index + 1} tiene un rango de viajes inválido.`;
+    if (rule.cuotas_por_vehiculo.length !== form.vehicles.length) {
+      return `La regla ${index + 1} no tiene una cuota para cada vehículo.`;
+    }
+  }
+  return null;
 }
 
 /** Clases para inputs numéricos sin spinners y sin cambio por rueda */
@@ -300,6 +469,7 @@ export default function YegoMiAutoConfig() {
     carros: true,
     filas: false,
   });
+  const [modalActiveTab, setModalActiveTab] = useState<CronogramaModalTab>('general');
   const [modalViewOnly, setModalViewOnly] = useState(true);
   const isViewMode = Boolean(editingId && modalViewOnly);
   const [isModalEntering, setIsModalEntering] = useState(false);
@@ -437,6 +607,7 @@ export default function YegoMiAutoConfig() {
       vehicles: [createEmptyVehicle()],
       rules: [createEmptyRule(1)],
     });
+    setModalActiveTab('general');
     setModalOpen(true);
   };
 
@@ -474,6 +645,7 @@ export default function YegoMiAutoConfig() {
       vehicles,
       rules,
     });
+    setModalActiveTab('general');
     setModalOpen(true);
   };
 
@@ -481,6 +653,7 @@ export default function YegoMiAutoConfig() {
     setModalOpen(false);
     setEditingId(null);
     setModalSectionsOpen({ parametros: true, carros: true, filas: false });
+    setModalActiveTab('general');
     setModalViewOnly(true);
     setIsModalClosing(false);
   };
@@ -494,8 +667,18 @@ export default function YegoMiAutoConfig() {
     setModalSectionsOpen((s) => ({ ...s, [key]: !s[key] }));
   };
 
+  const selectModalTab = (tab: CronogramaModalTab) => {
+    setModalActiveTab(tab);
+    const section = tab === 'general' ? 'parametros' : tab === 'vehicles' ? 'carros' : 'filas';
+    setModalSectionsOpen((current) => ({ ...current, [section]: true }));
+  };
+
   const handleSave = async () => {
-    if (!form.name.trim()) return;
+    const validationError = validateCronogramaForm(form);
+    if (validationError) {
+      toast.error(validationError);
+      return;
+    }
     setSaving(true);
     try {
       const payload = {
@@ -718,6 +901,11 @@ export default function YegoMiAutoConfig() {
   };
 
   const tipoCronograma = mergeRequisitosFromApi(form.requisitos_vehiculo).tipo_vehiculo;
+  const configuredExpenseTotal = useMemo(
+    () => form.vehicles.reduce((total, vehicle) => total + countConfiguredExpenses(vehicle, tipoCronograma), 0),
+    [form.vehicles, tipoCronograma],
+  );
+  const activeModalTabIndex = MODAL_TABS.findIndex((tab) => tab.id === modalActiveTab);
 
   /** Solo dígitos y un decimal (punto o coma). Sin "e", ni signos ni caracteres especiales. */
   const sanitizeDecimalInput = (raw: string): string => {
@@ -763,8 +951,8 @@ export default function YegoMiAutoConfig() {
               <SettingsIcon className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-lg lg:text-xl font-bold text-white leading-tight">Configuración</h1>
-              <p className="text-xs lg:text-sm text-white/90 mt-0.5">Cronogramas: viajes, bono mi auto y carros ofrecidos (inicial + cuotas semanales)</p>
+              <h1 className="text-lg lg:text-xl font-bold text-white leading-tight">Cronogramas Mi Auto</h1>
+              <p className="text-xs lg:text-sm text-white/90 mt-0.5">Planes, vehículos, gastos, coberturas y reglas de cuotas</p>
             </div>
           </div>
           <button
@@ -773,7 +961,7 @@ export default function YegoMiAutoConfig() {
             className="inline-flex items-center gap-2 px-4 py-2.5 bg-white/20 hover:bg-white/30 text-white rounded-lg font-medium transition-colors"
           >
             <PlusCircle className="w-5 h-5" />
-            Incluir cronograma
+            Crear cronograma
           </button>
         </div>
       </div>
@@ -989,15 +1177,20 @@ export default function YegoMiAutoConfig() {
             }}
           >
             <div
-              className={`bg-white rounded-2xl shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col transition-all duration-200 ${
+              className={`bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-[92vh] overflow-hidden flex flex-col transition-all duration-200 ${
                 isModalEntering ? 'opacity-0 scale-95' : isModalClosing ? 'opacity-0 scale-95' : 'opacity-100 scale-100'
               }`}
             >
             {/* Header del modal */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gray-50/80 flex-shrink-0">
-              <h2 className="text-xl font-bold text-gray-900">
-                {isViewMode ? 'Ver detalle' : editingId ? 'Editar cronograma' : 'Incluir cronograma'}
-              </h2>
+            <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-gray-200 bg-white flex-shrink-0">
+              <div className="min-w-0">
+                <h2 className="truncate text-lg font-bold text-gray-900">
+                  {isViewMode ? form.name || 'Detalle del cronograma' : editingId ? 'Editar cronograma' : 'Crear cronograma'}
+                </h2>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  {isViewMode ? 'Configuración vigente del plan' : 'Define el plan, sus vehículos, coberturas y reglas de cuotas'}
+                </p>
+              </div>
               <div className="flex items-center gap-2">
                 {isViewMode ? (
                   <button
@@ -1022,7 +1215,36 @@ export default function YegoMiAutoConfig() {
               </div>
             </div>
 
-            <div className="p-6 overflow-y-auto space-y-6">
+            <nav className="flex-shrink-0 border-b border-gray-200 bg-gray-50 px-4" aria-label="Secciones del cronograma">
+              <div className="flex gap-1 overflow-x-auto py-2" role="tablist">
+                {MODAL_TABS.map((tab) => {
+                  const Icon = tab.icon;
+                  const isActive = modalActiveTab === tab.id;
+                  const count = tab.id === 'vehicles'
+                    ? `${form.vehicles.length} · ${configuredExpenseTotal}`
+                    : tab.id === 'rules' ? String(form.rules.length) : null;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      onClick={() => selectModalTab(tab.id)}
+                      className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors ${
+                        isActive ? 'bg-white text-[#8B1A1A] shadow-sm ring-1 ring-gray-200' : 'text-gray-600 hover:bg-white/70 hover:text-gray-900'
+                      }`}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {tab.label}
+                      {count && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] tabular-nums text-gray-600">{count}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </nav>
+
+            <div className="overflow-y-auto p-4 sm:p-5">
+              <div className={modalActiveTab === 'general' ? 'space-y-5' : 'hidden'}>
               {/* Datos generales: nombre + tipo de vehículo (misma fila) + país */}
               <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-12 lg:gap-x-4 lg:items-end">
                 <div className="lg:col-span-5">
@@ -1147,14 +1369,32 @@ export default function YegoMiAutoConfig() {
                           </label>
                         </div>
 
+                        <div className="space-y-2 min-w-0 border-t border-gray-200 pt-2 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+                          <h4 className="text-sm font-medium text-gray-900 leading-tight">Estado del plan</h4>
+                          <p className="text-[11px] text-gray-500 leading-snug">Solo los cronogramas activos pueden asignarse a nuevas solicitudes.</p>
+                          <label className="inline-flex items-center gap-2.5 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={form.active}
+                              onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))}
+                              disabled={isViewMode}
+                              className="h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                            />
+                            <span className={`text-sm font-medium ${form.active ? 'text-green-700' : 'text-gray-600'}`}>
+                              {form.active ? 'Activo' : 'Inactivo'}
+                            </span>
+                          </label>
+                        </div>
+
                       </div>
                     </div>
                   </div>
                 </div>
               </div>
+              </div>
 
               {/* Carros ofrecidos (acordeón) */}
-              <div className="border border-gray-200 rounded-xl overflow-hidden flex flex-col min-h-0">
+              <div className={`${modalActiveTab === 'vehicles' ? 'flex' : 'hidden'} min-h-0 flex-col overflow-hidden rounded-lg border border-gray-200`}>
                 <div className="flex flex-col sm:flex-row sm:items-stretch gap-2 sm:gap-3 px-4 py-3 bg-gray-50 border-b border-gray-100">
                   <button
                     type="button"
@@ -1164,13 +1404,13 @@ export default function YegoMiAutoConfig() {
                     <span className="min-w-0">
                       <span className="text-sm font-medium text-gray-700 flex items-center gap-2">
                         <Car className="w-4 h-4 text-gray-500 shrink-0" aria-hidden />
-                        Carros ofrecidos
+                        Vehículos y coberturas
                         <span className="text-xs font-normal text-gray-500">
                           ({form.vehicles.length} carro{form.vehicles.length !== 1 ? 's' : ''})
                         </span>
                       </span>
                       <span className="block text-[11px] text-gray-500 truncate mt-0.5">
-                        Foto, inicial, cuotas y gastos por vehículo
+                        Datos del vehículo y conceptos que generará el contrato
                       </span>
                     </span>
                     {modalSectionsOpen.carros ? (
@@ -1186,7 +1426,7 @@ export default function YegoMiAutoConfig() {
                       className="shrink-0 inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-[#8B1A1A] rounded-xl hover:bg-[#6B1515] focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors shadow-sm w-full sm:w-auto sm:self-center"
                     >
                       <PlusCircle className="w-4 h-4" />
-                      Añadir carro
+                      Añadir vehículo
                     </button>
                   )}
                 </div>
@@ -1195,16 +1435,77 @@ export default function YegoMiAutoConfig() {
                   style={{ gridTemplateRows: modalSectionsOpen.carros ? '1fr' : '0fr' }}
                 >
                   <div className="min-h-0 overflow-hidden flex flex-col">
-                    <div className="p-4 flex-1 min-h-[min(420px,55vh)] max-h-[min(560px,65vh)] overflow-x-auto overflow-y-auto bg-white">
-                    <div className="flex gap-4 pb-1 scroll-smooth min-h-[min(380px,50vh)]">
+                    <div className="max-h-[65vh] min-h-[420px] flex-1 overflow-y-auto bg-white p-4">
+                    <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
                   {form.vehicles.map((v, i) => {
                     const rg = mergeRequisitosGastosFromApi(v.requisitos_gastos);
                     const modoAgr = rg.todo_riesgo_y_gps_modo === 'agrupado';
+                    const configuredKeys = configuredExpenseKeys(rg, tipoCronograma);
+                    const configuredCount = configuredKeys.length;
+                    const incompleteCount = incompleteExpenseKeys(v, tipoCronograma).length;
+                    const srcConfigurationEditor = (
+                      <div className="col-span-2 min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-3 shadow-sm">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(9rem,1fr)_minmax(11rem,1fr)_7rem] sm:items-end">
+                          <div className="min-w-0 sm:self-center">
+                            <label className="block text-[10px] font-medium leading-tight text-gray-700">
+                              Seguro de responsabilidad civil (SRC)
+                            </label>
+                            <p className="mt-0.5 text-[10px] leading-snug text-gray-400">
+                              Cobro mensual previo al vencimiento
+                            </p>
+                          </div>
+                          <label className="min-w-0 text-[10px] text-gray-500">
+                            Monto
+                            <div className="mt-1 flex min-w-0 rounded-md border border-gray-200 bg-white shadow-sm">
+                              <select
+                                value={rg.src.moneda}
+                                onChange={(event) => patchVehiculoGasto(i, 'src', { moneda: event.target.value as GastoRequisitoMoneda })}
+                                className="w-14 shrink-0 rounded-l-md border-0 border-r border-gray-200 bg-gray-50 py-1.5 text-xs"
+                              >
+                                <option value="USD">USD</option>
+                                <option value="PEN">PEN</option>
+                              </select>
+                              <input
+                                type="number"
+                                min={0}
+                                step={0.01}
+                                value={rg.src.monto}
+                                onChange={(event) => patchVehiculoGasto(i, 'src', { monto: Math.max(0, parseFloat(event.target.value) || 0) })}
+                                className={`min-w-0 flex-1 rounded-r-md border-0 px-2 py-1.5 text-xs${INPUT_NUMBER_CLASS}`}
+                              />
+                            </div>
+                          </label>
+                          <label className="min-w-0 text-[10px] text-gray-500">
+                            Meses antes
+                            <input
+                              type="number"
+                              min={1}
+                              max={12}
+                              value={rg.src.cobro?.meses_anticipo || ''}
+                              onChange={(event) => patchVehiculoGastoCobro(i, 'src', { meses_anticipo: Math.max(0, parseInt(event.target.value, 10) || 0) })}
+                              className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs${INPUT_NUMBER_CLASS}`}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    );
                     return (
                     <div
                       key={v.id}
-                      className="flex-shrink-0 w-[min(100%,380px)] max-w-[380px] p-4 bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-md hover:border-gray-300 transition-all duration-200 flex flex-col items-stretch gap-4"
+                      className="flex flex-col items-stretch gap-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm"
                     >
+                      <div className="flex items-center justify-between gap-3 border-b border-gray-100 pb-3">
+                        <p className="text-xs font-semibold uppercase text-gray-500">Vehículo {i + 1}</p>
+                        <span className={`rounded px-2 py-1 text-[10px] font-semibold ${
+                          incompleteCount > 0
+                            ? 'bg-amber-50 text-amber-700'
+                            : configuredCount > 0 ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'
+                        }`}>
+                          {incompleteCount > 0
+                            ? `${incompleteCount} por completar`
+                            : configuredCount > 0 ? `${configuredCount} configurada${configuredCount === 1 ? '' : 's'}` : 'Sin coberturas'}
+                        </span>
+                      </div>
                       {/* Foto */}
                       <div className="flex flex-col items-center gap-2">
                         {v.image ? (
@@ -1326,12 +1627,35 @@ export default function YegoMiAutoConfig() {
                         </div>
                       </div>
 
-                      {/* Gastos variables por carro: selector ancho completo + montos en grid 2×2 */}
+                      {/* Gastos variables por carro */}
                       <div className="border-t border-gray-100 pt-3 space-y-2.5">
-                        <p className="text-xs font-semibold text-gray-800">
-                          Gastos / coberturas
-                        </p>
-                        <div className="grid grid-cols-2 gap-3 items-stretch">
+                        <div>
+                          <p className="text-xs font-semibold text-gray-800">Gastos y coberturas</p>
+                          <p className="mt-0.5 text-[10px] text-gray-500">Solo se generan conceptos con monto mayor a cero.</p>
+                        </div>
+                        {isViewMode && (
+                          <div className="space-y-2">
+                            {configuredKeys.length === 0 ? (
+                              <div className="rounded-md border border-dashed border-gray-200 px-3 py-4 text-center text-xs text-gray-500">
+                                Este vehículo no tiene gastos ni coberturas configurados.
+                              </div>
+                            ) : configuredKeys.map((key) => {
+                              const expense = rg[key];
+                              return (
+                                <div key={key} className="flex items-center justify-between gap-4 rounded-md border border-gray-200 px-3 py-2.5">
+                                  <div className="min-w-0">
+                                    <p className="truncate text-xs font-semibold text-gray-800">{EXPENSE_LABELS[key]}</p>
+                                    <p className={`mt-0.5 truncate text-[10px] ${
+                                      isExpenseScheduleComplete(key, expense) ? 'text-gray-500' : 'font-medium text-amber-700'
+                                    }`}>{expenseScheduleLabel(key, expense)}</p>
+                                  </div>
+                                  <p className="shrink-0 text-sm font-bold tabular-nums text-gray-900">{formatExpenseAmount(expense)}</p>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <div className={`${isViewMode ? 'hidden' : 'grid'} grid-cols-2 items-stretch gap-3`}>
                           <div className="col-span-2 flex flex-col min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
                             <label className="block text-[10px] font-medium text-gray-700 mb-1.5">Todo riesgo + GPS</label>
                             <select
@@ -1348,50 +1672,7 @@ export default function YegoMiAutoConfig() {
                               <option value="separado">Por separado: GPS + seguro de responsabilidad civil</option>
                             </select>
                           </div>
-                          {tipoCronograma !== 'nuevo' && modoAgr && (
-                            <div className="flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
-                              <div className="mb-2 min-h-0">
-                                <label className="block text-[10px] font-medium text-gray-700 leading-tight">SRC (resp. civil)</label>
-                                <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
-                                  {rg.src.cobro?.meses_anticipo
-                                    ? `Mensual · desde ${rg.src.cobro.meses_anticipo} meses antes del vencimiento`
-                                    : 'Configura la anticipación en el cronograma'}
-                                </p>
-                              </div>
-                              <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
-                                <select
-                                  value={rg.src.moneda}
-                                  onChange={(e) => patchVehiculoGasto(i, 'src', { moneda: e.target.value as GastoRequisitoMoneda })}
-                                  disabled={isViewMode}
-                                  className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
-                                >
-                                  <option value="USD">USD</option>
-                                  <option value="PEN">PEN</option>
-                                </select>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step={0.01}
-                                  value={rg.src.monto}
-                                  onChange={(e) => patchVehiculoGasto(i, 'src', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
-                                  readOnly={isViewMode}
-                                  className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
-                                />
-                              </div>
-                              <label className="mt-2 text-[10px] text-gray-500">
-                                Meses antes
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={12}
-                                  value={rg.src.cobro?.meses_anticipo || ''}
-                                  onChange={(e) => patchVehiculoGastoCobro(i, 'src', { meses_anticipo: Math.max(0, parseInt(e.target.value, 10) || 0) })}
-                                  readOnly={isViewMode}
-                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
-                                />
-                              </label>
-                            </div>
-                          )}
+                          {tipoCronograma !== 'nuevo' && modoAgr && srcConfigurationEditor}
 
                           <div className="flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
                             <div className="mb-2 min-h-0">
@@ -1480,15 +1761,18 @@ export default function YegoMiAutoConfig() {
                             <div className="mt-2 grid grid-cols-3 gap-1.5">
                               <label className="text-[10px] text-gray-500">
                                 Mes inicial
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={12}
+                                <select
                                   value={rg.impuesto_vehicular.cobro?.mes_inicio || ''}
-                                  onChange={(e) => patchVehiculoGastoCobro(i, 'impuesto_vehicular', { mes_inicio: Math.max(0, parseInt(e.target.value, 10) || 0) })}
-                                  readOnly={isViewMode}
-                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
-                                />
+                                  onChange={(event) => patchVehiculoGastoCobro(i, 'impuesto_vehicular', {
+                                    mes_inicio: parseInt(event.target.value, 10) || 0,
+                                  })}
+                                  className="mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs"
+                                >
+                                  <option value="">Seleccionar</option>
+                                  {MONTH_OPTIONS.map((month) => (
+                                    <option key={month.value} value={month.value}>{month.label}</option>
+                                  ))}
+                                </select>
                               </label>
                               <label className="text-[10px] text-gray-500">
                                 Cuotas
@@ -1547,54 +1831,7 @@ export default function YegoMiAutoConfig() {
                                   />
                                 </div>
                               </div>
-                              <div
-                                className={`flex flex-col h-full min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm ${tipoCronograma !== 'nuevo' ? 'col-span-2' : ''}`}
-                              >
-                                <div className="mb-2 min-h-0">
-                                  <label className="block text-[10px] font-medium text-gray-700 leading-tight">
-                                    Seguro de responsabilidad civil (SRC)
-                                  </label>
-                                  <p className="text-[10px] text-gray-400 leading-snug mt-0.5 line-clamp-2">
-                                    {rg.src.cobro?.meses_anticipo
-                                      ? `Mensual · desde ${rg.src.cobro.meses_anticipo} meses antes del vencimiento`
-                                      : 'Configura la anticipación en el cronograma'}
-                                  </p>
-                                </div>
-                                <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
-                                  <select
-                                    value={rg.src.moneda}
-                                    onChange={(e) => patchVehiculoGasto(i, 'src', { moneda: e.target.value as GastoRequisitoMoneda })}
-                                    disabled={isViewMode}
-                                    className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
-                                  >
-                                    <option value="USD">USD</option>
-                                    <option value="PEN">PEN</option>
-                                  </select>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    step={0.01}
-                                    value={rg.src.monto}
-                                    onChange={(e) =>
-                                      patchVehiculoGasto(i, 'src', { monto: Math.max(0, parseFloat(e.target.value) || 0) })
-                                    }
-                                    readOnly={isViewMode}
-                                    className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
-                                  />
-                                </div>
-                                <label className="mt-2 text-[10px] text-gray-500">
-                                  Meses antes
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    max={12}
-                                    value={rg.src.cobro?.meses_anticipo || ''}
-                                    onChange={(e) => patchVehiculoGastoCobro(i, 'src', { meses_anticipo: Math.max(0, parseInt(e.target.value, 10) || 0) })}
-                                    readOnly={isViewMode}
-                                    className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
-                                  />
-                                </label>
-                              </div>
+                              {srcConfigurationEditor}
                             </>
                           )}
 
@@ -1612,87 +1849,95 @@ export default function YegoMiAutoConfig() {
                                     : 'Configura las semanas en el cronograma'}
                                 </p>
                               </div>
-                              <div className="mt-auto flex w-full min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
-                                <select
-                                  value={rg.todo_riesgo_mas_gps_agrupado.moneda}
-                                  onChange={(e) =>
-                                    patchVehiculoGasto(i, 'todo_riesgo_mas_gps_agrupado', {
-                                      moneda: e.target.value as GastoRequisitoMoneda,
-                                    })
-                                  }
-                                  disabled={isViewMode}
-                                  className="w-14 shrink-0 border-0 border-r border-gray-200 rounded-l-lg bg-gray-50 text-xs py-1.5"
-                                >
-                                  <option value="PEN">PEN</option>
-                                  <option value="USD">USD</option>
-                                </select>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step={0.01}
-                                  value={rg.todo_riesgo_mas_gps_agrupado.monto}
-                                  onChange={(e) =>
-                                    patchVehiculoGasto(i, 'todo_riesgo_mas_gps_agrupado', {
-                                      monto: Math.max(0, parseFloat(e.target.value) || 0),
-                                    })
-                                  }
-                                  readOnly={isViewMode}
-                                  className={`flex-1 min-w-0 px-2 py-1.5 text-xs border-0 rounded-r-lg${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
-                                />
+                              <div className="mt-auto grid min-w-0 grid-cols-[minmax(0,1fr)_5.5rem] items-end gap-2">
+                                <label className="min-w-0 text-[10px] text-gray-500">
+                                  Monto semanal
+                                  <div className="mt-1 flex min-w-0 rounded-md border border-gray-200 bg-white shadow-sm">
+                                    <select
+                                      value={rg.todo_riesgo_mas_gps_agrupado.moneda}
+                                      onChange={(e) =>
+                                        patchVehiculoGasto(i, 'todo_riesgo_mas_gps_agrupado', {
+                                          moneda: e.target.value as GastoRequisitoMoneda,
+                                        })
+                                      }
+                                      disabled={isViewMode}
+                                      className="w-14 shrink-0 rounded-l-md border-0 border-r border-gray-200 bg-gray-50 py-1.5 text-xs"
+                                    >
+                                      <option value="PEN">PEN</option>
+                                      <option value="USD">USD</option>
+                                    </select>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={0.01}
+                                      value={rg.todo_riesgo_mas_gps_agrupado.monto}
+                                      onChange={(e) =>
+                                        patchVehiculoGasto(i, 'todo_riesgo_mas_gps_agrupado', {
+                                          monto: Math.max(0, parseFloat(e.target.value) || 0),
+                                        })
+                                      }
+                                      readOnly={isViewMode}
+                                      className={`min-w-0 flex-1 rounded-r-md border-0 px-2 py-1.5 text-xs${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
+                                    />
+                                  </div>
+                                </label>
+                                <label className="min-w-0 text-[10px] text-gray-500">
+                                  Semanas
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={52}
+                                    value={rg.todo_riesgo_mas_gps_agrupado.cobro?.semanas || ''}
+                                    onChange={(e) => patchVehiculoGastoCobro(i, 'todo_riesgo_mas_gps_agrupado', { semanas: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                    readOnly={isViewMode}
+                                    className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
+                                  />
+                                </label>
                               </div>
-                              <label className="mt-2 text-[10px] text-gray-500">
-                                Semanas por ciclo
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={52}
-                                  value={rg.todo_riesgo_mas_gps_agrupado.cobro?.semanas || ''}
-                                  onChange={(e) => patchVehiculoGastoCobro(i, 'todo_riesgo_mas_gps_agrupado', { semanas: Math.max(0, parseInt(e.target.value, 10) || 0) })}
-                                  readOnly={isViewMode}
-                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
-                                />
-                              </label>
                             </div>
                           )}
 
-                          <div className="col-span-2 flex flex-col min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5 shadow-sm">
-                            <div className="mb-2">
-                              <label className="block text-[10px] font-medium text-gray-700">Inicial parcial</label>
-                              <p className="mt-0.5 text-[10px] text-gray-400">
-                                Solo se genera para contratos marcados con pago inicial parcial
+                          <div className="col-span-2 min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-3 shadow-sm">
+                            <div className="mb-2 min-w-0">
+                              <label className="block text-[10px] font-medium leading-tight text-gray-700">Inicial parcial</label>
+                              <p className="mt-0.5 text-[10px] leading-snug text-gray-400">
+                                Solo para contratos con pago inicial parcial
                               </p>
                             </div>
-                            <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-2">
-                              <div className="flex min-w-0 rounded-lg border border-gray-200 bg-white shadow-sm">
-                                <select
-                                  value={rg.inicial_parcial.moneda}
-                                  onChange={(e) => patchVehiculoGasto(i, 'inicial_parcial', { moneda: e.target.value as GastoRequisitoMoneda })}
-                                  disabled={isViewMode}
-                                  className="w-14 shrink-0 rounded-l-lg border-0 border-r border-gray-200 bg-gray-50 py-1.5 text-xs"
-                                >
-                                  <option value="USD">USD</option>
-                                  <option value="PEN">PEN</option>
-                                </select>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step={0.01}
-                                  value={rg.inicial_parcial.monto}
-                                  onChange={(e) => patchVehiculoGasto(i, 'inicial_parcial', { monto: Math.max(0, parseFloat(e.target.value) || 0) })}
-                                  readOnly={isViewMode}
-                                  className={`min-w-0 flex-1 rounded-r-lg border-0 px-2 py-1.5 text-xs${INPUT_NUMBER_CLASS}`}
-                                />
-                              </div>
-                              <label className="text-[10px] text-gray-500">
+                            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_5.5rem] items-end gap-2">
+                              <label className="min-w-0 text-[10px] text-gray-500">
+                                Monto semanal
+                                <div className="mt-1 flex min-w-0 rounded-md border border-gray-200 bg-white shadow-sm">
+                                  <select
+                                    value={rg.inicial_parcial.moneda}
+                                    onChange={(event) => patchVehiculoGasto(i, 'inicial_parcial', { moneda: event.target.value as GastoRequisitoMoneda })}
+                                    disabled={isViewMode}
+                                    className="w-14 shrink-0 rounded-l-md border-0 border-r border-gray-200 bg-gray-50 py-1.5 text-xs"
+                                  >
+                                    <option value="USD">USD</option>
+                                    <option value="PEN">PEN</option>
+                                  </select>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step={0.01}
+                                    value={rg.inicial_parcial.monto}
+                                    onChange={(event) => patchVehiculoGasto(i, 'inicial_parcial', { monto: Math.max(0, parseFloat(event.target.value) || 0) })}
+                                    readOnly={isViewMode}
+                                    className={`min-w-0 flex-1 rounded-r-md border-0 px-2 py-1.5 text-xs${INPUT_NUMBER_CLASS} ${isViewMode ? 'bg-gray-50' : ''}`}
+                                  />
+                                </div>
+                              </label>
+                              <label className="min-w-0 text-[10px] text-gray-500">
                                 Semanas
                                 <input
                                   type="number"
                                   min={1}
                                   max={52}
                                   value={rg.inicial_parcial.cobro?.semanas || ''}
-                                  onChange={(e) => patchVehiculoGastoCobro(i, 'inicial_parcial', { semanas: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                  onChange={(event) => patchVehiculoGastoCobro(i, 'inicial_parcial', { semanas: Math.max(0, parseInt(event.target.value, 10) || 0) })}
                                   readOnly={isViewMode}
-                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-xs${INPUT_NUMBER_CLASS}`}
+                                  className={`mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs${INPUT_NUMBER_CLASS}`}
                                 />
                               </label>
                             </div>
@@ -1721,7 +1966,7 @@ export default function YegoMiAutoConfig() {
               </div>
 
               {/* Sección: Filas del cronograma (acordeón, mismo patrón que Parámetros y Carros) */}
-              <div className="border border-gray-200 rounded-xl overflow-hidden">
+              <div className={`${modalActiveTab === 'rules' ? 'block' : 'hidden'} overflow-hidden rounded-lg border border-gray-200`}>
                 <button
                   type="button"
                   onClick={() => toggleModalSection('filas')}
@@ -1874,26 +2119,42 @@ export default function YegoMiAutoConfig() {
             </div>
 
             {/* Footer del modal */}
-            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-white flex-shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.08)]">
-              {isViewMode ? (
-                <button type="button" onClick={closeModal} className="px-5 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 font-medium transition-colors">
-                  Cerrar
+            <div className="flex items-center justify-between gap-2 border-t border-gray-200 bg-white px-3 py-3 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.06)] sm:px-5">
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <button
+                  type="button"
+                  onClick={() => selectModalTab(MODAL_TABS[activeModalTabIndex - 1].id)}
+                  disabled={activeModalTabIndex <= 0}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-md border border-gray-300 px-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:invisible sm:px-3"
+                  title="Sección anterior"
+                >
+                  <ChevronLeft className="h-4 w-4" /><span className="hidden sm:inline">Anterior</span>
                 </button>
-              ) : (
-                <>
-                  <button type="button" onClick={closeModal} className="px-5 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 font-medium transition-colors">
-                    Cancelar
-                  </button>
+                <button
+                  type="button"
+                  onClick={() => selectModalTab(MODAL_TABS[activeModalTabIndex + 1].id)}
+                  disabled={activeModalTabIndex >= MODAL_TABS.length - 1}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-md border border-gray-300 px-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:invisible sm:px-3"
+                  title="Sección siguiente"
+                >
+                  <span className="hidden sm:inline">Siguiente</span><ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex min-w-0 justify-end gap-1.5 sm:gap-2">
+                <button type="button" onClick={closeModal} className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 sm:px-4">
+                  {isViewMode ? 'Cerrar' : 'Cancelar'}
+                </button>
+                {!isViewMode && (
                   <button
                     type="button"
                     onClick={handleSave}
                     disabled={!form.name.trim() || saving}
-                    className="px-5 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors"
+                    className="h-9 whitespace-nowrap rounded-md bg-red-600 px-3 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50 sm:px-4"
                   >
-                    {saving ? 'Guardando...' : editingId ? 'Guardar' : 'Crear'}
+                    {saving ? 'Guardando...' : editingId ? 'Guardar cambios' : 'Crear cronograma'}
                   </button>
-                </>
-              )}
+                )}
+              </div>
             </div>
             </div>
           </div>

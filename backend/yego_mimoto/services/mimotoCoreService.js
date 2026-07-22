@@ -9,6 +9,12 @@ import {
 import { positiveNumber } from './mimotoServiceUtils.js';
 
 const q = (sql, params = []) => query(assertMimotoIsolationSql(sql), params);
+const LIVE_CRONOGRAMA_NAME_SQL = "COALESCE(NULLIF(c.name,''), NULLIF(s.cronograma_snapshot->>'name',''))";
+const LIVE_VEHICLE_NAME_SQL = "COALESCE(NULLIF(v.name,''), NULLIF(s.cronograma_snapshot->'vehicle'->>'name',''))";
+const LIVE_VEHICLE_IMAGE_SQL = `CASE WHEN v.id IS NOT NULL
+  THEN NULLIF(v.metadata->>'image','')
+  ELSE NULLIF(s.cronograma_snapshot->'vehicle'->'metadata'->>'image','')
+END`;
 
 function optionalUuid(value) {
   const text = String(value || '').trim();
@@ -563,13 +569,13 @@ export async function listSolicitudes({
   params.push(safeLimit, (safePage - 1) * safeLimit);
   const result = await q(
     `SELECT s.*, f.name AS fleet_name, f.park_id,
-       COALESCE(NULLIF(s.cronograma_snapshot->>'name',''), c.name) AS cronograma_name,
-       COALESCE(NULLIF(s.cronograma_snapshot->'vehicle'->>'name',''), v.name) AS vehiculo_name,
+       ${LIVE_CRONOGRAMA_NAME_SQL} AS cronograma_name,
+       ${LIVE_VEHICLE_NAME_SQL} AS vehiculo_name,
+       ${LIVE_VEHICLE_IMAGE_SQL} AS vehiculo_image,
        COALESCE(NULLIF(s.cronograma_snapshot->'vehicle'->>'inicial','')::numeric, v.inicial) AS vehiculo_inicial,
        COALESCE(NULLIF(s.cronograma_snapshot->'vehicle'->>'inicial_moneda',''), v.inicial_moneda) AS vehiculo_inicial_moneda,
        COALESCE(NULLIF(s.cronograma_snapshot->'vehicle'->>'cuotas_semanales','')::int, v.cuotas_semanales) AS cuotas_semanales_plan,
        COALESCE(NULLIF(s.cronograma_snapshot->'vehicle'->>'moneda',''), v.moneda) AS vehiculo_moneda,
-       COALESCE(s.cronograma_snapshot->'vehicle'->'metadata', v.metadata) AS vehiculo_metadata,
        COALESCE(x.total_cuotas,0)::int AS total_cuotas,
        COALESCE(x.cuotas_pagadas,0)::int AS cuotas_pagadas,
        COALESCE(x.cuotas_vencidas,0)::int AS cuotas_vencidas,
@@ -719,13 +725,13 @@ export async function updateSolicitud(id, payload, actorId) {
 export async function getSolicitudDetail(id) {
   const solicitud = await q(
     `SELECT s.*, f.name AS fleet_name, f.park_id, f.timezone,
-            COALESCE(NULLIF(s.cronograma_snapshot->>'name',''), c.name) AS cronograma_name,
+            ${LIVE_CRONOGRAMA_NAME_SQL} AS cronograma_name,
             COALESCE(NULLIF(s.cronograma_snapshot->>'tasa_interes_mora','')::numeric, c.tasa_interes_mora) AS tasa_interes_mora,
             COALESCE(NULLIF(s.cronograma_snapshot->>'modo_evaluacion',''), c.modo_evaluacion) AS modo_evaluacion,
-            COALESCE(NULLIF(s.cronograma_snapshot->'vehicle'->>'name',''), v.name) AS vehiculo_name,
+            ${LIVE_VEHICLE_NAME_SQL} AS vehiculo_name,
+            ${LIVE_VEHICLE_IMAGE_SQL} AS vehiculo_image,
             COALESCE(NULLIF(s.cronograma_snapshot->'vehicle'->>'cuotas_semanales','')::int, v.cuotas_semanales) AS cuotas_semanales,
-            COALESCE(NULLIF(s.cronograma_snapshot->'vehicle'->>'moneda',''), v.moneda) AS vehiculo_moneda,
-            COALESCE(s.cronograma_snapshot->'vehicle'->'metadata', v.metadata) AS vehiculo_metadata
+            COALESCE(NULLIF(s.cronograma_snapshot->'vehicle'->>'moneda',''), v.moneda) AS vehiculo_moneda
      FROM module_mimoto_solicitud s
      JOIN module_mimoto_fleet f ON f.id=s.fleet_id
      LEFT JOIN module_mimoto_cronograma c ON c.id=s.cronograma_id

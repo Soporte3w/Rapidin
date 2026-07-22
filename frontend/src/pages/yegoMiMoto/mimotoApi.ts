@@ -118,13 +118,13 @@ export type MimotoSolicitud = {
   cronograma_name?: string | null;
   cronograma_vehiculo_id?: string | null;
   vehiculo_name?: string | null;
+  vehiculo_image?: string | null;
   vehiculo_inicial?: number | string | null;
   vehiculo_inicial_moneda?: MimotoCurrency | null;
   cuotas_semanales_plan?: number | null;
   cuotas_semanales?: number | null;
   tasa_interes_mora?: number | string | null;
   vehiculo_moneda?: MimotoCurrency | null;
-  vehiculo_metadata?: { image?: string; cuota_base?: number; bono_40?: number; bono_75?: number } | null;
   placa_asignada?: string | null;
   pago_tipo?: 'completo' | 'parcial' | null;
   pago_estado?: string;

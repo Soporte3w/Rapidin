@@ -130,6 +130,19 @@ test('el cronograma solo se elimina lógicamente cuando no tiene solicitudes', a
   assert.doesNotMatch(service, /DELETE FROM module_mimoto_cronograma(?:\s|$)/);
 });
 
+test('las etiquetas de cronograma y vehículo reflejan el nombre vigente sin alterar snapshots financieros', async () => {
+  const core = await readFile(path.join(root, 'services/mimotoCoreService.js'), 'utf8');
+  assert.match(core, /const LIVE_CRONOGRAMA_NAME_SQL = "COALESCE\(NULLIF\(c\.name,''\)/);
+  assert.match(core, /const LIVE_VEHICLE_NAME_SQL = "COALESCE\(NULLIF\(v\.name,''\)/);
+  assert.match(core, /const LIVE_VEHICLE_IMAGE_SQL = `CASE WHEN v\.id IS NOT NULL/);
+  assert.equal((core.match(/\$\{LIVE_CRONOGRAMA_NAME_SQL\} AS cronograma_name/g) || []).length, 2);
+  assert.equal((core.match(/\$\{LIVE_VEHICLE_NAME_SQL\} AS vehiculo_name/g) || []).length, 2);
+  assert.equal((core.match(/\$\{LIVE_VEHICLE_IMAGE_SQL\} AS vehiculo_image/g) || []).length, 2);
+  assert.doesNotMatch(core, /AS vehiculo_metadata/);
+  assert.match(core, /cronograma_snapshot->>'tasa_interes_mora'/);
+  assert.match(core, /cronograma_snapshot->'vehicle'->>'cuotas_semanales'/);
+});
+
 test('el tarifario inicial conserva planes y valores colombianos vigentes', async () => {
   const seed = await readFile(path.resolve(root, '../database/migrations/030_seed_mimoto_colombia_cronogramas.sql'), 'utf8');
   assert.match(seed, /Plan 78 semanas - Portafolio general/);

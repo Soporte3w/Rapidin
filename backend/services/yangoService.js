@@ -166,8 +166,16 @@ async function postWithProxyRetry(url, body, headers) {
  * @param {{ balance_min?: string }} [conditionOverride] - sobreescribe la condición de saldo mínimo tras el retiro
  *   Por defecto `{ balance_min: '2' }`. Pasar `{ balance_min: '0' }` para permitir retiro hasta saldo cero.
  */
-export async function withdrawFromContractor(id, amount, description, cookieOverride, parkIdOverride, conditionOverride) {
-  const xIdempotencyToken = crypto.randomUUID();
+export async function withdrawFromContractor(
+  id,
+  amount,
+  description,
+  cookieOverride,
+  parkIdOverride,
+  conditionOverride,
+  idempotencyTokenOverride = null,
+) {
+  const xIdempotencyToken = String(idempotencyTokenOverride || '').trim() || crypto.randomUUID();
   const condition = conditionOverride ?? { balance_min: '2' };
   const body = {
     driver_profile_id: id,
@@ -233,13 +241,13 @@ export async function addToContractor(id, amount, description, cookieOverride, p
   }
 }
 
-/** Consulta saldo del conductor (Mi Auto). Usa cookie y parque de Mi Auto. cookieOverride opcional. */
-export async function getContractorBalance(contractorProfileId, parkId = null, cookieOverride = null) {
+async function getContractorBalanceWithContext(contractorProfileId, parkId, cookie) {
   const id = String(contractorProfileId || '').trim();
   if (!id) return { success: false, error: 'external_driver_id vacío' };
+  const resolvedPark = String(parkId || '').trim();
+  const resolvedCookie = String(cookie || '').trim();
+  if (!resolvedPark || !resolvedCookie) return { success: false, error: 'Falta configurar park_id o sesión Fleet' };
   const url = `${fleetBaseUrl()}/api/fleet/contractor-profiles-manager/v1/contractor-balances/by-pro-id?contractor_profile_id=${encodeURIComponent(id)}`;
-  const resolvedPark = fleetParkIdForMiAuto(parkId);
-  const resolvedCookie = fleetCookieCobroForMiAuto(cookieOverride);
   const headers = {
     'Accept-Language': 'es-ES,es',
     'Cookie': resolvedCookie,
@@ -265,36 +273,25 @@ export async function getContractorBalance(contractorProfileId, parkId = null, c
   }
 }
 
+/** Consulta saldo con contexto Fleet explícito; no aplica fallbacks de producto. */
+export function getContractorBalanceForFleet(contractorProfileId, { parkId, cookie } = {}) {
+  return getContractorBalanceWithContext(contractorProfileId, parkId, cookie);
+}
+
+/** Consulta saldo del conductor (Mi Auto). Usa cookie y parque de Mi Auto. cookieOverride opcional. */
+export async function getContractorBalance(contractorProfileId, parkId = null, cookieOverride = null) {
+  return getContractorBalanceWithContext(
+    contractorProfileId,
+    fleetParkIdForMiAuto(parkId),
+    fleetCookieCobroForMiAuto(cookieOverride),
+  );
+}
+
 /** Consulta saldo del conductor para Rapidin: usa parque del conductor (fallback YANGO_FLEET_PARK_ID) y cookie general de cobro (YANGO_FLEET_COOKIE_COBRO). Sin dependencia de Mi Auto. */
 export async function getContractorBalanceForRapidin(contractorProfileId, parkId = null, cookieOverride = null) {
-  const id = String(contractorProfileId || '').trim();
-  if (!id) return { success: false, error: 'external_driver_id vacío' };
-  const url = `${fleetBaseUrl()}/api/fleet/contractor-profiles-manager/v1/contractor-balances/by-pro-id?contractor_profile_id=${encodeURIComponent(id)}`;
   const resolvedPark = parkId && String(parkId).trim() ? String(parkId).trim() : fleetParkId();
   const resolvedCookie = cookieOverride && String(cookieOverride).trim() ? String(cookieOverride).trim() : fleetCookieCobro();
-  const headers = {
-    'Accept-Language': 'es-ES,es',
-    'Cookie': resolvedCookie,
-    'X-Park-Id': resolvedPark,
-    'Content-Type': 'application/json'
-  };
-  try {
-    const res = await postWithProxyRetry(url, {}, headers);
-    const contractors = res.data?.contractors || [];
-    const c = contractors.find(x => x?.contractor_profile_id === id) || contractors[0];
-    if (!c) return { success: false, error: 'Conductor no encontrado' };
-    const balance = parseFloat(c.balance);
-    return { success: true, balance: Number.isFinite(balance) ? balance : 0, full_name: c.full_name };
-  } catch (error) {
-    if (error.response) {
-      const st = error.response.status;
-      const raw = normalizeApiMessage(error.response.data);
-      const hint = fleetSessionRejectedMessage(st, raw);
-      if (hint) return { success: false, error: hint };
-      return { success: false, error: `Error ${st}` };
-    }
-    return { success: false, error: error.message };
-  }
+  return getContractorBalanceWithContext(contractorProfileId, resolvedPark, resolvedCookie);
 }
 
 /**
@@ -402,17 +399,23 @@ function extractPartnerFeesTributoFromIncomeData(payload) {
  * dateFrom/dateTo: ISO -05:00. Mi Auto: `limaWeekStartToMiAutoIncomeRange(week_start cuota)` en utils/miautoLimaWeekRange.js.
  * Opcional env `YANGO_DRIVER_INCOME_TRIPS_JSON_PATH`: ruta punteada al campo numérico de viajes si la API cambia la forma del JSON.
  */
-export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null, cookieOverride = null) {
+async function getDriverIncomeWithContext(
+  dateFrom,
+  dateTo,
+  driverId,
+  resolvedPark,
+  resolvedCookie,
+  logContext = 'Fleet',
+) {
   const id = String(driverId || '').trim();
   if (!id) return { success: false, error: 'driver_id vacío' };
+  if (!resolvedPark || !resolvedCookie) return { success: false, error: 'Falta configurar park_id o sesión Fleet' };
   const url = `${fleetBaseUrl()}/api/v1/cards/driver/income`;
   const body = {
     date_from: dateFrom || '',
     date_to: dateTo || '',
     driver_id: id
   };
-  const resolvedPark = fleetParkIdForMiAuto(parkId);
-  const resolvedCookie = fleetCookieCobroForMiAuto(cookieOverride);
   const headers = {
     'Accept-Language': 'es-ES,es',
     Cookie: resolvedCookie,
@@ -422,7 +425,7 @@ export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null,
   const logIncome = process.env.YANGO_LOG_DRIVER_INCOME !== '0';
   if (logIncome) {
     logger.info(
-      `[Yango driver/income] POST body: date_from=${body.date_from} date_to=${body.date_to} driver_id=${id} X-Park-Id=${resolvedPark} (Mi Auto env si aplica)`
+      `[Yango driver/income] ${logContext}: date_from=${body.date_from} date_to=${body.date_to} driver_id=${id} X-Park-Id=${resolvedPark}`
     );
   }
   try {
@@ -457,6 +460,22 @@ export async function getDriverIncome(dateFrom, dateTo, driverId, parkId = null,
   } catch (error) {
     return { success: false, error: error.response ? `Error ${error.response.status}` : error.message };
   }
+}
+
+/** Métricas de un conductor con contexto Fleet explícito, sin fallbacks de producto. */
+export function getDriverIncomeForFleet({ dateFrom, dateTo, driverId, parkId, cookie } = {}) {
+  return getDriverIncomeWithContext(dateFrom, dateTo, driverId, parkId, cookie, 'contexto explícito');
+}
+
+export function getDriverIncome(dateFrom, dateTo, driverId, parkId = null, cookieOverride = null) {
+  return getDriverIncomeWithContext(
+    dateFrom,
+    dateTo,
+    driverId,
+    fleetParkIdForMiAuto(parkId),
+    fleetCookieCobroForMiAuto(cookieOverride),
+    'Mi Auto',
+  );
 }
 
 function normalizeSupplyDriver(item) {
@@ -505,21 +524,27 @@ async function fetchSupplyDrivers({ endpoint, requestedPeriod, headers }) {
   return { firstPayload, drivers: [...driversById.values()] };
 }
 
-/** Resumen Fleet de Supply por conductor para el dashboard de Yego Mi Auto. */
-export async function getMiAutoSupplySummary({ dateFrom, dateTo, parkId = null, cookieOverride = null } = {}) {
-  const resolvedCookie = fleetCookieCobroForMiAuto(cookieOverride);
-  const resolvedPark = fleetParkIdForMiAuto(parkId);
+async function getFleetSupplySummaryWithContext({
+  dateFrom,
+  dateTo,
+  parkId,
+  cookie,
+  workRuleId = '',
+  contextLabel = 'Fleet',
+} = {}) {
+  const resolvedCookie = String(cookie || '').trim();
+  const resolvedPark = String(parkId || '').trim();
   if (!resolvedCookie || !resolvedPark) {
-    return { success: false, error: 'Falta configurar la sesión o flota Yango de Mi Auto' };
+    return { success: false, error: `Falta configurar la sesión o flota Yango de ${contextLabel}` };
   }
 
   const requestedPeriod = {
     date_from: String(dateFrom || '').slice(0, 10),
     date_to: String(dateTo || '').slice(0, 10),
-    work_rule_id: MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID,
     sort: { field: 'driver_id', direction: 'asc' },
   };
-  const cacheKey = `${resolvedPark}:${requestedPeriod.date_from}:${requestedPeriod.date_to}:${MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID}`;
+  if (workRuleId) requestedPeriod.work_rule_id = String(workRuleId).trim();
+  const cacheKey = `${resolvedPark}:${requestedPeriod.date_from}:${requestedPeriod.date_to}:${workRuleId || 'all'}`;
   const cached = readSupplyCache(miAutoSupplySummaryCache, cacheKey);
   if (cached) return cached;
   const inFlight = miAutoSupplySummaryRequests.get(cacheKey);
@@ -557,13 +582,37 @@ export async function getMiAutoSupplySummary({ dateFrom, dateTo, parkId = null, 
     } catch (error) {
       const status = error.response?.status;
       const detail = normalizeApiMessage(error.response?.data) || error.message;
-      logger.error('Yango Mi Auto supply summary error', { status, detail });
+      logger.error(`Yango ${contextLabel} supply summary error`, { status, detail });
       return { success: false, status, error: `Fleet no pudo obtener las horas Supply${status ? ` (${status})` : ''}` };
     }
   })().finally(() => miAutoSupplySummaryRequests.delete(cacheKey));
 
   miAutoSupplySummaryRequests.set(cacheKey, request);
   return request;
+}
+
+/** Resumen Supply con parque y sesión explícitos, utilizable por productos aislados. */
+export function getFleetSupplySummary({ dateFrom, dateTo, parkId, cookie, workRuleId = '' } = {}) {
+  return getFleetSupplySummaryWithContext({
+    dateFrom,
+    dateTo,
+    parkId,
+    cookie,
+    workRuleId,
+    contextLabel: 'Fleet explícito',
+  });
+}
+
+/** Resumen Fleet de Supply por conductor para el dashboard de Yego Mi Auto. */
+export function getMiAutoSupplySummary({ dateFrom, dateTo, parkId = null, cookieOverride = null } = {}) {
+  return getFleetSupplySummaryWithContext({
+    dateFrom,
+    dateTo,
+    parkId: fleetParkIdForMiAuto(parkId),
+    cookie: fleetCookieCobroForMiAuto(cookieOverride),
+    workRuleId: MIAUTO_SUPPLY_DEFAULT_WORK_RULE_ID,
+    contextLabel: 'Mi Auto',
+  });
 }
 
 function listYmdDates(dateFrom, dateTo) {

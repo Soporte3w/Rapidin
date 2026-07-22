@@ -46,7 +46,7 @@ export const verifyModule = (...modules) => (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({ error: 'No autenticado' });
   }
-  if (req.user.role === 'driver') return next();
+  if (req.user.role === 'driver' || req.user.role === 'admin') return next();
   const userModules = req.user.allowed_modules || ['rapidin'];
   if (!modules.some(m => userModules.includes(m))) {
     return res.status(403).json({ message: 'No tienes acceso a este módulo' });
@@ -69,7 +69,6 @@ export const verifyCountry = (req, res, next) => {
     error: 'No tienes permisos para este país'
   });
 };
-
 
 
 

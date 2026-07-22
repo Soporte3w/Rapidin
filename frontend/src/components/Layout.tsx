@@ -71,14 +71,15 @@ const ADMIN_MENU: Record<AdminProduct, { newRequest?: MenuItem; sections: MenuSe
     ],
   },
   'yego-mi-moto': {
-    newRequest: { text: 'Nueva solicitud Mi Moto', icon: PlusCircle, path: '/admin/yego-mi-moto/loan-requests/credit-type', permission: 'mimoto.nueva_solicitud' },
     subtitle: 'Yego mi moto',
-    dashboardPath: '/admin/yego-mi-moto/dashboard',
+    dashboardPath: '/admin/yego-mi-moto/requests',
     sections: [
-      { title: 'Principal', items: [{ text: 'Dashboard', icon: LayoutDashboard, path: '/admin/yego-mi-moto/dashboard', permission: 'mimoto.dashboard' }] },
-      { title: 'Operación', items: [
-        { text: 'Préstamos', icon: Banknote, path: '/admin/yego-mi-moto/loans', permission: 'mimoto.prestamos' },
-        { text: 'Pagos', icon: CreditCard, path: '/admin/yego-mi-moto/payments', permission: 'mimoto.pagos' },
+      { title: 'Operacion', items: [
+        { text: 'Nueva Solicitud', icon: PlusCircle, path: '/admin/yego-mi-moto/nueva-solicitud', permission: 'mimoto.nueva_solicitud' },
+        { text: 'Solicitudes', icon: FileText, path: '/admin/yego-mi-moto/requests', permission: 'mimoto.solicitudes' },
+        { text: 'Alquiler / Venta', icon: Banknote, path: '/admin/yego-mi-moto/rent-sale', permission: 'mimoto.alquiler_venta' },
+        { text: 'Validar comprobantes', icon: ClipboardCheck, path: '/admin/yego-mi-moto/validar-comprobantes', permission: 'mimoto.validar_comprobantes' },
+        { text: 'Mensajes', icon: MessageCircle, path: '/admin/yego-mi-moto/mensajes', permission: 'mimoto.mensajes' },
       ]},
       { title: 'Reportes', items: [{ text: 'Análisis', icon: BarChart3, path: '/admin/yego-mi-moto/analysis', permission: 'mimoto.analisis' }] },
       { title: 'Sistema', items: [{ text: 'Configuración', icon: Settings, path: '/admin/yego-mi-moto/config', permission: 'mimoto.configuracion' }] },
@@ -99,16 +100,21 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
       : 'rapidin';
 
   const userPermissions = user?.allowed_modules ?? ['rapidin'];
+  const isSystemAdmin = user?.role === 'admin';
   const canAccessProduct = (product: AdminProduct) =>
-    hasGroupAccess(userPermissions, PRODUCT_PERMISSION_KEY[product]);
+    isSystemAdmin || hasGroupAccess(userPermissions, PRODUCT_PERMISSION_KEY[product]);
   const canAccessItem = (item: MenuItem, product = currentProduct) =>
-    hasSectionAccess(userPermissions, PRODUCT_PERMISSION_KEY[product], item.permission);
+    isSystemAdmin || hasSectionAccess(userPermissions, PRODUCT_PERMISSION_KEY[product], item.permission);
   const canAccessSystemUsers =
-    hasSectionAccess(userPermissions, 'rapidin', 'rapidin.usuarios')
-    || hasSectionAccess(userPermissions, 'miauto', 'miauto.usuarios');
+    isSystemAdmin
+    || hasSectionAccess(userPermissions, 'rapidin', 'rapidin.usuarios')
+    || hasSectionAccess(userPermissions, 'miauto', 'miauto.usuarios')
+    || hasSectionAccess(userPermissions, 'mimoto', 'mimoto.usuarios');
   const systemUsersPath = hasSectionAccess(userPermissions, 'rapidin', 'rapidin.usuarios')
     ? '/admin/system-users'
-    : '/admin/yego-mi-auto/system-users';
+    : hasSectionAccess(userPermissions, 'miauto', 'miauto.usuarios')
+      ? '/admin/yego-mi-auto/system-users'
+      : '/admin/system-users';
 
   const firstAccessibleProduct = (): AdminProduct =>
     (['rapidin', 'yego-mi-auto', 'yego-mi-moto'] as const).find((product) => canAccessProduct(product)) ?? 'rapidin';

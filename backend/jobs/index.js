@@ -5,6 +5,7 @@ import { startDailyAutoChargeJob } from './dailyAutoCharge.js';
 import { startMiautoWeeklyChargeJob } from './miautoWeeklyCharge.js';
 import { startConsistencyCheckJob } from './consistencyCheckerScheduler.js';
 import { startMiautoWhatsAppQueueJob } from './miautoWhatsAppQueue.js';
+import { startMimotoJobs } from './mimotoJobs.js';
 import { logger } from '../utils/logger.js';
 
 export const initializeJobs = () => {
@@ -17,10 +18,10 @@ export const initializeJobs = () => {
   startMiautoWeeklyChargeJob();
   startConsistencyCheckJob();
   startMiautoWhatsAppQueueJob();
+  startMimotoJobs();
   
   logger.info('Jobs programados inicializados');
 };
-
 
 
 

@@ -46,12 +46,14 @@ export const ADMIN_PERMISSION_GROUPS: AdminPermissionGroup[] = [
     key: 'mimoto',
     label: 'Yego Mi Moto',
     sections: [
-      { key: 'mimoto.dashboard', label: 'Dashboard' },
-      { key: 'mimoto.nueva_solicitud', label: 'Nueva solicitud Mi Moto' },
-      { key: 'mimoto.prestamos', label: 'Préstamos' },
-      { key: 'mimoto.pagos', label: 'Pagos' },
+      { key: 'mimoto.nueva_solicitud', label: 'Nueva Solicitud' },
+      { key: 'mimoto.solicitudes', label: 'Solicitudes' },
+      { key: 'mimoto.alquiler_venta', label: 'Alquiler / Venta' },
+      { key: 'mimoto.validar_comprobantes', label: 'Validar comprobantes' },
+      { key: 'mimoto.mensajes', label: 'Mensajes' },
       { key: 'mimoto.analisis', label: 'Análisis' },
       { key: 'mimoto.configuracion', label: 'Configuración' },
+      { key: 'mimoto.usuarios', label: 'Usuarios y permisos' },
     ],
   },
 ];

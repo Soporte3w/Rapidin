@@ -28,7 +28,8 @@ import LoanBenefits from './pages/driver/LoanBenefits';
 import LoanOfferVerification from './pages/driver/LoanOfferVerification';
 import LoanRequestFlow from './pages/driver/LoanRequestFlow';
 import QuieroMiYegoAuto from './pages/driver/QuieroMiYegoAuto';
-import { DRIVER_MI_AUTO_ENABLED } from './components/DriverSidebar';
+import QuieroMiYegoMoto from './pages/driver/QuieroMiYegoMoto';
+import { DRIVER_MI_AUTO_ENABLED, DRIVER_MI_MOTO_ENABLED } from './components/DriverSidebar';
 import SelectFlota from './pages/driver/SelectFlota';
 import NewLoanRequest from './pages/yegoRapidin/NewLoanRequest';
 import CreditTypeSelection from './pages/yegoRapidin/CreditTypeSelection';
@@ -44,13 +45,14 @@ import YegoMiAutoNuevaSolicitud from './pages/yegoMiAuto/YegoMiAutoNuevaSolicitu
 import MiautoWhatsApp from './pages/admin/MiautoWhatsApp';
 import SystemUsersPage from './pages/admin/SystemUsersPage';
 import YegoMiMotoDashboard from './pages/yegoMiMoto/YegoMiMotoDashboard';
-import YegoMiMotoFlotas from './pages/yegoMiMoto/YegoMiMotoFlotas';
 import YegoMiMotoConfig from './pages/yegoMiMoto/YegoMiMotoConfig';
 import YegoMiMotoAnalysis from './pages/yegoMiMoto/YegoMiMotoAnalysis';
 import YegoMiMotoPayments from './pages/yegoMiMoto/YegoMiMotoPayments';
 import YegoMiMotoLoans from './pages/yegoMiMoto/YegoMiMotoLoans';
 import YegoMiMotoNewRequest from './pages/yegoMiMoto/YegoMiMotoNewRequest';
-import YegoMiMotoCreditTypeSelection from './pages/yegoMiMoto/CreditTypeSelection';
+import YegoMiMotoDetail from './pages/yegoMiMoto/YegoMiMotoDetail';
+import YegoMiMotoSolicitudDetail from './pages/yegoMiMoto/YegoMiMotoSolicitudDetail';
+import YegoMiMotoMessages from './pages/yegoMiMoto/YegoMiMotoMessages';
 import { AuthProvider } from './contexts/AuthContext';
 
 function RedirectSolicitudToRequest() {
@@ -130,6 +132,7 @@ function App() {
               <Route path="loan-offer-verification" element={<LoanOfferVerification />} />
               <Route path="loan-request-flow" element={<LoanRequestFlow />} />
               <Route path="quiero-mi-auto" element={DRIVER_MI_AUTO_ENABLED ? <QuieroMiYegoAuto /> : <Navigate to="/driver/resumen" replace />} />
+              <Route path="quiero-mi-moto" element={DRIVER_MI_MOTO_ENABLED ? <QuieroMiYegoMoto /> : <Navigate to="/driver/resumen" replace />} />
               <Route path="profile" element={<DriverProfile />} />
             </Route>
             
@@ -282,15 +285,16 @@ function App() {
             <Route path="/admin/yego-mi-auto/system-users" element={<ProtectedRoute><Layout><SystemUsersPage /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/mensajes" element={<ProtectedRoute><Layout><MiautoWhatsApp /></Layout></ProtectedRoute>} />
             {/* Yego mi moto */}
-            <Route path="/admin/yego-mi-moto" element={<Navigate to="/admin/yego-mi-moto/dashboard" replace />} />
-            <Route path="/admin/yego-mi-moto/dashboard" element={<ProtectedRoute><Layout><YegoMiMotoDashboard /></Layout></ProtectedRoute>} />
-            <Route path="/admin/yego-mi-moto/flotas" element={<ProtectedRoute><Layout><YegoMiMotoFlotas /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto" element={<Navigate to="/admin/yego-mi-moto/requests" replace />} />
+            <Route path="/admin/yego-mi-moto/requests" element={<ProtectedRoute><Layout><YegoMiMotoDashboard /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/requests/:id" element={<ProtectedRoute><Layout><YegoMiMotoSolicitudDetail /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/nueva-solicitud" element={<ProtectedRoute><Layout><YegoMiMotoNewRequest /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/rent-sale" element={<ProtectedRoute><Layout><YegoMiMotoLoans /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/rent-sale/:id" element={<ProtectedRoute><Layout><YegoMiMotoDetail /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/validar-comprobantes" element={<ProtectedRoute><Layout><YegoMiMotoPayments /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-moto/mensajes" element={<ProtectedRoute><Layout><YegoMiMotoMessages /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-moto/config" element={<ProtectedRoute><Layout><YegoMiMotoConfig /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-moto/analysis" element={<ProtectedRoute><Layout><YegoMiMotoAnalysis /></Layout></ProtectedRoute>} />
-            <Route path="/admin/yego-mi-moto/payments" element={<ProtectedRoute><Layout><YegoMiMotoPayments /></Layout></ProtectedRoute>} />
-            <Route path="/admin/yego-mi-moto/loans" element={<ProtectedRoute><Layout><YegoMiMotoLoans /></Layout></ProtectedRoute>} />
-            <Route path="/admin/yego-mi-moto/loan-requests/credit-type" element={<ProtectedRoute><Layout><YegoMiMotoCreditTypeSelection /></Layout></ProtectedRoute>} />
-            <Route path="/admin/yego-mi-moto/loan-requests/new" element={<ProtectedRoute><Layout><YegoMiMotoNewRequest /></Layout></ProtectedRoute>} />
         </Routes>
       </BrowserRouter>
       {/* Modales admin: fuera del Layout para que `fixed inset-0` cubra sidebar y header (z-50 / z-30). */}

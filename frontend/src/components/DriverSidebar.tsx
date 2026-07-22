@@ -6,12 +6,14 @@ import {
   User,
   LogOut,
   X,
-  Car
+  Car,
+  Bike
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 /** Sección Yego Mi Auto en conductor: menú + ruta /driver/quiero-mi-auto */
 export const DRIVER_MI_AUTO_ENABLED = true;
+export const DRIVER_MI_MOTO_ENABLED = import.meta.env.VITE_DRIVER_MI_MOTO_ENABLED === 'true';
 
 interface DriverSidebarProps {
   isOpen: boolean;
@@ -32,6 +34,7 @@ export default function DriverSidebar({ isOpen, onClose }: DriverSidebarProps) {
   type MenuSection = { title: string; items: MenuItem[] };
 
   const SHOW_MI_AUTO = DRIVER_MI_AUTO_ENABLED;
+  const SHOW_MI_MOTO = DRIVER_MI_MOTO_ENABLED;
 
   const sections: MenuSection[] = [
     { title: 'Principal', items: [
@@ -44,6 +47,9 @@ export default function DriverSidebar({ isOpen, onClose }: DriverSidebarProps) {
     ]},
     ...(SHOW_MI_AUTO ? [{ title: 'Mi Auto', items: [
       { name: '¡Quiero Yego Mi Auto!', href: '/driver/quiero-mi-auto', icon: Car },
+    ]}] : []),
+    ...(SHOW_MI_MOTO ? [{ title: 'Mi Moto', items: [
+      { name: 'Yego Mi Moto', href: '/driver/quiero-mi-moto', icon: Bike },
     ]}] : []),
   ];
 

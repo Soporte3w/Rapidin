@@ -18,8 +18,10 @@
     "miauto:repair-cascada-mora-extra": "node scripts/miauto-repair-cascada-mora-extra-excel.js",
     "miauto:cobro-fleet": "node scripts/miauto-cobro-fleet-solicitud.js",
     "miauto:importar-gastos": "node scripts/miauto-import-otros-gastos-excel.js",
+    "mimoto:importar-excel": "node scripts/mimoto-import-weekly-payments-excel.js",
     "test:miauto-cobros": "node --test tests/miautoWeeklyPoolPriority.test.js",
-    "test:miauto-gastos": "node --test tests/miautoGastoRules.test.js tests/miautoCronogramaGastosConfig.test.js tests/miautoGastoConfigSync.test.js tests/miautoOtrosGastosDocument.test.js tests/miautoOtrosGastosExcelImport.test.js"
+    "test:miauto-gastos": "node --test tests/miautoGastoRules.test.js tests/miautoCronogramaGastosConfig.test.js tests/miautoGastoConfigSync.test.js tests/miautoOtrosGastosDocument.test.js tests/miautoOtrosGastosExcelImport.test.js",
+    "test:mimoto": "node --test tests/mimotoFinancialEngine.test.js tests/mimotoDateUtils.test.js tests/mimotoIsolation.test.js tests/mimotoExcelImportParser.test.js"
   },
   "keywords": [
     "rapidin",

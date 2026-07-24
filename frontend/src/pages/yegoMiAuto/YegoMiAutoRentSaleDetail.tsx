@@ -17,7 +17,7 @@ import {
   type MiautoOtrosGastoRow,
 } from '../../utils/miautoOtrosGastos';
 import { monedaCuotasLabel, symMoneda } from '../../utils/miautoAlquilerVentaList';
-import { MIAUTO_NO_CACHE_HEADERS, emptyListIfNotAbort, isAxiosAbortError } from '../../utils/miautoApiUtils';
+import { MIAUTO_NO_CACHE_HEADERS, emptyListIfNotAbort, isAxiosAbortError, unwrapApiData } from '../../utils/miautoApiUtils';
 import {
   driverDisplayRentSale,
   getMiautoAdjuntoUrl,
@@ -342,7 +342,6 @@ export default function YegoMiAutoRentSaleDetail() {
   const conformidadFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [conformidadEliminarModal, setConformidadEliminarModal] = useState<{ comprobanteId: string } | null>(null);
   const [eliminandoConformidadId, setEliminandoConformidadId] = useState<string | null>(null);
-  const [racha, setRacha] = useState<number | null>(null);
   const [bonoAplicado, setBonoAplicado] = useState<number>(0);
   const [bonoTiempoResumen, setBonoTiempoResumen] = useState<BonoTiempoResumen | null>(null);
   const [tabCronograma, setTabCronograma] = useState<'semanales' | 'otros_gastos'>('semanales');
@@ -639,7 +638,7 @@ export default function YegoMiAutoRentSaleDetail() {
         api.get(`/miauto/solicitudes/${id}/contratos`, req).catch(emptyListIfNotAbort),
       ]);
       const sol = resSol.data?.data ?? resSol.data;
-      const { cuotas: rawCuotas, racha: rachaNum, cuotasSemanalesBonificadas: bonoNum } = parseCuotasSemanalesPayload(resCuotas);
+      const { cuotas: rawCuotas, cuotasSemanalesBonificadas: bonoNum } = parseCuotasSemanalesPayload(resCuotas);
       const cuotasEnvelope = resCuotas.data?.data ?? resCuotas.data ?? {};
       const bonoResumen = (cuotasEnvelope as { bono_tiempo?: BonoTiempoResumen }).bono_tiempo ?? null;
       const comp = resComp.data?.data ?? resComp.data ?? [];
@@ -655,7 +654,6 @@ export default function YegoMiAutoRentSaleDetail() {
       setContratos(Array.isArray(contratosData) ? contratosData : []);
 
       setEvidenciasFleet(Array.isArray(evFleet) ? evFleet : []);
-      setRacha(rachaNum);
       setBonoAplicado(bonoNum);
       setBonoTiempoResumen(bonoResumen);
     } catch (e: any) {
@@ -673,7 +671,6 @@ export default function YegoMiAutoRentSaleDetail() {
         setContratos([]);
   
         setEvidenciasFleet([]);
-        setRacha(null);
         setBonoAplicado(0);
         setBonoTiempoResumen(null);
       }
@@ -738,18 +735,30 @@ export default function YegoMiAutoRentSaleDetail() {
     setGuardandoPagoPuntualId(cuotaId);
     setCuotas((current) => current.map((c) => (c.id === cuotaId ? { ...c, pago_puntual: checked } : c)));
     try {
-      await api.patch(`/miauto/solicitudes/${id}/cuotas-semanales/${cuotaId}/pago-puntual`, {
+      const response = await api.patch(`/miauto/solicitudes/${id}/cuotas-semanales/${cuotaId}/pago-puntual`, {
         pago_puntual: checked,
       });
+      const result = unwrapApiData<{
+        bono_tiempo?: BonoTiempoResumen;
+        cuotas_semanales_bonificadas?: number;
+      }>(response);
+      const nextBonusSummary = result?.bono_tiempo;
+      const nextBonusCount = Math.max(0, Number(result?.cuotas_semanales_bonificadas) || 0);
+      if (nextBonusSummary?.enabled) {
+        setBonoTiempoResumen(nextBonusSummary);
+        setBonoAplicado(nextBonusCount);
+      }
       toast.success(checked ? 'Pago puntual marcado' : 'Pago puntual desmarcado');
-      await fetchDetail(undefined, { refresh: true });
+      if (nextBonusCount > bonoAplicado) {
+        await fetchDetail(undefined, { refresh: true });
+      }
     } catch (err: any) {
       setCuotas(prevCuotas);
       toast.error(err.response?.data?.message || 'No se pudo actualizar el pago puntual');
     } finally {
       setGuardandoPagoPuntualId(null);
     }
-  }, [cuotas, fetchDetail, id]);
+  }, [bonoAplicado, cuotas, fetchDetail, id]);
 
   const cuotasNotaVentaDisponibles = useMemo(() => {
     return cuotas.filter((c) => {
@@ -1542,7 +1551,7 @@ export default function YegoMiAutoRentSaleDetail() {
 
       {/* Métricas KPI */}
       <div className="space-y-3">
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
           <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
             <div className="flex items-center gap-2 text-gray-600 text-sm mb-1">
               <Calendar className="w-4 h-4" />
@@ -1590,32 +1599,22 @@ export default function YegoMiAutoRentSaleDetail() {
             <p className="text-xs text-gray-500">saldo en cuotas vencidas</p>
           </div>
           {bonoTiempoActivo && (
-            <>
-              <div className="bg-white rounded-lg border border-green-100 p-4 shadow-sm">
-                <div className="flex items-center gap-2 text-green-700 text-sm mb-1">
-                  <TrendingUp className="w-4 h-4" />
-                  <span>Racha</span>
-                </div>
-                <p className="text-xl font-bold text-green-800">{racha ?? 0}/4</p>
-                <p className="text-xs text-gray-500">pagadas, puntuales y con 120 viajes</p>
+            <div className="bg-white rounded-lg border border-[#8B1A1A]/20 p-4 shadow-sm">
+              <div className="flex items-center gap-2 text-[#8B1A1A] text-sm mb-1">
+                <Award className="w-4 h-4" />
+                <span>Bono tiempo</span>
               </div>
-              <div className="bg-white rounded-lg border border-[#8B1A1A]/20 p-4 shadow-sm">
-                <div className="flex items-center gap-2 text-[#8B1A1A] text-sm mb-1">
-                  <Award className="w-4 h-4" />
-                  <span>Bono tiempo</span>
-                </div>
-                <p className="text-xl font-bold text-[#8B1A1A]">{bonoAplicado}</p>
-                <p className="text-xs text-gray-500">
-                  {bonoAplicado >= 1 ? `${bonoAplicado} cuota${bonoAplicado !== 1 ? 's' : ''} consolidada${bonoAplicado !== 1 ? 's' : ''}` : 'sin bonos aún'}
-                </p>
-              </div>
-            </>
+              <p className="text-xl font-bold text-[#8B1A1A]">{bonoAplicado}</p>
+              <p className="text-xs text-gray-500">
+                {bonoAplicado >= 1 ? `${bonoAplicado} cuota${bonoAplicado !== 1 ? 's' : ''} consolidada${bonoAplicado !== 1 ? 's' : ''}` : 'sin bonos aún'}
+              </p>
+            </div>
           )}
         </div>
         {bonoTiempoActivo && (
           <>
             <p className="text-xs text-gray-500 px-1">
-              Bono tiempo: la primera semana de depósito no cuenta. Cada 4 cuotas pagadas puntualmente y con al menos 120 viajes consolida una cuota final; un incumplimiento posterior solo reinicia la siguiente racha.
+              Bono tiempo: la primera semana de depósito no cuenta. Cada 4 cuotas pagadas puntualmente y con al menos 120 viajes reserva una cuota final. Si se desmarca una antes de aplicar el bono, la reserva se elimina.
             </p>
             {bonoTiempoResumen?.bonos.some((bono) => bono.status === 'reservado') && (
               <p className="text-xs text-amber-700 px-1">

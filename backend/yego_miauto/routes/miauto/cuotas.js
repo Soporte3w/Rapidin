@@ -48,11 +48,14 @@ router.get('/solicitudes/:id/cuotas-semanales', validateUUID, async (req, res) =
     const bonoTiempo = await getResumenBonoTiempo(req.params.id);
     const rachaNum = typeof racha === 'number' && Number.isFinite(racha) ? Math.max(0, Math.floor(racha)) : 0;
     const bonoAplicado = typeof cuotas_semanales_bonificadas === 'number' && Number.isFinite(cuotas_semanales_bonificadas) ? Math.max(0, Math.floor(cuotas_semanales_bonificadas)) : 0;
+    const bonosConsolidados = bonoTiempo.enabled && Array.isArray(bonoTiempo.bonos)
+      ? bonoTiempo.bonos.length
+      : 0;
     const totalCargadas = typeof total_cuotas_cargadas === 'number' ? Math.max(0, Math.floor(total_cuotas_cargadas)) : 0;
     return successResponse(res, {
       data: list,
       racha: bonoTiempo.enabled ? bonoTiempo.racha : rachaNum,
-      cuotas_semanales_bonificadas: bonoAplicado,
+      cuotas_semanales_bonificadas: bonoTiempo.enabled ? bonosConsolidados : bonoAplicado,
       total_cuotas_cargadas: totalCargadas,
       bono_tiempo: bonoTiempo,
     });

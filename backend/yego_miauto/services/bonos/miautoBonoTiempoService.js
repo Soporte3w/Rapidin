@@ -1,8 +1,19 @@
 import { query } from '../../../config/database.js';
 
 export const MIN_VIAJES_BONO_TIEMPO = 120;
+export const CUOTAS_POR_BONO_TIEMPO = 4;
+
+const LIMA_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Lima',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 
 function ymd(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return LIMA_DATE_FORMATTER.format(value);
+  }
   const match = /^(\d{4}-\d{2}-\d{2})/.exec(String(value || '').trim());
   return match ? match[1] : null;
 }
@@ -16,43 +27,68 @@ function mondayOfYmd(value) {
   return date.toISOString().slice(0, 10);
 }
 
-function isEligibleRow(row, depositWeek) {
-  if (ymd(row.week_start_date) === depositWeek) return false;
+function isEligibleRow(row) {
   const status = String(row.status || '').toLowerCase();
   return (status === 'paid' || status === 'bonificada')
     && row.pago_puntual === true
     && Number(row.num_viajes || 0) >= MIN_VIAJES_BONO_TIEMPO;
 }
 
-function completedBlocks(rows, depositWeek) {
+function limaTodayYmd() {
+  return LIMA_DATE_FORMATTER.format(new Date());
+}
+
+function rowDate(row) {
+  return ymd(row?.due_date) || ymd(row?.week_start_date);
+}
+
+/**
+ * Las cuotas futuras todavía no exigibles no rompen la racha. Una cuota ya
+ * pagada, vencida o alcanzada por la fecha de corte sí forma parte de la
+ * secuencia y, si no cumple, reinicia el progreso.
+ */
+function shouldEvaluateRow(row, cutoffYmd) {
+  if (row?.pago_puntual === true) return true;
+  const status = String(row?.status || '').toLowerCase();
+  if (status === 'paid' || status === 'bonificada' || status === 'overdue') return true;
+  const date = rowDate(row);
+  return Boolean(date && date <= cutoffYmd);
+}
+
+/**
+ * Fuente única para analizar bloques consolidados y la racha vigente.
+ * Tras completar cuatro cuotas comienza un nuevo bloque desde cero.
+ */
+export function analizarRachaBonoTiempo(rows, depositWeek, options = {}) {
+  const cutoffYmd = ymd(options.cutoffYmd) || limaTodayYmd();
+  const excludedCuotaIds = new Set(
+    [...(options.excludedCuotaIds || [])].map((id) => String(id))
+  );
   const blocks = [];
   let current = [];
-  for (const row of rows) {
+  const orderedRows = [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
+    const aDate = rowDate(a) || '9999-12-31';
+    const bDate = rowDate(b) || '9999-12-31';
+    return aDate.localeCompare(bDate) || String(a?.id || '').localeCompare(String(b?.id || ''));
+  });
+  for (const row of orderedRows) {
     if (ymd(row.week_start_date) === depositWeek) continue;
-    if (!isEligibleRow(row, depositWeek)) {
+    if (excludedCuotaIds.has(String(row?.id))) {
+      current = [];
+      continue;
+    }
+    if (!shouldEvaluateRow(row, cutoffYmd)) continue;
+    if (!isEligibleRow(row)) {
       current = [];
       continue;
     }
     current.push(row);
-    if (current.length === 4) {
+    if (current.length === CUOTAS_POR_BONO_TIEMPO) {
       blocks.push(current);
       current = [];
     }
   }
-  return blocks;
-}
-
-function currentProgress(rows, depositWeek) {
-  let progress = 0;
-  for (const row of rows) {
-    if (ymd(row.week_start_date) === depositWeek) continue;
-    if (!isEligibleRow(row, depositWeek)) {
-      progress = 0;
-      continue;
-    }
-    progress = (progress + 1) % 4;
-  }
-  return progress;
+  return { blocks, progress: current.length };
 }
 
 async function loadContext(solicitudId) {
@@ -79,6 +115,30 @@ async function loadRows(solicitudId) {
     [solicitudId]
   );
   return result.rows || [];
+}
+
+async function loadBonos(solicitudId) {
+  const result = await query(
+    `SELECT id, source_key, source_cuota_ids, target_week_number,
+            target_cuota_semanal_id, status, created_at, applied_at
+     FROM module_miauto_bono_tiempo
+     WHERE solicitud_id = $1
+     ORDER BY created_at ASC`,
+    [solicitudId]
+  );
+  return result.rows || [];
+}
+
+function sourceCuotaIds(bonos) {
+  return (bonos || []).flatMap((bono) => (
+    Array.isArray(bono.source_cuota_ids)
+      ? bono.source_cuota_ids.map((id) => String(id))
+      : []
+  ));
+}
+
+function sourceKeyForBlock(block) {
+  return block.map((row) => String(row.id)).join(':');
 }
 
 async function aplicarReservas(solicitudId, context) {
@@ -125,64 +185,93 @@ async function aplicarReservas(solicitudId, context) {
   }
 }
 
-/** Consolida bloques nuevos; nunca revoca un bono registrado previamente. */
+/**
+ * Sincroniza las reservas con los bloques vigentes. Una reserva todavía no
+ * aplicada se revoca si se rompe su bloque; un bono aplicado es histórico.
+ */
 export async function reconciliarBonosTiempo(solicitudId) {
   const context = await loadContext(solicitudId);
   if (!context?.bono_tiempo_activo) return { enabled: false, granted: 0 };
-  const rows = await loadRows(solicitudId);
+  const [rows, existingBonos] = await Promise.all([
+    loadRows(solicitudId),
+    loadBonos(solicitudId),
+  ]);
   const depositWeek = mondayOfYmd(context.fecha_inicio_cobro_semanal);
-  const blocks = completedBlocks(rows, depositWeek);
-  const existing = await query(
-    `SELECT source_key FROM module_miauto_bono_tiempo WHERE solicitud_id = $1`,
-    [solicitudId]
+  const appliedBonos = existingBonos.filter((bono) => bono.status === 'aplicado');
+  const { blocks } = analizarRachaBonoTiempo(rows, depositWeek, {
+    excludedCuotaIds: sourceCuotaIds(appliedBonos),
+  });
+  const desiredKeys = new Set(blocks.map(sourceKeyForBlock));
+  const obsoleteReserved = existingBonos.filter(
+    (bono) => bono.status === 'reservado' && !desiredKeys.has(bono.source_key)
   );
-  const existingKeys = new Set((existing.rows || []).map((row) => row.source_key));
+  for (const bono of obsoleteReserved) {
+    await query(
+      `DELETE FROM module_miauto_bono_tiempo
+       WHERE id = $1 AND solicitud_id = $2 AND status = 'reservado'`,
+      [bono.id, solicitudId]
+    );
+  }
+
+  const obsoleteIds = new Set(obsoleteReserved.map((bono) => bono.id));
+  const retainedBonos = existingBonos.filter(
+    (bono) => !obsoleteIds.has(bono.id)
+  );
+  const existingKeys = new Set(retainedBonos.map((bono) => bono.source_key));
   let granted = 0;
-  let claimed = Number(context.legacy_bonus_count || 0);
+  let claimed = Math.max(Number(context.legacy_bonus_count || 0) - obsoleteReserved.length, retainedBonos.length);
   for (const block of blocks) {
-    const ids = block.map((row) => String(row.id));
-    const sourceKey = ids.join(':');
+    const sourceKey = sourceKeyForBlock(block);
     if (existingKeys.has(sourceKey)) continue;
+    const ids = block.map((row) => String(row.id));
     const targetWeek = Number(context.cuotas_semanales || 0) - claimed;
     if (targetWeek <= 0) break;
-    await query(
+    const inserted = await query(
       `INSERT INTO module_miauto_bono_tiempo
        (solicitud_id, source_key, source_cuota_ids, target_week_number)
-       VALUES ($1, $2, $3::jsonb, $4)`,
+       VALUES ($1, $2, $3::jsonb, $4)
+       ON CONFLICT (solicitud_id, source_key) DO NOTHING
+       RETURNING id`,
       [solicitudId, sourceKey, JSON.stringify(ids), targetWeek]
     );
+    if (inserted.rowCount === 0) continue;
     existingKeys.add(sourceKey);
     claimed += 1;
     granted += 1;
   }
-  if (granted > 0) {
-    await query(
-      `UPDATE module_miauto_solicitud
-       SET cuotas_semanales_bonificadas = COALESCE(cuotas_semanales_bonificadas, 0) + $1,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2`,
-      [granted, solicitudId]
-    );
-    context.legacy_bonus_count = claimed;
-  }
+  const totalBonos = retainedBonos.length + granted;
+  await query(
+    `UPDATE module_miauto_solicitud
+     SET cuotas_semanales_bonificadas = $1,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $2`,
+    [totalBonos, solicitudId]
+  );
+  context.legacy_bonus_count = totalBonos;
   await aplicarReservas(solicitudId, context);
-  return { enabled: true, granted };
+  return { enabled: true, granted, revoked: obsoleteReserved.length };
 }
 
 export async function getResumenBonoTiempo(solicitudId) {
   const context = await loadContext(solicitudId);
   if (!context?.bono_tiempo_activo) return { enabled: false, racha: 0, bonos: [] };
-  const rows = await loadRows(solicitudId);
+  const [rows, bonos] = await Promise.all([
+    loadRows(solicitudId),
+    loadBonos(solicitudId),
+  ]);
   const depositWeek = mondayOfYmd(context.fecha_inicio_cobro_semanal);
-  const bonos = await query(
-    `SELECT id, source_cuota_ids, target_week_number, target_cuota_semanal_id, status, created_at, applied_at
-     FROM module_miauto_bono_tiempo WHERE solicitud_id = $1 ORDER BY created_at ASC`,
-    [solicitudId]
+  const appliedBonos = bonos.filter((bono) => bono.status === 'aplicado');
+  const analysis = analizarRachaBonoTiempo(rows, depositWeek, {
+    excludedCuotaIds: sourceCuotaIds(appliedBonos),
+  });
+  const desiredKeys = new Set(analysis.blocks.map(sourceKeyForBlock));
+  const visibleBonos = bonos.filter(
+    (bono) => bono.status === 'aplicado' || desiredKeys.has(bono.source_key)
   );
   return {
     enabled: true,
-    racha: currentProgress(rows, depositWeek),
-    bonos: bonos.rows || [],
+    racha: analysis.progress,
+    bonos: visibleBonos,
   };
 }
 

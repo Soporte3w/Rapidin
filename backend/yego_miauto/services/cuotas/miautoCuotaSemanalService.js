@@ -26,6 +26,11 @@ import {
   tipoCambioUsdALocalEfectivo,
 } from '../utils/miautoMoneyUtils.js';
 import { MIAUTO_PARK_ID } from '../utils/miautoDriverLookup.js';
+import {
+  analizarRachaBonoTiempo,
+  getResumenBonoTiempo,
+  reconciliarBonosTiempo,
+} from '../bonos/miautoBonoTiempoService.js';
 
 const PARTNER_FEES_PCT = 0.8333;
 
@@ -701,7 +706,14 @@ export async function touchFechaPrimerComprobanteCuota(cuotaSemanalId) {
 
 export async function updatePagoPuntualCuotaSemanal(solicitudId, cuotaSemanalId, pagoPuntual) {
   const elegibilidad = await query(
-    `SELECT c.status, c.week_start_date, s.fecha_inicio_cobro_semanal, cr.bono_tiempo_activo
+    `SELECT c.status, c.week_start_date, s.fecha_inicio_cobro_semanal, cr.bono_tiempo_activo,
+            EXISTS (
+              SELECT 1
+              FROM module_miauto_bono_tiempo b
+              WHERE b.solicitud_id = c.solicitud_id
+                AND b.status = 'aplicado'
+                AND b.source_cuota_ids ? c.id::text
+            ) AS pertenece_bono_aplicado
      FROM module_miauto_cuota_semanal c
      JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
      LEFT JOIN module_miauto_cronograma cr ON cr.id = s.cronograma_id
@@ -729,6 +741,11 @@ export async function updatePagoPuntualCuotaSemanal(solicitudId, cuotaSemanalId,
     err.statusCode = 400;
     throw err;
   }
+  if (pagoPuntual === false && cuota.pertenece_bono_aplicado === true) {
+    const err = new Error('No se puede desmarcar una cuota cuyo bono tiempo ya fue aplicado');
+    err.statusCode = 409;
+    throw err;
+  }
   const res = await query(
     `UPDATE module_miauto_cuota_semanal
      SET pago_puntual = $1,
@@ -744,12 +761,16 @@ export async function updatePagoPuntualCuotaSemanal(solicitudId, cuotaSemanalId,
     err.statusCode = 404;
     throw err;
   }
-  const { reconciliarBonosTiempo } = await import('../bonos/miautoBonoTiempoService.js');
   await reconciliarBonosTiempo(solicitudId);
+  const bonoTiempo = await getResumenBonoTiempo(solicitudId);
   return {
     id: res.rows[0].id,
     solicitud_id: res.rows[0].solicitud_id,
     pago_puntual: res.rows[0].pago_puntual === true,
+    bono_tiempo: bonoTiempo,
+    cuotas_semanales_bonificadas: bonoTiempo.enabled && Array.isArray(bonoTiempo.bonos)
+      ? bonoTiempo.bonos.length
+      : 0,
   };
 }
 
@@ -1562,30 +1583,6 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
 export async function recalcularMoraGlobal() {
   const updated = await updateMoraDiaria(null, { includePartial: true, includeExcelMora: true });
   return { updated };
-}
-
-/**
- * Progreso de la racha actual de bono: cuotas pagadas, puntuales y con viajes mínimos.
- * La semana de depósito se excluye; una cuota no elegible reinicia solo la racha en curso.
- */
-function calcularRacha(cuotas, fechaInicioCobroSemanal) {
-  if (!Array.isArray(cuotas) || cuotas.length === 0) return 0;
-  const porFechaAsc = ordenarCuotasSemanalesCronologico(cuotas);
-  let racha = 0;
-  for (const c of porFechaAsc) {
-    if (isSemanaDepositoMiAuto(c.week_start_date, fechaInicioCobroSemanal)) continue;
-    const pend = Number(c.pending_total) || 0;
-    const ok = c.status === 'paid'
-      && pend <= 0.005
-      && c.pago_puntual === true
-      && Number(c.num_viajes || 0) >= 120;
-    if (!ok) {
-      racha = 0;
-      continue;
-    }
-    racha = (racha + 1) % 4;
-  }
-  return racha;
 }
 
 /**
@@ -2903,7 +2900,9 @@ async function pendingTotalMapsForSolicitudIdsBatched(solicitudIds, batchSize = 
  */
 export async function getCuotasSemanalesConRacha(solicitudId, options = {}) {
   const { cuotas, bonificadas_db: fromDb, fecha_inicio_cobro_semanal } = await fetchCuotasSemanalesPayload(solicitudId, options);
-  const racha = calcularRacha(cuotas, fecha_inicio_cobro_semanal);
+  const fechaInicio = ymdFromDbDate(fecha_inicio_cobro_semanal);
+  const depositWeek = fechaInicio ? mondayOfWeekContainingYmd(fechaInicio) : null;
+  const racha = analizarRachaBonoTiempo(cuotas, depositWeek).progress;
   const fromCuotas = (cuotas || []).filter((c) => c.status === 'bonificada').length;
   const cuotasSemanalesBonificadas = Math.max(fromDb, fromCuotas);
   const totalCuotasCargadas = (cuotas || []).length;

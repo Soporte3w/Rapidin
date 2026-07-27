@@ -97,6 +97,16 @@ function formatPreviewMessage(item: PreviewItem) {
   return `-- ${item.name} (${item.phone || 'sin teléfono'}) --\n${item.message}`;
 }
 
+function extractCuotas(response: any) {
+  const payload = response?.data?.data;
+  if (Array.isArray(payload?.data)) return payload.data;
+  return Array.isArray(payload) ? payload : [];
+}
+
+function uniqueRows(rows: SolicitudRow[]) {
+  return [...new Map(rows.map((row) => [row.id, row])).values()];
+}
+
 const MiautoWhatsApp: React.FC = () => {
   const [solicitudes, setSolicitudes] = useState<SolicitudRow[]>([]);
   const [cronogramas, setCronogramas] = useState<CronogramaOption[]>([]);
@@ -122,10 +132,12 @@ const MiautoWhatsApp: React.FC = () => {
   const [historyStatus, setHistoryStatus] = useState('');
   const [historySearch, setHistorySearch] = useState('');
   const loadedRef = useRef(false);
+  const cuotasRequestsRef = useRef<Map<string, Promise<any[]>>>(new Map());
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (refreshCuotas = false) => {
     try {
       setLoading(true);
+      if (refreshCuotas) cuotasRequestsRef.current.clear();
       const firstResponse = await api.get('/miauto/alquiler-venta', {
         params: { country: 'PE', page: 1, limit: RENT_SALE_API_PAGE_SIZE },
       });
@@ -146,14 +158,14 @@ const MiautoWhatsApp: React.FC = () => {
           Array.isArray(response.data?.data) ? response.data.data : []
         ),
       ];
-      const rows: SolicitudRow[] = raw.map((s: any) => ({
+      const rows = uniqueRows(raw.map((s: any): SolicitudRow => ({
         id: s.id,
         first_name: s.driver_name || s.working_driver_name || s.full_name || '',
         phone: s.phone || s.whatsapp_phone || '',
         cronograma_name: s.cronograma?.name || s.cronograma_name || '',
         cronograma_id: s.cronograma?.id || s.cronograma_id || '',
         vehiculo_name: s.vehiculo?.name || s.vehiculo_name || s.cronograma_vehiculo?.name || '',
-      }));
+      })));
       const availableIds = new Set(rows.map((row) => row.id));
       setSolicitudes(rows);
       setSelectedIds((current) => new Set([...current].filter((id) => availableIds.has(id))));
@@ -301,9 +313,26 @@ const MiautoWhatsApp: React.FC = () => {
     setProgressItems((items) => items.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   }
 
+  const getCuotas = useCallback((solicitudId: string) => {
+    const cachedRequest = cuotasRequestsRef.current.get(solicitudId);
+    if (cachedRequest) return cachedRequest;
+
+    const request = api
+      .get(`/miauto/solicitudes/${solicitudId}/cuotas-semanales`)
+      .then(extractCuotas)
+      .catch((error) => {
+        if (cuotasRequestsRef.current.get(solicitudId) === request) {
+          cuotasRequestsRef.current.delete(solicitudId);
+        }
+        throw error;
+      });
+
+    cuotasRequestsRef.current.set(solicitudId, request);
+    return request;
+  }, []);
+
   async function buildItem(row: SolicitudRow): Promise<WhatsAppItem> {
-    const cuotasRes = await api.get(`/miauto/solicitudes/${row.id}/cuotas-semanales`);
-    const cuotas = cuotasRes.data?.data?.data || cuotasRes.data?.data || [];
+    const cuotas = await getCuotas(row.id);
     const result = buildMiAutoMessage({ driverName: safeName(row), cuotas });
     return {
       solicitud_id: row.id,
@@ -314,7 +343,7 @@ const MiautoWhatsApp: React.FC = () => {
   }
 
   async function handlePreview(row?: SolicitudRow) {
-    const rows = row ? [row] : selectedEligibleRows;
+    const rows = uniqueRows(row ? [row] : selectedEligibleRows);
     if (rows.length === 0) return toast.error('Selecciona al menos un conductor con teléfono válido');
 
     setPreviewItems([]);
@@ -506,7 +535,7 @@ const MiautoWhatsApp: React.FC = () => {
           </div>
           <button
             type="button"
-            onClick={loadData}
+            onClick={() => loadData(true)}
             disabled={loading || sending}
             className="inline-flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold bg-white/10 text-white border border-white/25 rounded-lg hover:bg-white/15 disabled:opacity-50"
           >
@@ -721,7 +750,7 @@ const MiautoWhatsApp: React.FC = () => {
 
       {showPreview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setShowPreview(false)}>
-          <div className={`${isSinglePreview ? 'max-w-2xl' : 'max-w-5xl'} bg-white rounded-lg shadow-xl w-full max-h-[min(92vh,760px)] flex flex-col`} onClick={(e) => e.stopPropagation()}>
+          <div className={`${isSinglePreview ? 'max-w-2xl' : 'max-w-5xl'} flex h-[min(92vh,760px)] w-full flex-col rounded-lg bg-white shadow-xl`} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-3 border-b">
               <div>
                 <div className="flex items-center gap-2">
@@ -769,20 +798,20 @@ const MiautoWhatsApp: React.FC = () => {
                 </button>
               </div>
             </div>
-            <div className="p-5 overflow-hidden flex-1">
+            <div className="min-h-0 flex-1 overflow-y-auto p-5 lg:overflow-hidden">
               {previewLoading ? (
                 <div className="flex justify-center py-12">
                   <div className="animate-spin rounded-full h-8 w-8 border-2 border-red-600 border-t-transparent" />
                 </div>
               ) : (
-                <div className={`${isSinglePreview ? 'block' : 'grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4'} h-full min-h-[420px]`}>
+                <div className={`${isSinglePreview ? 'block' : 'grid grid-cols-1 gap-4 lg:grid-cols-[280px_1fr]'} min-h-0 lg:h-full`}>
                   {!isSinglePreview && (
-                  <aside className="border border-gray-200 rounded-lg overflow-hidden flex flex-col min-h-0">
+                  <aside className="flex max-h-56 min-h-0 flex-col overflow-hidden rounded-lg border border-gray-200 lg:h-full lg:max-h-none">
                     <div className="px-3 py-2 bg-gray-50 border-b">
                       <div className="text-xs font-semibold text-gray-600 uppercase">Conductores</div>
                       <div className="text-xs text-gray-500 mt-0.5">{previewReadyCount} listos · {previewErrorCount} errores</div>
                     </div>
-                    <div className="overflow-y-auto divide-y divide-gray-100">
+                    <div className="min-h-0 flex-1 divide-y divide-gray-100 overflow-y-auto overscroll-contain">
                       {previewItems.map((item, index) => (
                         <button
                           key={item.id}
@@ -807,7 +836,7 @@ const MiautoWhatsApp: React.FC = () => {
                   </aside>
                   )}
 
-                  <section className="border border-gray-200 rounded-lg overflow-hidden flex flex-col min-h-0 h-full">
+                  <section className="flex min-h-[360px] flex-col overflow-hidden rounded-lg border border-gray-200 lg:h-full lg:min-h-0">
                     <div className="px-4 py-3 bg-gray-50 border-b flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                       <div className="min-w-0">
                         {hasMultiplePreview && (
@@ -852,7 +881,7 @@ const MiautoWhatsApp: React.FC = () => {
                         )}
                       </div>
                     </div>
-                    <div className="p-4 overflow-y-auto flex-1 bg-white max-h-[calc(min(92vh,760px)-190px)]">
+                    <div className="min-h-0 flex-1 overflow-y-auto bg-white p-4">
                       {activePreview?.error ? (
                         <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
                           No se pudo generar este mensaje: {activePreview.error}

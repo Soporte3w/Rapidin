@@ -5,7 +5,9 @@ import {
   applyWaterfallPool,
   allocatePaymentByPriority,
   mergeCascadaAllocations,
+  nextMoraExtraHistoricalTotal,
   paymentApplicableToBaseAfterSettledExtra,
+  reconcilePostPaymentMoraExtraBreakdown,
 } from '../yego_miauto/services/cobros/CascadaPoolManager.js';
 
 test('sin cuotas vencidas el recaudo reduce primero la cuota semanal actual', () => {
@@ -174,4 +176,54 @@ test('mora extra ya cobrada no se vuelve a descontar como capital', () => {
   });
 
   assert.equal(applicable, 379.84);
+});
+
+test('mora extra nacida despues del abono permanece pendiente', () => {
+  const breakdown = reconcilePostPaymentMoraExtraBreakdown({
+    capital: 480,
+    paidAmount: 359.46,
+    moraNormalAtPayment: 19.18,
+    moraExtraAtPayment: 0,
+    moraExtraPendingNow: 5.6,
+  });
+
+  assert.deepEqual(breakdown, {
+    moraNormalPending: 0,
+    moraExtraPending: 5.6,
+    capitalPending: 139.72,
+    pendingTotal: 145.32,
+  });
+});
+
+test('el pago consume la mora extra que ya existia antes de bajar capital', () => {
+  const breakdown = reconcilePostPaymentMoraExtraBreakdown({
+    capital: 480,
+    paidAmount: 100,
+    moraNormalAtPayment: 20,
+    moraExtraAtPayment: 10,
+    moraExtraPendingNow: 0,
+  });
+
+  assert.deepEqual(breakdown, {
+    moraNormalPending: 0,
+    moraExtraPending: 0,
+    capitalPending: 410,
+    pendingTotal: 410,
+  });
+});
+
+test('el total historico nunca queda por debajo de la mora extra pendiente', () => {
+  assert.equal(nextMoraExtraHistoricalTotal({
+    previousTotal: 0.8,
+    previousPending: 5.6,
+    currentPending: 5.6,
+  }), 5.6);
+});
+
+test('el total historico conserva lo cobrado y agrega el nuevo saldo extra', () => {
+  assert.equal(nextMoraExtraHistoricalTotal({
+    previousTotal: 10,
+    previousPending: 4,
+    currentPending: 6,
+  }), 12);
 });

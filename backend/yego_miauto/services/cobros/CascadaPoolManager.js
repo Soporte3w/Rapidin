@@ -103,6 +103,51 @@ export function paymentApplicableToBaseAfterSettledExtra({
 }
 
 /**
+ * Reconstruye el saldo de una cuota cuando la mora extra actual nacio despues
+ * del ultimo abono. Solo la mora extra que existia al pagar puede consumir ese
+ * pago; la generada posteriormente permanece pendiente.
+ */
+export function reconcilePostPaymentMoraExtraBreakdown({
+  capital,
+  paidAmount,
+  moraNormalAtPayment,
+  moraExtraAtPayment = 0,
+  moraExtraPendingNow = 0,
+}) {
+  const cap = round2(Math.max(0, Number(capital) || 0));
+  const normalAtPayment = round2(Math.max(0, Number(moraNormalAtPayment) || 0));
+  const extraAtPayment = round2(Math.max(0, Number(moraExtraAtPayment) || 0));
+  const currentExtra = round2(Math.max(0, Number(moraExtraPendingNow) || 0));
+  const allocation = allocatePaymentByPriority({
+    payment: paidAmount,
+    pendingTotal: round2(cap + normalAtPayment + extraAtPayment),
+    moraNormal: normalAtPayment,
+    moraExtra: extraAtPayment,
+  });
+  const extraPending = round2(Math.max(currentExtra, allocation.moraExtraAfter));
+
+  return {
+    moraNormalPending: allocation.moraNormalAfter,
+    moraExtraPending: extraPending,
+    capitalPending: allocation.capitalAfter,
+    pendingTotal: round2(allocation.moraNormalAfter + extraPending + allocation.capitalAfter),
+  };
+}
+
+/** Conserva la mora extra ya cobrada y suma el saldo vigente sin permitir total < pendiente. */
+export function nextMoraExtraHistoricalTotal({
+  previousTotal = 0,
+  previousPending = 0,
+  currentPending = 0,
+}) {
+  const totalBefore = round2(Math.max(0, Number(previousTotal) || 0));
+  const pendingBefore = round2(Math.max(0, Number(previousPending) || 0));
+  const pendingNow = round2(Math.max(0, Number(currentPending) || 0));
+  const settledBefore = round2(Math.max(0, totalBefore - pendingBefore));
+  return round2(Math.max(totalBefore, pendingNow, settledBefore + pendingNow));
+}
+
+/**
  * Aplica un pool a un conjunto de cuotas (en memoria).
  * Devuelve las imputaciones sin modificar la base de datos.
  *

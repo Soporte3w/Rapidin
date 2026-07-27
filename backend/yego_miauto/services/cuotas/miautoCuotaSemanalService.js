@@ -18,7 +18,11 @@ import { logger } from '../../../utils/logger.js';
 import {
   computeAmountDueSemanal as _computeAmountDueSemanal,
 } from '../cobros/CuotaCalculator.js';
-import { paymentApplicableToBaseAfterSettledExtra } from '../cobros/CascadaPoolManager.js';
+import {
+  nextMoraExtraHistoricalTotal,
+  paymentApplicableToBaseAfterSettledExtra,
+  reconcilePostPaymentMoraExtraBreakdown,
+} from '../cobros/CascadaPoolManager.js';
 import {
   montoComprobanteCuotaALaMonedaFila,
   partnerFeesRawDbNormalizeUsdFromYangoLocal,
@@ -1232,7 +1236,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
             c.paid_amount, c.late_fee, c.status, c.moneda, c.pct_comision, c.cobro_saldo,
             c.partner_fees_raw, c.partner_fees_83,
             c.fecha_ultimo_abono, c.fecha_primer_comprobante, c.montos_fuente, c.cobro_desde_saldo_conductor,
-            c.mora_desde, c.mora_extra, c.mora_extra_desde,
+            c.mora_desde, c.mora_extra, c.mora_extra_desde, c.mora_extra_total,
             s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal
      FROM module_miauto_cuota_semanal c
      INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
@@ -1510,8 +1514,12 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     // mora_extra_total = total generado histórico (cristalizado + actual)
     const moraExtraDbOld = round2(parseFloat(row.mora_extra) || 0);
     const moraExtraTotalPersist = freezeMoraPorComprobante
-      ? moraExtraTotalDbOld
-      : round2(Math.max(moraExtraTotalDbOld, moraExtraTotalDbOld - moraExtraDbOld + moraExtraPersist));
+      ? round2(Math.max(moraExtraTotalDbOld, moraExtraDbOld))
+      : nextMoraExtraHistoricalTotal({
+          previousTotal: moraExtraTotalDbOld,
+          previousPending: moraExtraDbOld,
+          currentPending: moraExtraPersist,
+        });
 
     if (dryRun) {
       dryRunChanges.push({
@@ -2320,7 +2328,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     cascadeReceived: options.cascadeReceived,
     forzarMayorCuotaSinBono: options.forzarMayorCuotaSinBono === true,
   };
-  const d0 = computeCuotaDerivedForRow(r, cronograma, vehId, derivedOpts);
+  const d = computeCuotaDerivedForRow(r, cronograma, vehId, derivedOpts);
   let paid_amount = round2(parseFloat(r.paid_amount) || 0);
   /** Pago real en BD antes del cap API; para cotejar con `amount_due`+`late_fee` cuando el derivado subestima la obligación. */
   const filaCerrada = (st === 'paid' || st === 'bonificada') && !ignoreClosedForDerived;
@@ -2329,8 +2337,8 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
    * En **vencida / parcial / pendiente**: no recortar — la columna «Pagado» debe reflejar el abono real en BD aunque el derivado difiera.
    */
   const capPagadoApi =
-    d0.obligacion_total > 0.005
-      ? d0.obligacion_total
+    d.obligacion_total > 0.005
+      ? d.obligacion_total
       : round2(parseFloat(r.amount_due) || 0)
         + round2(parseFloat(r.late_fee) || 0)
         + round2(parseFloat(r.mora_extra) || 0);
@@ -2339,23 +2347,11 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   }
   /** Comprobante en revisión: solo congela mora y queda como evidencia; no descuenta cuota hasta validar/confirmar. */
   const creditoPend = round2(Math.max(0, Number(options.creditoComprobantePendienteMonedaCuota) || 0));
-  const pendPreDerivado = round2(Math.max(0, d0.obligacion_total - paid_amount));
-  const extraAbonoRevision = 0;
-  const d =
-    extraAbonoRevision > 0.005
-      ? computeCuotaDerivedForRow(
-          { ...r, paid_amount: round2(paid_amount + extraAbonoRevision) },
-          cronograma,
-          vehId,
-          derivedOpts
-        )
-      : d0;
+  const pendPreDerivado = round2(Math.max(0, d.obligacion_total - paid_amount));
   let pendienteEcon = round2(Math.max(0, d.obligacion_total - paid_amount));
   pendienteEcon = aplicarPisoColumnasPendienteCuota(r, d, pendienteEcon, isPrimera);
   const filaCerradaEfectiva = filaCerrada && pendienteEcon <= 0.005;
   const cobroSaldoRegla = round2(parseFloat(r.cobro_saldo) || 0);
-  const cobroDesdeFleet = round2(parseFloat(r.cobro_desde_saldo_conductor) || 0);
-   const cobroSaldoApi = cobroSaldoRegla;
   /**
    * `amount_due` API: cuota del plan del periodo (programada), no el remanente.
    * `cuota_pendiente`: lo que falta de esa cuota tras abonos (mora se descuenta primero del pago).
@@ -2367,15 +2363,19 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     : round2(d.amount_due_sched);
   const lateFeeColDb = round2(parseFloat(r.late_fee) || 0);
   const moraNormalHistoricaAplicada = round2(Math.max(0, Number(options.moraNormalHistoricaAplicada) || 0));
-  const moraExtraHistoricaAplicada = round2(Math.max(
-    Number(options.moraExtraHistoricaAplicada) || 0,
-    Number(r.mora_extra_total) || 0,
-    Number(r.mora_extra) || 0
+  const moraExtraHistoricaAlAbono = round2(Math.max(
+    0,
+    Number(options.moraExtraHistoricaAplicada) || 0
   ));
+  const moraExtraPersistidaActual = round2(Math.max(0, Number(r.mora_extra) || 0));
   const moraSchedDer = round2(parseFloat(d.mora_sched_periodo) || 0);
   const moraSaldoCapitalDer = round2(parseFloat(d.mora_saldo_capital_pendiente) || 0);
-  let moraExtraApiOut = round2(parseFloat(r.mora_extra) || 0);
-  let moraExtraTotalApiOut = round2(parseFloat(r.mora_extra_total) || 0);
+  let moraExtraApiOut = moraExtraPersistidaActual;
+  let moraExtraTotalApiOut = round2(Math.max(
+    Number(r.mora_extra_total) || 0,
+    moraExtraPersistidaActual,
+    moraExtraHistoricaAlAbono
+  ));
   /** Fila pagada: mostrar la mora persistida ya corregida. `bonificada`: sin mora. */
   const lateFeeHistoricaPagada =
     filaCerradaEfectiva && st !== 'bonificada'
@@ -2399,7 +2399,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   const moraComputedStat = round2(d.late_fee);
   let saldoPendienteApi = filaCerradaEfectiva ? round2(0) : pendienteEcon;
   /** Con monto proyectado, `pendienteEcon` ya incorpora el abono; no restar solo `paid_amount` de BD. */
-  if (!filaCerradaEfectiva && options.congelaMoraComprobantePendiente && extraAbonoRevision <= 0.005) {
+  if (!filaCerradaEfectiva && options.congelaMoraComprobantePendiente) {
     const obligFrozen = round2(d.obligacion_total - moraComputedStat + lateFeeColDb);
     saldoPendienteApi = round2(Math.max(0, obligFrozen - paid_amount));
   }
@@ -2412,20 +2412,21 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   let moraPendienteApiOut = lateFeePendiente;
   let cuotaPendienteApiOut = filaCerradaEfectiva ? round2(0) : round2(Math.max(0, d.amount_due_remaining));
   if (!filaCerradaEfectiva && moraNormalHistoricaAplicada > lateFeeColDb + 0.005 && paid_amount > 0.005) {
-    const moraBase = moraNormalHistoricaAplicada;
-    const moraPendienteHist = round2(Math.max(0, moraBase - paid_amount));
-    const pagoTrasMoraNormalHist = round2(Math.max(0, paid_amount - moraBase));
-    const moraExtraPendienteHist = round2(Math.max(0, moraExtraHistoricaAplicada - pagoTrasMoraNormalHist));
-    const pagoTrasMorasHist = round2(Math.max(0, pagoTrasMoraNormalHist - moraExtraHistoricaAplicada));
-    const cuotaPendienteHist = round2(Math.max(0, d.amount_due_sched - pagoTrasMorasHist));
-    lateFeePendiente = moraPendienteHist;
-    lateFeeApi = moraPendienteHist;
-    moraPendienteApiOut = moraPendienteHist;
-    cuotaPendienteApiOut = cuotaPendienteHist;
-    moraInteresPeriodoApi = moraBase;
-    moraExtraApiOut = moraExtraPendienteHist;
-    moraExtraTotalApiOut = round2(Math.max(moraExtraTotalApiOut, moraExtraHistoricaAplicada));
-    saldoPendienteApi = round2(cuotaPendienteHist + moraPendienteHist + moraExtraPendienteHist);
+    const breakdown = reconcilePostPaymentMoraExtraBreakdown({
+      capital: d.amount_due_sched,
+      paidAmount: paid_amount,
+      moraNormalAtPayment: moraNormalHistoricaAplicada,
+      moraExtraAtPayment: moraExtraHistoricaAlAbono,
+      moraExtraPendingNow: moraExtraPersistidaActual,
+    });
+    lateFeePendiente = breakdown.moraNormalPending;
+    lateFeeApi = breakdown.moraNormalPending;
+    moraPendienteApiOut = breakdown.moraNormalPending;
+    cuotaPendienteApiOut = breakdown.capitalPending;
+    moraInteresPeriodoApi = moraNormalHistoricaAplicada;
+    moraExtraApiOut = breakdown.moraExtraPending;
+    moraExtraTotalApiOut = round2(Math.max(moraExtraTotalApiOut, breakdown.moraExtraPending));
+    saldoPendienteApi = breakdown.pendingTotal;
   }
   const moraDesdeOrDue = ymdFromDbDate(r.mora_desde) || r.due_date;
   const lateFeeCalendarDays =
@@ -2437,7 +2438,7 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   if (!filaCerradaEfectiva && !options.congelaMoraComprobantePendiente && pendingTotalApi > 0.005) {
     const sumParts = round2(moraPendienteApiOut + moraSaldoCapitalDer + cuotaPendienteApiOut);
     if (Math.abs(sumParts - pendingTotalApi) > 0.05) {
-      const paidParaImputar = round2(paid_amount + extraAbonoRevision);
+      const paidParaImputar = round2(paid_amount);
       const imp = imputacionMoraCuotaRemanenteFromPaid(paidParaImputar, d.mora_full, d.amount_due_sched);
       const sImp = round2(imp.late_fee_remaining + moraSaldoCapitalDer + imp.amount_due_remaining);
       if (Math.abs(sImp - pendingTotalApi) <= 0.12) {
@@ -2452,14 +2453,14 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
   if (!filaCerradaEfectiva && st !== 'bonificada') {
     /** Pendiente según motor (`cuota_final`), no columnas `amount_due`+mora crudas. */
     let pendCols = round2(Math.max(0, d.cuota_final));
-    if (options.congelaMoraComprobantePendiente && extraAbonoRevision <= 0.005) {
+    if (options.congelaMoraComprobantePendiente) {
       pendCols = round2(Math.max(0, d.cuota_final - moraComputedStat + lateFeeColDb));
     }
     const pendStat = pendienteStatusCuotaAbiertaPostCorte(d, saldoPendienteApi, pendCols, {
       hasOlderBlockingDebt: !!options.hasOlderBlockingDebt,
     });
     const dueYStat = ymdFromDbDate(r.due_date);
-    const paidEfectivoApi = round2(paid_amount + extraAbonoRevision);
+    const paidEfectivoApi = round2(paid_amount);
     statusApi = miAutoOpenStatusSaldoVencimiento(dueYStat, pendStat, paidEfectivoApi);
   }
   // Solo cerrar si el saldo derivado completo (mora normal + mora extra + cuota) quedó cubierto.
@@ -2525,9 +2526,9 @@ function buildCuotaSemanalApiRow(r, cronograma, vehId, options = {}) {
     status: statusApi,
     moneda: d.moneda,
     pct_comision: d.pct_comision,
-    cobro_saldo: cobroSaldoApi,
-     cobro_saldo_regla: cobroSaldoRegla,
-     cobro_desde_saldo_conductor: round2(parseFloat(r.cobro_desde_saldo_conductor) || 0),
+    cobro_saldo: cobroSaldoRegla,
+    cobro_saldo_regla: cobroSaldoRegla,
+    cobro_desde_saldo_conductor: round2(parseFloat(r.cobro_desde_saldo_conductor) || 0),
     /** Lima YYYY-MM-DD: último abono registrado en cuota (Fleet, validación, admin, cascada). Mora sobre saldo desde el día siguiente. */
     fecha_ultimo_abono: ymdFromDbDate(r.fecha_ultimo_abono),
     /** Primera subida de comprobante por el conductor (ancla si aún no hay `fecha_ultimo_abono`). */

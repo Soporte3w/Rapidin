@@ -187,45 +187,106 @@ export async function processMiautoWhatsAppQueue() {
   return { processed: messages.length, sent, failed };
 }
 
+export async function getWhatsAppQueueStatuses(ids = []) {
+  const validIds = [...new Set(
+    ids.map((id) => String(id || '').trim()).filter((id) => UUID_RE.test(id))
+  )];
+  if (validIds.length === 0) return [];
+
+  const { rows } = await query(
+    `SELECT id, status, error, processing_at, sent_at
+     FROM module_miauto_whatsapp_log
+     WHERE id = ANY($1::uuid[])`,
+    [validIds]
+  );
+  return rows;
+}
+
 /**
  * Obtiene historial de envíos con filtros y paginación.
  */
-export async function getWhatsAppLog({ solicitudId, status, page = 1, limit = 50 } = {}) {
+const WHATSAPP_LOG_DATE_EXPRESSION = 'COALESCE(sent_at, queued_at, created_at)';
+
+function appendWhatsAppLogFilters({ solicitudId, status, date, search } = {}) {
   const conditions = [];
   const params = [];
-  let p = 0;
 
   if (solicitudId) {
-    p++; conditions.push(`solicitud_id = $${p}`);
     params.push(solicitudId);
+    conditions.push(`solicitud_id = $${params.length}`);
   }
   if (status) {
-    p++; conditions.push(`status = $${p}`);
     params.push(status);
+    conditions.push(`status = $${params.length}`);
+  }
+  if (date) {
+    params.push(date);
+    conditions.push(
+      `(${WHATSAPP_LOG_DATE_EXPRESSION} AT TIME ZONE 'America/Lima')::date = $${params.length}::date`
+    );
+  }
+  if (String(search || '').trim()) {
+    params.push(`%${String(search).trim()}%`);
+    conditions.push(`(
+      COALESCE(driver_name, '') ILIKE $${params.length}
+      OR COALESCE(phone, '') ILIKE $${params.length}
+      OR COALESCE(error, '') ILIKE $${params.length}
+    )`);
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const offset = (Math.max(1, Number(page)) - 1) * Math.min(100, Number(limit));
+  return {
+    params,
+    where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
+  };
+}
 
-  p++; params.push(Math.min(100, Number(limit)));
-  p++; params.push(offset);
+export async function getWhatsAppLogDays({ solicitudId, status, search } = {}) {
+  const { where, params } = appendWhatsAppLogFilters({ solicitudId, status, search });
+  const { rows } = await query(
+    `SELECT (${WHATSAPP_LOG_DATE_EXPRESSION} AT TIME ZONE 'America/Lima')::date::text AS date,
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE status = 'sent')::int AS sent,
+            COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+            COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
+            COUNT(*) FILTER (WHERE status = 'processing')::int AS processing
+     FROM module_miauto_whatsapp_log
+     ${where}
+     GROUP BY 1
+     ORDER BY 1 DESC`,
+    params
+  );
+
+  return rows;
+}
+
+export async function getWhatsAppLog({ solicitudId, status, date, search, page = 1, limit = 50 } = {}) {
+  const { where, params } = appendWhatsAppLogFilters({ solicitudId, status, date, search });
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || 50));
+  const safePage = Math.max(1, Number(page) || 1);
+  const offset = (safePage - 1) * safeLimit;
+
+  const dataParams = [...params, safeLimit, offset];
+  const limitPosition = params.length + 1;
+  const offsetPosition = params.length + 2;
 
   const { rows } = await query(
     `SELECT id, solicitud_id, driver_name, phone, status, error, created_by,
-            sent_at, created_at
+            sent_at, queued_at, created_at
      FROM module_miauto_whatsapp_log ${where}
-     ORDER BY created_at DESC LIMIT $${p - 1} OFFSET $${p}`, params
+     ORDER BY ${WHATSAPP_LOG_DATE_EXPRESSION} DESC
+     LIMIT $${limitPosition} OFFSET $${offsetPosition}`,
+    dataParams
   );
 
   const countRes = await query(
-    `SELECT COUNT(*) as total FROM module_miauto_whatsapp_log ${where}`,
-    params.slice(0, conditions.length)
+    `SELECT COUNT(*)::int AS total FROM module_miauto_whatsapp_log ${where}`,
+    params
   );
 
   return {
     data: rows,
-    total: parseInt(countRes.rows[0]?.total || 0, 10),
-    page: Number(page),
-    limit: Number(limit),
+    total: Number(countRes.rows[0]?.total || 0),
+    page: safePage,
+    limit: safeLimit,
   };
 }

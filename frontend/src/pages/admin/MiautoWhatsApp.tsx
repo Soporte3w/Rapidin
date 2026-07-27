@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FaCheckSquare, FaEye, FaHistory, FaPaperPlane, FaSearch, FaSquare } from 'react-icons/fa';
 import {
   AlertTriangle,
+  CalendarDays,
   CheckCircle2,
   Clock,
   Copy,
@@ -40,14 +41,25 @@ interface LogItem {
   error?: string;
   created_by?: string;
   sent_at?: string;
+  queued_at?: string;
   created_at: string;
+}
+
+interface HistoryDay {
+  date: string;
+  total: number;
+  sent: number;
+  failed: number;
+  pending: number;
+  processing: number;
 }
 
 interface ProgressItem {
   id: string;
+  queueId?: string;
   name: string;
   phone: string;
-  status: 'pending' | 'preparing' | 'sending' | 'queued' | 'failed';
+  status: 'pending' | 'preparing' | 'sending' | 'queued' | 'sent' | 'failed';
   error?: string;
 }
 
@@ -88,6 +100,7 @@ function statusLabel(status: ProgressItem['status']) {
   if (status === 'preparing') return 'Preparando';
   if (status === 'sending') return 'Enviando';
   if (status === 'queued') return 'Programado';
+  if (status === 'sent') return 'Enviado';
   if (status === 'failed') return 'Fallido';
   return 'Pendiente';
 }
@@ -105,6 +118,15 @@ function extractCuotas(response: any) {
 
 function uniqueRows(rows: SolicitudRow[]) {
   return [...new Map(rows.map((row) => [row.id, row])).values()];
+}
+
+function formatHistoryDay(date: string) {
+  return new Date(`${date}T12:00:00`).toLocaleDateString('es-PE', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
 }
 
 const MiautoWhatsApp: React.FC = () => {
@@ -127,10 +149,13 @@ const MiautoWhatsApp: React.FC = () => {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<LogItem[]>([]);
+  const [historyDays, setHistoryDays] = useState<HistoryDay[]>([]);
+  const [selectedHistoryDate, setSelectedHistoryDate] = useState('');
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyPage, setHistoryPage] = useState(1);
   const [historyStatus, setHistoryStatus] = useState('');
   const [historySearch, setHistorySearch] = useState('');
+  const [historyLoading, setHistoryLoading] = useState(false);
   const loadedRef = useRef(false);
   const cuotasRequestsRef = useRef<Map<string, Promise<any[]>>>(new Map());
 
@@ -236,11 +261,63 @@ const MiautoWhatsApp: React.FC = () => {
 
   const progressStats = useMemo(() => {
     const queued = progressItems.filter((i) => i.status === 'queued').length;
+    const sent = progressItems.filter((i) => i.status === 'sent').length;
     const failed = progressItems.filter((i) => i.status === 'failed').length;
-    const done = queued + failed;
+    const done = sent + failed;
     const total = progressItems.length;
-    return { queued, failed, done, total, percent: total ? Math.round((done / total) * 100) : 0 };
+    return { queued, sent, failed, done, total, percent: total ? Math.round((done / total) * 100) : 0 };
   }, [progressItems]);
+
+  const trackedQueueIds = useMemo(
+    () => progressItems
+      .filter((item) => item.queueId && (item.status === 'queued' || item.status === 'sending'))
+      .map((item) => item.queueId)
+      .sort()
+      .join(','),
+    [progressItems]
+  );
+
+  useEffect(() => {
+    if (!showProgress || !trackedQueueIds) return undefined;
+
+    let cancelled = false;
+    let requestRunning = false;
+    const ids = trackedQueueIds.split(',');
+
+    const refreshStatuses = async () => {
+      if (requestRunning) return;
+      requestRunning = true;
+      try {
+        const response = await api.post('/miauto/admin/whatsapp/status', { ids });
+        if (cancelled) return;
+
+        const rows = Array.isArray(response.data?.data) ? response.data.data : [];
+        const statusById = new Map(rows.map((row: any) => [String(row.id), row]));
+        setProgressItems((items) => items.map((item) => {
+          if (!item.queueId) return item;
+          const current = statusById.get(item.queueId) as any;
+          if (!current) return item;
+          if (current.status === 'sent') return { ...item, status: 'sent', error: undefined };
+          if (current.status === 'failed') {
+            return { ...item, status: 'failed', error: current.error || 'Error al enviar' };
+          }
+          if (current.status === 'processing') return { ...item, status: 'sending', error: undefined };
+          return { ...item, status: 'queued', error: undefined };
+        }));
+      } catch {
+        // El historial conserva el estado; el siguiente ciclo vuelve a consultarlo.
+      } finally {
+        requestRunning = false;
+      }
+    };
+
+    refreshStatuses();
+    const interval = window.setInterval(refreshStatuses, 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [showProgress, trackedQueueIds]);
 
   const activePreview = previewItems[activePreviewIndex] || null;
   const isSinglePreview = previewItems.length <= 1;
@@ -274,11 +351,10 @@ const MiautoWhatsApp: React.FC = () => {
     ].filter(Boolean).join(' ').toLowerCase().includes(q));
   }, [history, historySearch]);
 
-  const historyPageStats = useMemo(() => {
-    const sent = history.filter((h) => h.status === 'sent').length;
-    const failed = history.filter((h) => h.status === 'failed').length;
-    return { sent, failed, total: history.length };
-  }, [history]);
+  const selectedHistoryDay = useMemo(
+    () => historyDays.find((day) => day.date === selectedHistoryDate) || null,
+    [historyDays, selectedHistoryDate]
+  );
 
   function toggleAll() {
     if (allEligibleSelected) {
@@ -467,7 +543,10 @@ const MiautoWhatsApp: React.FC = () => {
       const queued = Array.isArray(result.queued) ? result.queued : [];
       const apiFailed = Array.isArray(result.failed) ? result.failed : [];
 
-      queued.forEach((item: any) => updateProgress(item.solicitudId, { status: 'queued' }));
+      queued.forEach((item: any) => updateProgress(item.solicitudId, {
+        status: 'queued',
+        queueId: item.id,
+      }));
       apiFailed.forEach((item: any) => updateProgress(item.solicitudId, {
         status: 'failed',
         error: item.error || 'Error al enviar',
@@ -499,22 +578,58 @@ const MiautoWhatsApp: React.FC = () => {
     }
   }
 
-  const loadHistory = useCallback(async (pageToLoad = 1, statusToLoad = historyStatus) => {
+  const loadHistory = useCallback(async (pageToLoad: number, statusToLoad: string, dateToLoad: string) => {
+    if (!dateToLoad) {
+      setHistory([]);
+      setHistoryTotal(0);
+      return;
+    }
+
     setHistoryPage(pageToLoad);
+    setHistoryLoading(true);
     try {
-      const params: any = { page: pageToLoad, limit: HISTORY_PAGE_SIZE };
+      const params: any = {
+        date: dateToLoad,
+        page: pageToLoad,
+        limit: HISTORY_PAGE_SIZE,
+      };
       if (statusToLoad) params.status = statusToLoad;
       const res = await api.get('/miauto/admin/whatsapp/log', { params });
       setHistory(res.data?.data?.data || []);
       setHistoryTotal(res.data?.data?.total || 0);
     } catch {
       toast.error('Error cargando historial');
+    } finally {
+      setHistoryLoading(false);
     }
-  }, [historyStatus]);
+  }, []);
+
+  const loadHistoryDays = useCallback(async (preferredDate = '', statusToLoad = '') => {
+    setHistoryLoading(true);
+    try {
+      const res = await api.get('/miauto/admin/whatsapp/log-days');
+      const days: HistoryDay[] = Array.isArray(res.data?.data) ? res.data.data : [];
+      const nextDate = days.some((day) => day.date === preferredDate)
+        ? preferredDate
+        : days[0]?.date || '';
+
+      setHistoryDays(days);
+      setSelectedHistoryDate(nextDate);
+      setHistorySearch('');
+      await loadHistory(1, statusToLoad, nextDate);
+    } catch {
+      setHistoryDays([]);
+      setHistory([]);
+      setHistoryTotal(0);
+      toast.error('Error cargando fechas del historial');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [loadHistory]);
 
   function openHistory() {
     setShowHistory(true);
-    loadHistory(1);
+    loadHistoryDays(selectedHistoryDate, historyStatus);
   }
 
   const selectClass = 'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm bg-white';
@@ -1048,7 +1163,7 @@ const MiautoWhatsApp: React.FC = () => {
               )}
             </div>
             <div className="p-5 space-y-4">
-              <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
                 <div className="rounded-lg border border-gray-200 p-3">
                   <div className="text-xl font-bold text-gray-900">{progressStats.total}</div>
                   <div className="text-xs text-gray-500">Total</div>
@@ -1056,6 +1171,10 @@ const MiautoWhatsApp: React.FC = () => {
                 <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
                   <div className="text-xl font-bold text-blue-700">{progressStats.queued}</div>
                   <div className="text-xs text-blue-700">Programados</div>
+                </div>
+                <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+                  <div className="text-xl font-bold text-green-700">{progressStats.sent}</div>
+                  <div className="text-xs text-green-700">Enviados</div>
                 </div>
                 <div className="rounded-lg border border-red-200 bg-red-50 p-3">
                   <div className="text-xl font-bold text-red-700">{progressStats.failed}</div>
@@ -1066,7 +1185,7 @@ const MiautoWhatsApp: React.FC = () => {
                 <div className="w-full bg-gray-200 rounded-full h-2.5">
                   <div className="bg-[#128C7E] h-2.5 rounded-full transition-all duration-300" style={{ width: `${progressStats.percent}%` }} />
                 </div>
-                <p className="mt-2 text-sm text-gray-600 text-center">{progressStats.done} de {progressStats.total} programados o revisados</p>
+                <p className="mt-2 text-center text-sm text-gray-600">{progressStats.done} de {progressStats.total} enviados o revisados</p>
               </div>
               <ul className="space-y-1.5 max-h-72 overflow-y-auto">
                 {progressItems.map((item) => (
@@ -1079,8 +1198,9 @@ const MiautoWhatsApp: React.FC = () => {
                       {item.status === 'pending' && <Clock className="w-4 h-4 text-gray-400" />}
                       {(item.status === 'preparing' || item.status === 'sending') && <div className="w-4 h-4 border-2 border-[#128C7E] border-t-transparent rounded-full animate-spin" />}
                       {item.status === 'queued' && <Clock className="w-4 h-4 text-blue-600" />}
+                      {item.status === 'sent' && <CheckCircle2 className="h-4 w-4 text-green-600" />}
                       {item.status === 'failed' && <AlertTriangle className="w-4 h-4 text-red-600" />}
-                      <span className={item.status === 'failed' ? 'text-red-700 max-w-[160px] truncate' : 'text-gray-600'}>
+                      <span className={item.status === 'failed' ? 'max-w-[160px] truncate text-red-700' : item.status === 'sent' ? 'text-green-700' : 'text-gray-600'}>
                         {item.status === 'failed' ? item.error || 'Fallido' : statusLabel(item.status)}
                       </span>
                     </div>
@@ -1094,108 +1214,181 @@ const MiautoWhatsApp: React.FC = () => {
 
       {showHistory && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setShowHistory(false)}>
-          <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full max-h-[min(90vh,720px)] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-            <div className="bg-white border-b px-5 py-3 space-y-3">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h2 className="text-lg font-bold text-gray-900">Historial de envíos</h2>
-                  <p className="text-xs text-gray-500">
-                    Mostrando {historyFiltered.length} de {history.length} en esta página. Total histórico: {historyTotal.toLocaleString('es-PE')}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button type="button" onClick={() => loadHistory(historyPage)} className={iconButtonClass} title="Actualizar historial">
-                    <RefreshCw className="w-4 h-4" />
-                  </button>
-                  <button type="button" onClick={() => setShowHistory(false)} className={iconButtonClass} title="Cerrar">
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
+          <div className="flex h-[min(90vh,760px)] w-full max-w-6xl flex-col overflow-hidden rounded-lg bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <header className="flex flex-col gap-3 border-b bg-white px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">Historial de envíos</h2>
+                <p className="text-xs text-gray-500">
+                  {selectedHistoryDay
+                    ? `${formatHistoryDay(selectedHistoryDay.date)} · ${selectedHistoryDay.total} mensaje(s)`
+                    : 'Selecciona una fecha para consultar sus mensajes'}
+                </p>
               </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-[1fr_170px_170px_170px] gap-3">
-                <div className="relative">
-                  <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                  <input
-                    type="text"
-                    value={historySearch}
-                    onChange={(e) => setHistorySearch(e.target.value)}
-                    placeholder="Buscar por conductor, teléfono o error"
-                    className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none text-sm"
-                  />
-                </div>
-                <select
-                  value={historyStatus}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    setHistoryStatus(value);
-                    loadHistory(1, value);
-                  }}
-                  className="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white text-gray-700"
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => loadHistoryDays(selectedHistoryDate, historyStatus)}
+                  disabled={historyLoading}
+                  className={iconButtonClass}
+                  title="Actualizar historial"
                 >
-                  <option value="">Todos</option>
-                  <option value="pending">Programados</option>
-                  <option value="processing">En proceso</option>
-                  <option value="sent">Enviados</option>
-                  <option value="failed">Fallidos</option>
-                </select>
-                <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2">
-                  <div className="text-xs text-green-700">En esta página</div>
-                  <div className="text-sm font-bold text-green-800">{historyPageStats.sent} enviados</div>
-                </div>
-                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2">
-                  <div className="text-xs text-red-700">En esta página</div>
-                  <div className="text-sm font-bold text-red-800">{historyPageStats.failed} fallidos</div>
-                </div>
+                  <RefreshCw className={`h-4 w-4 ${historyLoading ? 'animate-spin' : ''}`} />
+                </button>
+                <button type="button" onClick={() => setShowHistory(false)} className={iconButtonClass} title="Cerrar">
+                  <X className="h-4 w-4" />
+                </button>
               </div>
-            </div>
-            <div className="p-5 overflow-y-auto">
-              <div className="space-y-2">
-                {historyFiltered.map((h) => {
-                  const date = h.sent_at || h.created_at;
-                  const sent = h.status === 'sent';
-                  const failed = h.status === 'failed';
-                  const processing = h.status === 'processing';
-                  return (
-                    <div key={h.id} className="rounded-lg border border-gray-200 p-3 hover:bg-gray-50">
-                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-semibold text-gray-900">{h.driver_name || '-'}</span>
-                            <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                              sent ? 'bg-green-100 text-green-800' : failed ? 'bg-red-100 text-red-800' : processing ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-700'
-                            }`}>
-                              {sent ? 'Enviado' : failed ? 'Fallido' : processing ? 'En proceso' : 'Programado'}
-                            </span>
-                          </div>
-                          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
-                            <span>{h.phone || '-'}</span>
-                            <span>{date ? new Date(date).toLocaleString('es-PE', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</span>
-                          </div>
-                          {h.error && (
-                            <div className="mt-2 rounded-md bg-red-50 border border-red-100 px-3 py-2 text-xs text-red-700">
-                              {h.error}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {historyFiltered.length === 0 && (
-                  <div className="text-center py-10 text-gray-400 border border-dashed border-gray-200 rounded-lg">
-                    Sin envíos para los filtros actuales
+            </header>
+
+            <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[250px_1fr]">
+              <aside className="flex min-h-0 flex-col border-b bg-gray-50 lg:border-b-0 lg:border-r">
+                <div className="flex items-center justify-between border-b px-4 py-3">
+                  <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
+                    <CalendarDays className="h-4 w-4 text-[#8B1A1A]" />
+                    Fechas
                   </div>
+                  <span className="text-xs text-gray-500">{historyDays.length}</span>
+                </div>
+                <div className="flex max-h-44 gap-2 overflow-x-auto p-3 lg:max-h-none lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto">
+                  {historyDays.map((day) => (
+                    <button
+                      key={day.date}
+                      type="button"
+                      onClick={() => {
+                        setSelectedHistoryDate(day.date);
+                        setHistorySearch('');
+                        loadHistory(1, historyStatus, day.date);
+                      }}
+                      className={`min-w-[190px] rounded-lg border px-3 py-2.5 text-left transition-colors lg:min-w-0 ${
+                        selectedHistoryDate === day.date
+                          ? 'border-red-200 bg-red-50'
+                          : 'border-gray-200 bg-white hover:bg-gray-100'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-semibold capitalize text-gray-900">{formatHistoryDay(day.date)}</span>
+                        <span className="text-xs font-bold text-gray-600">{day.total}</span>
+                      </div>
+                      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                        <span className="text-green-700">{day.sent} enviados</span>
+                        {day.pending + day.processing > 0 && (
+                          <span className="text-blue-700">{day.pending + day.processing} programados</span>
+                        )}
+                        {day.failed > 0 && <span className="text-red-700">{day.failed} fallidos</span>}
+                      </div>
+                    </button>
+                  ))}
+                  {!historyLoading && historyDays.length === 0 && (
+                    <div className="px-3 py-8 text-center text-sm text-gray-500">Sin fechas registradas</div>
+                  )}
+                </div>
+              </aside>
+
+              <section className="flex min-h-0 flex-col overflow-hidden">
+                <div className="grid grid-cols-1 gap-3 border-b bg-white p-4 md:grid-cols-[1fr_170px_145px_145px]">
+                  <div className="relative">
+                    <FaSearch className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={historySearch}
+                      onChange={(e) => setHistorySearch(e.target.value)}
+                      placeholder="Buscar dentro del día"
+                      className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm outline-none focus:border-red-600 focus:ring-2 focus:ring-red-100"
+                    />
+                  </div>
+                  <select
+                    value={historyStatus}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setHistoryStatus(value);
+                      loadHistory(1, value, selectedHistoryDate);
+                    }}
+                    className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700"
+                  >
+                    <option value="">Todos los estados</option>
+                    <option value="pending">Programados</option>
+                    <option value="processing">En proceso</option>
+                    <option value="sent">Enviados</option>
+                    <option value="failed">Fallidos</option>
+                  </select>
+                  <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2">
+                    <div className="text-xs text-green-700">Enviados</div>
+                    <div className="text-sm font-bold text-green-800">{selectedHistoryDay?.sent || 0}</div>
+                  </div>
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+                    <div className="text-xs text-red-700">Fallidos</div>
+                    <div className="text-sm font-bold text-red-800">{selectedHistoryDay?.failed || 0}</div>
+                  </div>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                  {historyLoading ? (
+                    <div className="flex h-full items-center justify-center py-12">
+                      <div className="h-8 w-8 animate-spin rounded-full border-2 border-red-600 border-t-transparent" />
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {historyFiltered.map((h) => {
+                        const date = h.sent_at || h.queued_at || h.created_at;
+                        const sent = h.status === 'sent';
+                        const failed = h.status === 'failed';
+                        const processing = h.status === 'processing';
+                        return (
+                          <div key={h.id} className="rounded-lg border border-gray-200 p-3 hover:bg-gray-50">
+                            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-semibold text-gray-900">{h.driver_name || '-'}</span>
+                                  <span className={`rounded px-2 py-0.5 text-xs font-semibold ${
+                                    sent ? 'bg-green-100 text-green-800' : failed ? 'bg-red-100 text-red-800' : processing ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-700'
+                                  }`}>
+                                    {sent ? 'Enviado' : failed ? 'Fallido' : processing ? 'En proceso' : 'Programado'}
+                                  </span>
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+                                  <span>{h.phone || '-'}</span>
+                                  <span>{date ? new Date(date).toLocaleTimeString('es-PE', { hour: 'numeric', minute: '2-digit' }) : '-'}</span>
+                                </div>
+                                {h.error && (
+                                  <div className="mt-2 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">
+                                    {h.error}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {historyFiltered.length === 0 && (
+                        <div className="rounded-lg border border-dashed border-gray-200 py-10 text-center text-gray-400">
+                          Sin envíos para los filtros actuales
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {historyTotal > HISTORY_PAGE_SIZE && (
+                  <footer className="flex justify-center gap-2 border-t px-5 py-3">
+                    <button
+                      disabled={historyPage <= 1 || historyLoading}
+                      onClick={() => loadHistory(historyPage - 1, historyStatus, selectedHistoryDate)}
+                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:opacity-50"
+                    >
+                      Anterior
+                    </button>
+                    <span className="px-3 py-2 text-sm text-gray-500">Página {historyPage}</span>
+                    <button
+                      disabled={historyPage * HISTORY_PAGE_SIZE >= historyTotal || historyLoading}
+                      onClick={() => loadHistory(historyPage + 1, historyStatus, selectedHistoryDate)}
+                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:opacity-50"
+                    >
+                      Siguiente
+                    </button>
+                  </footer>
                 )}
-              </div>
+              </section>
             </div>
-            {historyTotal > HISTORY_PAGE_SIZE && (
-              <div className="border-t px-5 py-3 flex justify-center gap-2">
-                <button disabled={historyPage <= 1} onClick={() => loadHistory(historyPage - 1)} className="px-3 py-2 text-sm border border-gray-300 rounded-lg disabled:opacity-50">Anterior</button>
-                <span className="px-3 py-2 text-sm text-gray-500">Página {historyPage}</span>
-                <button disabled={historyPage * HISTORY_PAGE_SIZE >= historyTotal} onClick={() => loadHistory(historyPage + 1)} className="px-3 py-2 text-sm border border-gray-300 rounded-lg disabled:opacity-50">Siguiente</button>
-              </div>
-            )}
           </div>
         </div>
       )}

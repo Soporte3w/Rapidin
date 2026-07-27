@@ -3,7 +3,12 @@
  * /api/miauto/admin/whatsapp/*
  */
 import { Router } from 'express';
-import { enqueueBulkWhatsApp, getWhatsAppLog } from '../../services/miautoWhatsAppService.js';
+import {
+  enqueueBulkWhatsApp,
+  getWhatsAppLog,
+  getWhatsAppLogDays,
+  getWhatsAppQueueStatuses,
+} from '../../services/miautoWhatsAppService.js';
 import { errorResponse, successResponse } from '../../../utils/responses.js';
 import { logger } from '../../../utils/logger.js';
 
@@ -54,6 +59,34 @@ router.get('/admin/whatsapp/log', async (req, res) => {
     return successResponse(res, log);
   } catch (error) {
     logger.error('Error consultando log WhatsApp:', error);
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+router.get('/admin/whatsapp/log-days', async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'Sin permisos', 403);
+    }
+
+    const days = await getWhatsAppLogDays(req.query);
+    return successResponse(res, days);
+  } catch (error) {
+    logger.error('Error consultando días del historial WhatsApp:', error);
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+router.post('/admin/whatsapp/status', async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'Sin permisos', 403);
+    }
+
+    const statuses = await getWhatsAppQueueStatuses(req.body?.ids);
+    return successResponse(res, statuses);
+  } catch (error) {
+    logger.error('Error consultando estados WhatsApp:', error);
     return errorResponse(res, error.message, 500);
   }
 });

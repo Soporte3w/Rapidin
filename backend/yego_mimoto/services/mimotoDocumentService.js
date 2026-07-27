@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { query } from '../../config/database.js';
 import { uploadFileToMedia } from '../../services/voucherService.js';
 import { MIMOTO_CONFIG } from '../config/mimotoConfig.js';
@@ -19,6 +20,18 @@ async function ensureSolicitud(id) {
   );
   if (!result.rows[0]) throw new Error('Solicitud Mi Moto no encontrada');
   return result.rows[0];
+}
+
+async function ensureQuotaBelongsToSolicitud(solicitudId, quotaId) {
+  const result = await query(
+    assertMimotoIsolationSql(
+      `SELECT id
+       FROM module_mimoto_cuota_semanal
+       WHERE id=$1 AND solicitud_id=$2 AND deleted_at IS NULL`
+    ),
+    [quotaId, solicitudId]
+  );
+  if (!result.rows[0]) throw new Error('La cuota Mi Moto no pertenece a esta solicitud');
 }
 
 export async function uploadMimotoContract(solicitudId, file, actorId) {
@@ -62,6 +75,54 @@ export async function uploadMimotoExpenseVoucherFile(solicitudId, expenseId, fil
   };
   const filePath = await uploadFileToMedia(upload, { bucket: MIMOTO_CONFIG.comprobantesBucket });
   return { fileName: original, filePath };
+}
+
+export async function uploadMimotoFleetEvidenceFiles(solicitudId, quotaId, files, actorId) {
+  const solicitud = await ensureSolicitud(solicitudId);
+  await ensureQuotaBelongsToSolicitud(solicitudId, quotaId);
+
+  const uploaded = [];
+  for (const file of files) {
+    const original = safeFileName(file.originalname, 'evidencia-fleet');
+    const mediaFile = {
+      ...file,
+      originalname: `mimoto/${solicitudId}/evidencias-fleet/${quotaId}-${solicitud.document_number}-${randomUUID()}-${original}`,
+    };
+    const filePath = await uploadFileToMedia(mediaFile, { bucket: MIMOTO_CONFIG.comprobantesBucket });
+    const result = await query(
+      assertMimotoIsolationSql(
+        `INSERT INTO module_mimoto_evidencia_fleet_archivo
+          (solicitud_id, cuota_semanal_id, file_name, file_path, mime_type, file_size, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         RETURNING id, solicitud_id, cuota_semanal_id, file_name, file_path,
+                   mime_type, file_size, created_by, created_at`
+      ),
+      [
+        solicitudId,
+        quotaId,
+        original,
+        filePath,
+        file.mimetype || null,
+        file.size || null,
+        actorId || null,
+      ]
+    );
+    uploaded.push(result.rows[0]);
+  }
+  return uploaded;
+}
+
+export async function deleteMimotoFleetEvidenceFile(solicitudId, evidenceId, actorId) {
+  const result = await query(
+    assertMimotoIsolationSql(
+      `UPDATE module_mimoto_evidencia_fleet_archivo
+       SET deleted_at=CURRENT_TIMESTAMP, deleted_by=$1
+       WHERE id=$2 AND solicitud_id=$3 AND deleted_at IS NULL
+       RETURNING id`
+    ),
+    [actorId || null, evidenceId, solicitudId]
+  );
+  return Boolean(result.rows[0]);
 }
 
 export async function deleteMimotoContract(solicitudId, contractId, actorId) {

@@ -483,12 +483,17 @@ function normalizeSupplyDriver(item) {
   const cars = Array.isArray(item?.cars) ? item.cars : [];
   const firstCar = cars[0] || {};
   const name = [driver.first_name, driver.last_name].filter(Boolean).join(' ').trim() || 'Sin nombre';
+  const plates = [...new Set([
+    item?.car?.callsign,
+    ...cars.map((car) => car?.number),
+  ].map((value) => String(value || '').trim()).filter(Boolean))];
 
   return {
     driver_id: String(driver.id || ''),
     name,
     license_number: driver.license_number || null,
-    plate: item?.car?.callsign || firstCar.number || null,
+    plate: plates[0] || firstCar.number || null,
+    plates,
     completed_trips: Math.max(0, Number(item?.count_orders_completed) || 0),
     supply_hours: round2(Math.max(0, Number(item?.work_time_seconds) || 0) / 3600),
   };
@@ -601,6 +606,67 @@ export function getFleetSupplySummary({ dateFrom, dateTo, parkId, cookie, workRu
     workRuleId,
     contextLabel: 'Fleet explícito',
   });
+}
+
+function normalizedFleetPlate(value) {
+  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+/** Resuelve exactamente una placa dentro de un parque Fleet explícito. */
+export async function findFleetContractorByPlateForFleet({ plate, parkId, cookie } = {}) {
+  const normalizedPlate = normalizedFleetPlate(plate);
+  const resolvedPark = String(parkId || '').trim();
+  const resolvedCookie = String(cookie || '').trim();
+  if (!normalizedPlate) return { success: false, reason: 'sin_placa', error: 'La placa está vacía' };
+  if (!resolvedPark || !resolvedCookie) {
+    return { success: false, reason: 'sin_contexto_fleet', error: 'Falta configurar park_id o sesión Fleet' };
+  }
+
+  const endpoint = `${fleetBaseUrl()}/api/fleet/contractor-profiles-manager/v1/suggestions/list`;
+  const headers = {
+    'Accept-Language': 'es-ES,es',
+    Cookie: resolvedCookie,
+    'X-Park-Id': resolvedPark,
+    'Content-Type': 'application/json',
+  };
+  try {
+    const response = await postWithProxyRetry(endpoint, { query: { text: normalizedPlate } }, headers);
+    const suggestions = Array.isArray(response.data?.suggestions) ? response.data.suggestions : [];
+    const exactByContractor = new Map();
+    suggestions.forEach((suggestion) => {
+      if (normalizedFleetPlate(suggestion?.vehicle?.number) !== normalizedPlate) return;
+      const contractorId = String(suggestion?.contractor?.contractor_id || '').trim();
+      if (contractorId) exactByContractor.set(contractorId, suggestion);
+    });
+    const exact = [...exactByContractor.values()];
+    if (exact.length === 0) {
+      return { success: false, reason: 'placa_no_encontrada', error: `Fleet no encontró la placa ${normalizedPlate}` };
+    }
+    if (exact.length > 1) {
+      return { success: false, reason: 'placa_ambigua', error: `Fleet devolvió más de un conductor para la placa ${normalizedPlate}` };
+    }
+    const contractorId = String(exact[0]?.contractor?.contractor_id || '').trim();
+    if (!contractorId) {
+      return { success: false, reason: 'conductor_sin_id', error: `Fleet no devolvió conductor para la placa ${normalizedPlate}` };
+    }
+    return {
+      success: true,
+      driver_id: contractorId,
+      plate: normalizedPlate,
+      name: [exact[0]?.contractor?.name?.first, exact[0]?.contractor?.name?.last]
+        .filter(Boolean).join(' ').trim() || null,
+      source: 'fleet_suggestions',
+    };
+  } catch (error) {
+    const status = error.response?.status;
+    const detail = normalizeApiMessage(error.response?.data) || error.message;
+    return {
+      success: false,
+      reason: 'fleet_plate_lookup',
+      status,
+      error: `Fleet no pudo resolver la placa${status ? ` (${status})` : ''}: ${detail}`,
+    };
+  }
 }
 
 /** Resumen Fleet de Supply por conductor para el dashboard de Yego Mi Auto. */

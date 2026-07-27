@@ -44,6 +44,7 @@ export async function runMimotoDailyMora({ dryRun = true, asOf = bogotaToday() }
        LEFT JOIN module_mimoto_comprobante_cuota_semanal cp
          ON cp.cuota_semanal_id=q.id AND cp.deleted_at IS NULL
        WHERE q.deleted_at IS NULL AND q.status IN ('pending','partial','overdue')
+         AND q.week_number > 1
          AND q.due_date < $1::date
        GROUP BY q.id, s.cronograma_snapshot, c.tasa_interes_mora
        ORDER BY q.due_date, q.id`,

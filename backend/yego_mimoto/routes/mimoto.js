@@ -33,9 +33,11 @@ import {
 } from '../services/mimotoReportingService.js';
 import { previewOrGenerateWeeklyQuota } from '../services/mimotoWeeklyBillingService.js';
 import {
+  deleteMimotoFleetEvidenceFile,
   deleteMimotoContract,
   uploadMimotoContract,
   uploadMimotoExpenseVoucherFile,
+  uploadMimotoFleetEvidenceFiles,
   uploadMimotoVoucherFile,
 } from '../services/mimotoDocumentService.js';
 import {
@@ -228,6 +230,36 @@ router.delete('/solicitudes/:id/contratos/:contractId', handler('eliminando cont
   const deleted = await deleteMimotoContract(req.params.id, req.params.contractId, actorId(req));
   return deleted ? successResponse(res, null, 'Contrato eliminado') : errorResponse(res, 'Contrato no encontrado', 404);
 }));
+
+router.post(
+  '/solicitudes/:id/evidencias-fleet',
+  uploadVoucher.array('files', 20),
+  handler('subiendo evidencias Fleet', async (req, res) => {
+    if (!req.files?.length) return errorResponse(res, 'Selecciona al menos un archivo', 400);
+    if (!req.body.cuota_semanal_id) return errorResponse(res, 'La cuota semanal es requerida', 400);
+    const rows = await uploadMimotoFleetEvidenceFiles(
+      req.params.id,
+      req.body.cuota_semanal_id,
+      req.files,
+      actorId(req)
+    );
+    return successResponse(res, rows, `${rows.length} evidencia(s) subida(s)`, 201);
+  })
+);
+
+router.delete(
+  '/solicitudes/:id/evidencias-fleet/:evidenceId',
+  handler('eliminando evidencia Fleet', async (req, res) => {
+    const deleted = await deleteMimotoFleetEvidenceFile(
+      req.params.id,
+      req.params.evidenceId,
+      actorId(req)
+    );
+    return deleted
+      ? successResponse(res, null, 'Evidencia eliminada')
+      : errorResponse(res, 'Evidencia no encontrada', 404);
+  })
+);
 
 router.post('/solicitudes/:id/otros-gastos/ciclos', requireMimotoEnabled, handler('creando ciclo de gasto', async (req, res) =>
   successResponse(res, await createExpenseCycle(req.params.id, req.body, actorId(req)), 'Ciclo creado', 201)));

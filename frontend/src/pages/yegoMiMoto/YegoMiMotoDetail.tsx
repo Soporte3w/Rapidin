@@ -36,6 +36,7 @@ import {
   type MimotoDetail,
   type MimotoExpense,
   type MimotoFleetEvidence,
+  type MimotoFleetEvidenceFile,
   type MimotoPublicConfig,
   type MimotoQuota,
   type MimotoQuotaVoucher,
@@ -46,7 +47,7 @@ import { MimotoLoading, MimotoPagination, MimotoStatusBadge } from './mimotoUi';
 type Tab = 'cuotas' | 'gastos';
 type QuotaDetailTab = 'comprobantes' | 'fleet';
 type WhatsAppTab = 'cuotas' | 'metricas' | 'comprobante';
-type PaymentTarget = { kind: 'quota'; row: MimotoQuota } | { kind: 'expense'; row: MimotoExpense };
+type PaymentTarget = { row: MimotoExpense };
 type QuotaPreview = {
   cuota?: {
     cuota_semanal: number | string;
@@ -226,9 +227,7 @@ export default function YegoMiMotoDetail() {
   };
 
   const openPayment = (target: PaymentTarget) => {
-    const balance = target.kind === 'quota'
-      ? Number(target.row.saldo_total)
-      : Math.max(0, Number(target.row.amount_due) - Number(target.row.paid_amount));
+    const balance = Math.max(0, Number(target.row.amount_due) - Number(target.row.paid_amount));
     setPayment(target);
     setPaymentAmount(String(balance));
     setPaymentCurrency(target.row.moneda);
@@ -239,7 +238,7 @@ export default function YegoMiMotoDetail() {
     if (!payment || Number(paymentAmount) <= 0) return toast.error('Ingresa un monto válido');
     setSaving(true);
     try {
-      const base = `/mimoto/solicitudes/${id}/${payment.kind === 'quota' ? `cuotas/${payment.row.id}` : `otros-gastos/${payment.row.id}`}`;
+      const base = `/mimoto/solicitudes/${id}/otros-gastos/${payment.row.id}`;
       if (paymentFile) {
         const form = new FormData();
         form.append('file', paymentFile);
@@ -287,6 +286,34 @@ export default function YegoMiMotoDetail() {
       return true;
     } catch (error: unknown) {
       toast.error(mimotoApiErrorMessage(error, 'No se pudo subir el comprobante'));
+      return false;
+    }
+  };
+
+  const uploadFleetEvidence = async (row: MimotoQuota, files: File[]) => {
+    if (files.length === 0) return false;
+    const form = new FormData();
+    form.append('cuota_semanal_id', row.id);
+    files.forEach((file) => form.append('files', file));
+    try {
+      await api.post(`/mimoto/solicitudes/${id}/evidencias-fleet`, form);
+      toast.success(`${files.length} evidencia(s) subida(s)`);
+      await load();
+      return true;
+    } catch (error: unknown) {
+      toast.error(mimotoApiErrorMessage(error, 'No se pudieron subir las evidencias Fleet'));
+      return false;
+    }
+  };
+
+  const deleteFleetEvidence = async (evidenceId: string) => {
+    try {
+      await api.delete(`/mimoto/solicitudes/${id}/evidencias-fleet/${evidenceId}`);
+      toast.success('Evidencia eliminada');
+      await load();
+      return true;
+    } catch (error: unknown) {
+      toast.error(mimotoApiErrorMessage(error, 'No se pudo eliminar la evidencia Fleet'));
       return false;
     }
   };
@@ -520,21 +547,23 @@ export default function YegoMiMotoDetail() {
             detailTab={quotaDetailTab}
             vouchers={detail.comprobantes_cuota || []}
             fleetEvidence={detail.evidencias_fleet || []}
+            fleetEvidenceFiles={detail.evidencias_fleet_archivos || []}
             onPage={setQuotaPage}
             onPageSize={(size) => { setQuotaPageSize(size); setQuotaPage(1); }}
-            onPay={(row) => openPayment({ kind: 'quota', row })}
             onToggle={(row) => {
               setExpandedQuotaId((current) => current === row.id ? null : row.id);
               setQuotaDetailTab('comprobantes');
             }}
             onDetailTab={setQuotaDetailTab}
             onUploadVoucher={uploadQuotaVoucher}
+            onUploadFleetEvidence={uploadFleetEvidence}
+            onDeleteFleetEvidence={deleteFleetEvidence}
           />
         ) : (
           <ExpenseSchedule
             rows={detail.otros_gastos}
             canPay={Boolean(config?.enabled)}
-            onPay={(row) => openPayment({ kind: 'expense', row })}
+            onPay={(row) => openPayment({ row })}
           />
         )}
       </section>
@@ -608,7 +637,7 @@ export default function YegoMiMotoDetail() {
       )}
 
       {payment && (
-        <Modal title={payment.kind === 'quota' ? `Pagar semana ${payment.row.week_number}` : `Pagar ${payment.row.tipo.replace(/_/g, ' ')}`} onClose={() => setPayment(null)}>
+        <Modal title={`Pagar ${payment.row.tipo.replace(/_/g, ' ')}`} onClose={() => setPayment(null)}>
           <div className="grid gap-3 sm:grid-cols-2">
             <FormField label="Monto"><input type="number" min="0.01" value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} className="mt-1 h-10 w-full rounded-lg border px-3" /></FormField>
             <FormField label="Moneda"><select value={paymentCurrency} onChange={(event) => setPaymentCurrency(event.target.value as MimotoCurrency)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3"><option value="COP">COP</option><option value="USD">USD</option></select></FormField>
@@ -676,7 +705,7 @@ function TabButton({ active, onClick, icon: Icon, children }: { active: boolean;
   );
 }
 
-function QuotaSchedule({ rows, totalRows, currentPage, pageSize, requiresConnectedHours, moraRate, canPay, expandedQuotaId, detailTab, vouchers, fleetEvidence, onPage, onPageSize, onPay, onToggle, onDetailTab, onUploadVoucher }: {
+function QuotaSchedule({ rows, totalRows, currentPage, pageSize, requiresConnectedHours, moraRate, canPay, expandedQuotaId, detailTab, vouchers, fleetEvidence, fleetEvidenceFiles, onPage, onPageSize, onToggle, onDetailTab, onUploadVoucher, onUploadFleetEvidence, onDeleteFleetEvidence }: {
   rows: MimotoQuota[];
   totalRows: number;
   currentPage: number;
@@ -688,21 +717,36 @@ function QuotaSchedule({ rows, totalRows, currentPage, pageSize, requiresConnect
   detailTab: QuotaDetailTab;
   vouchers: MimotoQuotaVoucher[];
   fleetEvidence: MimotoFleetEvidence[];
+  fleetEvidenceFiles: MimotoFleetEvidenceFile[];
   onPage: (page: number) => void;
   onPageSize: (pageSize: number) => void;
-  onPay: (row: MimotoQuota) => void;
   onToggle: (row: MimotoQuota) => void;
   onDetailTab: (tab: QuotaDetailTab) => void;
   onUploadVoucher: (row: MimotoQuota, amount: number, currency: MimotoCurrency, file: File) => Promise<boolean>;
+  onUploadFleetEvidence: (row: MimotoQuota, files: File[]) => Promise<boolean>;
+  onDeleteFleetEvidence: (evidenceId: string) => Promise<boolean>;
 }) {
   if (totalRows === 0) return <div className="py-14 text-center text-sm text-gray-500">Aún no hay cuotas generadas.</div>;
   return (
     <>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[1540px] text-sm">
+        <table className="w-full min-w-[1280px] table-fixed border-collapse text-sm">
+          <colgroup>
+            <col style={{ width: '9%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '11%' }} />
+            <col style={{ width: '9%' }} />
+            <col style={{ width: '13%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '9%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '9%' }} />
+            <col style={{ width: '7%' }} />
+            <col style={{ width: '7%' }} />
+          </colgroup>
           <thead className="bg-gray-50 text-center text-[11px] font-semibold uppercase text-gray-600">
             <tr>
-              <th className="px-3 py-3 text-left">Semana</th><th className="px-3 py-3 text-left">Fecha</th><th className="px-3 py-3">Viajes / bono</th><th className="px-3 py-3">Cuota semanal</th><th className="px-3 py-3 text-green-700">Recaudo por semana</th><th className="px-3 py-3 text-green-700">Cobro saldo</th><th className="px-3 py-3">Cuota a pagar</th><th className="px-3 py-3 text-red-600">Mora ({moraRate.toFixed(2)}%)</th><th className="px-3 py-3 text-orange-600">Pendiente de pago</th><th className="px-3 py-3 text-green-700">Pagado</th><th className="px-3 py-3">Estado</th><th className="px-3 py-3">Acción</th>
+              <th className="px-3 py-3 text-left">Semana</th><th className="px-3 py-3 text-left">Fecha</th><th className="px-3 py-3">Viajes / bono</th><th className="px-3 py-3">Cuota semanal</th><th className="px-3 py-3 text-green-700">Recaudo por semana</th><th className="px-3 py-3 text-green-700">Cobro saldo</th><th className="px-3 py-3">Cuota a pagar</th><th className="px-3 py-3 text-red-600">Mora ({moraRate.toFixed(2)}%)</th><th className="px-3 py-3 text-orange-600">Pendiente de pago</th><th className="px-3 py-3 text-green-700">Pagado</th><th className="px-3 py-3">Estado</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -716,10 +760,12 @@ function QuotaSchedule({ rows, totalRows, currentPage, pageSize, requiresConnect
                 detailTab={detailTab}
                 vouchers={vouchers.filter((voucher) => voucher.cuota_semanal_id === row.id)}
                 fleetEvidence={fleetEvidence.filter((evidence) => evidence.cuota_semanal_id === row.id)}
-                onPay={onPay}
+                fleetEvidenceFiles={fleetEvidenceFiles.filter((evidence) => evidence.cuota_semanal_id === row.id)}
                 onToggle={onToggle}
                 onDetailTab={onDetailTab}
                 onUploadVoucher={onUploadVoucher}
+                onUploadFleetEvidence={onUploadFleetEvidence}
+                onDeleteFleetEvidence={onDeleteFleetEvidence}
               />
             ))}
           </tbody>
@@ -730,7 +776,7 @@ function QuotaSchedule({ rows, totalRows, currentPage, pageSize, requiresConnect
   );
 }
 
-function QuotaGroup({ row, requiresConnectedHours, canPay, expanded, detailTab, vouchers, fleetEvidence, onPay, onToggle, onDetailTab, onUploadVoucher }: {
+function QuotaGroup({ row, requiresConnectedHours, canPay, expanded, detailTab, vouchers, fleetEvidence, fleetEvidenceFiles, onToggle, onDetailTab, onUploadVoucher, onUploadFleetEvidence, onDeleteFleetEvidence }: {
   row: MimotoQuota;
   requiresConnectedHours: boolean;
   canPay: boolean;
@@ -738,14 +784,13 @@ function QuotaGroup({ row, requiresConnectedHours, canPay, expanded, detailTab, 
   detailTab: QuotaDetailTab;
   vouchers: MimotoQuotaVoucher[];
   fleetEvidence: MimotoFleetEvidence[];
-  onPay: (row: MimotoQuota) => void;
+  fleetEvidenceFiles: MimotoFleetEvidenceFile[];
   onToggle: (row: MimotoQuota) => void;
   onDetailTab: (tab: QuotaDetailTab) => void;
   onUploadVoucher: (row: MimotoQuota, amount: number, currency: MimotoCurrency, file: File) => Promise<boolean>;
+  onUploadFleetEvidence: (row: MimotoQuota, files: File[]) => Promise<boolean>;
+  onDeleteFleetEvidence: (evidenceId: string) => Promise<boolean>;
 }) {
-  const generatedMora = Number(row.late_fee_total || 0) + Number(row.mora_extra_total || 0);
-  const pendingMora = Number(row.saldo_mora || 0) + Number(row.saldo_mora_extra || 0);
-  const hasExtraMora = Number(row.saldo_mora_extra || 0) > 0.005;
   const balance = Number(row.saldo_total || 0);
   const revenueDestinations = Array.isArray(row.recaudo_cascada_destino)
     ? row.recaudo_cascada_destino
@@ -755,10 +800,30 @@ function QuotaGroup({ row, requiresConnectedHours, canPay, expanded, detailTab, 
     ? storedRevenuePool
     : Number(row.recaudo_aplicado || 0);
   const driverCredit = Number(row.saldo_favor_conductor || 0);
+  const capitalPaid = Number(row.capital_paid || 0);
+  const appliedRevenue = Number(row.recaudo_aplicado || 0);
+  const appliedPayments = Number(row.paid_amount || 0);
+  const showPaidBreakdown = row.status === 'paid' && appliedRevenue > 0.005;
+  const paidCovered = showPaidBreakdown
+    ? appliedRevenue + appliedPayments
+    : appliedPayments;
   return (
     <>
-      <tr className={`text-center transition-colors hover:bg-gray-50/70 ${expanded ? 'bg-red-50/30' : ''}`}>
-        <td className="px-3 py-3 text-left font-semibold text-[#8B1A1A]"><button type="button" onClick={() => onToggle(row)} className="inline-flex items-center gap-2"><ChevronRight className={`h-4 w-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />Semana {row.week_number}</button></td>
+      <tr
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? 'Ocultar' : 'Ver'} detalle de la semana ${row.week_number}`}
+        onClick={() => onToggle(row)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onToggle(row);
+          }
+        }}
+        className={`cursor-pointer text-center transition-colors hover:bg-gray-50/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-red-300 ${expanded ? 'bg-red-50/30' : ''}`}
+      >
+        <td className="px-3 py-3 text-left font-semibold text-[#8B1A1A]"><span className="inline-flex items-center gap-2"><ChevronRight className={`h-4 w-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />Semana {row.week_number}</span></td>
         <td className="px-3 py-3 text-left text-gray-600">{formatDateOnly(row.due_date)}</td>
         <td className="px-3 py-3"><p>{row.viajes} viajes · Bono {money(row.bono_moto, row.moneda)}</p>{requiresConnectedHours && <p className="text-xs text-gray-500">{row.horas_conectadas == null ? 'Horas sin dato' : `${Number(row.horas_conectadas)} h conectadas`}</p>}</td>
         <td className="px-3 py-3 font-semibold">{money(row.cuota_semanal, row.moneda)}</td>
@@ -776,25 +841,49 @@ function QuotaGroup({ row, requiresConnectedHours, canPay, expanded, detailTab, 
           {driverCredit > 0.005 && <p className="text-xs font-semibold">Saldo a favor: {money(driverCredit, row.moneda)}</p>}
         </td>
         <td className="px-3 py-3 text-green-700">{money(row.cobro_saldo, row.moneda)}</td>
-        <td className="px-3 py-3"><p className="text-xs text-gray-400">Total: {money(row.amount_due, row.moneda)}</p><p className="font-bold">{money(row.saldo_capital, row.moneda)}</p></td>
-        <td className="px-3 py-3"><p className="text-xs text-gray-400">Generada: {money(generatedMora, row.moneda)}</p><p className="font-bold text-red-600">{money(pendingMora, row.moneda)}</p>{hasExtraMora && <span className="mt-1 inline-flex rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600">Extra</span>}</td>
+        <td className="px-3 py-3">
+          <div className="flex flex-col items-end gap-0.5 tabular-nums">
+            <span className="text-xs text-gray-400">Total: {money(row.amount_due, row.moneda)}</span>
+            <span className="font-bold">{money(row.saldo_capital, row.moneda)}</span>
+            {capitalPaid > 0.005 && (
+              <span className="text-[10px] font-normal text-green-700">
+                Cobrado: {money(capitalPaid, row.moneda)}
+              </span>
+            )}
+          </div>
+        </td>
+        <td className="px-3 py-3"><MoraBreakdown row={row} /></td>
         <td className="px-3 py-3 font-semibold text-orange-600">{money(balance, row.moneda)}</td>
-        <td className="px-3 py-3 font-semibold text-green-700">{money(row.paid_amount, row.moneda)}</td>
+        <td className="px-3 py-3 text-green-700">
+          <div className="flex flex-col items-end gap-0.5 tabular-nums">
+            <span className="font-semibold">{money(paidCovered, row.moneda)}</span>
+            {showPaidBreakdown && (
+              <span className="text-[10px] font-normal leading-snug text-gray-500">
+                {[
+                  `Recaudo ${money(appliedRevenue, row.moneda)}`,
+                  appliedPayments > 0.005 ? `Pago ${money(appliedPayments, row.moneda)}` : null,
+                ].filter(Boolean).join(' + ')}
+              </span>
+            )}
+          </div>
+        </td>
         <td className="px-3 py-3"><MimotoStatusBadge status={row.status} label={MIMOTO_STATUS_LABEL[row.status] || row.status} /></td>
-        <td className="px-3 py-3">{balance > 0.005 && <button type="button" disabled={!canPay} onClick={() => onPay(row)} className="rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-40">Pagar</button>}</td>
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={12} className="bg-gray-50/80 p-0">
+          <td colSpan={11} className="bg-gray-50/80 p-0">
             <QuotaDropdown
               row={row}
               balance={balance}
               tab={detailTab}
               vouchers={vouchers}
               fleetEvidence={fleetEvidence}
+              fleetEvidenceFiles={fleetEvidenceFiles}
               canPay={canPay}
               onTab={onDetailTab}
               onUploadVoucher={onUploadVoucher}
+              onUploadFleetEvidence={onUploadFleetEvidence}
+              onDeleteFleetEvidence={onDeleteFleetEvidence}
             />
           </td>
         </tr>
@@ -803,15 +892,52 @@ function QuotaGroup({ row, requiresConnectedHours, canPay, expanded, detailTab, 
   );
 }
 
-function QuotaDropdown({ row, balance, tab, vouchers, fleetEvidence, canPay, onTab, onUploadVoucher }: {
+function MoraBreakdown({ row }: { row: MimotoQuota }) {
+  const normalGenerated = Number(row.late_fee_total || 0);
+  const normalPending = Number(row.saldo_mora || 0);
+  const normalPaid = Number(row.late_fee_paid || 0);
+  const extraGenerated = Number(row.mora_extra_total || 0);
+  const extraPending = Number(row.saldo_mora_extra || 0);
+  const extraPaid = Number(row.mora_extra_paid || 0);
+  const hasExtra = extraGenerated > 0.005 || extraPending > 0.005 || extraPaid > 0.005;
+
+  return (
+    <div className="flex flex-col items-end gap-0.5 tabular-nums">
+      <span className="text-[10px] text-gray-400">Generada: {money(normalGenerated, row.moneda)}</span>
+      <span className="font-bold text-red-600">{money(normalPending, row.moneda)}</span>
+      {normalPaid > 0.005 && (
+        <span className="text-[10px] font-normal text-green-700">Cobrada: {money(normalPaid, row.moneda)}</span>
+      )}
+      {hasExtra && (
+        <span
+          className="group/extra relative mt-0.5 inline-flex cursor-help items-center whitespace-nowrap rounded-full bg-red-50 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-red-600 ring-1 ring-inset ring-red-100"
+          title={`Mora extra generada: ${money(extraGenerated, row.moneda)}\nMora extra pendiente: ${money(extraPending, row.moneda)}\nMora extra cobrada: ${money(extraPaid, row.moneda)}`}
+        >
+          Extra
+          <span className="pointer-events-none absolute right-0 top-full z-30 mt-1 hidden w-48 rounded-md border border-red-100 bg-white p-2 text-left text-[10px] font-normal leading-snug text-gray-600 shadow-lg group-hover/extra:block">
+            <span className="mb-1 block border-b border-red-50 pb-1 font-semibold text-gray-800">Mora extra</span>
+            <span className="flex justify-between gap-3"><span className="text-gray-400">Generada</span><strong>{money(extraGenerated, row.moneda)}</strong></span>
+            <span className="flex justify-between gap-3"><span className="text-gray-400">Pendiente</span><strong className="text-red-600">{money(extraPending, row.moneda)}</strong></span>
+            <span className="flex justify-between gap-3"><span className="text-gray-400">Cobrada</span><strong className="text-green-700">{money(extraPaid, row.moneda)}</strong></span>
+          </span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+function QuotaDropdown({ row, balance, tab, vouchers, fleetEvidence, fleetEvidenceFiles, canPay, onTab, onUploadVoucher, onUploadFleetEvidence, onDeleteFleetEvidence }: {
   row: MimotoQuota;
   balance: number;
   tab: QuotaDetailTab;
   vouchers: MimotoQuotaVoucher[];
   fleetEvidence: MimotoFleetEvidence[];
+  fleetEvidenceFiles: MimotoFleetEvidenceFile[];
   canPay: boolean;
   onTab: (tab: QuotaDetailTab) => void;
   onUploadVoucher: (row: MimotoQuota, amount: number, currency: MimotoCurrency, file: File) => Promise<boolean>;
+  onUploadFleetEvidence: (row: MimotoQuota, files: File[]) => Promise<boolean>;
+  onDeleteFleetEvidence: (evidenceId: string) => Promise<boolean>;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [amount, setAmount] = useState(String(balance));
@@ -970,7 +1096,13 @@ function QuotaDropdown({ row, balance, tab, vouchers, fleetEvidence, canPay, onT
             <VoucherList rows={vouchers} />
           </div>
         ) : (
-          <FleetEvidenceList rows={fleetEvidence} />
+          <FleetEvidencePanel
+            row={row}
+            records={fleetEvidence}
+            files={fleetEvidenceFiles}
+            onUpload={onUploadFleetEvidence}
+            onDelete={onDeleteFleetEvidence}
+          />
         )}
       </div>
     </div>
@@ -1018,9 +1150,182 @@ function VoucherList({ rows }: { rows: MimotoQuotaVoucher[] }) {
   );
 }
 
-function FleetEvidenceList({ rows }: { rows: MimotoFleetEvidence[] }) {
-  if (rows.length === 0) return <p className="text-sm text-gray-500">No hay evidencias Fleet registradas para esta semana.</p>;
-  return <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{rows.map((evidence) => <article key={evidence.id} className="rounded-lg border border-gray-200 bg-white p-3"><div className="flex items-center justify-between gap-3"><p className="font-bold text-green-700">{money(evidence.monto, evidence.moneda)}</p><span className={`rounded px-2 py-1 text-xs font-semibold ${evidence.simulated ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-800'}`}>{evidence.simulated ? 'Simulada' : 'Confirmada'}</span></div><p className="mt-2 text-xs text-gray-500">{formatDateTimeValue(evidence.created_at)}</p>{evidence.external_reference && <p className="mt-1 truncate text-xs text-gray-600">Ref. {evidence.external_reference}</p>}</article>)}</div>;
+function FleetEvidencePanel({ row, records, files, onUpload, onDelete }: {
+  row: MimotoQuota;
+  records: MimotoFleetEvidence[];
+  files: MimotoFleetEvidenceFile[];
+  onUpload: (row: MimotoQuota, files: File[]) => Promise<boolean>;
+  onDelete: (evidenceId: string) => Promise<boolean>;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<MimotoFleetEvidenceFile | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<MimotoFleetEvidenceFile | null>(null);
+
+  const selectFiles = async (selected: FileList | null) => {
+    const selectedFiles = Array.from(selected || []);
+    if (selectedFiles.length === 0) return;
+    const invalid = selectedFiles.find((file) => {
+      const supported = ['image/jpeg', 'image/png', 'application/pdf'].includes(file.type)
+        || /\.(jpe?g|png|pdf)$/i.test(file.name);
+      return !supported || file.size > 5 * 1024 * 1024;
+    });
+    if (invalid) {
+      toast.error('Cada evidencia debe ser JPG, PNG o PDF y pesar como máximo 5 MB');
+      if (inputRef.current) inputRef.current.value = '';
+      return;
+    }
+    setUploading(true);
+    try {
+      await onUpload(row, selectedFiles);
+    } finally {
+      setUploading(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setDeletingId(pendingDelete.id);
+    try {
+      const deleted = await onDelete(pendingDelete.id);
+      if (deleted) setPendingDelete(null);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <section>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h4 className="text-sm font-semibold text-gray-900">Evidencias de cobro Fleet</h4>
+            <p className="mt-0.5 text-xs text-gray-500">Imágenes o documentos que respaldan el cobro de esta semana.</p>
+          </div>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/jpeg,image/png,.jpg,.jpeg,.png,.pdf,application/pdf"
+            multiple
+            className="hidden"
+            onChange={(event) => void selectFiles(event.target.files)}
+          />
+          <button
+            type="button"
+            disabled={uploading}
+            onClick={() => inputRef.current?.click()}
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 text-xs font-semibold text-[#8B1A1A] hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Upload className={`h-4 w-4 ${uploading ? 'animate-pulse' : ''}`} />
+            {uploading ? 'Subiendo...' : 'Subir evidencia'}
+          </button>
+        </div>
+
+        {files.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-center text-sm text-gray-500">
+            Sin archivos de evidencia para esta semana.
+          </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {files.map((file) => {
+              const isImage = isFleetEvidenceImage(file);
+              return (
+                <article key={file.id} className="group relative flex min-w-0 items-center gap-3 rounded-lg border border-gray-200 bg-white p-3">
+                  <button
+                    type="button"
+                    onClick={() => setPreview(file)}
+                    className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-gray-200 bg-gray-50 hover:ring-2 hover:ring-red-200"
+                    aria-label={`Ver ${file.file_name}`}
+                  >
+                    {isImage ? (
+                      <img src={file.file_path} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <FileText className="h-6 w-6 text-red-700" />
+                    )}
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <button type="button" onClick={() => setPreview(file)} className="block max-w-full truncate text-left text-sm font-semibold text-gray-900 hover:text-[#8B1A1A]" title={file.file_name}>
+                      {file.file_name}
+                    </button>
+                    <p className="mt-1 text-xs text-gray-500">{formatDateTimeValue(file.created_at)}</p>
+                    {file.file_size != null && <p className="text-[11px] text-gray-400">{formatFileSize(file.file_size)}</p>}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPendingDelete(file)}
+                    className="rounded-lg p-2 text-gray-400 opacity-100 hover:bg-red-50 hover:text-red-700 sm:opacity-0 sm:group-hover:opacity-100"
+                    aria-label={`Eliminar ${file.file_name}`}
+                    title="Eliminar evidencia"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {records.length > 0 && (
+        <section className="border-t border-gray-200 pt-4">
+          <h4 className="mb-3 text-sm font-semibold text-gray-900">Registros del cobro Fleet</h4>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {records.map((evidence) => (
+              <article key={evidence.id} className="rounded-lg border border-gray-200 bg-white p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-bold text-green-700">{money(evidence.monto, evidence.moneda)}</p>
+                  <span className={`rounded px-2 py-1 text-xs font-semibold ${evidence.simulated ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-800'}`}>
+                    {evidence.simulated ? 'Simulada' : 'Confirmada'}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs text-gray-500">{formatDateTimeValue(evidence.created_at)}</p>
+                {evidence.external_reference && <p className="mt-1 truncate text-xs text-gray-600">Ref. {evidence.external_reference}</p>}
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {preview && (
+        <Modal title={preview.file_name} onClose={() => setPreview(null)}>
+          {isFleetEvidenceImage(preview) ? (
+            <img src={preview.file_path} alt={preview.file_name} className="mx-auto max-h-[68vh] max-w-full rounded-lg object-contain" />
+          ) : (
+            <iframe src={preview.file_path} title={preview.file_name} className="h-[68vh] w-full rounded-lg border border-gray-200" />
+          )}
+          <div className="mt-4 flex justify-end">
+            <a href={preview.file_path} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-300 px-4 text-sm font-medium text-gray-700 hover:bg-gray-50">
+              <ExternalLink className="h-4 w-4" />Abrir archivo
+            </a>
+          </div>
+        </Modal>
+      )}
+
+      {pendingDelete && (
+        <Modal title="Eliminar evidencia" onClose={() => deletingId == null && setPendingDelete(null)}>
+          <p className="text-sm text-gray-600">Se retirará <strong>{pendingDelete.file_name}</strong> de esta cuota. La eliminación quedará registrada.</p>
+          <ModalActions>
+            <SecondaryButton disabled={deletingId != null} onClick={() => setPendingDelete(null)}>Cancelar</SecondaryButton>
+            <PrimaryButton disabled={deletingId != null} onClick={() => void confirmDelete()}>{deletingId ? 'Eliminando...' : 'Eliminar'}</PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function isFleetEvidenceImage(file: MimotoFleetEvidenceFile) {
+  return String(file.mime_type || '').startsWith('image/')
+    || /\.(jpe?g|png|gif|webp)(?:\?.*)?$/i.test(file.file_name || file.file_path);
+}
+
+function formatFileSize(value: number | string) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return '—';
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
 function formatDateTimeValue(value: string) {

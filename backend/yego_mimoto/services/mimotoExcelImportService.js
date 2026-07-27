@@ -331,7 +331,8 @@ async function insertDriver(client, driver, fleetId, importId, actorId, sourceFi
 async function insertQuotas(client, solicitudId, quotas, importId, actorId, sourceFile, usesConnectedHours, cronogramaSnapshot) {
   const today = bogotaToday();
   const rows = quotas.map((quota) => {
-    const paid = quota.validation === 'paid';
+    const firstWeekCovered = Number(quota.number) === 1;
+    const paid = firstWeekCovered || quota.validation === 'paid';
     const paidAmount = paid ? quota.amount : 0;
     return {
       due_date: quota.date,
@@ -347,6 +348,7 @@ async function insertQuotas(client, solicitudId, quotas, importId, actorId, sour
         trips_hours_raw: quota.tripHoursRaw, observed_hours: quota.observedHours,
         amount_raw: quota.amountRaw, payment_source_raw: quota.sourceRaw,
         evidence_file_raw: quota.fileRaw, validation_raw: quota.validationRaw,
+        first_week_covered_by_rule: firstWeekCovered,
       },
       payment_chunks: paid
         ? [{ source: 'excel_import', amount: paidAmount, applied_to_capital: paidAmount }]

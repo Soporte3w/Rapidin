@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { query } from '../../config/database.js';
 import {
   getContractorBalanceForFleet,
+  getFleetSupplySummary,
   withdrawFromContractor,
 } from '../../services/yangoService.js';
 import { logger } from '../../utils/logger.js';
@@ -9,7 +10,11 @@ import { MIMOTO_CONFIG } from '../config/mimotoConfig.js';
 import { applyPaymentToQuota } from './mimotoPaymentService.js';
 import { acquireMimotoCronLock, releaseMimotoCronLock } from './mimotoCronLockService.js';
 import { assertMimotoFleetWriteEnabled, mimotoFleetCookie } from './mimotoFleetContext.js';
-import { mimotoToday } from './mimotoDateUtils.js';
+import { addMimotoDays, mimotoMondayOf, mimotoToday } from './mimotoDateUtils.js';
+import {
+  normalizeMimotoPlate,
+  resolveMimotoFleetIdentity,
+} from './mimotoFleetIdentityService.js';
 import {
   assertMimotoIsolationSql,
   planMimotoFleetCharge,
@@ -18,9 +23,9 @@ import {
 
 const q = (sql, params = []) => query(assertMimotoIsolationSql(sql), params);
 
-function openQuotas(asOf) {
+function openQuotas(asOf, solicitudId = null) {
   return q(
-    `SELECT q.*, s.driver_id_fleet, s.fleet_id, f.park_id,
+    `SELECT q.*, s.placa_asignada, s.fleet_id, f.park_id,
             CONCAT_WS(' ',s.first_name,s.last_name) AS driver_name
      FROM module_mimoto_cuota_semanal q
      JOIN module_mimoto_solicitud s
@@ -28,23 +33,33 @@ function openQuotas(asOf) {
      JOIN module_mimoto_fleet f
        ON f.id=s.fleet_id AND f.active=TRUE AND f.deleted_at IS NULL
      WHERE q.deleted_at IS NULL
+       AND q.week_number > 1
        AND q.status IN ('pending','partial','overdue')
        AND q.due_date <= $1::date
+       AND ($2::uuid IS NULL OR s.id=$2::uuid)
        AND GREATEST(0,q.amount_due-q.capital_paid)+q.late_fee+q.mora_extra > 0.005
-       AND s.driver_id_fleet IS NOT NULL
-     ORDER BY f.park_id, s.driver_id_fleet, q.due_date, q.week_start_date, q.id`,
-    [asOf]
+     ORDER BY f.park_id, s.placa_asignada, q.due_date, q.week_start_date, q.id`,
+    [asOf, solicitudId]
   );
 }
 
-function groupByDriverAndFleet(rows) {
+function groupByPlateAndFleet(rows) {
   const groups = new Map();
   for (const row of rows) {
-    const key = `${row.fleet_id}:${row.driver_id_fleet}`;
+    const plate = normalizeMimotoPlate(row.placa_asignada);
+    const key = `${row.fleet_id}:${plate || `sin-placa:${row.solicitud_id}`}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(row);
   }
   return groups;
+}
+
+function supplyPeriod(asOf) {
+  const monday = mimotoMondayOf(asOf);
+  return {
+    dateFrom: addMimotoDays(monday, -7),
+    dateTo: addMimotoDays(monday, -1),
+  };
 }
 
 function financialSourceKey(quota, runDate) {
@@ -139,7 +154,11 @@ async function markEvidenceFailure(evidenceId, message, response = null) {
   );
 }
 
-export async function runMimotoFleetCharge({ dryRun = true, asOf = mimotoToday() } = {}) {
+export async function runMimotoFleetCharge({
+  dryRun = true,
+  asOf = mimotoToday(),
+  solicitudId = null,
+} = {}) {
   if (!dryRun) assertMimotoFleetWriteEnabled();
   const jobName = 'mimoto_fleet_charge';
   const executionId = await acquireMimotoCronLock(jobName, 120);
@@ -148,19 +167,60 @@ export async function runMimotoFleetCharge({ dryRun = true, asOf = mimotoToday()
   const results = [];
   try {
     if (!dryRun) await reconcileAppliedEvidence();
-    const quotas = (await openQuotas(asOf)).rows;
+    const quotas = (await openQuotas(asOf, solicitudId)).rows;
     const needsUsdRate = quotas.some((quota) => quota.moneda === 'USD');
     const usdToCop = needsUsdRate ? await colombianExchangeRate() : 1;
     if (needsUsdRate && usdToCop <= 0) throw new Error('El tipo de cambio USD/COP no está configurado');
 
-    for (const driverQuotas of groupByDriverAndFleet(quotas).values()) {
+    const supplyByFleet = new Map();
+    for (const driverQuotas of groupByPlateAndFleet(quotas).values()) {
       const driver = driverQuotas[0];
+      const plate = normalizeMimotoPlate(driver.placa_asignada);
+      const solicitudIds = new Set(driverQuotas.map((quota) => String(quota.solicitud_id)));
+      if (!plate) {
+        results.push({ solicitud_id: driver.solicitud_id, status: 'error', reason: 'sin_placa' });
+        continue;
+      }
+      if (solicitudIds.size > 1) {
+        solicitudIds.forEach((id) => results.push({
+          solicitud_id: id,
+          status: 'error',
+          reason: 'placa_duplicada_en_flota',
+          error: `La placa ${plate} está asignada a más de una solicitud activa`,
+        }));
+        continue;
+      }
       const cookie = mimotoFleetCookie();
       if (!cookie) {
         results.push({ solicitud_id: driver.solicitud_id, status: 'error', reason: 'sin_sesion_fleet' });
         continue;
       }
-      const balanceResult = await getContractorBalanceForFleet(driver.driver_id_fleet, {
+
+      if (!supplyByFleet.has(driver.fleet_id)) {
+        const period = supplyPeriod(asOf);
+        supplyByFleet.set(driver.fleet_id, await getFleetSupplySummary({
+          ...period,
+          parkId: driver.park_id,
+          cookie,
+        }));
+      }
+      const identity = await resolveMimotoFleetIdentity({
+        plate,
+        parkId: driver.park_id,
+        cookie,
+        supply: supplyByFleet.get(driver.fleet_id),
+      });
+      if (!identity.success) {
+        results.push({
+          solicitud_id: driver.solicitud_id,
+          status: 'error',
+          reason: identity.reason || 'fleet_plate',
+          error: identity.error,
+        });
+        continue;
+      }
+
+      const balanceResult = await getContractorBalanceForFleet(identity.driverId, {
         parkId: driver.park_id,
         cookie,
       });
@@ -184,6 +244,7 @@ export async function runMimotoFleetCharge({ dryRun = true, asOf = mimotoToday()
           solicitud_id: quota.solicitud_id,
           cuota_id: quota.id,
           week_number: quota.week_number,
+          plate: identity.plate,
           source_key: sourceKey,
           ...plan,
         };
@@ -194,8 +255,10 @@ export async function runMimotoFleetCharge({ dryRun = true, asOf = mimotoToday()
         }
 
         const requestPayload = {
-          contractor_profile_id: quota.driver_id_fleet,
+          contractor_profile_id: identity.driverId,
           park_id: quota.park_id,
+          plate: identity.plate,
+          identity_source: identity.source,
           amount: plan.amount_cop,
           currency: 'COP',
           quota_id: quota.id,
@@ -208,7 +271,7 @@ export async function runMimotoFleetCharge({ dryRun = true, asOf = mimotoToday()
         }
 
         const withdrawal = await withdrawFromContractor(
-          quota.driver_id_fleet,
+          identity.driverId,
           plan.amount_cop,
           `Yego Mi Moto - Semana ${quota.week_number}`,
           cookie,
@@ -248,13 +311,14 @@ export async function runMimotoFleetCharge({ dryRun = true, asOf = mimotoToday()
       counts[item.status] = (counts[item.status] || 0) + 1;
       return counts;
     }, {});
-    logger.info('Mi Moto: cobro Fleet finalizado', { dryRun, asOf, summary });
+    logger.info('Mi Moto: cobro Fleet finalizado', { dryRun, asOf, solicitudId, summary });
     return {
       skipped: false,
       dry_run: dryRun,
       fleet_write_enabled: MIMOTO_CONFIG.fleetWithdrawEnabled,
       execution_id: executionId,
       as_of: asOf,
+      solicitud_id: solicitudId,
       summary,
       results,
     };

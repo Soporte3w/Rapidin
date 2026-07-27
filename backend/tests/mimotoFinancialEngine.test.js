@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyMimotoFirstWeekRule,
   assertMimotoIsolationSql,
   calculateLateFee,
   calculateMimotoMoraAccrual,
@@ -13,9 +14,15 @@ import {
   planMimotoMondaySettlement,
   planMimotoFleetCharge,
   projectQuotaAfterPayment,
+  resolveMimotoWeeklyMetrics,
   selectMimotoRule,
   simulatePaymentCascade,
 } from '../yego_mimoto/services/mimotoFinancialEngine.js';
+import {
+  findSupplyDriversByPlate,
+  normalizeMimotoPlate,
+  resolveMimotoFleetIdentity,
+} from '../yego_mimoto/services/mimotoFleetIdentityService.js';
 
 test('normaliza identidad colombiana sin aceptar formatos peruanos', () => {
   assert.equal(normalizeColombianPhone('300 123 4567'), '573001234567');
@@ -30,6 +37,89 @@ test('convierte únicamente COP y USD con tasa explícita', () => {
   assert.equal(convertMimotoAmount(40000, 'COP', 'USD', 4000), 10);
   assert.throws(() => convertMimotoAmount(10, 'PEN', 'COP', 4000), /COP o USD/);
   assert.throws(() => convertMimotoAmount(10, 'USD', 'COP', 0), /tipo de cambio/);
+});
+
+test('Mi Moto resuelve la identidad Fleet por placa normalizada', async () => {
+  const supplyDriver = {
+    driver_id: 'driver-correcto',
+    plate: 'PVW-78H',
+    plates: ['PVW-78H'],
+    completed_trips: 75,
+    supply_hours: 30,
+  };
+  const supply = { success: true, drivers: [supplyDriver] };
+
+  assert.equal(normalizeMimotoPlate(' pvw-78h '), 'PVW78H');
+  assert.deepEqual(findSupplyDriversByPlate(supply, 'PVW78H'), [supplyDriver]);
+  assert.deepEqual(await resolveMimotoFleetIdentity({
+    plate: 'PVW78H',
+    parkId: 'park-co',
+    cookie: 'session',
+    supply,
+  }), {
+    success: true,
+    driverId: 'driver-correcto',
+    plate: 'PVW78H',
+    supplyDriver,
+    source: 'fleet_supply',
+  });
+});
+
+test('Mi Moto bloquea una placa ambigua en Supply', async () => {
+  const result = await resolveMimotoFleetIdentity({
+    plate: 'PVW78H',
+    parkId: 'park-co',
+    cookie: 'session',
+    supply: {
+      success: true,
+      drivers: [
+        { driver_id: 'one', plate: 'PVW78H' },
+        { driver_id: 'two', plates: ['PVW-78H'] },
+      ],
+    },
+  });
+  assert.equal(result.success, false);
+  assert.equal(result.reason, 'placa_ambigua');
+});
+
+test('la primera semana nace pagada y sin ningún tipo de mora', () => {
+  assert.deepEqual(applyMimotoFirstWeekRule({
+    week_number: 1,
+    amount_due: 180000,
+    capital_paid: 0,
+    late_fee_total: 25714.29,
+    late_fee: 25714.29,
+    mora_extra_total: 1004.08,
+    mora_extra: 1004.08,
+    paid_amount: 0,
+    status: 'overdue',
+  }), {
+    week_number: 1,
+    amount_due: 180000,
+    capital_paid: 180000,
+    late_fee_total: 0,
+    late_fee: 0,
+    late_fee_paid: 0,
+    mora_extra_total: 0,
+    mora_extra: 0,
+    mora_extra_paid: 0,
+    paid_amount: 180000,
+    mora_extra_desde: null,
+    mora_extra_calculated_through: null,
+    pago_puntual: false,
+    status: 'paid',
+  });
+});
+
+test('la cascada ignora una primera semana mal formada y empieza en la segunda', () => {
+  const result = simulatePaymentCascade([
+    { id: 'week-1', week_number: 1, due_date: '2026-06-29', amount_due: 180000, capital_paid: 0, late_fee: 26000, mora_extra: 1000 },
+    { id: 'week-2', week_number: 2, due_date: '2026-07-06', amount_due: 180000, capital_paid: 0, late_fee: 18000, mora_extra: 0 },
+  ], 1000, { asOf: '2026-07-24' });
+
+  assert.equal(result.applications.length, 1);
+  assert.equal(result.applications[0].cuota_id, 'week-2');
+  assert.equal(result.applications[0].lateFee, 1000);
 });
 
 test('un pago cubre mora normal, mora extra y capital en ese orden', () => {
@@ -144,11 +234,11 @@ test('bono moto conserva la cuota contractual y reduce únicamente lo pagable', 
 test('el recaudo del lunes cubre deuda antigua y luego la cuota nueva', () => {
   const result = planMimotoMondaySettlement({
     existingQuotas: [{
-      id: 'old', due_date: '2026-07-13', week_number: 1,
+      id: 'old', due_date: '2026-07-13', week_number: 2,
       amount_due: 100, capital_paid: 0, late_fee: 10, mora_extra: 5, paid_amount: 0,
     }],
     currentQuota: {
-      id: 'current', due_date: '2026-07-20', week_number: 2,
+      id: 'current', due_date: '2026-07-20', week_number: 3,
       amount_due: 100, capital_paid: 0, late_fee: 0, mora_extra: 0, paid_amount: 0,
     },
     revenuePool: 130,
@@ -172,11 +262,11 @@ test('el recaudo del lunes cubre deuda antigua y luego la cuota nueva', () => {
 test('el cobro Fleet continúa sobre el saldo que dejó el recaudo', () => {
   const result = planMimotoMondaySettlement({
     existingQuotas: [{
-      id: 'old', due_date: '2026-07-13', week_number: 1,
+      id: 'old', due_date: '2026-07-13', week_number: 2,
       amount_due: 100, capital_paid: 0, late_fee: 10, mora_extra: 5, paid_amount: 0,
     }],
     currentQuota: {
-      id: 'current', due_date: '2026-07-20', week_number: 2,
+      id: 'current', due_date: '2026-07-20', week_number: 3,
       amount_due: 100, capital_paid: 0, late_fee: 0, mora_extra: 0, paid_amount: 0,
     },
     revenuePool: 8,
@@ -185,7 +275,7 @@ test('el cobro Fleet continúa sobre el saldo que dejó el recaudo', () => {
   });
 
   assert.deepEqual(result.revenue.applications[0], {
-    cuota_id: 'old', week_number: 1, due_date: '2026-07-13',
+    cuota_id: 'old', week_number: 2, due_date: '2026-07-13',
     applied: 8, unapplied: 0, lateFee: 8, extraLateFee: 0, capital: 0,
   });
   assert.deepEqual(result.fleet.applications.map((item) => ({
@@ -202,11 +292,11 @@ test('el cobro Fleet continúa sobre el saldo que dejó el recaudo', () => {
 test('una cuota futura no recibe recaudo ni cobro Fleet del lunes', () => {
   const result = planMimotoMondaySettlement({
     existingQuotas: [{
-      id: 'future', due_date: '2026-07-27', week_number: 3,
+      id: 'future', due_date: '2026-07-27', week_number: 4,
       amount_due: 100, capital_paid: 0, late_fee: 0, mora_extra: 0, paid_amount: 0,
     }],
     currentQuota: {
-      id: 'current', due_date: '2026-07-20', week_number: 2,
+      id: 'current', due_date: '2026-07-20', week_number: 3,
       amount_due: 100, capital_paid: 0, late_fee: 0, mora_extra: 0, paid_amount: 0,
     },
     revenuePool: 150,
@@ -223,7 +313,7 @@ test('una cuota futura no recibe recaudo ni cobro Fleet del lunes', () => {
 test('el excedente queda libre y nunca se inventa una aplicación a otros gastos', () => {
   const result = planMimotoMondaySettlement({
     currentQuota: {
-      id: 'current', due_date: '2026-07-20', week_number: 1,
+      id: 'current', due_date: '2026-07-20', week_number: 2,
       amount_due: 100, capital_paid: 0, late_fee: 0, mora_extra: 0, paid_amount: 0,
     },
     revenuePool: 140,
@@ -239,11 +329,11 @@ test('el excedente queda libre y nunca se inventa una aplicación a otros gastos
 test('la simulación completa del lunes es determinista e idempotente en memoria', () => {
   const scenario = {
     existingQuotas: [{
-      id: 'old', due_date: '2026-07-13', week_number: 1,
+      id: 'old', due_date: '2026-07-13', week_number: 2,
       amount_due: 100, capital_paid: 20, late_fee: 6, mora_extra: 4, paid_amount: 20,
     }],
     currentQuota: {
-      id: 'current', due_date: '2026-07-20', week_number: 2,
+      id: 'current', due_date: '2026-07-20', week_number: 3,
       amount_due: 100, capital_paid: 0, late_fee: 0, mora_extra: 0, paid_amount: 0,
     },
     revenuePool: 50,
@@ -255,7 +345,7 @@ test('la simulación completa del lunes es determinista e idempotente en memoria
 
 test('un abono parcial cierra mora normal, luego nace mora extra y el siguiente cobro la prioriza', () => {
   const initial = {
-    id: 'quota', due_date: '2026-07-13', week_number: 1,
+    id: 'quota', due_date: '2026-07-13', week_number: 2,
     amount_due: 100, capital_paid: 0,
     late_fee_total: 10, late_fee: 10, late_fee_paid: 0,
     mora_extra_total: 0, mora_extra: 0, mora_extra_paid: 0,
@@ -319,6 +409,35 @@ test('cronograma combinado exige viajes y horas por umbral', () => {
     trips: 75,
     mode: 'viajes_horas',
   }), /horas conectadas/);
+});
+
+test('conductor omitido del reporte Supply genera con cero horas y no bloquea la cuota', () => {
+  assert.deepEqual(resolveMimotoWeeklyMetrics({
+    mode: 'viajes_horas',
+    incomeTrips: 12,
+    supply: { success: true, drivers: [] },
+    supplyDriver: null,
+  }), {
+    valid: true,
+    trips: 12,
+    connectedHours: 0,
+    warning: 'driver_sin_supply_asumido_cero',
+  });
+});
+
+test('un error real del reporte Supply sí bloquea la generación combinada', () => {
+  assert.deepEqual(resolveMimotoWeeklyMetrics({
+    mode: 'viajes_horas',
+    incomeTrips: 12,
+    supply: { success: false, error: 'Fleet no disponible' },
+    supplyDriver: null,
+  }), {
+    valid: false,
+    trips: 0,
+    connectedHours: 0,
+    warning: null,
+    error: 'Fleet no disponible',
+  });
 });
 
 test('el guard de SQL bloquea cualquier tabla de Mi Auto', () => {

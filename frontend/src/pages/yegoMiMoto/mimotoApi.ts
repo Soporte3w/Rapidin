@@ -188,6 +188,7 @@ export type MimotoDetail = MimotoSolicitud & {
   contratos: Array<{ id: string; version: number; file_name: string; file_path: string; created_at: string }>;
   comprobantes_cuota: MimotoQuotaVoucher[];
   evidencias_fleet: MimotoFleetEvidence[];
+  evidencias_fleet_archivos: MimotoFleetEvidenceFile[];
 };
 
 export type MimotoQuotaVoucher = {
@@ -210,6 +211,16 @@ export type MimotoFleetEvidence = {
   moneda: MimotoCurrency;
   external_reference?: string | null;
   simulated: boolean;
+  created_at: string;
+};
+
+export type MimotoFleetEvidenceFile = {
+  id: string;
+  cuota_semanal_id: string;
+  file_name: string;
+  file_path: string;
+  mime_type?: string | null;
+  file_size?: number | string | null;
   created_at: string;
 };
 

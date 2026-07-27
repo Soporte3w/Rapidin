@@ -2,6 +2,7 @@ import { getClient, query } from '../../config/database.js';
 import { MIMOTO_CONFIG } from '../config/mimotoConfig.js';
 import {
   assertMimotoIsolationSql,
+  applyMimotoFirstWeekRule,
   calculateWeeklyCharge,
   convertMimotoAmount,
   normalizeMimotoCurrency,
@@ -129,6 +130,7 @@ async function hasOverdueDebt(solicitudId, dueDate) {
   const result = await q(
     `SELECT 1 FROM module_mimoto_cuota_semanal
      WHERE solicitud_id=$1 AND deleted_at IS NULL
+       AND week_number > 1
        AND due_date<$2::date
        AND status IN ('partial','overdue')
        AND GREATEST(0,amount_due-capital_paid)+late_fee+mora_extra>0.005
@@ -142,6 +144,7 @@ async function loadOpenQuotas(execute, { solicitudId, weekStart, dueDate, curren
   const result = await execute(
     `SELECT * FROM module_mimoto_cuota_semanal
      WHERE solicitud_id=$1 AND deleted_at IS NULL
+       AND week_number > 1
        AND week_start_date<>$2::date
        AND due_date<=$3::date
        AND moneda=$4
@@ -311,14 +314,16 @@ export async function previewOrGenerateWeeklyQuota(solicitudId, payload, actorId
     dueDate,
     currency: output.moneda,
   });
+  const isFirstWeekPreview = Number(output.week_number) === 1;
   const previewSettlement = buildSettlement({
     priorQuotas: previewPrior,
     output,
-    obligation: terms.obligation,
+    obligation: isFirstWeekPreview ? 0 : terms.obligation,
     revenuePool,
     fleetBalance: simulatedFleetBalance,
   });
   output = settleCurrentOutput(output, terms.obligation, previewSettlement);
+  if (isFirstWeekPreview) output = applyMimotoFirstWeekRule(output);
   if (isDryRun) {
     return dryRunResponse({
       output,
@@ -364,6 +369,7 @@ export async function previewOrGenerateWeeklyQuota(solicitudId, payload, actorId
       [solicitudId]
     );
     output = { ...output, week_number: Number(latestWeek.rows[0]?.last_week || 0) + 1 };
+    const isFirstWeek = Number(output.week_number) === 1;
     const priorQuotas = await loadOpenQuotas(execute, {
       solicitudId,
       weekStart,
@@ -374,10 +380,12 @@ export async function previewOrGenerateWeeklyQuota(solicitudId, payload, actorId
     const settlement = buildSettlement({
       priorQuotas,
       output,
-      obligation: terms.obligation,
+      obligation: isFirstWeek ? 0 : terms.obligation,
       revenuePool,
     });
     output = settleCurrentOutput(output, terms.obligation, settlement);
+    if (isFirstWeek) output = applyMimotoFirstWeekRule(output);
+    generationContext.first_week_covered_by_rule = isFirstWeek;
     generationContext.revenue_cascade = {
       pool: revenuePool,
       destinations: output.recaudo_cascada_destino,
@@ -397,17 +405,18 @@ export async function previewOrGenerateWeeklyQuota(solicitudId, payload, actorId
         (solicitud_id,week_start_date,due_date,week_number,viajes,horas_conectadas,
          cuota_semanal,bono_moto,amount_due,moneda,partner_fees_raw,pct_recaudo,
          recaudo_pool,recaudo_aplicado,recaudo_cascada_destino,saldo_favor_conductor,
-         cobro_saldo,status,generation_context,tasa_interes_mora_snapshot,rule_snapshot,
+         cobro_saldo,capital_paid,paid_amount,status,generation_context,tasa_interes_mora_snapshot,rule_snapshot,
          mora_calculated_through,updated_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,
-               $17,$18,$19::jsonb,$20,$21::jsonb,$22,$23)
+               $17,$18,$19,$20,$21,$22::jsonb,$23,$24::jsonb,$25,$26)
        ON CONFLICT (solicitud_id,week_start_date) DO NOTHING RETURNING *`,
       [solicitudId, weekStart, dueDate, output.week_number, trips,
         output.horas_conectadas, output.cuota_semanal, output.bono_moto, output.amount_due,
         output.moneda, output.partner_fees_raw, output.pct_recaudo, output.recaudo_pool,
         output.recaudo_aplicado, JSON.stringify(output.recaudo_cascada_destino),
         output.saldo_favor_conductor, output.cobro_saldo,
-        output.amount_due <= 0.005 ? 'paid' : 'pending', JSON.stringify(generationContext),
+        Number(output.capital_paid || 0), Number(output.paid_amount || 0),
+        output.status || (output.amount_due <= 0.005 ? 'paid' : 'pending'), JSON.stringify(generationContext),
         Number(context.tasa_interes_mora) || 0, JSON.stringify(rule), dueDate, actorId || null]
     );
     if (!inserted.rows[0]) throw new Error('La cuota de esa semana ya existe');

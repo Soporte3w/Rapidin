@@ -3,6 +3,30 @@ import { mimotoDateOnly } from './mimotoDateUtils.js';
 export const MIMOTO_DOCUMENT_TYPES = Object.freeze(['CC', 'CE', 'PPT']);
 export const MIMOTO_CURRENCIES = Object.freeze(['COP', 'USD']);
 
+export function isMimotoFirstWeek(quota) {
+  return Number(quota?.week_number ?? quota?.weekNumber) === 1;
+}
+
+export function applyMimotoFirstWeekRule(quota) {
+  if (!isMimotoFirstWeek(quota)) return { ...quota };
+  const amountDue = roundMoney(Math.max(0, Number(quota?.amount_due) || 0));
+  return {
+    ...quota,
+    capital_paid: amountDue,
+    late_fee_total: 0,
+    late_fee: 0,
+    late_fee_paid: 0,
+    mora_extra_total: 0,
+    mora_extra: 0,
+    mora_extra_paid: 0,
+    paid_amount: amountDue,
+    mora_extra_desde: null,
+    mora_extra_calculated_through: null,
+    pago_puntual: false,
+    status: 'paid',
+  };
+}
+
 export function roundMoney(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.round((parsed + Number.EPSILON) * 100) / 100 : 0;
@@ -113,7 +137,40 @@ export function calculateWeeklyCharge({
   };
 }
 
+export function resolveMimotoWeeklyMetrics({ mode, incomeTrips = 0, supply, supplyDriver }) {
+  const tripsFromIncome = Math.max(0, Math.trunc(Number(incomeTrips) || 0));
+  if (mode !== 'viajes_horas') {
+    return { valid: true, trips: tripsFromIncome, connectedHours: null, warning: null };
+  }
+  if (!supply?.success) {
+    return {
+      valid: false,
+      trips: 0,
+      connectedHours: 0,
+      warning: null,
+      error: supply?.error || 'Fleet no pudo obtener las horas Supply',
+    };
+  }
+  if (!supplyDriver) {
+    return {
+      valid: true,
+      trips: tripsFromIncome,
+      connectedHours: 0,
+      warning: 'driver_sin_supply_asumido_cero',
+    };
+  }
+  return {
+    valid: true,
+    trips: Math.max(0, Math.trunc(Number(supplyDriver.completed_trips) || 0)),
+    connectedHours: roundMoney(Math.max(0, Number(supplyDriver.supply_hours) || 0)),
+    warning: null,
+  };
+}
+
 export function quotaBalances(quota) {
+  if (isMimotoFirstWeek(quota)) {
+    return { lateFee: 0, extraLateFee: 0, capital: 0 };
+  }
   return {
     lateFee: roundMoney(Math.max(0, Number(quota.late_fee) || 0)),
     extraLateFee: roundMoney(Math.max(0, Number(quota.mora_extra) || 0)),

@@ -58,7 +58,14 @@ test('los jobs Mi Moto separan generación, mora y cobro Fleet con interruptor r
   assert.match(fleet, /assertMimotoFleetWriteEnabled\(\)/);
   assert.match(fleet, /sourceKey/);
   assert.match(fleet, /q\.due_date <= \$1::date/);
+  assert.match(fleet, /\(\$2::uuid IS NULL OR s\.id=\$2::uuid\)/);
+  assert.match(fleet, /openQuotas\(asOf, solicitudId\)/);
   assert.match(weekly, /mimoto_weekly_generation/);
+  assert.match(weekly, /resolveMimotoFleetIdentity/);
+  assert.match(weekly, /s\.placa_asignada/);
+  assert.doesNotMatch(weekly, /driverId: candidate\.driver_id_fleet/);
+  assert.match(fleet, /resolveMimotoFleetIdentity/);
+  assert.match(fleet, /contractor_profile_id: identity\.driverId/);
   assert.match(jobs, /defaultExpression: '0 1 \* \* \*'/);
   assert.match(jobs, /defaultExpression: '0 6 \* \* 1'/);
   assert.match(jobs, /defaultExpression: '10 7 \* \* 1'/);
@@ -150,4 +157,24 @@ test('el tarifario inicial conserva planes y valores colombianos vigentes', asyn
   assert.match(seed, /Plan 61 semanas - Victory Combat 100/);
   assert.match(seed, /"cuota_base":156600,"bono_40":15000,"bono_75":30000/);
   assert.doesNotMatch(seed, /module_miauto_/i);
+});
+
+test('las evidencias Fleet separan archivos y registros financieros', async () => {
+  const migration = await readFile(
+    path.resolve(root, '../database/migrations/039_mimoto_fleet_evidence_files.sql'),
+    'utf8'
+  );
+  const routes = await readFile(path.join(root, 'routes/mimoto.js'), 'utf8');
+  const documents = await readFile(path.join(root, 'services/mimotoDocumentService.js'), 'utf8');
+  const core = await readFile(path.join(root, 'services/mimotoCoreService.js'), 'utf8');
+
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS module_mimoto_evidencia_fleet_archivo/);
+  assert.match(migration, /cuota_semanal_id UUID NOT NULL REFERENCES module_mimoto_cuota_semanal/);
+  assert.match(migration, /deleted_at TIMESTAMPTZ/);
+  assert.doesNotMatch(migration, /module_miauto_/i);
+  assert.match(routes, /solicitudes\/:id\/evidencias-fleet/);
+  assert.match(routes, /uploadVoucher\.array\('files', 20\)/);
+  assert.match(documents, /ensureQuotaBelongsToSolicitud/);
+  assert.match(documents, /MIMOTO_CONFIG\.comprobantesBucket/);
+  assert.match(core, /evidencias_fleet_archivos: evidenciasFleetArchivos\.rows/);
 });

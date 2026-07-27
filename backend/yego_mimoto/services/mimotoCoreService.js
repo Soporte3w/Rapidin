@@ -740,7 +740,7 @@ export async function getSolicitudDetail(id) {
     [id]
   );
   if (!solicitud.rows[0]) return null;
-  const [cuotas, gastos, contratos, comprobantesCuota, evidenciasFleet] = await Promise.all([
+  const [cuotas, gastos, contratos, comprobantesCuota, evidenciasFleet, evidenciasFleetArchivos] = await Promise.all([
     q('SELECT * FROM module_mimoto_cuota_saldo_view WHERE solicitud_id=$1 ORDER BY week_start_date', [id]),
     q(`SELECT * FROM module_mimoto_otros_gastos WHERE solicitud_id=$1 AND deleted_at IS NULL ORDER BY due_date`, [id]),
     q(`SELECT * FROM module_mimoto_contrato_documento WHERE solicitud_id=$1 AND deleted_at IS NULL ORDER BY version DESC`, [id]),
@@ -753,6 +753,10 @@ export async function getSolicitudDetail(id) {
        FROM module_mimoto_evidencia_cobro_fleet
        WHERE solicitud_id=$1
        ORDER BY created_at DESC`, [id]),
+    q(`SELECT id, cuota_semanal_id, file_name, file_path, mime_type, file_size, created_at
+       FROM module_mimoto_evidencia_fleet_archivo
+       WHERE solicitud_id=$1 AND deleted_at IS NULL
+       ORDER BY created_at DESC`, [id]),
   ]);
   return {
     ...solicitud.rows[0],
@@ -761,5 +765,6 @@ export async function getSolicitudDetail(id) {
     contratos: contratos.rows,
     comprobantes_cuota: comprobantesCuota.rows,
     evidencias_fleet: evidenciasFleet.rows,
+    evidencias_fleet_archivos: evidenciasFleetArchivos.rows,
   };
 }

@@ -50,6 +50,9 @@ export async function applyPaymentToQuota({
     );
     const quota = quotaResult.rows[0];
     if (!quota) throw new Error('Cuota Mi Moto no encontrada');
+    if (Number(quota.week_number) === 1) {
+      throw new Error('La primera semana está cubierta por regla y no admite pagos');
+    }
     const priorChunks = Array.isArray(quota.payment_chunks) ? quota.payment_chunks : [];
     if (sourceKey && priorChunks.some((item) => item?.source_key === sourceKey)) {
       const balances = quotaBalances(quota);
@@ -302,6 +305,7 @@ export async function simulateFleetCascade(solicitudId, availableAmount, currenc
   const cuotas = await q(
     `SELECT * FROM module_mimoto_cuota_semanal
      WHERE solicitud_id=$1 AND deleted_at IS NULL AND status IN ('overdue','partial','pending')
+       AND week_number > 1
        AND due_date<=$2::date
      ORDER BY due_date, week_start_date, id`,
     [solicitudId, asOf]

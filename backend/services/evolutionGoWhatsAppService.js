@@ -2,6 +2,10 @@ import { logger } from '../utils/logger.js';
 
 const EVOLUTION_GO_BASE_URL = (process.env.EVOLUTION_GO_BASE_URL || 'https://go.yego.pro').replace(/\/+$/, '');
 const DEFAULT_DELAY_MS = Number(process.env.EVOLUTION_GO_WHATSAPP_DELAY_MS || 1200);
+const configuredEvolutionGoTimeoutMs = Number(process.env.EVOLUTION_GO_TIMEOUT_MS);
+const EVOLUTION_GO_TIMEOUT_MS = Number.isFinite(configuredEvolutionGoTimeoutMs) && configuredEvolutionGoTimeoutMs >= 1000
+    ? configuredEvolutionGoTimeoutMs
+    : 15000;
 
 function normalizeEvolutionGoNumber(phone, defaultCountry = 'PE') {
     const digits = String(phone || '').replace(/\D/g, '');
@@ -60,6 +64,7 @@ async function evolutionGoRequest(path, { token, tokenName, body }) {
                 Authorization: `Bearer ${tokenCheck.token}`,
             },
             body: JSON.stringify(body),
+            signal: AbortSignal.timeout(EVOLUTION_GO_TIMEOUT_MS),
         });
 
         const parsed = await parseEvolutionGoResponse(response);
@@ -136,6 +141,7 @@ export async function getEvolutionGoInstanceStatus({ token, tokenName = 'EVOLUTI
                 apikey: tokenCheck.token,
                 Authorization: `Bearer ${tokenCheck.token}`,
             },
+            signal: AbortSignal.timeout(EVOLUTION_GO_TIMEOUT_MS),
         });
         const parsed = await parseEvolutionGoResponse(response);
         if (!response.ok) {

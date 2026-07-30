@@ -1,4 +1,4 @@
-import { query } from '../../config/database.js';
+import { query, withTransaction } from '../../config/database.js';
 import { parseRequestObservations, resolveAdminLoanWeeks } from '../../utils/loanRequestObservations.js';
 import { buildDriverNameSearchSql } from '../../utils/driverNameSearch.js';
 import { getCreditLine, getInterestRate, simulateLoanOptions, generateInstallmentSchedule, isMiautoDriver } from './calculationsService.js';
@@ -388,8 +388,7 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
   const esMiauto = await isMiautoDriver(request.driver_id);
   const interestRate = option.interestRate != null ? parseFloat(option.interestRate) : await getInterestRate(request.country, cycleFromDb, esMiauto);
 
-  await query('BEGIN');
-  try {
+  return withTransaction(async () => {
     const loanResult = await query(
       `INSERT INTO module_rapidin_loans 
        (request_id, driver_id, country, disbursed_amount, total_amount, interest_rate, 
@@ -433,12 +432,8 @@ export const disburseRequest = async (requestId, userId, options = {}) => {
       firstPaymentDateStr
     );
 
-    await query('COMMIT');
     return { loan, request: await getLoanRequestById(requestId) };
-  } catch (error) {
-    await query('ROLLBACK');
-    throw error;
-  }
+  });
 };
 
 export const getLoanByRequestId = async (requestId) => {
@@ -724,7 +719,8 @@ export const getLoanById = async (id) => {
 export const getInstallmentSchedule = async (loanId) => {
   // Recalcular mora de cuotas vencidas. Si hay late_fee_base_date (pago parcial), la mora calculada es solo desde esa fecha → no restar paid_late_fee.
   const overdueForLoan = await query(
-    `SELECT i.id, COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee, i.late_fee_base_date
+    `SELECT i.id, COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee, i.late_fee_base_date,
+            calculate_late_fee(i.id, CURRENT_DATE) AS calculated_late_fee
      FROM module_rapidin_installments i
      JOIN module_rapidin_loans l ON l.id = i.loan_id
      WHERE i.loan_id = $1 AND l.status IN ('active', 'defaulted')
@@ -734,8 +730,7 @@ export const getInstallmentSchedule = async (loanId) => {
     [loanId]
   );
   for (const row of overdueForLoan.rows) {
-    const feeRes = await query('SELECT calculate_late_fee($1, CURRENT_DATE) as late_fee', [row.id]);
-    const totalMora = parseFloat(feeRes.rows[0]?.late_fee) || 0;
+    const totalMora = parseFloat(row.calculated_late_fee) || 0;
     const paidLateFee = parseFloat(row.paid_late_fee || 0) || 0;
     const hasBaseDate = row.late_fee_base_date != null;
     const newLateFee = hasBaseDate ? totalMora : Math.max(0, totalMora - paidLateFee);
@@ -747,45 +742,40 @@ export const getInstallmentSchedule = async (loanId) => {
     );
   }
   if (overdueForLoan.rows.length > 0) {
-    const sumRes = await query(
-      `SELECT SUM((installment_amount - COALESCE(paid_amount, 0)) + COALESCE(late_fee, 0)) AS pending_balance
-       FROM module_rapidin_installments WHERE loan_id = $1 AND status != 'cancelled'`,
+    await query(
+      `UPDATE module_rapidin_loans
+       SET pending_balance = COALESCE((
+             SELECT SUM((installment_amount - COALESCE(paid_amount, 0)) + COALESCE(late_fee, 0))
+             FROM module_rapidin_installments
+             WHERE loan_id = $1 AND status != 'cancelled'
+           ), 0),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
       [loanId]
     );
-    const pendingBalance = sumRes.rows[0]?.pending_balance ?? 0;
-    await query(`UPDATE module_rapidin_loans SET pending_balance = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, [pendingBalance, loanId]);
   }
 
   const result = await query(
     `SELECT 
-       id, loan_id, installment_number, installment_amount, principal_amount, interest_amount,
-       due_date, paid_date, paid_amount,
-       GREATEST(0, COALESCE(late_fee, 0))::numeric AS late_fee,
-       COALESCE(paid_late_fee, 0)::numeric AS paid_late_fee,
-       (COALESCE(paid_amount, 0) + COALESCE(paid_late_fee, 0))::numeric AS total_paid,
-       COALESCE(late_fee_waived, false) AS late_fee_waived,
-       days_overdue, status, created_at, updated_at
-     FROM module_rapidin_installments 
-     WHERE loan_id = $1 
-     ORDER BY installment_number`,
-    [loanId]
-  );
-
-  const installmentIds = result.rows.map((r) => r.id);
-  let lastPaymentByInstallment = {};
-  if (installmentIds.length > 0) {
-    const dateRes = await query(
-      `SELECT pi.installment_id, MAX(p.payment_date)::text AS last_payment_date
+       i.id, i.loan_id, i.installment_number, i.installment_amount, i.principal_amount, i.interest_amount,
+       i.due_date, i.paid_date, i.paid_amount,
+       GREATEST(0, COALESCE(i.late_fee, 0))::numeric AS late_fee,
+       COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee,
+       (COALESCE(i.paid_amount, 0) + COALESCE(i.paid_late_fee, 0))::numeric AS total_paid,
+       COALESCE(i.late_fee_waived, false) AS late_fee_waived,
+       i.days_overdue, i.status, i.created_at, i.updated_at,
+       lp.last_payment_date
+     FROM module_rapidin_installments i
+     LEFT JOIN (
+       SELECT pi.installment_id, MAX(p.payment_date)::text AS last_payment_date
        FROM module_rapidin_payment_installments pi
        JOIN module_rapidin_payments p ON p.id = pi.payment_id
-       WHERE pi.installment_id = ANY($1::uuid[])
-       GROUP BY pi.installment_id`,
-      [installmentIds]
-    );
-    dateRes.rows.forEach((row) => {
-      lastPaymentByInstallment[row.installment_id] = row.last_payment_date;
-    });
-  }
+       GROUP BY pi.installment_id
+     ) lp ON lp.installment_id = i.id
+     WHERE i.loan_id = $1
+     ORDER BY i.installment_number`,
+    [loanId]
+  );
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -805,13 +795,10 @@ export const getInstallmentSchedule = async (loanId) => {
     const moraCobrada = paid
       ? (paidLateFee > 0 ? paidLateFee : Math.max(0, totalPagado - (parseFloat(r.installment_amount) || 0)))
       : 0;
-    const lastPaymentDate = lastPaymentByInstallment[r.id] || null;
+    const lastPaymentDate = r.last_payment_date || null;
     return { ...r, late_fee: lateFeeDisplay, paid_late_fee: paidLateFee, mora_cobrada: moraCobrada, status: effectiveStatus, total_pagado: totalPagado, total_a_cobrar: totalCobrar, last_payment_date: lastPaymentDate };
   });
   return rows;
 };
-
-
-
 
 

@@ -1,4 +1,4 @@
-import { query } from '../../config/database.js';
+import { query, withTransaction } from '../../config/database.js';
 import { buildDriverNameSearchSqlFlat } from '../../utils/driverNameSearch.js';
 import { logger } from '../../utils/logger.js';
 import { getPaymentPunctuality, calculateCycle, calculateMiautoCycle } from './calculationsService.js';
@@ -9,9 +9,7 @@ export const registerPayment = async (data, userId) => {
     ? waive_late_fee_installment_ids.filter((id) => id && String(id).trim()).map((id) => String(id).trim())
     : [];
 
-  await query('BEGIN');
-
-  try {
+  return withTransaction(async () => {
     const paymentResult = await query(
       `INSERT INTO module_rapidin_payments 
        (loan_id, amount, payment_date, payment_method, observations, registered_by)
@@ -30,22 +28,15 @@ export const registerPayment = async (data, userId) => {
     const payment = paymentResult.rows[0];
 
     await distributePayment(payment.id, loan_id, amount, 'by_date', waiveIds);
-
-    await query('COMMIT');
-
     return payment;
-  } catch (error) {
-    await query('ROLLBACK');
-    throw error;
-  }
+  });
 };
 
 /** Registra un pago por cobro automático (job diario, sin usuario).
  * Si se pasa targetInstallmentId, el monto se aplica solo a esa cuota (la que se cobró); si no, se reparte por fecha.
  */
 export const registerPaymentAuto = async (loanId, amount, paymentDate, targetInstallmentId = null) => {
-  await query('BEGIN');
-  try {
+  return withTransaction(async () => {
     const paymentResult = await query(
       `INSERT INTO module_rapidin_payments 
        (loan_id, amount, payment_date, payment_method, observations, registered_by)
@@ -55,12 +46,8 @@ export const registerPaymentAuto = async (loanId, amount, paymentDate, targetIns
     );
     const payment = paymentResult.rows[0];
     await distributePayment(payment.id, loanId, amount, 'by_date', [], targetInstallmentId);
-    await query('COMMIT');
     return payment;
-  } catch (error) {
-    await query('ROLLBACK');
-    throw error;
-  }
+  });
 };
 
 const ROUND_CENTS = (v) => Math.round((v) * 100) / 100;
@@ -505,6 +492,5 @@ export const getAutoPaymentLog = async (filters = {}) => {
   );
   return { data: dataResult.rows, total };
 };
-
 
 

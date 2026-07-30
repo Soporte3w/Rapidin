@@ -4,6 +4,10 @@
  */
 
 const FACTILIZA_BASE_URL = 'https://api.factiliza.com/pe/v1/dni/info';
+const configuredFactilizaTimeoutMs = Number(process.env.FACTILIZA_TIMEOUT_MS);
+const FACTILIZA_TIMEOUT_MS = Number.isFinite(configuredFactilizaTimeoutMs) && configuredFactilizaTimeoutMs >= 1000
+  ? configuredFactilizaTimeoutMs
+  : 10000;
 
 /**
  * Obtiene información del DNI desde Factiliza.
@@ -30,6 +34,7 @@ export const getDniInfo = async (dni) => {
       'Content-Type': 'application/json',
       'Authorization': authHeader,         
     },
+    signal: AbortSignal.timeout(FACTILIZA_TIMEOUT_MS),
   });
 
   const body = await response.json().catch(() => ({}));

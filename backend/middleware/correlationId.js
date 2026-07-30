@@ -17,6 +17,9 @@ export function correlationIdMiddleware(req, res, next) {
     userId: req.user?.id || null,
     userRole: req.user?.role || null,
     actorType: req.user ? 'user' : 'system',
+    dbQueryCount: 0,
+    dbDurationMs: 0,
+    dbPoolWaitMs: 0,
   };
 
   // Exponer en response header para debugging
@@ -43,6 +46,9 @@ export function requestLogMiddleware(req, res, next) {
       url: req.originalUrl,
       statusCode: res.statusCode,
       durationMs: duration,
+      dbQueryCount: ctx?.dbQueryCount || 0,
+      dbDurationMs: ctx?.dbDurationMs || 0,
+      dbPoolWaitMs: ctx?.dbPoolWaitMs || 0,
       correlationId: cid,
     });
   });

@@ -7,7 +7,26 @@ const ADMIN_USER_SELECT = `
   u.id, u.email, u.first_name, u.last_name, u.role, u.country, u.active,
   COALESCE(r.allowed_modules, u.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
   COALESCE(r.base_role, u.role) AS base_role,
-  r.name AS role_name
+  r.name AS role_name,
+  CASE
+    WHEN u.role = 'admin' OR COALESCE(r.base_role, u.role) = 'admin'
+      THEN ARRAY['PE', 'CO']::text[]
+    ELSE COALESCE(
+      NULLIF(ARRAY(
+        SELECT up.country::text
+        FROM module_rapidin_user_country_permissions up
+        WHERE up.user_id = u.id
+        ORDER BY up.country
+      ), ARRAY[]::text[]),
+      NULLIF(ARRAY(
+        SELECT rp.country::text
+        FROM module_rapidin_role_country_permissions rp
+        WHERE rp.role = u.role
+        ORDER BY rp.country
+      ), ARRAY[]::text[]),
+      ARRAY[u.country::text]
+    )
+  END AS allowed_countries
 `;
 
 export const verifyToken = async (req, res, next) => {
@@ -151,7 +170,6 @@ export const verifyRole = (...roles) => {
     next();
   };
 };
-
 
 
 

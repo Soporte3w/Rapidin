@@ -11,6 +11,10 @@ import { logger } from '../utils/logger.js';
 
 const PARTNERS_API_URL = process.env.PARTNERS_API_URL || 'http://162.55.214.109:6000/v2/partners';
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
+const configuredPartnersTimeoutMs = Number(process.env.PARTNERS_API_TIMEOUT_MS);
+const PARTNERS_TIMEOUT_MS = Number.isFinite(configuredPartnersTimeoutMs) && configuredPartnersTimeoutMs >= 1000
+  ? configuredPartnersTimeoutMs
+  : 5000;
 
 let partnersCache = null;
 let cacheExpiry = 0;
@@ -41,6 +45,9 @@ function postJson(urlStr) {
         });
       }
     );
+    req.setTimeout(PARTNERS_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Partners API timeout después de ${PARTNERS_TIMEOUT_MS}ms`));
+    });
     req.on('error', reject);
     req.end();
   });

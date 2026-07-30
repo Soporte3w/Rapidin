@@ -134,6 +134,11 @@ function rateLimitBackoffMs(attempt) {
   return Math.min(base + jitter, cap);
 }
 
+const configuredYangoTimeoutMs = Number(process.env.YANGO_API_TIMEOUT_MS);
+const YANGO_API_TIMEOUT_MS = Number.isFinite(configuredYangoTimeoutMs) && configuredYangoTimeoutMs >= 1000
+  ? configuredYangoTimeoutMs
+  : 15000;
+
 /**
  * POST con reintento ante 429. Cada intento usa el siguiente proxy si hay lista (getNextProxyConfig).
  */
@@ -141,7 +146,11 @@ async function postWithProxyRetry(url, body, headers) {
   await loadProxiesFromUrlIfConfigured();
   let lastError;
   for (let attempt = 0; attempt < MAX_RATE_LIMIT_RETRIES; attempt++) {
-    const config = { headers, ...getNextProxyConfig() };
+    const config = {
+      headers,
+      timeout: YANGO_API_TIMEOUT_MS,
+      ...getNextProxyConfig(),
+    };
     try {
       const res = await axios.post(url, body || {}, config);
       return res;

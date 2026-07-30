@@ -1,10 +1,7 @@
-import pool from '../../database/connection.js';
+import { query } from '../../config/database.js';
 import { logger } from '../../utils/logger.js';
 import { normalizePhoneForDb, getCountryCodeForDrivers, phoneDigitsForRapidinMatch } from '../../utils/helpers.js';
 import { getPartnerNameById } from '../../services/partnersService.js';
-
-// Helper function para ejecutar queries
-const query = (text, params) => pool.query(text, params);
 
 export const getDriverDashboard = async (phone, country, parkId = null, rapidinDriverIdFromAuth = null) => {
   try {
@@ -20,11 +17,11 @@ export const getDriverDashboard = async (phone, country, parkId = null, rapidinD
         AND (phone = $2 OR phone = $3 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $4)
       LIMIT 1
     `;
-    const driverResult = await query(driverQuery, [countryCode, phoneForDb, phone, digitsOnly]);
+    const driverPromise = query(driverQuery, [countryCode, phoneForDb, phone, digitsOnly]);
 
     // 2. Resolver ID en module_rapidin_drivers: si ya viene del login (conductor en Rapidín), usarlo; si no, buscar por teléfono
     const parkNorm = (parkId != null && String(parkId).trim() !== '') ? String(parkId).trim() : null;
-    let rapidinDriverResult = { rows: [] };
+    let rapidinDriverPromise = Promise.resolve({ rows: [] });
 
     const last9 = phoneDigitsForRapidinMatch(phone, country);
     if (rapidinDriverIdFromAuth) {
@@ -40,9 +37,13 @@ export const getDriverDashboard = async (phone, country, parkId = null, rapidinD
       const checkParams = parkNorm
         ? [rapidinDriverIdFromAuth, country, parkNorm, phoneForDb, phone, digitsOnly, last9]
         : [rapidinDriverIdFromAuth, country, phoneForDb, phone, digitsOnly, last9];
-      const check = await query(checkQuery, checkParams);
-      if (check.rows.length > 0) rapidinDriverResult = check;
+      rapidinDriverPromise = query(checkQuery, checkParams);
     }
+
+    const [driverResult, rapidinDriverResult] = await Promise.all([
+      driverPromise,
+      rapidinDriverPromise,
+    ]);
 
     // Solo usamos el id que el conductor guardó al elegir flota. Si no viene o no es válido → dashboard vacío, no asumir nada.
 
@@ -137,12 +138,6 @@ export const getDriverDashboard = async (phone, country, parkId = null, rapidinD
 
     const activeLoansResult = await query(activeLoansQuery, [rapidinDriverId, country]);
     const parkIdForName = activeLoansResult.rows[0]?.park_id ?? parkId;
-    const flotaNameForCards = await getPartnerNameById(parkIdForName) || parkIdForName || 'Otra flota';
-
-    const activeLoans = activeLoansResult.rows.map((row) => ({
-      ...row,
-      flotaName: flotaNameForCards
-    }));
 
     // Préstamo "principal" para mensaje de bloqueo (primero de la flota)
     let activeLoan = activeLoansResult.rows[0] || null;
@@ -176,18 +171,12 @@ export const getDriverDashboard = async (phone, country, parkId = null, rapidinD
       ORDER BY created_at DESC
       LIMIT 1
     `;
-    const pendingRequestsResult = await query(pendingRequestsQuery, [rapidinDriverId]);
-    const pendingRequest = pendingRequestsResult.rows[0] || null;
-
     // 3. Obtener historial de préstamos completados
     const completedLoansQuery = `
       SELECT COUNT(*) as completed_count, SUM(disbursed_amount) as total_borrowed
       FROM module_rapidin_loans
       WHERE driver_id = $1 AND country = $2 AND status = 'cancelled'
     `;
-
-    const completedResult = await query(completedLoansQuery, [rapidinDriverId, country]);
-    const loanHistory = completedResult.rows[0];
 
     // 4. Obtener últimos pagos realizados
     const recentPaymentsQuery = `
@@ -204,8 +193,6 @@ export const getDriverDashboard = async (phone, country, parkId = null, rapidinD
       LIMIT 5
     `;
 
-    const paymentsResult = await query(recentPaymentsQuery, [rapidinDriverId, country]);
-
     // 5. Obtener estadísticas de pagos
     const paymentStatsQuery = `
       SELECT 
@@ -218,7 +205,21 @@ export const getDriverDashboard = async (phone, country, parkId = null, rapidinD
       WHERE l.driver_id = $1 AND l.country = $2
     `;
 
-    const statsResult = await query(paymentStatsQuery, [rapidinDriverId, country]);
+    const [pendingRequestsResult, completedResult, paymentsResult, statsResult, partnerName] = await Promise.all([
+      query(pendingRequestsQuery, [rapidinDriverId]),
+      query(completedLoansQuery, [rapidinDriverId, country]),
+      query(recentPaymentsQuery, [rapidinDriverId, country]),
+      query(paymentStatsQuery, [rapidinDriverId, country]),
+      getPartnerNameById(parkIdForName),
+    ]);
+
+    const flotaNameForCards = partnerName || parkIdForName || 'Otra flota';
+    const activeLoans = activeLoansResult.rows.map((row) => ({
+      ...row,
+      flotaName: flotaNameForCards,
+    }));
+    const pendingRequest = pendingRequestsResult.rows[0] || null;
+    const loanHistory = completedResult.rows[0];
     const paymentStats = statsResult.rows[0];
 
     // 6. Calcular días hasta próximo pago
@@ -520,4 +521,3 @@ export const getDriverLoans = async (phone, country, parkId = null, rapidinDrive
     throw error;
   }
 };
-

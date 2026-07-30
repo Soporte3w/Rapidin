@@ -1,14 +1,27 @@
 import pkg from 'pg';
 import dotenv from 'dotenv';
 import { logger } from '../utils/logger.js';
+import { AsyncLocalStorage } from 'async_hooks';
+import { asyncLocalStorage } from '../utils/logger.js';
 
 const { Pool } = pkg;
 dotenv.config();
 
+const positiveNumberFromEnv = (name, fallback) => {
+    const parsed = Number(process.env[name]);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 const poolOpts = {
-    max: 20,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 30000,
+    max: positiveNumberFromEnv('DB_POOL_MAX', 20),
+    idleTimeoutMillis: positiveNumberFromEnv('DB_POOL_IDLE_TIMEOUT_MS', 120000),
+    connectionTimeoutMillis: positiveNumberFromEnv('DB_POOL_CONNECTION_TIMEOUT_MS', 30000),
+    keepAlive: true,
+    keepAliveInitialDelayMillis: positiveNumberFromEnv('DB_KEEPALIVE_INITIAL_DELAY_MS', 10000),
+    application_name: process.env.DB_APPLICATION_NAME?.trim() || 'rapidin-api',
+    // Se envía en el startup packet. Así no se ejecuta un SET concurrente con
+    // la primera consulta de una conexión recién creada.
+    options: process.env.DB_CONNECTION_OPTIONS?.trim() || '-c search_path=public',
 };
 
 const databaseUrl = process.env.DATABASE_URL?.trim();
@@ -40,19 +53,7 @@ if (databaseUrl) {
     });
 }
 
-// Cache para evitar establecer search_path múltiples veces por conexión
-const connectionSearchPathSet = new WeakSet();
-
-pool.on('connect', async (client) => {
-    // Establecer search_path solo una vez por conexión
-    if (!connectionSearchPathSet.has(client)) {
-        try {
-            await client.query('SET search_path TO public, "$user"');
-            connectionSearchPathSet.add(client);
-        } catch (err) {
-            logger.error('Error estableciendo search_path', err);
-        }
-    }
+pool.on('connect', () => {
     logger.info('Conexión a PostgreSQL establecida');
 });
 
@@ -61,23 +62,77 @@ pool.on('error', (err) => {
     process.exit(-1);
 });
 
-export const query = async (text, params) => {
-    const start = Date.now();
-    const client = await pool.connect();
+const transactionStorage = new AsyncLocalStorage();
+
+function recordQueryMetrics(durationMs, poolWaitMs) {
+    const requestContext = asyncLocalStorage.getStore();
+    if (!requestContext) return;
+    requestContext.dbQueryCount = (requestContext.dbQueryCount || 0) + 1;
+    requestContext.dbDurationMs = (requestContext.dbDurationMs || 0) + durationMs;
+    requestContext.dbPoolWaitMs = (requestContext.dbPoolWaitMs || 0) + poolWaitMs;
+}
+
+async function executeQuery(client, text, params, poolWaitMs = 0) {
+    const queryStart = Date.now();
     try {
-        // Asegurar que el search_path esté configurado en esta conexión
-        // Usar un flag simple en lugar de WeakSet para evitar problemas
-        const clientId = client.processID || Math.random();
-        if (!connectionSearchPathSet.has(client)) {
-            await client.query('SET search_path TO public, "$user"');
-            connectionSearchPathSet.add(client);
-        }
         const res = await client.query(text, params);
-        const duration = Date.now() - start;
-        logger.debug('Query ejecutada', { text, duration, rows: res.rowCount });
+        const duration = Date.now() - queryStart;
+        recordQueryMetrics(duration, poolWaitMs);
+        logger.debug('Query ejecutada', { text, duration, poolWaitMs, rows: res.rowCount });
+        const slowQueryMs = positiveNumberFromEnv('DB_SLOW_QUERY_MS', 500);
+        if (duration >= slowQueryMs) {
+            logger.warn('Query lenta', {
+                durationMs: duration,
+                poolWaitMs,
+                rows: res.rowCount,
+                statement: String(text).replace(/\s+/g, ' ').trim().slice(0, 240),
+            });
+        }
         return res;
     } catch (error) {
+        const duration = Date.now() - queryStart;
+        recordQueryMetrics(duration, poolWaitMs);
         logger.error('Error en query', { text, error: error.message, stack: error.stack });
+        throw error;
+    }
+}
+
+export const query = async (text, params) => {
+    const transactionClient = transactionStorage.getStore();
+    if (transactionClient) {
+        return executeQuery(transactionClient, text, params, 0);
+    }
+
+    const waitStart = Date.now();
+    const client = await pool.connect();
+    const poolWaitMs = Date.now() - waitStart;
+    try {
+        return await executeQuery(client, text, params, poolWaitMs);
+    } finally {
+        client.release();
+    }
+};
+
+/**
+ * Ejecuta todo el callback sobre una única conexión. Las llamadas al helper
+ * query() realizadas dentro del callback reutilizan automáticamente ese client.
+ */
+export const withTransaction = async (callback) => {
+    const currentClient = transactionStorage.getStore();
+    if (currentClient) return callback(currentClient);
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const result = await transactionStorage.run(client, () => callback(client));
+        await client.query('COMMIT');
+        return result;
+    } catch (error) {
+        try {
+            await client.query('ROLLBACK');
+        } catch (rollbackError) {
+            logger.error('Error ejecutando rollback', { error: rollbackError.message });
+        }
         throw error;
     } finally {
         client.release();
@@ -90,7 +145,6 @@ export const getClient = async () => {
 };
 
 export default pool;
-
 
 
 

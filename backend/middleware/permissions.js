@@ -12,6 +12,15 @@ export const filterByCountry = async (req, res, next) => {
       return next();
     }
 
+    const preloadedCountries = Array.isArray(req.user.allowed_countries)
+      ? req.user.allowed_countries.filter(Boolean)
+      : [];
+    if (preloadedCountries.length > 0) {
+      req.allowedCountries = preloadedCountries;
+      return next();
+    }
+
+    // Compatibilidad con tokens/usuarios cargados por flujos antiguos.
     const userPermissions = await query(
       `SELECT country FROM module_rapidin_user_country_permissions 
        WHERE user_id = $1`,
@@ -69,7 +78,6 @@ export const verifyCountry = (req, res, next) => {
     error: 'No tienes permisos para este país'
   });
 };
-
 
 
 

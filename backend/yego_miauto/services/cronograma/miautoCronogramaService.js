@@ -474,14 +474,16 @@ export async function getCronogramaById(id) {
   );
   if (res.rows.length === 0) return null;
   const row = res.rows[0];
-  const vehicles = await query(
-     'SELECT id, name, inicial, inicial_moneda, cuotas_semanales, image, orden, requisitos_gastos FROM module_miauto_cronograma_vehiculo WHERE cronograma_id = $1 ORDER BY orden, created_at',
-    [id]
-  );
-  const rules = await query(
-     'SELECT id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo FROM module_miauto_cronograma_rule WHERE cronograma_id = $1 ORDER BY orden, created_at',
-    [id]
-  );
+  const [vehicles, rules] = await Promise.all([
+    query(
+      'SELECT id, name, inicial, inicial_moneda, cuotas_semanales, image, orden, requisitos_gastos FROM module_miauto_cronograma_vehiculo WHERE cronograma_id = $1 ORDER BY orden, created_at',
+      [id]
+    ),
+    query(
+      'SELECT id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo FROM module_miauto_cronograma_rule WHERE cronograma_id = $1 ORDER BY orden, created_at',
+      [id]
+    ),
+  ]);
   return {
     id: row.id,
     name: row.name,

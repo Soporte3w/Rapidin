@@ -2731,21 +2731,21 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
   if (!solRow) {
     return { cuotas: [], bonificadas_db: 0 };
   }
-  const cronograma =
-    solRow.cronograma_id != null ? await getCronogramaById(solRow.cronograma_id) : null;
   const countrySol = String(solRow.country || 'PE').toUpperCase() === 'CO' ? 'CO' : 'PE';
-  const tipoCambioUsd = await tipoCambioUsdALocalEfectivo(countrySol);
-
-  const res = await query(
-    `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, pago_puntual, late_fee, status, moneda, pct_comision, cobro_saldo,
-            partner_fees_raw, partner_fees_83, partner_fees_yango_raw, partner_fees_cascada_destino,
-            fecha_ultimo_abono, fecha_primer_comprobante, montos_fuente, cobro_desde_saldo_conductor,
-            saldo_favor_conductor, mora_desde, mora_extra, mora_extra_desde, mora_extra_total, cobro_saldo_referencia, created_at, updated_at
-     FROM module_miauto_cuota_semanal
-     WHERE solicitud_id = $1 AND deleted_at IS NULL
-     ORDER BY week_start_date ASC NULLS LAST, due_date ASC NULLS LAST, id ASC`,
-    [solicitudId]
-  );
+  const [cronograma, tipoCambioUsd, res] = await Promise.all([
+    solRow.cronograma_id != null ? getCronogramaById(solRow.cronograma_id) : Promise.resolve(null),
+    tipoCambioUsdALocalEfectivo(countrySol),
+    query(
+      `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, pago_puntual, late_fee, status, moneda, pct_comision, cobro_saldo,
+              partner_fees_raw, partner_fees_83, partner_fees_yango_raw, partner_fees_cascada_destino,
+              fecha_ultimo_abono, fecha_primer_comprobante, montos_fuente, cobro_desde_saldo_conductor,
+              saldo_favor_conductor, mora_desde, mora_extra, mora_extra_desde, mora_extra_total, cobro_saldo_referencia, created_at, updated_at
+       FROM module_miauto_cuota_semanal
+       WHERE solicitud_id = $1 AND deleted_at IS NULL
+       ORDER BY week_start_date ASC NULLS LAST, due_date ASC NULLS LAST, id ASC`,
+      [solicitudId]
+    ),
+  ]);
   const vehId = solRow.cronograma_vehiculo_id;
   const fiRaw = solRow.fecha_inicio_cobro_semanal;
   const bonificadas_db = parseInt(solRow.cuotas_semanales_bonificadas, 10) || 0;
@@ -2758,25 +2758,22 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
   const moraNormalHistoricaAplicadaPorCuota = new Map();
   const moraExtraHistoricaAplicadaPorCuota = new Map();
   if (rows.length > 0) {
-    const freezeRes = await query(
-      `SELECT DISTINCT cuota_semanal_id::text AS cid
-       FROM module_miauto_comprobante_cuota_semanal
-       WHERE solicitud_id = $1::uuid
-         AND validated_at IS NULL
-         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) = 'pendiente'`,
-      [solicitudId]
-    );
-    pendingComprobanteCuotaIds = new Set((freezeRes.rows || []).map((x) => String(x.cid)));
-    const pendRes = await query(
-      `SELECT cuota_semanal_id::text AS cid, monto, moneda,
-              COALESCE(origen, 'conductor') AS origen
-       FROM module_miauto_comprobante_cuota_semanal
-       WHERE solicitud_id = $1::uuid
-         AND validated_at IS NULL
-         AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) = 'pendiente'`,
-      [solicitudId]
-    );
+    const [pendRes, moraHistorica] = await Promise.all([
+      query(
+        `SELECT cuota_semanal_id::text AS cid, monto, moneda,
+                COALESCE(origen, 'conductor') AS origen
+         FROM module_miauto_comprobante_cuota_semanal
+         WHERE solicitud_id = $1::uuid
+           AND validated_at IS NULL
+           AND LOWER(COALESCE(NULLIF(TRIM(estado::text), ''), 'pendiente')) = 'pendiente'`,
+        [solicitudId]
+      ),
+      loadMoraHistoricaAplicadaPorCuota(solicitudId, {
+        incluirPendientesAplicados: true,
+      }),
+    ]);
     const pendRows = pendRes.rows || [];
+    pendingComprobanteCuotaIds = new Set(pendRows.map((x) => String(x.cid)));
     if (incluirAbonoPendiente) {
       const byCuota = new Map();
       for (const pr of pendRows) {
@@ -2799,9 +2796,6 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
         if (sum > 0.005) creditoComprobantePendientePorCuota.set(cid, sum);
       }
     }
-    const moraHistorica = await loadMoraHistoricaAplicadaPorCuota(solicitudId, {
-      incluirPendientesAplicados: true,
-    });
     for (const [cid, monto] of moraHistorica.normal) {
       moraNormalHistoricaAplicadaPorCuota.set(cid, monto);
     }

@@ -179,6 +179,85 @@ export async function getTotalValidado(solicitudId) {
   return { total, totalUsd };
 }
 
+/**
+ * Variante batch para listados. Conserva las mismas reglas monetarias de
+ * getTotalValidado(), evitando ejecutar varias consultas por solicitud.
+ */
+export async function getTotalsValidadosBySolicitudIds(solicitudIds) {
+  const ids = [...new Set((solicitudIds || []).filter(Boolean).map(String))];
+  if (ids.length === 0) return new Map();
+
+  const [contextsRes, pagosRes, otrosRes, peRate, coRate] = await Promise.all([
+    query(
+      `SELECT s.id AS solicitud_id, s.country, v.inicial_moneda
+       FROM module_miauto_solicitud s
+       LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id
+       WHERE s.id = ANY($1::uuid[])`,
+      [ids]
+    ),
+    query(
+      `SELECT solicitud_id, COALESCE(SUM(COALESCE(monto, 0)), 0) AS total
+       FROM module_miauto_comprobante_pago
+       WHERE solicitud_id = ANY($1::uuid[]) AND estado = 'validado'
+       GROUP BY solicitud_id`,
+      [ids]
+    ),
+    query(
+      `SELECT solicitud_id, monto, moneda
+       FROM module_miauto_comprobante_otros_gastos
+       WHERE solicitud_id = ANY($1::uuid[]) AND estado = 'validado'`,
+      [ids]
+    ),
+    tipoCambioUsdALocalEfectivo('PE'),
+    tipoCambioUsdALocalEfectivo('CO'),
+  ]);
+
+  const ratesByCountry = new Map([
+    ['PE', peRate],
+    ['CO', coRate],
+  ]);
+  const paymentsBySolicitud = new Map(
+    (pagosRes.rows || []).map((row) => [String(row.solicitud_id), round2(parseFloat(row.total) || 0)])
+  );
+  const expensesBySolicitud = new Map();
+  for (const row of otrosRes.rows || []) {
+    const key = String(row.solicitud_id);
+    if (!expensesBySolicitud.has(key)) expensesBySolicitud.set(key, []);
+    expensesBySolicitud.get(key).push(row);
+  }
+
+  const totals = new Map();
+  for (const context of contextsRes.rows || []) {
+    const key = String(context.solicitud_id);
+    const country = String(context.country || 'PE').toUpperCase() === 'CO' ? 'CO' : 'PE';
+    const rate = ratesByCountry.get(country);
+    const monedaLocal = rate?.monedaLocal || (country === 'CO' ? 'COP' : 'PEN');
+    const valorUsdALocal = rate?.valorUsdALocal || 0;
+    const inicialMoneda = String(context.inicial_moneda || 'USD').toUpperCase() === 'USD'
+      ? 'USD'
+      : monedaLocal;
+
+    let total = paymentsBySolicitud.get(key) || 0;
+    for (const expense of expensesBySolicitud.get(key) || []) {
+      const monto = parseFloat(expense.monto) || 0;
+      if (monto <= 0) continue;
+      const converted = convertirMontoEntreMonedas(
+        monto,
+        normalizePenUsd(expense.moneda),
+        inicialMoneda,
+        valorUsdALocal
+      );
+      if (converted != null) total = round2(total + converted);
+    }
+
+    const totalUsd = inicialMoneda !== 'USD' && valorUsdALocal > 0
+      ? round2(total / valorUsdALocal)
+      : total;
+    totals.set(key, { total, totalUsd });
+  }
+  return totals;
+}
+
 /** El admin agrega un pago manual (sin archivo): se registra como comprobante validado y suma a la cuota inicial. */
 export async function addPagoManual(solicitudId, userId, { monto, moneda } = {}) {
   await assertPagoNoCompleto(solicitudId);

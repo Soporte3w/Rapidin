@@ -7,7 +7,7 @@ import {
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../../../utils/helpers.js';
 import { generateWeeklyCharge } from '../cobros/CobroEngine.js';
 import { getLimaYmd, mondayOfWeekContainingYmd, addDaysYmd, limaWeekStartToMiAutoIncomeRange } from '../../../utils/miautoLimaWeekRange.js';
-import { getTotalValidado } from '../comprobantes/miautoComprobantePagoService.js';
+import { getTotalValidado, getTotalsValidadosBySolicitudIds } from '../comprobantes/miautoComprobantePagoService.js';
 import {
   generateExpenseCycles,
   listBySolicitud as listOtrosGastosBySolicitud,
@@ -157,12 +157,6 @@ export const listSolicitudes = async (filters = {}) => {
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * limitNum;
 
-  const countResult = await query(
-    `SELECT COUNT(*)::int AS total ${fromJoin} ${where}`,
-    params
-  );
-  const total = countResult.rows[0]?.total ?? 0;
-
   const selectFields = forDriver
     ? `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.country, s.pago_tipo, s.pago_estado, s.fecha_inicio_cobro_semanal,
             s.placa_asignada, s.appointment_date, s.reagendo_count, s.observations, s.rejection_reason, s.withdrawn_at, s.withdrawal_reason,
@@ -175,14 +169,18 @@ export const listSolicitudes = async (filters = {}) => {
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
             c.name AS cronograma_name,
             v.name AS vehiculo_name`;
-  const dataResult = await query(
-    `${selectFields}
-     ${fromJoin}
-     ${where}
-     ORDER BY s.created_at DESC
-     LIMIT $${n} OFFSET $${n + 1}`,
-    [...params, limitNum, offset]
-  );
+  const [countResult, dataResult] = await Promise.all([
+    query(`SELECT COUNT(*)::int AS total ${fromJoin} ${where}`, params),
+    query(
+      `${selectFields}
+       ${fromJoin}
+       ${where}
+       ORDER BY s.created_at DESC
+       LIMIT $${n} OFFSET $${n + 1}`,
+      [...params, limitNum, offset]
+    ),
+  ]);
+  const total = countResult.rows[0]?.total ?? 0;
 
   let comprobantesBySolicitud = {};
   let citasBySolicitud = {};
@@ -190,7 +188,7 @@ export const listSolicitudes = async (filters = {}) => {
   let totalValidadoBySolicitud = {};
   if (forDriver && dataResult.rows.length > 0) {
     const ids = dataResult.rows.map((r) => r.id);
-    const [compRes, citasRes, otrosGastosMap, ...totalsList] = await Promise.all([
+    const [compRes, citasRes, otrosGastosMap, totalsMap] = await Promise.all([
       query(
         'SELECT solicitud_id, id, monto, file_name, file_path, created_at, estado, validated_at, validated_by, rechazado_at, rechazo_razon, rechazado_by FROM module_miauto_comprobante_pago WHERE solicitud_id = ANY($1::uuid[]) ORDER BY created_at ASC',
         [ids]
@@ -200,7 +198,7 @@ export const listSolicitudes = async (filters = {}) => {
         [ids]
       ),
       listOtrosGastosBySolicitudIds(ids),
-      ...ids.map((id) => getTotalValidado(id)),
+      getTotalsValidadosBySolicitudIds(ids),
     ]);
     for (const row of compRes.rows || []) {
       if (!comprobantesBySolicitud[row.solicitud_id]) comprobantesBySolicitud[row.solicitud_id] = [];
@@ -211,10 +209,10 @@ export const listSolicitudes = async (filters = {}) => {
       citasBySolicitud[row.solicitud_id].push(row);
     }
     otrosGastosBySolicitud = otrosGastosMap;
-    ids.forEach((id, i) => {
-      const t = totalsList[i];
+    for (const id of ids) {
+      const t = totalsMap.get(String(id));
       if (t) totalValidadoBySolicitud[id] = { total: t.total, totalUsd: t.totalUsd };
-    });
+    }
   }
 
   const nameFromRapidinList = (r) => [r.driver_first_name, r.driver_last_name].filter(Boolean).map(String).join(' ').trim() || null;

@@ -11,7 +11,6 @@ readonly PM2_PROCESS="${PM2_PROCESS:-rapidin-backend}"
 readonly WEB_ROOT="${WEB_ROOT:-/var/www/rapidin_front}"
 readonly DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-/var/lock/rapidin-deploy.lock}"
 
-COMMIT_MESSAGE="${1:-}"
 RELEASE_DIR=''
 PREVIOUS_WEB_ROOT=''
 WEB_SWAP_STARTED=0
@@ -28,10 +27,10 @@ fail() {
 usage() {
   cat <<'USAGE'
 Uso:
-  sudo ./deploy-production.sh ["mensaje del commit"]
+  sudo ./deploy-production.sh
 
-Si el repositorio contiene cambios, el mensaje es obligatorio y el script
-crea el commit antes del despliegue. Si está limpio, despliega el HEAD actual.
+El script exige que los archivos rastreados estén limpios, actualiza main con
+git pull --ff-only y despliega exactamente el commit publicado en origin/main.
 
 Variables opcionales:
   PM2_PROCESS             Nombre PM2 (default: rapidin-backend)
@@ -67,7 +66,7 @@ if [[ "${1:-}" == '-h' || "${1:-}" == '--help' ]]; then
   exit 0
 fi
 
-if (( $# > 1 )); then
+if (( $# > 0 )); then
   usage
   exit 2
 fi
@@ -91,22 +90,19 @@ git_cmd=(git -c "safe.directory=$REPO_ROOT" -C "$REPO_ROOT")
 current_branch="$("${git_cmd[@]}" branch --show-current)"
 [[ "$current_branch" == 'main' ]] || fail "El despliegue solo está permitido desde main; rama actual: $current_branch"
 
-working_tree_status="$("${git_cmd[@]}" status --porcelain=v1)"
-if [[ -n "$working_tree_status" ]]; then
-  [[ -n "$COMMIT_MESSAGE" ]] || fail "Hay cambios pendientes; proporciona el mensaje del commit"
-
-  if printf '%s\n' "$working_tree_status" | grep -E '(^|/)(\.env($|\.)|node_modules/|dist/|uploads?/|backups?/)|\.(dump|bak)$' >/dev/null; then
-    printf '%s\n' "$working_tree_status" >&2
-    fail "Se detectaron credenciales, dependencias, builds, uploads o backups; no se hará commit automático"
-  fi
-
-  log "Preparando cambios y creando commit"
-  "${git_cmd[@]}" add -A
-  "${git_cmd[@]}" diff --cached --check
-  "${git_cmd[@]}" commit -m "$COMMIT_MESSAGE"
-else
-  log "Repositorio limpio; se desplegará el commit $("${git_cmd[@]}" rev-parse --short HEAD)"
+tracked_status="$("${git_cmd[@]}" status --porcelain=v1 --untracked-files=no)"
+if [[ -n "$tracked_status" ]]; then
+  printf '%s\n' "$tracked_status" >&2
+  fail "Hay cambios locales en archivos rastreados; revísalos antes de desplegar"
 fi
+
+log "Actualizando main desde origin/main"
+"${git_cmd[@]}" pull --ff-only origin main
+
+local_head="$("${git_cmd[@]}" rev-parse HEAD)"
+remote_head="$("${git_cmd[@]}" rev-parse origin/main)"
+[[ "$local_head" == "$remote_head" ]] || fail "main local no coincide con origin/main después del pull"
+log "Se desplegará el commit $("${git_cmd[@]}" rev-parse --short HEAD)"
 
 log "Instalando dependencias del backend desde package-lock.json"
 npm --prefix "$BACKEND_DIR" ci --omit=dev

@@ -44,6 +44,42 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "No se encontró el comando requerido: $1"
 }
 
+ensure_dependencies() {
+  local project_dir="$1"
+  local install_mode="$2"
+  local stamp_file="$project_dir/node_modules/.rapidin-dependencies.sha256"
+  local fingerprint
+  local installed_fingerprint=''
+  local npm_ls_args=(--depth=0)
+  local npm_ci_args=()
+
+  if [[ "$install_mode" == 'production' ]]; then
+    npm_ls_args+=(--omit=dev)
+    npm_ci_args+=(--omit=dev)
+  fi
+
+  fingerprint="$({
+    "${git_cmd[@]}" hash-object "$project_dir/package.json"
+    "${git_cmd[@]}" hash-object "$project_dir/package-lock.json"
+  } | "${git_cmd[@]}" hash-object --stdin)"
+
+  if [[ -f "$stamp_file" ]]; then
+    installed_fingerprint="$(<"$stamp_file")"
+  fi
+
+  if [[ -d "$project_dir/node_modules" ]] \
+    && npm --prefix "$project_dir" ls "${npm_ls_args[@]}" >/dev/null 2>&1 \
+    && { [[ "$installed_fingerprint" == "$fingerprint" ]] || [[ -z "$installed_fingerprint" ]]; }; then
+    printf '%s\n' "$fingerprint" >"$stamp_file"
+    log "Dependencias vigentes; se omite npm ci en $project_dir"
+    return
+  fi
+
+  log "Dependencias ausentes o desactualizadas; ejecutando npm ci en $project_dir"
+  npm --prefix "$project_dir" ci "${npm_ci_args[@]}"
+  printf '%s\n' "$fingerprint" >"$stamp_file"
+}
+
 rollback_web_root() {
   local exit_code=$?
 
@@ -104,8 +140,7 @@ remote_head="$("${git_cmd[@]}" rev-parse origin/main)"
 [[ "$local_head" == "$remote_head" ]] || fail "main local no coincide con origin/main después del pull"
 log "Se desplegará el commit $("${git_cmd[@]}" rev-parse --short HEAD)"
 
-log "Instalando dependencias del backend desde package-lock.json"
-npm --prefix "$BACKEND_DIR" ci --omit=dev
+ensure_dependencies "$BACKEND_DIR" production
 
 pm2 describe "$PM2_PROCESS" >/dev/null 2>&1 || fail "No existe el proceso PM2: $PM2_PROCESS"
 log "Reiniciando únicamente el backend PM2: $PM2_PROCESS"
@@ -129,8 +164,8 @@ if [[ -n "${BACKEND_HEALTHCHECK_URL:-}" ]]; then
   log "Healthcheck del backend correcto"
 fi
 
-log "Instalando dependencias y construyendo el frontend"
-npm --prefix "$FRONTEND_DIR" ci
+ensure_dependencies "$FRONTEND_DIR" development
+log "Construyendo el frontend"
 npm --prefix "$FRONTEND_DIR" run build
 [[ -s "$FRONTEND_DIR/dist/index.html" ]] || fail "El build no generó frontend/dist/index.html"
 

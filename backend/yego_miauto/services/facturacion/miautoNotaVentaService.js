@@ -4,6 +4,7 @@ import { getClient, query } from '../../../config/database.js';
 import { logger } from '../../../utils/logger.js';
 import { getCuotasSemanalesConRacha } from '../cuotas/miautoCuotaSemanalService.js';
 import { uploadFileToMedia } from '../../../services/voucherService.js';
+import { selectFacturadorCustomerByDocument } from '../utils/miautoFacturadorCustomer.js';
 
 const FACTURADOR_BASE_URL = (process.env.FACTURADOR_BASE_URL || 'https://ajhla.facturador.3w.pe').replace(/\/+$/, '');
 const FACTURADOR_HOSTNAME = new URL(FACTURADOR_BASE_URL).hostname;
@@ -239,7 +240,7 @@ function csrfTokenFromLoginPage(html) {
 }
 
 function isAuthExpiredError(error) {
-  return error?.source === 'facturador' && [401, 419].includes(Number(error.status));
+  return error?.source === 'facturador' && [302, 303, 401, 419].includes(Number(error.status));
 }
 
 function facturadorLoginCredentials() {
@@ -397,6 +398,58 @@ async function facturadorRequest(path, options = {}) {
     }
     throw error;
   }
+}
+
+export async function findFacturadorCustomerByDni(dni) {
+  const document = String(dni ?? '').replace(/\D/g, '');
+  if (!/^\d{8}$/.test(document)) {
+    throw new Error('El DNI para vincular con el facturador debe tener 8 dígitos');
+  }
+  const data = await facturadorRequest(
+    `/documents/data-table/customers?input=${encodeURIComponent(document)}`,
+    { method: 'GET' }
+  );
+  return selectFacturadorCustomerByDocument(data?.customers, document);
+}
+
+export async function syncFacturadorCustomerForSolicitud(solicitudId, userId = null) {
+  const result = await query(
+    `SELECT id, dni, facturador_customer_id
+     FROM module_miauto_solicitud
+     WHERE id = $1::uuid
+     LIMIT 1`,
+    [solicitudId]
+  );
+  const solicitud = result.rows[0];
+  if (!solicitud) throw new Error('Solicitud no encontrada');
+
+  const currentId = Number(solicitud.facturador_customer_id);
+  if (Number.isInteger(currentId) && currentId > 0) {
+    return { linked: true, customer_id: currentId, already_linked: true };
+  }
+
+  const customer = await findFacturadorCustomerByDni(solicitud.dni);
+  if (!customer) {
+    return { linked: false, customer_id: null, reason: 'not_found' };
+  }
+
+  const updateParams = [customer.id, solicitudId];
+  const updatedBySql = userId ? ', updated_by = $3' : '';
+  if (userId) updateParams.push(userId);
+  const updateResult = await query(
+    `UPDATE module_miauto_solicitud
+     SET facturador_customer_id = $1, updated_at = CURRENT_TIMESTAMP${updatedBySql}
+     WHERE id = $2::uuid AND facturador_customer_id IS NULL
+     RETURNING facturador_customer_id`,
+    updateParams
+  );
+  const linkedId = Number(updateResult.rows[0]?.facturador_customer_id || customer.id);
+  return {
+    linked: true,
+    customer_id: linkedId,
+    already_linked: updateResult.rowCount === 0,
+    customer: { id: customer.id, number: customer.number, name: customer.name || null },
+  };
 }
 
 async function facturadorBinaryRequestRaw(urlOrPath) {

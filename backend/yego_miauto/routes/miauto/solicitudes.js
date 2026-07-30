@@ -16,7 +16,8 @@ import {
   getActiveSolicitudInfo,
 } from '../../services/solicitud/miautoSolicitudService.js';
 import { getPartnerNameById } from '../../../services/partnersService.js';
-import { searchFleetContractorFull } from '../../../services/yangoService.js';
+import { getContractorProfile, searchFleetContractorFull } from '../../../services/yangoService.js';
+import { getDniFromPeruvianLicense } from '../../services/utils/miautoLicenseDocument.js';
 import pool from '../../../database/connection.js';
 
 const router = Router();
@@ -159,16 +160,38 @@ router.get('/yango/contractor-suggestions', async (req, res) => {
 router.post('/solicitudes', async (req, res) => {
   try {
     const { country, dni, phone, email, license_number, description, driver_id_fleet } = req.body;
-    if (!dni || !country) return errorResponse(res, 'country y dni son requeridos', 400);
+    if (!country) return errorResponse(res, 'country es requerido', 400);
+    let resolvedDni = trimOrUndefined(dni);
+    let resolvedLicenseNumber = trimOrUndefined(license_number);
+
+    // En el alta administrativa, Yango devuelve la licencia en el perfil completo.
+    // El DNI peruano corresponde a los 8 dígitos posteriores a la letra inicial.
+    if (req.user?.role !== 'driver' && trimOrUndefined(driver_id_fleet)) {
+      const profile = await getContractorProfile(driver_id_fleet);
+      if (!profile.success) {
+        return errorResponse(res, profile.error || 'No se pudo obtener la licencia del conductor en Yango', 400);
+      }
+      resolvedLicenseNumber = trimOrUndefined(profile.license_number);
+      resolvedDni = getDniFromPeruvianLicense(resolvedLicenseNumber);
+      if (!resolvedDni) {
+        return errorResponse(
+          res,
+          'La licencia obtenida de Yango debe tener una letra inicial seguida de 8 dígitos',
+          400
+        );
+      }
+    }
+
+    if (!resolvedDni) return errorResponse(res, 'dni es requerido', 400);
     const cronogramaId = trimOrUndefined(req.body.cronograma_id);
     const pagoTipo = trimOrUndefined(req.body.pago_tipo);
 
     const solicitud = await createSolicitud({
       country,
-      dni,
+      dni: resolvedDni,
       phone,
       email,
-      license_number,
+      license_number: resolvedLicenseNumber,
       description,
       apps: getAppsFromBody(req.body),
       driver_id_fleet,
@@ -180,7 +203,7 @@ router.post('/solicitudes', async (req, res) => {
       pago_estado: trimOrUndefined(req.body.pago_estado),
       status: trimOrUndefined(req.body.status),
     }, req.user?.id);
-    auditMiautoMutation('solicitud.created', 'solicitud', solicitud?.id, { country, dni });
+    auditMiautoMutation('solicitud.created', 'solicitud', solicitud?.id, { country, dni: resolvedDni });
     return successResponse(res, solicitud, 'Solicitud creada', 201);
   } catch (error) {
     if (error instanceof ActiveSolicitudError) {

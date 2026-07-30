@@ -792,17 +792,35 @@ export default function YegoMiAutoRentSaleDetail() {
     const n = Number(solicitud?.facturador_customer_id);
     return Number.isInteger(n) && n > 0 ? n : null;
   }, [solicitud?.facturador_customer_id]);
+  const [syncingFacturadorCustomer, setSyncingFacturadorCustomer] = useState(false);
 
   const openNotasVentaModal = useCallback(() => {
-    if (!facturadorCustomerId) {
-      toast.error('Este conductor no tiene customer ID del facturador vinculado');
+    const open = () => {
+      const preselected: Record<string, boolean> = {};
+      cuotasNotaVentaDisponibles.forEach((c) => { preselected[c.id] = true; });
+      setNotaVentaCuotasSeleccionadas(preselected);
+      setShowNotasVentaModal(true);
+    };
+    if (facturadorCustomerId) {
+      open();
       return;
     }
-    const preselected: Record<string, boolean> = {};
-    cuotasNotaVentaDisponibles.forEach((c) => { preselected[c.id] = true; });
-    setNotaVentaCuotasSeleccionadas(preselected);
-    setShowNotasVentaModal(true);
-  }, [cuotasNotaVentaDisponibles, facturadorCustomerId]);
+    if (!id || syncingFacturadorCustomer) return;
+    setSyncingFacturadorCustomer(true);
+    api.post(`/miauto/solicitudes/${id}/facturador-customer/sync`)
+      .then((response) => {
+        const customerId = Number(response.data?.data?.customer_id);
+        if (!Number.isInteger(customerId) || customerId <= 0) {
+          throw new Error('El facturador no devolvió un customer ID válido');
+        }
+        setSolicitud((prev) => prev ? { ...prev, facturador_customer_id: customerId } : prev);
+        open();
+      })
+      .catch((error) => {
+        toast.error(error.response?.data?.message || error.message || 'No se pudo vincular el cliente del facturador');
+      })
+      .finally(() => setSyncingFacturadorCustomer(false));
+  }, [cuotasNotaVentaDisponibles, facturadorCustomerId, id, syncingFacturadorCustomer]);
 
   const toggleNotaVentaCuota = useCallback((cuotaId: string) => {
     setNotaVentaCuotasSeleccionadas((prev) => ({ ...prev, [cuotaId]: !prev[cuotaId] }));
@@ -1437,17 +1455,16 @@ export default function YegoMiAutoRentSaleDetail() {
                   <Plus className="w-4 h-4" />
                   Cuota
                 </button>
-                {facturadorCustomerId && (
-                  <button
-                    type="button"
-                    onClick={openNotasVentaModal}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium transition-colors"
-                    title="Generar nota de venta para cuotas pagadas"
-                  >
-                    <ReceiptText className="w-4 h-4" />
-                    Generar boletas
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={openNotasVentaModal}
+                  disabled={syncingFacturadorCustomer}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium transition-colors disabled:opacity-60"
+                  title="Generar nota de venta para cuotas pagadas"
+                >
+                  <ReceiptText className="w-4 h-4" />
+                  {syncingFacturadorCustomer ? 'Vinculando…' : 'Generar boletas'}
+                </button>
                 <div className="w-px h-6 bg-white/20" />
               </>
             )}

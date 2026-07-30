@@ -17,6 +17,7 @@
     "miauto:regenerar-cuota-fecha": "node scripts/miauto-regenerar-cuota-por-semana.js",
     "miauto:repair-mora": "node scripts/miauto-repair-mora-caps-solicitud.js",
     "miauto:repair-cascada-mora-extra": "node scripts/miauto-repair-cascada-mora-extra-excel.js",
+    "miauto:backfill-rent-sale-dni": "node scripts/miauto-backfill-rent-sale-dni.js",
     "miauto:cobro-fleet": "node scripts/miauto-cobro-fleet-solicitud.js",
     "miauto:importar-gastos": "node scripts/miauto-import-otros-gastos-excel.js",
     "mimoto:importar-excel": "node scripts/mimoto-import-weekly-payments-excel.js",

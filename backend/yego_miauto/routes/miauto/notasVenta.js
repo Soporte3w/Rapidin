@@ -7,6 +7,7 @@ import {
   downloadNotaVentaPdfBySolicitud,
   generarNotaVentaCuotasPagadas,
   listNotasVentaBySolicitud,
+  syncFacturadorCustomerForSolicitud,
 } from '../../services/facturacion/miautoNotaVentaService.js';
 
 const router = Router();
@@ -40,6 +41,21 @@ router.get('/solicitudes/:id/notas-venta', validateUUID, async (req, res) => {
   } catch (error) {
     logger.error('Error listando notas de venta Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al listar notas de venta', 500);
+  }
+});
+
+router.post('/solicitudes/:id/facturador-customer/sync', validateUUID, async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'Sin permisos para vincular clientes del facturador', 403);
+    }
+    const data = await syncFacturadorCustomerForSolicitud(req.params.id, req.user?.id || null);
+    if (!data.linked) {
+      return errorResponse(res, 'No se encontró un cliente en el facturador con el DNI de esta solicitud', 404);
+    }
+    return successResponse(res, data, 'Cliente del facturador vinculado');
+  } catch (error) {
+    return sendNotaVentaError(res, error, 'Error vinculando cliente del facturador:', 'Error al vincular cliente del facturador');
   }
 });
 

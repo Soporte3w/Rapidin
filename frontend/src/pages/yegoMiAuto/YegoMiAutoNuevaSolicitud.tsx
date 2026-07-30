@@ -81,7 +81,6 @@ export default function YegoMiAutoNuevaSolicitud() {
 
       const payload: Record<string, unknown> = {
         country: state.country,
-        dni: (state.conductor.phone || '').replace(/\D/g, '').slice(-8),
         phone: state.conductor.phone,
         driver_id_fleet: state.conductor.contractor_id,
         apps: state.apps,

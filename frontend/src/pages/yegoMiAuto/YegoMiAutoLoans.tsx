@@ -25,6 +25,11 @@ type AlquilerVentaSearchState = {
   pageSize?: number;
 };
 
+type AlquilerVentaNavigationItem = {
+  id: string;
+  driver_name?: string;
+};
+
 const COUNTRY_OPTIONS = [
   { value: '', label: 'Todos' },
   { value: 'PE', label: 'Perú' },
@@ -116,6 +121,11 @@ export default function YegoMiAutoLoans() {
     const start = (pageClamped - 1) * pageSize;
     return filteredItems.slice(start, start + pageSize);
   }, [filteredItems, pageClamped, pageSize]);
+
+  const detailNavigationItems = useMemo<AlquilerVentaNavigationItem[]>(
+    () => filteredItems.map((row) => ({ id: row.id, driver_name: conductorDisplay(row) })),
+    [filteredItems]
+  );
 
   const isFirstRender = useRef(true);
 
@@ -219,16 +229,17 @@ export default function YegoMiAutoLoans() {
     navigate(`/admin/yego-mi-auto/rent-sale/${row.id}`, {
       state: {
         fromList: true,
-        driver_name: row.driver_name,
+        driver_name: conductorDisplay(row),
         country,
         driverSearchInput,
         cronogramaId,
         cuotaEstado,
         page: pageClamped,
         pageSize,
+        navigationItems: detailNavigationItems,
       },
     });
-  }, [country, cronogramaId, cuotaEstado, driverSearchInput, navigate, pageClamped, pageSize]);
+  }, [country, cronogramaId, cuotaEstado, detailNavigationItems, driverSearchInput, navigate, pageClamped, pageSize]);
 
   const countryLabel = COUNTRY_OPTIONS.find((o) => o.value === country)?.label ?? 'Todos';
   const searchActive = debouncedSearch.trim().length > 0;

@@ -319,22 +319,43 @@ export default function YegoMiAutoRentSaleDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
-  const driverNameFromState = (location.state as { driver_name?: string })?.driver_name;
+
+  type AlquilerVentaNavigationItem = {
+    id: string;
+    driver_name?: string;
+  };
 
   type AlquilerVentaListState = {
     fromList?: boolean;
+    driver_name?: string;
     country?: string;
     driverSearchInput?: string;
     cronogramaId?: string;
     cuotaEstado?: string;
     page?: number;
     pageSize?: number;
+    navigationItems?: AlquilerVentaNavigationItem[];
   };
 
   type AlquilerVentaBackState = AlquilerVentaListState & { fromDetail?: boolean };
 
+  const listState = location.state as AlquilerVentaListState | null;
+  const driverNameFromState = listState?.driver_name;
+  const navigationItems = Array.isArray(listState?.navigationItems) ? listState.navigationItems : [];
+  const currentNavigationIndex = navigationItems.findIndex((item) => item.id === id);
+  const nextNavigationItem = currentNavigationIndex >= 0
+    ? navigationItems[currentNavigationIndex + 1] ?? null
+    : null;
+  const detailPageRef = useRef<HTMLDivElement>(null);
+  const tabContentScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    detailPageRef.current?.scrollIntoView({ block: 'start' });
+    if (tabContentScrollRef.current) tabContentScrollRef.current.scrollTop = 0;
+  }, [id]);
+
   const getBackToListState = (): AlquilerVentaBackState | undefined => {
-    const s = location.state as AlquilerVentaListState | null;
+    const s = listState;
     if (!s?.fromList) return undefined;
     return {
       fromDetail: true,
@@ -345,6 +366,18 @@ export default function YegoMiAutoRentSaleDetail() {
       page: s.page ?? 1,
       pageSize: s.pageSize ?? 20,
     };
+  };
+
+  const goToNextDriver = () => {
+    if (!nextNavigationItem) return;
+    const pageSize = Math.max(1, Number(listState?.pageSize) || 20);
+    navigate(`/admin/yego-mi-auto/rent-sale/${nextNavigationItem.id}`, {
+      state: {
+        ...listState,
+        driver_name: nextNavigationItem.driver_name,
+        page: Math.floor((currentNavigationIndex + 1) / pageSize) + 1,
+      },
+    });
   };
 
   const [solicitud, setSolicitud] = useState<SolicitudSummary | null>(null);
@@ -1483,7 +1516,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const bonoTiempoActivo = solicitud.cronograma?.bono_tiempo_activo === true;
 
   return (
-    <div className="space-y-6 lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:gap-6 lg:space-y-0 lg:overflow-hidden">
+    <div ref={detailPageRef} className="space-y-6 lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:gap-6 lg:space-y-0 lg:overflow-hidden">
       <header className="bg-[#8B1A1A] rounded-lg p-4 lg:p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 flex-wrap">
@@ -1501,7 +1534,20 @@ export default function YegoMiAutoRentSaleDetail() {
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {navigationItems.length > 0 && (
+              <button
+                type="button"
+                onClick={goToNextDriver}
+                disabled={!nextNavigationItem}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                title={nextNavigationItem ? `Ir a ${nextNavigationItem.driver_name || 'siguiente conductor'}` : 'Último conductor de la lista'}
+              >
+                <span className="hidden xl:inline">Siguiente conductor</span>
+                <span className="xl:hidden">Siguiente</span>
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            )}
             {solicitud?.status === 'aprobado' && solicitud?.fecha_inicio_cobro_semanal && (
               <>
                 <button
@@ -1777,7 +1823,7 @@ export default function YegoMiAutoRentSaleDetail() {
           </button>
         </div>
 
-        <div className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
+        <div ref={tabContentScrollRef} className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
         {tabCronograma === 'semanales' && (
         <>
         {cuotas.length === 0 ? (

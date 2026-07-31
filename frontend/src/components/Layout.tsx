@@ -349,7 +349,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
         </header>
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
-          <div className="max-w-full">{children}</div>
+          <div className="h-full max-w-full">{children}</div>
         </main>
       </div>
     </div>

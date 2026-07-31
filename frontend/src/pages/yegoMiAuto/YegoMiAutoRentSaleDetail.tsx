@@ -1483,7 +1483,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const bonoTiempoActivo = solicitud.cronograma?.bono_tiempo_activo === true;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:gap-6 lg:space-y-0 lg:overflow-hidden">
       <header className="bg-[#8B1A1A] rounded-lg p-4 lg:p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 flex-wrap">
@@ -1747,8 +1747,8 @@ export default function YegoMiAutoRentSaleDetail() {
       </div>
 
       {/* Cronograma semanal + Otros gastos (pestañas) */}
-      <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden relative min-h-[200px]">
-        <div className="flex border-b border-gray-200 px-2 sm:px-3 gap-0.5" role="tablist" aria-label="Cronograma y otros gastos">
+      <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden relative min-h-[200px] lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
+        <div className="flex shrink-0 border-b border-gray-200 px-2 sm:px-3 gap-0.5" role="tablist" aria-label="Cronograma y otros gastos">
           <button
             type="button"
             role="tab"
@@ -1777,6 +1777,7 @@ export default function YegoMiAutoRentSaleDetail() {
           </button>
         </div>
 
+        <div className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
         {tabCronograma === 'semanales' && (
         <>
         {cuotas.length === 0 ? (
@@ -2958,6 +2959,7 @@ export default function YegoMiAutoRentSaleDetail() {
             )}
         </>
         )}
+        </div>
 
         {refreshingDetail && (
           <div

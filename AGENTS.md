@@ -49,6 +49,20 @@ La ausencia de credenciales de base de datos no autoriza usar credenciales de
 producción ni aplicar migraciones automáticamente; se debe informar esa
 limitación.
 
+## Migraciones de base de datos
+
+- Cada cambio de esquema o datos se agrega como un nuevo archivo SQL numerado
+  en `backend/database/migrations`; nunca se edita una migración ya aplicada.
+- El nombre debe usar tres dígitos y snake_case, por ejemplo
+  `042_descripcion_breve.sql`.
+- Las migraciones son transaccionales por defecto. Para operaciones que no
+  admitan transacción, agregar el comentario
+  `-- rapidin:migration-transaction off` y escribir sentencias idempotentes.
+- `deploy-production.sh` debe comprobar, respaldar, aplicar y volver a validar
+  automáticamente todas las migraciones pendientes antes de reiniciar PM2.
+- Nunca sustituir esta comprobación por un mensaje fijo ni exigir que el
+  operador aplique manualmente una migración versionada.
+
 ## Seguridad del commit
 
 - No incluir `.env`, credenciales, tokens, dumps, backups, uploads,

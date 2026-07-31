@@ -18,12 +18,26 @@ La aplicación conserva valores seguros por defecto y permite ajustar:
 
 ## Orden de despliegue
 
-1. Desplegar código sin ejecutar la migración de índices.
-2. Confirmar en logs `dbQueryCount`, `dbDurationMs` y `dbPoolWaitMs`.
-3. Verificar que no aparezca la advertencia de consultas concurrentes de `pg`.
-4. Comprobar que no queden conexiones `idle in transaction` del backend.
-5. Aplicar cada sentencia de `041_api_performance_indexes.sql` por separado.
-6. Después de cada índice, verificar que sea válido:
+`deploy-production.sh` verifica el historial de migraciones antes de reiniciar
+el backend. Cuando encuentra archivos pendientes:
+
+1. Genera un respaldo de las tablas financieras.
+2. Toma un advisory lock exclusivo de PostgreSQL.
+3. Ejecuta cada migración pendiente en orden de nombre.
+4. Registra archivo, checksum, modo y duración en
+   `public.rapidin_schema_migrations`.
+5. Vuelve a comprobar que no quede ninguna migración pendiente.
+6. Verifica que los ocho índices de rendimiento estén válidos y listos.
+
+Si cualquiera de esos pasos falla, el despliegue se detiene antes de reiniciar
+PM2 o publicar el frontend. Después del despliegue:
+
+1. Confirmar en logs `dbQueryCount`, `dbDurationMs` y `dbPoolWaitMs`.
+2. Verificar que no aparezca la advertencia de consultas concurrentes de `pg`.
+3. Comprobar que no queden conexiones `idle in transaction` del backend.
+4. Comparar p50/p95 durante un ciclo de uso.
+
+La validación de índices equivale a comprobar:
 
 ```sql
 SELECT c.relname AS index_name, i.indisvalid, i.indisready
@@ -32,12 +46,14 @@ JOIN pg_class c ON c.oid = i.indexrelid
 WHERE c.relname LIKE 'idx_%';
 ```
 
-7. Ejecutar `ANALYZE` solamente sobre la tabla correspondiente.
-8. Comparar p50/p95 durante un ciclo de uso antes de continuar.
-
 El comando `npm run db:indexes:performance` ejecuta las sentencias de forma
 secuencial, valida los ocho índices y actualiza las estadísticas de las tablas
 afectadas. `npm run db:indexes:performance -- --check` solo verifica.
+
+En una base existente sin historial, la primera ejecución registra como
+baseline las migraciones hasta `040` y ejecuta `041` de forma idempotente. Las
+siguientes migraciones se aplican una sola vez. Un archivo ya registrado nunca
+debe editarse: el checksum hará fallar el despliegue.
 
 ## Pendientes de infraestructura
 

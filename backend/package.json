@@ -9,6 +9,7 @@
     "dev": "NODE_ENV=development nodemon --legacy-watch index.js",
     "db:backup-full": "node scripts/db-backup-full-pg-dump.js",
     "db:backup-financing": "node scripts/db-backup-financing-modules.js",
+    "db:migrate": "node scripts/run-migrations.js",
     "db:indexes:performance": "node scripts/apply-api-performance-indexes.js",
     "miauto:alinear-flota": "node scripts/miauto-alinear-rapidin-driver-mi-auto.js",
     "miauto:importar-solicitudes": "node scripts/miauto-import-solicitudes-entrega-excel.js",

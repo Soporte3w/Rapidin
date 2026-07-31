@@ -30,7 +30,8 @@ Uso:
   sudo ./deploy-production.sh
 
 El script exige que los archivos rastreados estén limpios, actualiza main con
-git pull --ff-only y despliega exactamente el commit publicado en origin/main.
+git pull --ff-only, respalda y aplica migraciones SQL pendientes, y despliega
+exactamente el commit publicado en origin/main.
 
 Variables opcionales:
   PM2_PROCESS             Nombre PM2 (default: rapidin-backend)
@@ -142,6 +143,33 @@ log "Se desplegará el commit $("${git_cmd[@]}" rev-parse --short HEAD)"
 
 ensure_dependencies "$BACKEND_DIR" production
 
+log "Comprobando migraciones SQL"
+set +e
+(cd "$BACKEND_DIR" && node scripts/run-migrations.js --check)
+migration_check_status=$?
+set -e
+
+case "$migration_check_status" in
+  0)
+    log "No hay migraciones SQL pendientes"
+    ;;
+  10)
+    log "Hay migraciones pendientes; generando respaldo previo de las tablas financieras"
+    require_command pg_dump
+    require_command pg_restore
+    npm --prefix "$BACKEND_DIR" run db:backup-financing
+    log "Aplicando migraciones pendientes"
+    npm --prefix "$BACKEND_DIR" run db:migrate
+    ;;
+  *)
+    fail "No se pudo comprobar el estado de las migraciones (código $migration_check_status)"
+    ;;
+esac
+
+(cd "$BACKEND_DIR" && node scripts/run-migrations.js --check)
+log "Validando índices de rendimiento"
+npm --prefix "$BACKEND_DIR" run db:indexes:performance -- --check
+
 pm2 describe "$PM2_PROCESS" >/dev/null 2>&1 || fail "No existe el proceso PM2: $PM2_PROCESS"
 log "Reiniciando únicamente el backend PM2: $PM2_PROCESS"
 pm2 restart "$PM2_PROCESS" --update-env
@@ -207,4 +235,4 @@ if [[ -n "$PREVIOUS_WEB_ROOT" ]]; then
   log "Rollback conservado en $PREVIOUS_WEB_ROOT"
 fi
 log "Despliegue terminado en commit $("${git_cmd[@]}" rev-parse --short HEAD)"
-log "La migración 041_api_performance_indexes.sql NO fue aplicada automáticamente"
+log "Migraciones e índices verificados correctamente"

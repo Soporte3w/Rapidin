@@ -8,6 +8,23 @@ function positiveInteger(value) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizedCurrency(value, fallback = 'PEN') {
+  const currency = String(value || fallback).trim().toUpperCase();
+  return ['PEN', 'USD', 'COP'].includes(currency) ? currency : fallback;
+}
+
+function inferredVehicleYear(value) {
+  const matches = String(value || '').match(/(?:19|20)\d{2}/g) || [];
+  const year = Number(matches.at(-1));
+  return Number.isInteger(year) && year >= 1990 && year <= 2100 ? year : null;
+}
+
 function round2(value) {
   return Math.round(Number(value) * 100) / 100;
 }
@@ -28,6 +45,26 @@ export function parseExpenseRequirements(value) {
   } catch {
     return {};
   }
+}
+
+/** Combina overrides del contrato con la configuración heredada del vehículo del cronograma. */
+export function resolveEffectiveExpenseConfiguration(value = {}) {
+  const requirements = parseExpenseRequirements(value.requisitos_gastos);
+  const strRule = requirements.todo_riesgo_mas_gps_agrupado || {};
+  const explicitStrAmount = numberOrNull(value.str_gps_monto_semanal);
+  const explicitVehicleYear = numberOrNull(value.vehiculo_anio);
+
+  return {
+    ...value,
+    requisitos_gastos: requirements,
+    vehiculo_anio: explicitVehicleYear ?? inferredVehicleYear(value.vehiculo_name),
+    str_gps_heredado: explicitStrAmount == null,
+    str_gps_monto_semanal: explicitStrAmount ?? numberOrNull(strRule.monto),
+    str_gps_moneda: normalizedCurrency(
+      explicitStrAmount != null ? value.str_gps_moneda : strRule.moneda,
+      'USD',
+    ),
+  };
 }
 
 /** Devuelve el monto configurado para una cuota existente sin alterar su calendario. */

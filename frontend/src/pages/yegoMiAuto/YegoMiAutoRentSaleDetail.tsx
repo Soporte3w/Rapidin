@@ -478,6 +478,13 @@ export default function YegoMiAutoRentSaleDetail() {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [gastoConfigContextMenu]);
+
+  useEffect(() => {
+    setGastoConfig(null);
+    setGastoConfigFocus(null);
+    setGastoConfigContextMenu(null);
+    setShowGastoConfigModal(false);
+  }, [id]);
   const evidenciaFleetFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const [showGenerarCuotaModal, setShowGenerarCuotaModal] = useState(false);
@@ -1090,7 +1097,16 @@ export default function YegoMiAutoRentSaleDetail() {
     if (!id) return;
     try {
       setSavingGastoConfig(true);
-      const response = await api.patch(`/miauto/solicitudes/${id}/otros-gastos/configuracion`, config);
+      const payload = { ...config };
+      if (
+        gastoConfig?.str_gps_heredado
+        && Number(config.str_gps_monto_semanal) === Number(gastoConfig.str_gps_monto_semanal)
+        && config.str_gps_moneda === gastoConfig.str_gps_moneda
+      ) {
+        delete payload.str_gps_monto_semanal;
+        delete payload.str_gps_moneda;
+      }
+      const response = await api.patch(`/miauto/solicitudes/${id}/otros-gastos/configuracion`, payload);
       setGastoConfig(response.data?.data ?? response.data);
       toast.success('Configuracion guardada');
       setShowGastoConfigModal(false);
@@ -1099,7 +1115,7 @@ export default function YegoMiAutoRentSaleDetail() {
     } finally {
       setSavingGastoConfig(false);
     }
-  }, [id]);
+  }, [gastoConfig, id]);
 
   const saveAndGenerateAdditionalExpenses = useCallback(async (
     config: MiautoGastoConfiguration,
@@ -1108,9 +1124,18 @@ export default function YegoMiAutoRentSaleDetail() {
     if (!id) return;
     try {
       setGeneratingGastos(true);
+      const payload = { ...config };
+      if (
+        gastoConfig?.str_gps_heredado
+        && Number(config.str_gps_monto_semanal) === Number(gastoConfig.str_gps_monto_semanal)
+        && config.str_gps_moneda === gastoConfig.str_gps_moneda
+      ) {
+        delete payload.str_gps_monto_semanal;
+        delete payload.str_gps_moneda;
+      }
       const configResponse = await api.patch(
         `/miauto/solicitudes/${id}/otros-gastos/configuracion`,
-        config,
+        payload,
       );
       setGastoConfig(configResponse.data?.data ?? configResponse.data);
       await api.post(`/miauto/solicitudes/${id}/otros-gastos/generar`, {
@@ -1125,7 +1150,7 @@ export default function YegoMiAutoRentSaleDetail() {
     } finally {
       setGeneratingGastos(false);
     }
-  }, [id, fetchDetail]);
+  }, [gastoConfig, id, fetchDetail]);
 
   const loadAdditionalExpenseFleetCharge = useCallback(async (preferredType?: string | null) => {
     if (!id) return;

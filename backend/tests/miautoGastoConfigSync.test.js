@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   amountChanged,
   configuredExpenseAmount,
+  resolveEffectiveExpenseConfiguration,
 } from '../yego_miauto/services/gastos/miautoGastoConfigSync.js';
 
 const requirements = {
@@ -55,4 +56,34 @@ test('ignora conceptos sin monto y compara importes con tolerancia monetaria', (
   assert.equal(amountChanged(47.2, 47.2), false);
   assert.equal(amountChanged(47.2, 50), true);
   assert.equal(amountChanged(47.2, null), false);
+});
+
+test('la configuración efectiva hereda datos del vehículo sin reemplazar overrides del contrato', () => {
+  const inherited = resolveEffectiveExpenseConfiguration({
+    vehiculo_name: 'Glory 560 - 2026',
+    vehiculo_anio: null,
+    str_gps_monto_semanal: null,
+    str_gps_moneda: 'USD',
+    requisitos_gastos: {
+      todo_riesgo_mas_gps_agrupado: { monto: 25.31, moneda: 'PEN' },
+    },
+  });
+  assert.equal(inherited.vehiculo_anio, 2026);
+  assert.equal(inherited.str_gps_heredado, true);
+  assert.equal(inherited.str_gps_monto_semanal, 25.31);
+  assert.equal(inherited.str_gps_moneda, 'PEN');
+
+  const overridden = resolveEffectiveExpenseConfiguration({
+    vehiculo_name: 'Glory 560 - 2026',
+    vehiculo_anio: 2025,
+    str_gps_monto_semanal: 30,
+    str_gps_moneda: 'USD',
+    requisitos_gastos: {
+      todo_riesgo_mas_gps_agrupado: { monto: 25.31, moneda: 'PEN' },
+    },
+  });
+  assert.equal(overridden.vehiculo_anio, 2025);
+  assert.equal(overridden.str_gps_heredado, false);
+  assert.equal(overridden.str_gps_monto_semanal, 30);
+  assert.equal(overridden.str_gps_moneda, 'USD');
 });

@@ -2,14 +2,33 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CalendarDays, RefreshCw, Save, X } from 'lucide-react';
 
+interface MiautoConfiguredExpenseRule {
+  monto?: number | null;
+  moneda?: 'PEN' | 'USD' | 'COP' | string;
+  cobro?: {
+    meses_anticipo?: number;
+    cuotas?: number;
+    mes_inicio?: number;
+    anios_vigencia_tras_modelo?: number;
+    semanas?: number;
+  };
+}
+
 export interface MiautoGastoConfiguration {
   fecha_entrega_vehiculo?: string | null;
   vehiculo_anio?: number | null;
   soat_fecha_vencimiento?: string | null;
   str_gps_monto_semanal?: number | null;
   str_gps_moneda?: 'PEN' | 'USD' | 'COP';
+  str_gps_heredado?: boolean;
   inicial_parcial_activa?: boolean;
   gastos_automaticos_activos?: boolean;
+  requisitos_gastos?: {
+    soat?: MiautoConfiguredExpenseRule;
+    impuesto_vehicular?: MiautoConfiguredExpenseRule;
+    todo_riesgo_mas_gps_agrupado?: MiautoConfiguredExpenseRule;
+    inicial_parcial?: MiautoConfiguredExpenseRule;
+  };
 }
 
 export interface MiautoGastoGenerationInput {
@@ -51,6 +70,13 @@ function normalizeDraft(config: MiautoGastoConfiguration): MiautoGastoConfigurat
   };
 }
 
+function configuredAmountLabel(rule?: MiautoConfiguredExpenseRule): string {
+  if (!rule) return 'Sin configuración';
+  const amount = Number(rule?.monto);
+  const currency = String(rule?.moneda || 'PEN').toUpperCase();
+  return `${currency} ${Number.isFinite(amount) ? amount.toFixed(2) : '0.00'}`;
+}
+
 export function MiautoGastosConfigurationModal({
   open,
   config,
@@ -71,7 +97,8 @@ export function MiautoGastosConfigurationModal({
     if (!open || !config) return;
     setDraft(normalizeDraft(config));
     setPeriodo(String(new Date().getFullYear()));
-    setImpuestoMonto('');
+    const configuredTaxAmount = Number(config.requisitos_gastos?.impuesto_vehicular?.monto);
+    setImpuestoMonto(configuredTaxAmount > 0 ? String(configuredTaxAmount) : '');
   }, [open, config]);
 
   useEffect(() => {
@@ -115,6 +142,10 @@ export function MiautoGastosConfigurationModal({
   ) => setDraft((current) => (current ? { ...current, [field]: value } : current));
 
   const canGenerate = Boolean(draft.fecha_entrega_vehiculo && generation);
+  const configuredSoat = draft.requisitos_gastos?.soat;
+  const configuredTax = draft.requisitos_gastos?.impuesto_vehicular;
+  const configuredStrGps = draft.requisitos_gastos?.todo_riesgo_mas_gps_agrupado;
+  const configuredInitial = draft.requisitos_gastos?.inicial_parcial;
 
   return createPortal(
     <div
@@ -192,6 +223,9 @@ export function MiautoGastosConfigurationModal({
                   onChange={(event) => setField('soat_fecha_vencimiento', event.target.value || null)}
                   className={inputClassName}
                 />
+                <span className="mt-1.5 block text-[11px] font-normal text-gray-500">
+                  Cronograma: {configuredAmountLabel(configuredSoat)} · {Number(configuredSoat?.cobro?.meses_anticipo) || 0} cobros mensuales
+                </span>
               </label>
               <div
                 data-config-section="str_gps"
@@ -220,6 +254,9 @@ export function MiautoGastosConfigurationModal({
                     <option value="COP">COP ($)</option>
                   </select>
                 </label>
+                <p className="col-span-2 text-[11px] text-gray-500">
+                  Cronograma: {configuredAmountLabel(configuredStrGps)} · {Number(configuredStrGps?.cobro?.semanas) || 0} semanas
+                </p>
               </div>
             </div>
 
@@ -235,6 +272,9 @@ export function MiautoGastosConfigurationModal({
                   onChange={(event) => setField('inicial_parcial_activa', event.target.checked)}
                   className="h-4 w-4 rounded border-gray-300 text-red-700 focus:ring-red-600"
                 />
+                <span className="sr-only">
+                  Cronograma: {configuredAmountLabel(configuredInitial)} · {Number(configuredInitial?.cobro?.semanas) || 0} semanas
+                </span>
               </label>
               <label className="flex min-h-11 items-center justify-between gap-3 rounded-md border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700">
                 Generación automática
@@ -246,6 +286,9 @@ export function MiautoGastosConfigurationModal({
                 />
               </label>
             </div>
+            <p className="mt-2 text-[11px] text-gray-500">
+              Inicial parcial del cronograma: {configuredAmountLabel(configuredInitial)} · {Number(configuredInitial?.cobro?.semanas) || 0} semanas
+            </p>
           </section>
 
           <section className="border-t border-gray-200 pt-5">
@@ -276,6 +319,9 @@ export function MiautoGastosConfigurationModal({
                   onChange={(event) => setImpuestoMonto(event.target.value)}
                   className={inputClassName}
                 />
+                <span className="mt-1.5 block text-[11px] font-normal text-gray-500">
+                  Cronograma: {configuredAmountLabel(configuredTax)} · {Number(configuredTax?.cobro?.cuotas) || 0} cuotas desde el mes {Number(configuredTax?.cobro?.mes_inicio) || 0} · vigencia {Number(configuredTax?.cobro?.anios_vigencia_tras_modelo) || 0} años
+                </span>
               </label>
             </div>
           </section>

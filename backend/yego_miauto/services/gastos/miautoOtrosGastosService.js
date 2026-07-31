@@ -13,7 +13,10 @@ import {
   recurringReferenceDate,
   replaceYearClamped,
 } from './miautoGastoRules.js';
-import { parseExpenseRequirements } from './miautoGastoConfigSync.js';
+import {
+  parseExpenseRequirements,
+  resolveEffectiveExpenseConfiguration,
+} from './miautoGastoConfigSync.js';
 
 function limaTodayYmd() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -172,14 +175,12 @@ export async function getExpenseConfiguration(solicitudId) {
   );
   const row = result.rows[0];
   if (!row) throw new Error('Solicitud Mi Auto no encontrada');
+  const effectiveConfig = resolveEffectiveExpenseConfiguration(row);
   return {
-    ...row,
-    fecha_entrega_vehiculo: ymd(row.fecha_entrega_vehiculo) || ymd(row.fecha_inicio_cobro_semanal),
-    soat_fecha_vencimiento: ymd(row.soat_fecha_vencimiento),
-    vehiculo_anio: row.vehiculo_anio != null ? Number(row.vehiculo_anio) : null,
-    cuotas_semanales: row.cuotas_semanales != null ? Number(row.cuotas_semanales) : null,
-    str_gps_monto_semanal: numberOrNull(row.str_gps_monto_semanal),
-    str_gps_moneda: normalizeCurrency(row.str_gps_moneda, 'USD'),
+    ...effectiveConfig,
+    fecha_entrega_vehiculo: ymd(effectiveConfig.fecha_entrega_vehiculo) || ymd(effectiveConfig.fecha_inicio_cobro_semanal),
+    soat_fecha_vencimiento: ymd(effectiveConfig.soat_fecha_vencimiento),
+    cuotas_semanales: effectiveConfig.cuotas_semanales != null ? Number(effectiveConfig.cuotas_semanales) : null,
   };
 }
 

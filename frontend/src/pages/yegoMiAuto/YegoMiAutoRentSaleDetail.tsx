@@ -1517,6 +1517,19 @@ export default function YegoMiAutoRentSaleDetail() {
 
   return (
     <div ref={detailPageRef} className="space-y-6 lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:gap-6 lg:space-y-0 lg:overflow-hidden">
+      {nextNavigationItem && (
+        <div className="flex shrink-0 justify-end">
+          <button
+            type="button"
+            onClick={goToNextDriver}
+            className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[#8B1A1A]/30 bg-white px-4 py-2 text-sm font-semibold text-[#8B1A1A] shadow-sm transition-colors hover:border-[#8B1A1A] hover:bg-red-50"
+            title="Ir al siguiente conductor"
+          >
+            <span className="max-w-[18rem] truncate">{nextNavigationItem.driver_name || 'Conductor sin nombre'}</span>
+            <ChevronRight className="h-4 w-4 shrink-0" />
+          </button>
+        </div>
+      )}
       <header className="bg-[#8B1A1A] rounded-lg p-4 lg:p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 flex-wrap">
@@ -1535,19 +1548,6 @@ export default function YegoMiAutoRentSaleDetail() {
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {navigationItems.length > 0 && (
-              <button
-                type="button"
-                onClick={goToNextDriver}
-                disabled={!nextNavigationItem}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-                title={nextNavigationItem ? `Ir a ${nextNavigationItem.driver_name || 'siguiente conductor'}` : 'Último conductor de la lista'}
-              >
-                <span className="hidden xl:inline">Siguiente conductor</span>
-                <span className="xl:hidden">Siguiente</span>
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            )}
             {solicitud?.status === 'aprobado' && solicitud?.fecha_inicio_cobro_semanal && (
               <>
                 <button

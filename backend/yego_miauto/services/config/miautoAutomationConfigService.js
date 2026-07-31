@@ -18,6 +18,8 @@ export async function getMiautoAutomationConfig() {
             weekly_generation_time::text,
             weekly_fleet_charge_enabled, weekly_fleet_charge_day,
             weekly_fleet_charge_time::text,
+            daily_additional_expenses_enabled,
+            daily_additional_expenses_time::text,
             timezone, updated_at, updated_by
      FROM module_miauto_automation_config
      WHERE id = 1`,
@@ -34,6 +36,10 @@ export async function updateMiautoAutomationConfig(input, userId = null) {
     weekly_fleet_charge_enabled: input?.weekly_fleet_charge_enabled ?? current.weekly_fleet_charge_enabled,
     weekly_fleet_charge_day: input?.weekly_fleet_charge_day ?? current.weekly_fleet_charge_day,
     weekly_fleet_charge_time: input?.weekly_fleet_charge_time ?? current.weekly_fleet_charge_time,
+    daily_additional_expenses_enabled: input?.daily_additional_expenses_enabled
+      ?? current.daily_additional_expenses_enabled,
+    daily_additional_expenses_time: input?.daily_additional_expenses_time
+      ?? current.daily_additional_expenses_time,
   });
 
   const result = await query(
@@ -44,14 +50,18 @@ export async function updateMiautoAutomationConfig(input, userId = null) {
          weekly_fleet_charge_enabled = $4,
          weekly_fleet_charge_day = $5,
          weekly_fleet_charge_time = $6::time,
-         timezone = $7,
-         updated_by = $8,
+         daily_additional_expenses_enabled = $7,
+         daily_additional_expenses_time = $8::time,
+         timezone = $9,
+         updated_by = $10,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = 1
      RETURNING weekly_generation_enabled, weekly_generation_day,
                weekly_generation_time::text,
                weekly_fleet_charge_enabled, weekly_fleet_charge_day,
                weekly_fleet_charge_time::text,
+               daily_additional_expenses_enabled,
+               daily_additional_expenses_time::text,
                timezone, updated_at, updated_by`,
     [
       next.weekly_generation_enabled,
@@ -60,6 +70,8 @@ export async function updateMiautoAutomationConfig(input, userId = null) {
       next.weekly_fleet_charge_enabled,
       next.weekly_fleet_charge_day,
       next.weekly_fleet_charge_time,
+      next.daily_additional_expenses_enabled,
+      next.daily_additional_expenses_time,
       next.timezone,
       userId,
     ],

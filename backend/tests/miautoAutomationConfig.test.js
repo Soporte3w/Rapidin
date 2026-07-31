@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  getMiautoAutomationActions,
   getMiautoWeeklyAutomationActions,
+  matchesMiautoDailyAdditionalExpensesSchedule,
   matchesMiautoWeeklyFleetChargeSchedule,
   matchesMiautoWeeklyGenerationSchedule,
   normalizeMiautoAutomationConfig,
@@ -17,6 +19,8 @@ test('normaliza la configuración histórica al horario vigente', () => {
     weekly_fleet_charge_enabled: true,
     weekly_fleet_charge_day: 1,
     weekly_fleet_charge_time: '07:10',
+    daily_additional_expenses_enabled: true,
+    daily_additional_expenses_time: '02:15',
     timezone: 'America/Lima',
   });
   assert.equal(normalizeMiautoAutomationTime('07:15:00'), '07:15');
@@ -30,6 +34,8 @@ test('valida día y hora administrables', () => {
     weekly_fleet_charge_enabled: true,
     weekly_fleet_charge_day: 6,
     weekly_fleet_charge_time: '22:40',
+    daily_additional_expenses_enabled: false,
+    daily_additional_expenses_time: '03:25',
   }), {
     weekly_generation_enabled: false,
     weekly_generation_day: 6,
@@ -37,6 +43,8 @@ test('valida día y hora administrables', () => {
     weekly_fleet_charge_enabled: true,
     weekly_fleet_charge_day: 6,
     weekly_fleet_charge_time: '22:40',
+    daily_additional_expenses_enabled: false,
+    daily_additional_expenses_time: '03:25',
     timezone: 'America/Lima',
   });
 
@@ -66,6 +74,19 @@ test('valida día y hora administrables', () => {
       weekly_fleet_charge_time: '07:10',
     }),
     /weekly_fleet_charge_day debe estar entre 1/,
+  );
+  assert.throws(
+    () => validateMiautoAutomationConfig({
+      weekly_generation_enabled: true,
+      weekly_generation_day: 1,
+      weekly_generation_time: '06:00',
+      weekly_fleet_charge_enabled: true,
+      weekly_fleet_charge_day: 1,
+      weekly_fleet_charge_time: '07:10',
+      daily_additional_expenses_enabled: true,
+      daily_additional_expenses_time: '24:00',
+    }),
+    /daily_additional_expenses_time debe tener formato HH:mm/,
   );
 });
 
@@ -118,4 +139,34 @@ test('si ambos horarios coinciden ordena generación antes de Fleet', () => {
     weekly_fleet_charge_day: 1,
     weekly_fleet_charge_time: '06:00',
   }, mondaySixLima), ['generation', 'fleet']);
+});
+
+test('otros gastos usa una hora diaria administrable', () => {
+  const fridayTwoFifteenLima = new Date('2026-07-31T07:15:00.000Z');
+  const saturdayTwoFifteenLima = new Date('2026-08-01T07:15:00.000Z');
+  const config = {
+    daily_additional_expenses_enabled: true,
+    daily_additional_expenses_time: '02:15',
+  };
+
+  assert.equal(matchesMiautoDailyAdditionalExpensesSchedule(config, fridayTwoFifteenLima), true);
+  assert.equal(matchesMiautoDailyAdditionalExpensesSchedule(config, saturdayTwoFifteenLima), true);
+  assert.equal(matchesMiautoDailyAdditionalExpensesSchedule({
+    ...config,
+    daily_additional_expenses_enabled: false,
+  }, fridayTwoFifteenLima), false);
+});
+
+test('si coinciden ejecuta otros gastos antes de generación y Fleet', () => {
+  const mondaySixLima = new Date('2026-07-27T11:00:00.000Z');
+  assert.deepEqual(getMiautoAutomationActions({
+    daily_additional_expenses_enabled: true,
+    daily_additional_expenses_time: '06:00',
+    weekly_generation_enabled: true,
+    weekly_generation_day: 1,
+    weekly_generation_time: '06:00',
+    weekly_fleet_charge_enabled: true,
+    weekly_fleet_charge_day: 1,
+    weekly_fleet_charge_time: '06:00',
+  }, mondaySixLima), ['additional_expenses', 'generation', 'fleet']);
 });

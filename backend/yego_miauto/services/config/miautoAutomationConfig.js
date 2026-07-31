@@ -9,6 +9,8 @@ export const MIAUTO_AUTOMATION_DEFAULTS = Object.freeze({
   weekly_fleet_charge_enabled: true,
   weekly_fleet_charge_day: 1,
   weekly_fleet_charge_time: '07:10',
+  daily_additional_expenses_enabled: true,
+  daily_additional_expenses_time: '02:15',
   timezone: MIAUTO_AUTOMATION_TIMEZONE,
 });
 
@@ -51,6 +53,14 @@ export function normalizeMiautoAutomationConfig(value = {}) {
       value.weekly_fleet_charge_time,
       MIAUTO_AUTOMATION_DEFAULTS.weekly_fleet_charge_time,
     ),
+    daily_additional_expenses_enabled: normalizeBoolean(
+      value.daily_additional_expenses_enabled,
+      MIAUTO_AUTOMATION_DEFAULTS.daily_additional_expenses_enabled,
+    ),
+    daily_additional_expenses_time: normalizeMiautoAutomationTime(
+      value.daily_additional_expenses_time,
+      MIAUTO_AUTOMATION_DEFAULTS.daily_additional_expenses_time,
+    ),
     timezone: MIAUTO_AUTOMATION_TIMEZONE,
   };
 }
@@ -73,6 +83,19 @@ function validateWeeklySchedule(value, fields) {
   return { enabled: value[fields.enabled], day, time };
 }
 
+function validateDailySchedule(value, fields) {
+  if (typeof value[fields.enabled] !== 'boolean') {
+    throw new Error(`${fields.enabled} debe ser booleano`);
+  }
+
+  const time = String(value[fields.time] || '').trim();
+  if (!/^\d{2}:\d{2}$/.test(time) || normalizeMiautoAutomationTime(time, null) == null) {
+    throw new Error(`${fields.time} debe tener formato HH:mm`);
+  }
+
+  return { enabled: value[fields.enabled], time };
+}
+
 export function validateMiautoAutomationConfig(value = {}) {
   const generation = validateWeeklySchedule(value, {
     enabled: 'weekly_generation_enabled',
@@ -84,6 +107,10 @@ export function validateMiautoAutomationConfig(value = {}) {
     day: 'weekly_fleet_charge_day',
     time: 'weekly_fleet_charge_time',
   });
+  const additionalExpenses = validateDailySchedule(value, {
+    enabled: 'daily_additional_expenses_enabled',
+    time: 'daily_additional_expenses_time',
+  });
 
   return {
     weekly_generation_enabled: generation.enabled,
@@ -92,6 +119,8 @@ export function validateMiautoAutomationConfig(value = {}) {
     weekly_fleet_charge_enabled: fleet.enabled,
     weekly_fleet_charge_day: fleet.day,
     weekly_fleet_charge_time: fleet.time,
+    daily_additional_expenses_enabled: additionalExpenses.enabled,
+    daily_additional_expenses_time: additionalExpenses.time,
     timezone: MIAUTO_AUTOMATION_TIMEZONE,
   };
 }
@@ -100,14 +129,16 @@ function matchesWeeklySchedule(enabled, day, time, now) {
   if (!enabled) return false;
   const limaYmd = getLimaYmd(now);
   const isoWeekday = weekdaysSinceMondayMon0(limaYmd) + 1;
-  const limaTime = new Intl.DateTimeFormat('en-GB', {
+  return isoWeekday === day && limaTime(now) === time;
+}
+
+function limaTime(now) {
+  return new Intl.DateTimeFormat('en-GB', {
     timeZone: MIAUTO_AUTOMATION_TIMEZONE,
     hour: '2-digit',
     minute: '2-digit',
     hourCycle: 'h23',
   }).format(now);
-
-  return isoWeekday === day && limaTime === time;
 }
 
 export function matchesMiautoWeeklyGenerationSchedule(configValue, now = new Date()) {
@@ -130,9 +161,24 @@ export function matchesMiautoWeeklyFleetChargeSchedule(configValue, now = new Da
   );
 }
 
+export function matchesMiautoDailyAdditionalExpensesSchedule(configValue, now = new Date()) {
+  const config = normalizeMiautoAutomationConfig(configValue);
+  return config.daily_additional_expenses_enabled
+    && limaTime(now) === config.daily_additional_expenses_time;
+}
+
 export function getMiautoWeeklyAutomationActions(configValue, now = new Date()) {
   const actions = [];
   if (matchesMiautoWeeklyGenerationSchedule(configValue, now)) actions.push('generation');
   if (matchesMiautoWeeklyFleetChargeSchedule(configValue, now)) actions.push('fleet');
+  return actions;
+}
+
+export function getMiautoAutomationActions(configValue, now = new Date()) {
+  const actions = [];
+  if (matchesMiautoDailyAdditionalExpensesSchedule(configValue, now)) {
+    actions.push('additional_expenses');
+  }
+  actions.push(...getMiautoWeeklyAutomationActions(configValue, now));
   return actions;
 }

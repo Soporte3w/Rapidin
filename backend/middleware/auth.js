@@ -1,7 +1,15 @@
 import jwt from 'jsonwebtoken';
 import { query } from '../config/database.js';
 import { SYSTEM_ROLES_TABLE, SYSTEM_USERS_TABLE } from '../config/systemUsers.js';
-import { logger } from '../utils/logger.js';
+import { asyncLocalStorage, logger } from '../utils/logger.js';
+
+function updateRequestUserContext(user) {
+  const context = asyncLocalStorage.getStore();
+  if (!context || !user) return;
+  context.userId = user.id || null;
+  context.userRole = user.role || null;
+  context.actorType = 'user';
+}
 
 const ADMIN_USER_SELECT = `
   u.id, u.email, u.first_name, u.last_name, u.role, u.country, u.active,
@@ -57,6 +65,7 @@ export const verifyToken = async (req, res, next) => {
 
     req.user = result.rows[0];
     req.user.allowed_modules = req.user.allowed_modules || decoded.allowedModules || ['rapidin'];
+    updateRequestUserContext(req.user);
     next();
   } catch (error) {
     logger.error('Error verificando token:', error);
@@ -131,6 +140,7 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
+    updateRequestUserContext(req.user);
     next();
   } catch (error) {
     logger.error('Error verificando token:', error);
@@ -170,6 +180,5 @@ export const verifyRole = (...roles) => {
     next();
   };
 };
-
 
 

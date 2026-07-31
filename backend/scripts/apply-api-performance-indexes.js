@@ -14,6 +14,17 @@ const EXPECTED_INDEXES = [
   'idx_rapidin_audit_entity_changed',
 ];
 
+const TABLES_TO_ANALYZE = [
+  'module_rapidin_payment_installments',
+  'module_rapidin_loans',
+  'module_rapidin_loan_requests',
+  'module_rapidin_installments',
+  'module_miauto_cuota_semanal',
+  'module_miauto_comprobante_cuota_semanal',
+  'module_rapidin_drivers',
+  'module_rapidin_data_audit_log',
+];
+
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const migrationPath = path.resolve(
   scriptDirectory,
@@ -74,6 +85,11 @@ try {
       const label = statement.replace(/\s+/g, ' ').slice(0, 100);
       console.log(`[${index + 1}/${statements.length}] ${label}`);
       await client.query(statement);
+    }
+
+    for (const tableName of TABLES_TO_ANALYZE) {
+      console.log(`Actualizando estadísticas: ${tableName}`);
+      await client.query(`ANALYZE public.${tableName}`);
     }
   }
 

@@ -359,32 +359,40 @@ export const generateInstallmentSchedule = async (loanId, disbursedAmount, inter
   const schedule = buildScheduleFromFixedCuota(P, i, n, cuotaFija);
 
   const startDate = new Date(firstPaymentDate);
-  const installments = [];
-
-  for (let k = 0; k < schedule.length; k++) {
-    const row = schedule[k];
+  const installmentRows = schedule.map((row, k) => {
     const dueDate = new Date(startDate);
     dueDate.setDate(startDate.getDate() + k * 7);
     const dueDateStr = dueDate.toISOString().split('T')[0];
-
-    await query(
-      `INSERT INTO module_rapidin_installments 
-       (loan_id, installment_number, installment_amount, principal_amount, interest_amount, due_date, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending')`,
-      [loanId, row.installment_number, row.installment_amount, row.principal_amount, row.interest_amount, dueDateStr]
-    );
-
-    installments.push({
+    return {
       installment_number: row.installment_number,
       installment_amount: row.installment_amount,
-      due_date: dueDateStr
-    });
-  }
+      principal_amount: row.principal_amount,
+      interest_amount: row.interest_amount,
+      due_date: dueDateStr,
+    };
+  });
 
-  return installments;
+  await query(
+    `INSERT INTO module_rapidin_installments
+       (loan_id, installment_number, installment_amount, principal_amount, interest_amount, due_date, status)
+     SELECT $1, x.installment_number, x.installment_amount, x.principal_amount, x.interest_amount, x.due_date, 'pending'
+     FROM jsonb_to_recordset($2::jsonb) AS x(
+       installment_number INTEGER,
+       installment_amount NUMERIC,
+       principal_amount NUMERIC,
+       interest_amount NUMERIC,
+       due_date DATE
+     )
+     ORDER BY x.installment_number`,
+    [loanId, JSON.stringify(installmentRows)]
+  );
+
+  return installmentRows.map(({ installment_number, installment_amount, due_date }) => ({
+    installment_number,
+    installment_amount,
+    due_date,
+  }));
 };
-
-
 
 
 

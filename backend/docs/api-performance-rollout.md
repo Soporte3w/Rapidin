@@ -35,6 +35,22 @@ WHERE c.relname LIKE 'idx_%';
 7. Ejecutar `ANALYZE` solamente sobre la tabla correspondiente.
 8. Comparar p50/p95 durante un ciclo de uso antes de continuar.
 
+El comando `npm run db:indexes:performance` ejecuta las sentencias de forma
+secuencial, valida los ocho índices y actualiza las estadísticas de las tablas
+afectadas. `npm run db:indexes:performance -- --check` solo verifica.
+
+## Pendientes de infraestructura
+
+Estas acciones no se automatizan desde el repositorio:
+
+- Acercar el backend y PostgreSQL para reducir el tiempo de red por consulta.
+- Habilitar `pg_stat_statements` y `track_io_timing` en una ventana de
+  mantenimiento para observar consultas e I/O reales.
+- Revisar `shared_buffers`, `work_mem` y la actualización de PostgreSQL según
+  la memoria disponible y la carga de todos los sistemas que comparten la BD.
+- Definir retención o particionamiento del audit log antes de eliminar datos.
+- Programar backups recurrentes y mantener al menos una copia fuera del host.
+
 ## Rollback
 
 El código puede revertirse por commit sin revertir datos. Los índices son

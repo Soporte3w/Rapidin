@@ -155,7 +155,7 @@ export function buildMiAutoMessage(input: BuildMessageInput): BuildMessageResult
     const semana = miautoSemanaOrdinalPorVencimiento(cuotas, cuotaReciente.due_date, cuotaReciente.week_start_date);
     const cubierto = pendingTotalCuota <= 0.01;
 
-    let header = `Hola ${name},\n\nLe compartimos el detalle de su pago:\n- Semana ${semana}: ${viajes} viajes - ${sym} ${cuotaSemanal.toFixed(2)}\n`;
+    const header = `Hola ${name},\n\nLe compartimos el detalle de su pago:\n- Semana ${semana}: ${viajes} viajes - ${sym} ${cuotaSemanal.toFixed(2)}\n`;
 
     let descuentos = '\nDESCUENTOS:\n';
     let hasDescuentos = false;

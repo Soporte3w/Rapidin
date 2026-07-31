@@ -719,28 +719,28 @@ export const getLoanById = async (id) => {
 export const getInstallmentSchedule = async (loanId) => {
   // Recalcular mora de cuotas vencidas. Si hay late_fee_base_date (pago parcial), la mora calculada es solo desde esa fecha → no restar paid_late_fee.
   const overdueForLoan = await query(
-    `SELECT i.id, COALESCE(i.paid_late_fee, 0)::numeric AS paid_late_fee, i.late_fee_base_date,
-            calculate_late_fee(i.id, CURRENT_DATE) AS calculated_late_fee
-     FROM module_rapidin_installments i
-     JOIN module_rapidin_loans l ON l.id = i.loan_id
-     WHERE i.loan_id = $1 AND l.status IN ('active', 'defaulted')
+    `UPDATE module_rapidin_installments i
+     SET late_fee = CASE
+           WHEN i.late_fee_base_date IS NOT NULL
+             THEN COALESCE(calculate_late_fee(i.id, CURRENT_DATE), 0)
+           ELSE GREATEST(
+             0,
+             COALESCE(calculate_late_fee(i.id, CURRENT_DATE), 0) - COALESCE(i.paid_late_fee, 0)
+           )
+         END,
+         days_overdue = GREATEST(0, CURRENT_DATE - COALESCE(i.late_fee_base_date, i.due_date)),
+         status = 'overdue',
+         updated_at = CURRENT_TIMESTAMP
+     FROM module_rapidin_loans l
+     WHERE l.id = i.loan_id
+       AND i.loan_id = $1
+       AND l.status IN ('active', 'defaulted')
        AND i.status IN ('pending', 'overdue')
        AND i.due_date < CURRENT_DATE
-       AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0`,
+       AND (i.installment_amount + COALESCE(i.late_fee, 0) - COALESCE(i.paid_amount, 0)) > 0
+     RETURNING i.id`,
     [loanId]
   );
-  for (const row of overdueForLoan.rows) {
-    const totalMora = parseFloat(row.calculated_late_fee) || 0;
-    const paidLateFee = parseFloat(row.paid_late_fee || 0) || 0;
-    const hasBaseDate = row.late_fee_base_date != null;
-    const newLateFee = hasBaseDate ? totalMora : Math.max(0, totalMora - paidLateFee);
-    await query(
-      `UPDATE module_rapidin_installments
-       SET late_fee = $1, days_overdue = GREATEST(0, CURRENT_DATE - COALESCE(late_fee_base_date, due_date)), status = 'overdue', updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2`,
-      [newLateFee, row.id]
-    );
-  }
   if (overdueForLoan.rows.length > 0) {
     await query(
       `UPDATE module_rapidin_loans
@@ -800,5 +800,3 @@ export const getInstallmentSchedule = async (loanId) => {
   });
   return rows;
 };
-
-

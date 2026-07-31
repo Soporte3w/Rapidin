@@ -64,6 +64,9 @@ type MiautoAutomationConfig = {
   weekly_generation_enabled: boolean;
   weekly_generation_day: number;
   weekly_generation_time: string;
+  weekly_fleet_charge_enabled: boolean;
+  weekly_fleet_charge_day: number;
+  weekly_fleet_charge_time: string;
   timezone: string;
 };
 
@@ -71,6 +74,9 @@ const DEFAULT_AUTOMATION_CONFIG: MiautoAutomationConfig = {
   weekly_generation_enabled: true,
   weekly_generation_day: 1,
   weekly_generation_time: '06:00',
+  weekly_fleet_charge_enabled: true,
+  weekly_fleet_charge_day: 1,
+  weekly_fleet_charge_time: '07:10',
   timezone: 'America/Lima',
 };
 
@@ -216,6 +222,9 @@ export default function YegoMiAutoConfig() {
             weekly_generation_enabled: automation?.weekly_generation_enabled !== false,
             weekly_generation_day: Number(automation?.weekly_generation_day) || 1,
             weekly_generation_time: String(automation?.weekly_generation_time || '06:00').slice(0, 5),
+            weekly_fleet_charge_enabled: automation?.weekly_fleet_charge_enabled !== false,
+            weekly_fleet_charge_day: Number(automation?.weekly_fleet_charge_day) || 1,
+            weekly_fleet_charge_time: String(automation?.weekly_fleet_charge_time || '07:10').slice(0, 5),
             timezone: automation?.timezone || 'America/Lima',
           });
         }
@@ -235,8 +244,11 @@ export default function YegoMiAutoConfig() {
   }, []);
 
   const saveAutomationConfig = useCallback(async () => {
-    if (!/^\d{2}:\d{2}$/.test(automationConfig.weekly_generation_time)) {
-      toast.error('Selecciona una hora válida');
+    if (
+      !/^\d{2}:\d{2}$/.test(automationConfig.weekly_generation_time)
+      || !/^\d{2}:\d{2}$/.test(automationConfig.weekly_fleet_charge_time)
+    ) {
+      toast.error('Selecciona horas válidas para ambas automatizaciones');
       return;
     }
     try {
@@ -247,9 +259,12 @@ export default function YegoMiAutoConfig() {
         weekly_generation_enabled: saved.weekly_generation_enabled !== false,
         weekly_generation_day: Number(saved.weekly_generation_day),
         weekly_generation_time: String(saved.weekly_generation_time).slice(0, 5),
+        weekly_fleet_charge_enabled: saved.weekly_fleet_charge_enabled !== false,
+        weekly_fleet_charge_day: Number(saved.weekly_fleet_charge_day),
+        weekly_fleet_charge_time: String(saved.weekly_fleet_charge_time).slice(0, 5),
         timezone: saved.timezone || 'America/Lima',
       });
-      toast.success('Automatización de cuotas actualizada');
+      toast.success('Automatizaciones semanales actualizadas');
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Error al guardar la automatización');
     } finally {
@@ -622,6 +637,15 @@ export default function YegoMiAutoConfig() {
     () => form.vehicles.reduce((total, vehicle) => total + countConfiguredExpenses(vehicle, tipoCronograma), 0),
     [form.vehicles, tipoCronograma],
   );
+  const fleetScheduleNotAfterGeneration = useMemo(() => {
+    if (!automationConfig.weekly_generation_enabled || !automationConfig.weekly_fleet_charge_enabled) return false;
+    const minuteOfWeek = (day: number, time: string) => {
+      const [hour, minute] = time.split(':').map(Number);
+      return day * 24 * 60 + (Number.isFinite(hour) ? hour : 0) * 60 + (Number.isFinite(minute) ? minute : 0);
+    };
+    return minuteOfWeek(automationConfig.weekly_fleet_charge_day, automationConfig.weekly_fleet_charge_time)
+      <= minuteOfWeek(automationConfig.weekly_generation_day, automationConfig.weekly_generation_time);
+  }, [automationConfig]);
   const activeModalTabIndex = MODAL_TABS.findIndex((tab) => tab.id === modalActiveTab);
 
   /** Solo dígitos y un decimal (punto o coma). Sin "e", ni signos ni caracteres especiales. */
@@ -689,8 +713,8 @@ export default function YegoMiAutoConfig() {
             <CalendarClock className="h-5 w-5" />
           </span>
           <div>
-            <h2 className="text-base font-semibold text-gray-900">Generación automática de cuotas</h2>
-            <p className="text-xs text-gray-500">Programa cuándo se generan las cuotas semanales de todos los contratos elegibles.</p>
+            <h2 className="text-base font-semibold text-gray-900">Automatizaciones semanales</h2>
+            <p className="text-xs text-gray-500">Programa la generación de cuotas y el cobro posterior desde el saldo Fleet.</p>
           </div>
         </div>
         <div className="p-4 sm:p-6">
@@ -699,8 +723,13 @@ export default function YegoMiAutoConfig() {
               <div className="h-8 w-8 animate-spin rounded-full border-2 border-red-600 border-t-transparent" />
             </div>
           ) : (
-            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-              <div className="grid flex-1 gap-4 sm:grid-cols-3">
+            <div className="space-y-5">
+              <section>
+                <div className="mb-3">
+                  <h3 className="text-sm font-semibold text-gray-900">1. Generación automática de cuotas</h3>
+                  <p className="mt-0.5 text-xs text-gray-500">Calcula viajes, recaudo y saldo pendiente de todos los contratos elegibles.</p>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-3">
                 <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-4">
                   <p className="mb-3 text-sm font-medium text-gray-700">Estado</p>
                   <label className="inline-flex cursor-pointer items-center gap-3">
@@ -755,20 +784,92 @@ export default function YegoMiAutoConfig() {
                   />
                   <p className="mt-1 text-xs text-gray-500">Zona horaria: Lima (UTC-5)</p>
                 </div>
-              </div>
+                </div>
+              </section>
+
+              <section className="border-t border-gray-200 pt-5">
+                <div className="mb-3">
+                  <h3 className="text-sm font-semibold text-gray-900">2. Cobro automático Fleet</h3>
+                  <p className="mt-0.5 text-xs text-gray-500">Retira del saldo Fleet únicamente lo que permanezca pendiente después de generar la cuota.</p>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-4">
+                    <p className="mb-3 text-sm font-medium text-gray-700">Estado</p>
+                    <label className="inline-flex cursor-pointer items-center gap-3">
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={automationConfig.weekly_fleet_charge_enabled}
+                        onClick={() => setAutomationConfig((current) => ({
+                          ...current,
+                          weekly_fleet_charge_enabled: !current.weekly_fleet_charge_enabled,
+                        }))}
+                        className={`relative inline-flex h-6 w-11 rounded-full border-2 border-transparent transition-colors ${
+                          automationConfig.weekly_fleet_charge_enabled ? 'bg-green-500' : 'bg-gray-300'
+                        }`}
+                      >
+                        <span className={`pointer-events-none absolute left-0.5 top-1/2 h-5 w-5 -translate-y-1/2 rounded-full bg-white shadow transition-transform ${
+                          automationConfig.weekly_fleet_charge_enabled ? 'translate-x-4' : 'translate-x-0'
+                        }`} />
+                      </button>
+                      <span className={`text-sm font-semibold ${automationConfig.weekly_fleet_charge_enabled ? 'text-green-700' : 'text-gray-600'}`}>
+                        {automationConfig.weekly_fleet_charge_enabled ? 'Activo' : 'Inactivo'}
+                      </span>
+                    </label>
+                  </div>
+                  <div>
+                    <label htmlFor="miauto-weekly-fleet-day" className="mb-1.5 block text-sm font-medium text-gray-700">Día de ejecución</label>
+                    <select
+                      id="miauto-weekly-fleet-day"
+                      value={automationConfig.weekly_fleet_charge_day}
+                      onChange={(event) => setAutomationConfig((current) => ({
+                        ...current,
+                        weekly_fleet_charge_day: Number(event.target.value),
+                      }))}
+                      disabled={!automationConfig.weekly_fleet_charge_enabled}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
+                    >
+                      {WEEKDAY_OPTIONS.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="miauto-weekly-fleet-time" className="mb-1.5 block text-sm font-medium text-gray-700">Hora de ejecución</label>
+                    <input
+                      id="miauto-weekly-fleet-time"
+                      type="time"
+                      value={automationConfig.weekly_fleet_charge_time}
+                      onChange={(event) => setAutomationConfig((current) => ({
+                        ...current,
+                        weekly_fleet_charge_time: event.target.value,
+                      }))}
+                      disabled={!automationConfig.weekly_fleet_charge_enabled}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">Zona horaria: Lima (UTC-5)</p>
+                  </div>
+                </div>
+              </section>
+
+              {fleetScheduleNotAfterGeneration && (
+                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  El cobro Fleet está programado antes o al mismo minuto que la generación. Si coinciden, el sistema genera primero; si Fleet queda antes, podría no encontrar la cuota nueva.
+                </p>
+              )}
+
+              <div className="flex justify-end border-t border-gray-200 pt-4">
               <button
                 type="button"
                 onClick={saveAutomationConfig}
                 disabled={savingAutomation}
                 className="inline-flex h-10 items-center justify-center rounded-lg bg-[#8B1A1A] px-5 text-sm font-medium text-white hover:bg-[#6B1515] disabled:opacity-50"
               >
-                {savingAutomation ? 'Guardando...' : 'Guardar automatización'}
+                {savingAutomation ? 'Guardando...' : 'Guardar automatizaciones'}
               </button>
+              </div>
             </div>
           )}
           <p className="mt-4 text-xs leading-relaxed text-gray-500">
-            El proceso usa los ingresos de la última semana cerrada y conserva la protección contra ejecuciones duplicadas.
-            Si está inactivo, no se crearán nuevas cuotas por esta automatización.
+            Ambos procesos conservan protección contra ejecuciones duplicadas. Programa Fleet después de la generación para que cobre la cuota recién calculada.
           </p>
         </div>
       </div>

@@ -39,6 +39,9 @@ router.put('/automation-config', async (req, res) => {
       weeklyGenerationEnabled: config.weekly_generation_enabled,
       weeklyGenerationDay: config.weekly_generation_day,
       weeklyGenerationTime: config.weekly_generation_time,
+      weeklyFleetChargeEnabled: config.weekly_fleet_charge_enabled,
+      weeklyFleetChargeDay: config.weekly_fleet_charge_day,
+      weeklyFleetChargeTime: config.weekly_fleet_charge_time,
     });
     return successResponse(res, config, 'Automatización actualizada');
   } catch (error) {

@@ -6,6 +6,9 @@ export const MIAUTO_AUTOMATION_DEFAULTS = Object.freeze({
   weekly_generation_enabled: true,
   weekly_generation_day: 1,
   weekly_generation_time: '06:00',
+  weekly_fleet_charge_enabled: true,
+  weekly_fleet_charge_day: 1,
+  weekly_fleet_charge_time: '07:10',
   timezone: MIAUTO_AUTOMATION_TIMEZONE,
 });
 
@@ -26,47 +29,75 @@ export function normalizeMiautoAutomationTime(value, fallback = MIAUTO_AUTOMATIO
 }
 
 export function normalizeMiautoAutomationConfig(value = {}) {
-  const day = Number(value.weekly_generation_day);
+  const generationDay = Number(value.weekly_generation_day);
+  const fleetDay = Number(value.weekly_fleet_charge_day);
   return {
     weekly_generation_enabled: normalizeBoolean(
       value.weekly_generation_enabled,
       MIAUTO_AUTOMATION_DEFAULTS.weekly_generation_enabled,
     ),
-    weekly_generation_day: Number.isInteger(day) && day >= 1 && day <= 6
-      ? day
+    weekly_generation_day: Number.isInteger(generationDay) && generationDay >= 1 && generationDay <= 6
+      ? generationDay
       : MIAUTO_AUTOMATION_DEFAULTS.weekly_generation_day,
     weekly_generation_time: normalizeMiautoAutomationTime(value.weekly_generation_time),
+    weekly_fleet_charge_enabled: normalizeBoolean(
+      value.weekly_fleet_charge_enabled,
+      MIAUTO_AUTOMATION_DEFAULTS.weekly_fleet_charge_enabled,
+    ),
+    weekly_fleet_charge_day: Number.isInteger(fleetDay) && fleetDay >= 1 && fleetDay <= 6
+      ? fleetDay
+      : MIAUTO_AUTOMATION_DEFAULTS.weekly_fleet_charge_day,
+    weekly_fleet_charge_time: normalizeMiautoAutomationTime(
+      value.weekly_fleet_charge_time,
+      MIAUTO_AUTOMATION_DEFAULTS.weekly_fleet_charge_time,
+    ),
     timezone: MIAUTO_AUTOMATION_TIMEZONE,
   };
+}
+
+function validateWeeklySchedule(value, fields) {
+  if (typeof value[fields.enabled] !== 'boolean') {
+    throw new Error(`${fields.enabled} debe ser booleano`);
+  }
+
+  const day = Number(value[fields.day]);
+  if (!Number.isInteger(day) || day < 1 || day > 6) {
+    throw new Error(`${fields.day} debe estar entre 1 (lunes) y 6 (sábado)`);
+  }
+
+  const time = String(value[fields.time] || '').trim();
+  if (!/^\d{2}:\d{2}$/.test(time) || normalizeMiautoAutomationTime(time, null) == null) {
+    throw new Error(`${fields.time} debe tener formato HH:mm`);
+  }
+
+  return { enabled: value[fields.enabled], day, time };
 }
 
 export function validateMiautoAutomationConfig(value = {}) {
-  if (typeof value.weekly_generation_enabled !== 'boolean') {
-    throw new Error('weekly_generation_enabled debe ser booleano');
-  }
-
-  const day = Number(value.weekly_generation_day);
-  if (!Number.isInteger(day) || day < 1 || day > 6) {
-    throw new Error('weekly_generation_day debe estar entre 1 (lunes) y 6 (sábado)');
-  }
-
-  const time = String(value.weekly_generation_time || '').trim();
-  if (!/^\d{2}:\d{2}$/.test(time) || normalizeMiautoAutomationTime(time, null) == null) {
-    throw new Error('weekly_generation_time debe tener formato HH:mm');
-  }
+  const generation = validateWeeklySchedule(value, {
+    enabled: 'weekly_generation_enabled',
+    day: 'weekly_generation_day',
+    time: 'weekly_generation_time',
+  });
+  const fleet = validateWeeklySchedule(value, {
+    enabled: 'weekly_fleet_charge_enabled',
+    day: 'weekly_fleet_charge_day',
+    time: 'weekly_fleet_charge_time',
+  });
 
   return {
-    weekly_generation_enabled: value.weekly_generation_enabled,
-    weekly_generation_day: day,
-    weekly_generation_time: time,
+    weekly_generation_enabled: generation.enabled,
+    weekly_generation_day: generation.day,
+    weekly_generation_time: generation.time,
+    weekly_fleet_charge_enabled: fleet.enabled,
+    weekly_fleet_charge_day: fleet.day,
+    weekly_fleet_charge_time: fleet.time,
     timezone: MIAUTO_AUTOMATION_TIMEZONE,
   };
 }
 
-export function matchesMiautoWeeklyGenerationSchedule(configValue, now = new Date()) {
-  const config = normalizeMiautoAutomationConfig(configValue);
-  if (!config.weekly_generation_enabled) return false;
-
+function matchesWeeklySchedule(enabled, day, time, now) {
+  if (!enabled) return false;
   const limaYmd = getLimaYmd(now);
   const isoWeekday = weekdaysSinceMondayMon0(limaYmd) + 1;
   const limaTime = new Intl.DateTimeFormat('en-GB', {
@@ -76,6 +107,32 @@ export function matchesMiautoWeeklyGenerationSchedule(configValue, now = new Dat
     hourCycle: 'h23',
   }).format(now);
 
-  return isoWeekday === config.weekly_generation_day
-    && limaTime === config.weekly_generation_time;
+  return isoWeekday === day && limaTime === time;
+}
+
+export function matchesMiautoWeeklyGenerationSchedule(configValue, now = new Date()) {
+  const config = normalizeMiautoAutomationConfig(configValue);
+  return matchesWeeklySchedule(
+    config.weekly_generation_enabled,
+    config.weekly_generation_day,
+    config.weekly_generation_time,
+    now,
+  );
+}
+
+export function matchesMiautoWeeklyFleetChargeSchedule(configValue, now = new Date()) {
+  const config = normalizeMiautoAutomationConfig(configValue);
+  return matchesWeeklySchedule(
+    config.weekly_fleet_charge_enabled,
+    config.weekly_fleet_charge_day,
+    config.weekly_fleet_charge_time,
+    now,
+  );
+}
+
+export function getMiautoWeeklyAutomationActions(configValue, now = new Date()) {
+  const actions = [];
+  if (matchesMiautoWeeklyGenerationSchedule(configValue, now)) actions.push('generation');
+  if (matchesMiautoWeeklyFleetChargeSchedule(configValue, now)) actions.push('fleet');
+  return actions;
 }

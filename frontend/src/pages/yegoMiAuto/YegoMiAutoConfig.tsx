@@ -1309,7 +1309,7 @@ export default function YegoMiAutoConfig() {
                         <div>
                           <p className="text-xs font-semibold text-gray-800">Gastos y coberturas</p>
                           <p className="mt-0.5 text-[10px] text-gray-500">
-                            Los conceptos requieren monto mayor a cero, excepto el impuesto vehicular, que puede permanecer activo en cero.
+                            Los conceptos permanecen activos incluso cuando su monto configurado es cero.
                           </p>
                         </div>
                         {isViewMode && (

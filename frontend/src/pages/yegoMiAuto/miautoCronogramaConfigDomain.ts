@@ -230,9 +230,16 @@ export function configuredExpenseKeys(
   } else {
     keys.push('gps', 'src');
   }
-  return keys.filter((key) => (
-    key === 'impuesto_vehicular' || Number(requirements[key]?.monto) > 0
-  ));
+  return keys;
+}
+
+function expenseKeysRequiringSchedule(
+  requirements: RequisitosGastosVehiculo,
+  vehicleType: TipoVehiculoCronograma,
+): GastoConfigurable[] {
+  return configuredExpenseKeys(requirements, vehicleType).filter(
+    (key) => Number(requirements[key]?.monto) > 0,
+  );
 }
 
 export function isExpenseScheduleComplete(key: GastoConfigurable, item: ItemGastoConCobro) {
@@ -288,7 +295,7 @@ export function incompleteExpenseKeys(
   vehicleType: TipoVehiculoCronograma,
 ) {
   const requirements = mergeRequisitosGastosFromApi(vehicle.requisitos_gastos);
-  return configuredExpenseKeys(requirements, vehicleType).filter(
+  return expenseKeysRequiringSchedule(requirements, vehicleType).filter(
     (key) => !isExpenseScheduleComplete(key, requirements[key]),
   );
 }
@@ -300,7 +307,7 @@ function validateExpenseConfiguration(
 ): string | null {
   const expenses = mergeRequisitosGastosFromApi(vehicle.requisitos_gastos);
   const vehicleLabel = vehicle.name.trim() || `Vehículo ${index + 1}`;
-  const configuredKeys = new Set(configuredExpenseKeys(expenses, vehicleType));
+  const configuredKeys = new Set(expenseKeysRequiringSchedule(expenses, vehicleType));
 
   if (configuredKeys.has('soat')) {
     const monthsBefore = Number(expenses.soat.cobro?.meses_anticipo);

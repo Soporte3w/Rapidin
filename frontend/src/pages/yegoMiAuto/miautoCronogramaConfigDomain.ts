@@ -230,7 +230,9 @@ export function configuredExpenseKeys(
   } else {
     keys.push('gps', 'src');
   }
-  return keys.filter((key) => Number(requirements[key]?.monto) > 0);
+  return keys.filter((key) => (
+    key === 'impuesto_vehicular' || Number(requirements[key]?.monto) > 0
+  ));
 }
 
 export function isExpenseScheduleComplete(key: GastoConfigurable, item: ItemGastoConCobro) {

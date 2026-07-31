@@ -1308,7 +1308,9 @@ export default function YegoMiAutoConfig() {
                       <div className="border-t border-gray-100 pt-3 space-y-2.5">
                         <div>
                           <p className="text-xs font-semibold text-gray-800">Gastos y coberturas</p>
-                          <p className="mt-0.5 text-[10px] text-gray-500">Solo se generan conceptos con monto mayor a cero.</p>
+                          <p className="mt-0.5 text-[10px] text-gray-500">
+                            Los conceptos requieren monto mayor a cero, excepto el impuesto vehicular, que puede permanecer activo en cero.
+                          </p>
                         </div>
                         {isViewMode && (
                           <div className="space-y-2">

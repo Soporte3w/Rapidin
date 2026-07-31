@@ -29,6 +29,10 @@ el backend. Cuando encuentra archivos pendientes:
 5. Vuelve a comprobar que no quede ninguna migración pendiente.
 6. Verifica que los ocho índices de rendimiento estén válidos y listos.
 
+El respaldo requiere `pg_dump` y `pg_restore`. Si no están disponibles, el
+Bash instala una sola vez el paquete cliente de PostgreSQL mediante `apt`,
+`dnf`, `yum` o `apk`; en ejecuciones posteriores omite esa instalación.
+
 Si `git pull` descarga un commit nuevo, el proceso se reinicia una sola vez
 desde el Bash actualizado. Esto evita continuar el despliegue con instrucciones
 antiguas que ya estaban cargadas antes del pull.

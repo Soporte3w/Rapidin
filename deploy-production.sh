@@ -45,6 +45,31 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "No se encontró el comando requerido: $1"
 }
 
+ensure_postgresql_client_tools() {
+  if command -v pg_dump >/dev/null 2>&1 && command -v pg_restore >/dev/null 2>&1; then
+    log "Herramientas PostgreSQL vigentes; se omite su instalación"
+    return
+  fi
+
+  log "Faltan pg_dump/pg_restore; instalando el cliente PostgreSQL"
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-client
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y postgresql
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y postgresql
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache postgresql-client
+  else
+    fail "No hay un gestor compatible para instalar pg_dump y pg_restore"
+  fi
+
+  require_command pg_dump
+  require_command pg_restore
+  log "Cliente PostgreSQL instalado correctamente"
+}
+
 ensure_dependencies() {
   local project_dir="$1"
   local install_mode="$2"
@@ -168,8 +193,7 @@ case "$migration_check_status" in
     ;;
   10)
     log "Hay migraciones pendientes; generando respaldo previo de las tablas financieras"
-    require_command pg_dump
-    require_command pg_restore
+    ensure_postgresql_client_tools
     npm --prefix "$BACKEND_DIR" run db:backup-financing
     log "Aplicando migraciones pendientes"
     npm --prefix "$BACKEND_DIR" run db:migrate

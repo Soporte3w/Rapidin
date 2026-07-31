@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CalendarDays, RefreshCw, Save, X } from 'lucide-react';
 
@@ -17,11 +17,18 @@ export interface MiautoGastoGenerationInput {
   impuestoVehicularMontoTotal?: number;
 }
 
+export type MiautoGastoConfigFocus =
+  | 'soat'
+  | 'impuesto_vehicular'
+  | 'inicial_parcial'
+  | 'str_gps';
+
 interface Props {
   open: boolean;
   config: MiautoGastoConfiguration | null;
   saving: boolean;
   generating: boolean;
+  initialFocus?: MiautoGastoConfigFocus | null;
   onClose: () => void;
   onSave: (config: MiautoGastoConfiguration) => Promise<void>;
   onSaveAndGenerate: (
@@ -49,6 +56,7 @@ export function MiautoGastosConfigurationModal({
   config,
   saving,
   generating,
+  initialFocus = null,
   onClose,
   onSave,
   onSaveAndGenerate,
@@ -56,6 +64,7 @@ export function MiautoGastosConfigurationModal({
   const [draft, setDraft] = useState<MiautoGastoConfiguration | null>(null);
   const [periodo, setPeriodo] = useState(String(new Date().getFullYear()));
   const [impuestoMonto, setImpuestoMonto] = useState('');
+  const scrollBodyRef = useRef<HTMLDivElement>(null);
   const busy = saving || generating;
 
   useEffect(() => {
@@ -64,6 +73,22 @@ export function MiautoGastosConfigurationModal({
     setPeriodo(String(new Date().getFullYear()));
     setImpuestoMonto('');
   }, [open, config]);
+
+  useEffect(() => {
+    if (!open || !config) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      const scrollBody = scrollBodyRef.current;
+      if (!scrollBody) return;
+      if (!initialFocus) {
+        scrollBody.scrollTop = 0;
+        return;
+      }
+      const target = scrollBody.querySelector<HTMLElement>(`[data-config-section="${initialFocus}"]`);
+      target?.scrollIntoView({ block: 'center' });
+      target?.querySelector<HTMLElement>('input, select')?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [config, initialFocus, open]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -126,7 +151,7 @@ export function MiautoGastosConfigurationModal({
           </button>
         </header>
 
-        <div className="overflow-y-auto px-5 py-4">
+        <div ref={scrollBodyRef} className="overflow-y-auto px-5 py-4">
           <section className="pb-5">
             <h3 className="mb-3 text-sm font-semibold text-gray-900">Datos del vehículo</h3>
             <div className="grid gap-4 sm:grid-cols-2">
@@ -156,7 +181,10 @@ export function MiautoGastosConfigurationModal({
           <section className="border-t border-gray-200 py-5">
             <h3 className="mb-3 text-sm font-semibold text-gray-900">Seguros y cobros semanales</h3>
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="text-xs font-medium text-gray-600">
+              <label
+                data-config-section="soat"
+                className={`rounded-md text-xs font-medium text-gray-600 ${initialFocus === 'soat' ? 'ring-2 ring-red-200 ring-offset-4' : ''}`}
+              >
                 Vencimiento SOAT
                 <input
                   type="date"
@@ -165,7 +193,10 @@ export function MiautoGastosConfigurationModal({
                   className={inputClassName}
                 />
               </label>
-              <div className="grid grid-cols-[1fr_7.5rem] gap-3">
+              <div
+                data-config-section="str_gps"
+                className={`grid grid-cols-[1fr_7.5rem] gap-3 rounded-md ${initialFocus === 'str_gps' ? 'ring-2 ring-red-200 ring-offset-4' : ''}`}
+              >
                 <label className="text-xs font-medium text-gray-600">
                   STR + GPS semanal
                   <input
@@ -193,7 +224,10 @@ export function MiautoGastosConfigurationModal({
             </div>
 
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <label className="flex min-h-11 items-center justify-between gap-3 rounded-md border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700">
+              <label
+                data-config-section="inicial_parcial"
+                className={`flex min-h-11 items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm font-medium text-gray-700 ${initialFocus === 'inicial_parcial' ? 'border-red-300 ring-2 ring-red-100' : 'border-gray-200'}`}
+              >
                 Inicial parcial
                 <input
                   type="checkbox"
@@ -228,7 +262,10 @@ export function MiautoGastosConfigurationModal({
                   className={inputClassName}
                 />
               </label>
-              <label className="text-xs font-medium text-gray-600">
+              <label
+                data-config-section="impuesto_vehicular"
+                className={`rounded-md text-xs font-medium text-gray-600 ${initialFocus === 'impuesto_vehicular' ? 'ring-2 ring-red-200 ring-offset-4' : ''}`}
+              >
                 Impuesto vehicular total (PEN)
                 <input
                   type="number"

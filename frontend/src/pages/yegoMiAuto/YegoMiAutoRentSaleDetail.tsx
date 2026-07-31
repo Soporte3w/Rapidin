@@ -43,6 +43,7 @@ import { MiautoComprobantesResumenSemana } from '../../components/yegoMiAuto/Mia
 import { MiautoGenerarCuotaModal } from '../../components/yegoMiAuto/MiautoGenerarCuotaModal';
 import {
   MiautoGastosConfigurationModal,
+  type MiautoGastoConfigFocus,
   type MiautoGastoConfiguration,
   type MiautoGastoGenerationInput,
 } from '../../components/yegoMiAuto/MiautoGastosConfigurationModal';
@@ -410,6 +411,13 @@ export default function YegoMiAutoRentSaleDetail() {
   const [savingGastoConfig, setSavingGastoConfig] = useState(false);
   const [generatingGastos, setGeneratingGastos] = useState(false);
   const [showGastoConfigModal, setShowGastoConfigModal] = useState(false);
+  const [gastoConfigFocus, setGastoConfigFocus] = useState<MiautoGastoConfigFocus | null>(null);
+  const [gastoConfigContextMenu, setGastoConfigContextMenu] = useState<{
+    type: string | null;
+    label: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [showGastoFleetChargeModal, setShowGastoFleetChargeModal] = useState(false);
   const [gastoManualPagoTarget, setGastoManualPagoTarget] = useState<MiautoOtrosGastoRow | null>(null);
   const [pagandoGastoManualId, setPagandoGastoManualId] = useState<string | null>(null);
@@ -428,6 +436,48 @@ export default function YegoMiAutoRentSaleDetail() {
   const [evidenciasFleet, setEvidenciasFleet] = useState<{ id: string; cuota_semanal_id: string; file_name: string; file_path: string; created_at: string }[]>([]);
   const [subiendoEvidenciaCuotaId, setSubiendoEvidenciaCuotaId] = useState<string | null>(null);
   const [eliminandoEvidenciaId, setEliminandoEvidenciaId] = useState<string | null>(null);
+
+  const openGastoConfigModal = (focus: MiautoGastoConfigFocus | null = null) => {
+    setGastoConfigFocus(focus);
+    setShowGastoConfigModal(true);
+  };
+
+  const gastoConfigFocusForType = (type: string | null): MiautoGastoConfigFocus | null => {
+    const canonicalType = canonicalOtrosGastoType(type);
+    if (
+      canonicalType === 'soat'
+      || canonicalType === 'impuesto_vehicular'
+      || canonicalType === 'inicial_parcial'
+      || canonicalType === 'str_gps'
+    ) {
+      return canonicalType;
+    }
+    return null;
+  };
+
+  const openGastoConfigContextMenu = (
+    event: React.MouseEvent<HTMLButtonElement>,
+    type: string | null,
+    label: string,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setGastoConfigContextMenu({
+      type,
+      label,
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 200)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 96)),
+    });
+  };
+
+  useEffect(() => {
+    if (!gastoConfigContextMenu) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setGastoConfigContextMenu(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [gastoConfigContextMenu]);
   const evidenciaFleetFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const [showGenerarCuotaModal, setShowGenerarCuotaModal] = useState(false);
@@ -2755,7 +2805,7 @@ export default function YegoMiAutoRentSaleDetail() {
               </button>
               <button
                 type="button"
-                onClick={() => setShowGastoConfigModal(true)}
+                onClick={() => openGastoConfigModal()}
                 disabled={loadingGastoConfig || !gastoConfig}
                 className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -2796,6 +2846,8 @@ export default function YegoMiAutoRentSaleDetail() {
                   <button
                     type="button"
                     onClick={() => setOgTipoFilterAdmin(null)}
+                    onContextMenu={(event) => openGastoConfigContextMenu(event, null, 'Todos')}
+                    title="Clic izquierdo para filtrar · clic derecho para configurar"
                     className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${!ogTipoFilterAdmin ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
                   >
                     Todos ({otrosGastosRows.length})
@@ -2806,6 +2858,8 @@ export default function YegoMiAutoRentSaleDetail() {
                         key={type}
                         type="button"
                         onClick={() => setOgTipoFilterAdmin(ogTipoFilterAdmin === type ? null : type)}
+                        onContextMenu={(event) => openGastoConfigContextMenu(event, type, labelOtrosGastoType(type))}
+                        title="Clic izquierdo para filtrar · clic derecho para configurar"
                         className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${ogTipoFilterAdmin === type ? 'bg-[#8B1A1A] text-white border-[#8B1A1A]' : 'bg-white text-gray-600 border-gray-200'}`}
                       >
                         {labelOtrosGastoType(type)} ({expenses.length})
@@ -3021,12 +3075,53 @@ export default function YegoMiAutoRentSaleDetail() {
         )}
       </div>
 
+      {gastoConfigContextMenu && createPortal(
+        <div
+          className="fixed inset-0 z-[9997]"
+          onClick={() => setGastoConfigContextMenu(null)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setGastoConfigContextMenu(null);
+          }}
+        >
+          <div
+            role="menu"
+            aria-label={`Opciones de ${gastoConfigContextMenu.label}`}
+            className="fixed w-48 overflow-hidden rounded-md border border-gray-200 bg-white py-1 shadow-xl"
+            style={{ left: gastoConfigContextMenu.x, top: gastoConfigContextMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="truncate border-b border-gray-100 px-3 py-2 text-xs font-semibold text-gray-500">
+              {gastoConfigContextMenu.label}
+            </p>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={loadingGastoConfig || !gastoConfig}
+              onClick={() => {
+                openGastoConfigModal(gastoConfigFocusForType(gastoConfigContextMenu.type));
+                setGastoConfigContextMenu(null);
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium text-gray-700 hover:bg-red-50 hover:text-[#8B1A1A] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loadingGastoConfig ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Settings2 className="h-4 w-4" />}
+              {loadingGastoConfig ? 'Cargando...' : 'Configurar'}
+            </button>
+          </div>
+        </div>,
+        document.body,
+      )}
+
       <MiautoGastosConfigurationModal
         open={showGastoConfigModal}
         config={gastoConfig}
         saving={savingGastoConfig}
         generating={generatingGastos}
-        onClose={() => setShowGastoConfigModal(false)}
+        initialFocus={gastoConfigFocus}
+        onClose={() => {
+          setShowGastoConfigModal(false);
+          setGastoConfigFocus(null);
+        }}
         onSave={saveGastoConfiguration}
         onSaveAndGenerate={saveAndGenerateAdditionalExpenses}
       />

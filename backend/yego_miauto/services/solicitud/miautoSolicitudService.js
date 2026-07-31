@@ -538,12 +538,16 @@ export const listAlquilerVenta = async (filters = {}) => {
 
 export const getSolicitudById = async (id, options = {}) => {
   const skipYangoLicenseLookup = options.skipYangoLicenseLookup === true;
+  const vehicleImageExpression = options.includeVehicleImage === false ? 'NULL::text AS image' : 'image';
   const result = await query(
     `SELECT id, country, dni, phone, email, license_number, description,
             status, rejection_reason, cited_at, cited_by, appointment_date, reagendo_count,
             reviewed_at, reviewed_by, withdrawn_at, withdrawal_reason, observations, created_at, updated_at, driver_id_fleet,
             cronograma_id, cronograma_vehiculo_id, pago_tipo, pago_estado, fecha_inicio_cobro_semanal, placa_asignada,
             facturador_customer_id,
+            (SELECT cv.inicial_moneda
+             FROM module_miauto_cronograma_vehiculo cv
+             WHERE cv.id = module_miauto_solicitud.cronograma_vehiculo_id) AS cronograma_vehiculo_inicial_moneda,
             COALESCE(apps_trabajadas, '[]'::jsonb) AS apps_trabajadas
      FROM module_miauto_solicitud WHERE id = $1`,
     [id]
@@ -551,7 +555,7 @@ export const getSolicitudById = async (id, options = {}) => {
   if (result.rows.length === 0) return null;
   const row = result.rows[0];
 
-  const [citasRes, cronoRes, vehRes, compRes, otrosGastos, validadoPack] = await Promise.all([
+  const [citasRes, cronoRes, vehRes, compRes, otrosGastos, validadoPack, workingRes] = await Promise.all([
     query(
       'SELECT id, tipo, appointment_date, created_at, created_by, resultado FROM module_miauto_solicitud_cita WHERE solicitud_id = $1 ORDER BY created_at ASC',
       [id]
@@ -564,7 +568,8 @@ export const getSolicitudById = async (id, options = {}) => {
       : Promise.resolve({ rows: [] }),
     row.cronograma_vehiculo_id
       ? query(
-          'SELECT id, name, inicial, inicial_moneda, cuotas_semanales, image FROM module_miauto_cronograma_vehiculo WHERE id = $1',
+          `SELECT id, name, inicial, inicial_moneda, cuotas_semanales, ${vehicleImageExpression}
+           FROM module_miauto_cronograma_vehiculo WHERE id = $1`,
           [row.cronograma_vehiculo_id]
         )
       : Promise.resolve({ rows: [] }),
@@ -573,8 +578,24 @@ export const getSolicitudById = async (id, options = {}) => {
       [id]
     ),
     listOtrosGastosBySolicitud(id),
-    getTotalValidado(id),
+    getTotalValidado(id, {
+      country: row.country,
+      cronogramaVehiculoId: row.cronograma_vehiculo_id,
+      inicialMonedaRaw: row.cronograma_vehiculo_inicial_moneda,
+    }),
+    row.placa_asignada
+      ? query(
+          `SELECT first_name, last_name FROM drivers
+           WHERE TRIM(COALESCE(park_id::text, '')) = $1
+             AND work_status = 'working'
+             AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) =
+                 UPPER(REGEXP_REPLACE(TRIM($2), ' ', '', 'g'))
+           LIMIT 1`,
+          [MIAUTO_PARK_ID, row.placa_asignada]
+        )
+      : Promise.resolve({ rows: [] }),
   ]);
+  delete row.cronograma_vehiculo_inicial_moneda;
 
   row.citas_historial = citasRes.rows || [];
 
@@ -620,19 +641,8 @@ export const getSolicitudById = async (id, options = {}) => {
       }
     } catch { /* no bloquear */ }
   }
-  if (row.placa_asignada) {
-    const { rows: workingRows } = await query(
-      `SELECT first_name, last_name FROM drivers
-       WHERE TRIM(COALESCE(park_id::text, '')) = $1
-         AND work_status = 'working'
-         AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) =
-             UPPER(REGEXP_REPLACE(TRIM($2), ' ', '', 'g'))
-       LIMIT 1`,
-      [MIAUTO_PARK_ID, row.placa_asignada]
-    );
-    if (workingRows.length > 0) {
-      row.working_driver_name = [workingRows[0].first_name, workingRows[0].last_name].filter(Boolean).join(' ').trim();
-    }
+  if (workingRes.rows.length > 0) {
+    row.working_driver_name = [workingRes.rows[0].first_name, workingRes.rows[0].last_name].filter(Boolean).join(' ').trim();
   }
 
   // Devolver objeto plano para que cronograma y cronograma_vehiculo se serialicen correctamente en la respuesta API

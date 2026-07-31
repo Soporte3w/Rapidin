@@ -206,7 +206,7 @@ export default function YegoMiAutoSolicitudDetail() {
     const country = solicitud.country;
     setLoadingCronogramas(true);
     Promise.all([
-      api.get(`/miauto/cronogramas?country=${encodeURIComponent(country)}&active=true`, { signal, headers: MIAUTO_NO_CACHE_HEADERS }),
+      api.get(`/miauto/cronogramas?country=${encodeURIComponent(country)}&active=true&lite=true`, { signal, headers: MIAUTO_NO_CACHE_HEADERS }),
       api.get(`/miauto/tipo-cambio?country=${encodeURIComponent(country)}`, { signal, headers: MIAUTO_NO_CACHE_HEADERS }),
     ])
       .then(([resCron, resTc]) => {
@@ -226,6 +226,27 @@ export default function YegoMiAutoSolicitudDetail() {
 
     return () => ac.abort();
   }, [solicitud?.status, solicitud?.country]);
+
+  useEffect(() => {
+    const cronogramaId = selectedCronogramaForVehicles?.id;
+    if (!cronogramaId) return;
+    const ac = new AbortController();
+    api.get(`/miauto/cronogramas/${cronogramaId}`, {
+      signal: ac.signal,
+      headers: MIAUTO_NO_CACHE_HEADERS,
+    })
+      .then((response) => {
+        const detail = unwrapApiData(response);
+        if (!detail) return;
+        setSelectedCronogramaForVehicles((current: any) => (
+          String(current?.id || '') === String(cronogramaId) ? detail : current
+        ));
+      })
+      .catch((error) => {
+        if (!isAxiosAbortError(error)) toast.error('No se pudo cargar el detalle del cronograma');
+      });
+    return () => ac.abort();
+  }, [selectedCronogramaForVehicles?.id]);
 
   const prevPagoSectionOpen = useRef(false);
   useEffect(() => {

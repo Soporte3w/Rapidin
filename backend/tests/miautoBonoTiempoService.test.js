@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analizarRachaBonoTiempo } from '../yego_miauto/services/bonos/miautoBonoTiempoService.js';
+import {
+  analizarRachaBonoTiempo,
+  buildResumenBonoTiempo,
+} from '../yego_miauto/services/bonos/miautoBonoTiempoService.js';
 
 const DEPOSIT_WEEK = '2026-06-22';
 
@@ -114,4 +117,41 @@ test('no reutiliza cuotas de un bono que ya fue aplicado', () => {
 
   assert.equal(result.blocks.length, 0);
   assert.equal(result.progress, 1);
+});
+
+test('el resumen reutiliza filas cargadas y conserva solo bonos visibles', () => {
+  const rows = [
+    cuota('2026-06-29', { id: 'consolidada-1' }),
+    cuota('2026-07-06', { id: 'consolidada-2' }),
+    cuota('2026-07-13', { id: 'consolidada-3' }),
+    cuota('2026-07-20', { id: 'consolidada-4' }),
+    cuota('2026-07-27', { id: 'nueva-1' }),
+  ];
+  const aplicado = {
+    id: 'bono-aplicado',
+    status: 'aplicado',
+    source_key: 'consolidada-1:consolidada-2:consolidada-3:consolidada-4',
+    source_cuota_ids: ['consolidada-1', 'consolidada-2', 'consolidada-3', 'consolidada-4'],
+  };
+  const obsoleto = {
+    id: 'bono-obsoleto',
+    status: 'reservado',
+    source_key: 'ya-no-vigente',
+    source_cuota_ids: [],
+  };
+  const result = buildResumenBonoTiempo({
+    bono_tiempo_activo: true,
+    fecha_inicio_cobro_semanal: DEPOSIT_WEEK,
+  }, rows, [aplicado, obsoleto]);
+
+  assert.equal(result.enabled, true);
+  assert.equal(result.racha, 1);
+  assert.deepEqual(result.bonos.map((bono) => bono.id), ['bono-aplicado']);
+});
+
+test('el resumen desactivado no expone racha ni bonos', () => {
+  assert.deepEqual(
+    buildResumenBonoTiempo({ bono_tiempo_activo: false }, [cuota('2026-06-29')], []),
+    { enabled: false, racha: 0, bonos: [] }
+  );
 });

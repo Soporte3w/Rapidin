@@ -28,34 +28,15 @@ function trimOrUndefined(x) {
   return s === '' ? undefined : s;
 }
 
-const cronogramasListCache = new Map();
-const CRONOGRAMAS_CACHE_TTL_MS = 60 * 1000;
-
-function getCronogramasCacheKey(country, active, isLite) {
-  const activeKey = active === undefined || active === null ? '' : String(active);
-  return `${String(country ?? '')}:${activeKey}:${isLite ? 'lite' : 'full'}`;
-}
-
-function invalidateCronogramasListCache() {
-  cronogramasListCache.clear();
-}
-
 // GET /api/miauto/cronogramas
 router.get('/cronogramas', async (req, res) => {
   try {
     const { country, active, lite } = req.query;
     const countryVal = trimOrUndefined(country);
     const isLite = lite === 'true' || lite === '1';
-    const key = getCronogramasCacheKey(countryVal, active, isLite);
-    const now = Date.now();
-    const cached = cronogramasListCache.get(key);
-    if (cached && cached.expires > now) {
-      return successResponse(res, cached.data);
-    }
     const list = isLite
       ? await listCronogramasLite({ country: countryVal, active })
       : await listCronogramas({ country: countryVal, active });
-    cronogramasListCache.set(key, { data: list, expires: now + CRONOGRAMAS_CACHE_TTL_MS });
     return successResponse(res, list);
   } catch (error) {
     logger.error('Error listando cronogramas Mi Auto:', error);
@@ -79,7 +60,6 @@ router.get('/cronogramas/:id', validateUUID, async (req, res) => {
 router.post('/cronogramas', async (req, res) => {
   try {
     const cronograma = await createCronograma(req.body);
-    invalidateCronogramasListCache();
     auditMiautoMutation('cronograma.created', 'cronograma', cronograma?.id);
     return successResponse(res, cronograma, 'Cronograma creado', 201);
   } catch (error) {
@@ -94,7 +74,6 @@ router.put('/cronogramas/:id', validateUUID, async (req, res) => {
     const result = await updateCronograma(req.params.id, req.body, req.user?.id || null);
     if (!result) return errorResponse(res, 'Cronograma no encontrado', 404);
     const { cronograma, skippedVehicles } = result;
-    invalidateCronogramasListCache();
     auditMiautoMutation('cronograma.updated', 'cronograma', req.params.id);
     return successResponse(res, { ...cronograma, skippedVehicles }, 'Cronograma actualizado');
   } catch (error) {
@@ -108,7 +87,6 @@ router.delete('/cronogramas/:id', validateUUID, async (req, res) => {
   try {
     const deleted = await deleteCronograma(req.params.id);
     if (!deleted) return errorResponse(res, 'Cronograma no encontrado', 404);
-    invalidateCronogramasListCache();
     auditMiautoMutation('cronograma.deleted', 'cronograma', req.params.id);
     return successResponse(res, { deleted: true }, 'Cronograma eliminado');
   } catch (error) {
@@ -122,7 +100,6 @@ router.patch('/cronogramas/:id/toggle-active', validateUUID, async (req, res) =>
   try {
     const cronograma = await toggleCronogramaActive(req.params.id);
     if (!cronograma) return errorResponse(res, 'Cronograma no encontrado', 404);
-    invalidateCronogramasListCache();
     auditMiautoMutation('cronograma.toggled', 'cronograma', req.params.id);
     return successResponse(res, cronograma, 'Estado actualizado');
   } catch (error) {

@@ -11,6 +11,7 @@ import whatsappRouter from './miauto/whatsapp.js';
 import notasVentaRouter from './miauto/notasVenta.js';
 import contratosRouter from './miauto/contratos.js';
 import analysisRouter from './miauto/analysis.js';
+import dashboardRouter from './miauto/dashboard.js';
 
 const router = Router();
 router.use(authenticate);
@@ -23,6 +24,7 @@ router.use((req, res, next) => {
   next();
 });
 
+router.use(dashboardRouter);
 router.use(solicitudesRouter);
 router.use(cronogramasRouter);
 router.use(cuotasRouter);

@@ -129,6 +129,10 @@ async function loadBonos(solicitudId) {
   return result.rows || [];
 }
 
+export async function listBonosTiempo(solicitudId) {
+  return loadBonos(solicitudId);
+}
+
 function sourceCuotaIds(bonos) {
   return (bonos || []).flatMap((bono) => (
     Array.isArray(bono.source_cuota_ids)
@@ -252,13 +256,8 @@ export async function reconciliarBonosTiempo(solicitudId) {
   return { enabled: true, granted, revoked: obsoleteReserved.length };
 }
 
-export async function getResumenBonoTiempo(solicitudId) {
-  const context = await loadContext(solicitudId);
+export function buildResumenBonoTiempo(context, rows, bonos) {
   if (!context?.bono_tiempo_activo) return { enabled: false, racha: 0, bonos: [] };
-  const [rows, bonos] = await Promise.all([
-    loadRows(solicitudId),
-    loadBonos(solicitudId),
-  ]);
   const depositWeek = mondayOfYmd(context.fecha_inicio_cobro_semanal);
   const appliedBonos = bonos.filter((bono) => bono.status === 'aplicado');
   const analysis = analizarRachaBonoTiempo(rows, depositWeek, {
@@ -273,6 +272,16 @@ export async function getResumenBonoTiempo(solicitudId) {
     racha: analysis.progress,
     bonos: visibleBonos,
   };
+}
+
+export async function getResumenBonoTiempo(solicitudId) {
+  const context = await loadContext(solicitudId);
+  if (!context?.bono_tiempo_activo) return { enabled: false, racha: 0, bonos: [] };
+  const [rows, bonos] = await Promise.all([
+    loadRows(solicitudId),
+    loadBonos(solicitudId),
+  ]);
+  return buildResumenBonoTiempo(context, rows, bonos);
 }
 
 /** Se llama al generar una cuota para materializar reservas cuyo objetivo ya existe. */

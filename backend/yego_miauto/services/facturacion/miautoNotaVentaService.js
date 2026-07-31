@@ -633,39 +633,6 @@ function buildSaleNotePayload({ customerId, currencyTypeId, exchangeRateSale, it
   };
 }
 
-async function ensureNotaVentaTables(client) {
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS module_miauto_nota_venta (
-      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-      solicitud_id UUID NOT NULL REFERENCES module_miauto_solicitud(id) ON DELETE CASCADE,
-      facturador_sale_note_id INTEGER NOT NULL,
-      number_full VARCHAR(50),
-      external_id VARCHAR(120),
-      print_a4 TEXT,
-      customer_id INTEGER NOT NULL,
-      currency_type_id VARCHAR(10) NOT NULL DEFAULT 'PEN',
-      exchange_rate_sale NUMERIC(12,4),
-      total NUMERIC(12,2) NOT NULL DEFAULT 0,
-      payload JSONB,
-      response JSONB,
-      cash_response JSONB,
-      created_by UUID REFERENCES module_rapidin_users(id),
-      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-      deleted_at TIMESTAMPTZ
-    )
-  `);
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS module_miauto_nota_venta_cuota (
-      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-      nota_venta_id UUID NOT NULL REFERENCES module_miauto_nota_venta(id) ON DELETE CASCADE,
-      cuota_semanal_id UUID NOT NULL REFERENCES module_miauto_cuota_semanal(id) ON DELETE CASCADE,
-      amount NUMERIC(12,2) NOT NULL DEFAULT 0,
-      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE (cuota_semanal_id)
-    )
-  `);
-}
-
 async function loadSolicitudAndCuotas(client, solicitudId, cuotaIds) {
   const solRes = await client.query(
     `SELECT s.id, s.dni, s.country, s.placa_asignada, s.facturador_customer_id,
@@ -966,28 +933,29 @@ async function persistCashResponse(notaId, saleNoteId) {
 }
 
 export async function listNotasVentaBySolicitud(solicitudId) {
-  await ensureNotaVentaTables({ query });
-  const res = await query(
-    `SELECT nv.id, nv.facturador_sale_note_id, nv.number_full, nv.external_id, nv.print_a4,
-            nv.customer_id, nv.currency_type_id, nv.exchange_rate_sale, nv.total, nv.created_at,
-            COALESCE(json_agg(json_build_object('cuota_semanal_id', nc.cuota_semanal_id, 'amount', nc.amount, 'semana', cw.semana) ORDER BY nc.created_at)
-              FILTER (WHERE nc.id IS NOT NULL), '[]'::json) AS cuotas
-     FROM module_miauto_nota_venta nv
-     LEFT JOIN module_miauto_nota_venta_cuota nc ON nc.nota_venta_id = nv.id
-     ${CUOTA_SEMANA_JOIN_SQL}
-     WHERE nv.solicitud_id = $1::uuid AND nv.deleted_at IS NULL
-     GROUP BY nv.id
-     ORDER BY nv.created_at DESC`,
-    [solicitudId]
-  );
-  const solicitudRes = await query(
-    `SELECT ${DRIVER_NAME_SELECT_SQL}
-     FROM module_miauto_solicitud s
-     ${DRIVER_NAME_JOIN_SQL}
-     WHERE s.id = $1::uuid
-     LIMIT 1`,
-    [solicitudId]
-  );
+  const [res, solicitudRes] = await Promise.all([
+    query(
+      `SELECT nv.id, nv.facturador_sale_note_id, nv.number_full, nv.external_id, nv.print_a4,
+              nv.customer_id, nv.currency_type_id, nv.exchange_rate_sale, nv.total, nv.created_at,
+              COALESCE(json_agg(json_build_object('cuota_semanal_id', nc.cuota_semanal_id, 'amount', nc.amount, 'semana', cw.semana) ORDER BY nc.created_at)
+                FILTER (WHERE nc.id IS NOT NULL), '[]'::json) AS cuotas
+       FROM module_miauto_nota_venta nv
+       LEFT JOIN module_miauto_nota_venta_cuota nc ON nc.nota_venta_id = nv.id
+       ${CUOTA_SEMANA_JOIN_SQL}
+       WHERE nv.solicitud_id = $1::uuid AND nv.deleted_at IS NULL
+       GROUP BY nv.id
+       ORDER BY nv.created_at DESC`,
+      [solicitudId]
+    ),
+    query(
+      `SELECT ${DRIVER_NAME_SELECT_SQL}
+       FROM module_miauto_solicitud s
+       ${DRIVER_NAME_JOIN_SQL}
+       WHERE s.id = $1::uuid
+       LIMIT 1`,
+      [solicitudId]
+    ),
+  ]);
   const driverName = driverNameFromRow(solicitudRes.rows[0]);
   return (res.rows || []).map((nota) => ({
     ...nota,
@@ -996,7 +964,6 @@ export async function listNotasVentaBySolicitud(solicitudId) {
 }
 
 export async function downloadNotaVentaPdfBySolicitud(solicitudId, notaVentaId) {
-  await ensureNotaVentaTables({ query });
   const res = await query(
     `SELECT nv.id, nv.facturador_sale_note_id, nv.number_full, nv.print_a4, nv.response, nv.created_at,
             ${DRIVER_NAME_SELECT_SQL},
@@ -1094,7 +1061,6 @@ export async function downloadNotaVentaPdfBySolicitud(solicitudId, notaVentaId) 
 }
 
 export async function anularNotaVentaBySolicitud(solicitudId, notaVentaId, userId = null) {
-  await ensureNotaVentaTables({ query });
   const notaRes = await query(
     `SELECT id, solicitud_id, facturador_sale_note_id, number_full, response
      FROM module_miauto_nota_venta
@@ -1194,7 +1160,6 @@ export async function generarNotaVentaCuotasPagadas(solicitudId, cuotaIds, opts 
   let localCommitted = false;
   try {
     await client.query('BEGIN');
-    await ensureNotaVentaTables(client);
     const { solicitud, cuotas } = await loadSolicitudAndCuotas(client, solicitudId, uniqueCuotaIds);
     const customerId = Number(opts.customer_id || solicitud.facturador_customer_id);
     if (!Number.isInteger(customerId) || customerId <= 0) {

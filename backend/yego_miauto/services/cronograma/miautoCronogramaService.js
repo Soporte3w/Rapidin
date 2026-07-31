@@ -356,9 +356,7 @@ export function getRuleForTripCount(rules, numViajes) {
   return floorRule;
 }
 
-/**
- * Solo id + name + country (combos / filtros). Sin vehículos ni reglas.
- */
+/** Listado liviano para combos y asignación. Incluye vehículos sin imágenes ni reglas. */
 export async function listCronogramasLite(filters = {}) {
   const { country, active } = filters;
   const params = [];
@@ -375,13 +373,36 @@ export async function listCronogramasLite(filters = {}) {
     n += 1;
   }
   const listRes = await query(
-    `SELECT c.id, c.name, c.requisitos_vehiculo FROM module_miauto_cronograma c ${where} ORDER BY c.name`,
+    `SELECT c.id, c.name, c.requisitos_vehiculo,
+            COALESCE((
+              SELECT jsonb_agg(
+                jsonb_build_object(
+                  'id', v.id,
+                  'name', v.name,
+                  'inicial', v.inicial,
+                  'inicial_moneda', v.inicial_moneda,
+                  'cuotas_semanales', v.cuotas_semanales,
+                  'requisitos_gastos', v.requisitos_gastos
+                ) ORDER BY v.orden, v.created_at
+              )
+              FROM module_miauto_cronograma_vehiculo v
+              WHERE v.cronograma_id = c.id
+            ), '[]'::jsonb) AS vehicles
+     FROM module_miauto_cronograma c ${where} ORDER BY c.name`,
     params
   );
   return (listRes.rows || []).map((row) => ({
     id: row.id,
     name: row.name,
     requisitos_vehiculo: parseRequisitosVehiculo(row.requisitos_vehiculo),
+    vehicles: (row.vehicles || []).map((vehicle) => ({
+      id: vehicle.id,
+      name: vehicle.name,
+      inicial: parseFloat(vehicle.inicial) || 0,
+      inicial_moneda: vehicle.inicial_moneda || 'USD',
+      cuotas_semanales: parseInt(vehicle.cuotas_semanales, 10) || 0,
+      requisitos_gastos: parseRequisitosGastosVehiculo(vehicle.requisitos_gastos),
+    })),
   }));
 }
 
@@ -467,23 +488,50 @@ export async function listCronogramas(filters = {}) {
   }));
 }
 
-export async function getCronogramaById(id) {
+export async function getCronogramaById(id, options = {}) {
+  const imageExpression = options.includeImages === false ? 'NULL::text' : 'v.image';
   const res = await query(
-    'SELECT id, name, country, active, tasa_interes_mora, bono_tiempo_activo, requisitos_vehiculo, created_at, updated_at FROM module_miauto_cronograma WHERE id = $1',
+    `SELECT c.id, c.name, c.country, c.active, c.tasa_interes_mora,
+            c.bono_tiempo_activo, c.requisitos_vehiculo, c.created_at, c.updated_at,
+            COALESCE((
+              SELECT jsonb_agg(
+                jsonb_build_object(
+                  'id', v.id,
+                  'name', v.name,
+                  'inicial', v.inicial,
+                  'inicial_moneda', v.inicial_moneda,
+                  'cuotas_semanales', v.cuotas_semanales,
+                  'image', ${imageExpression},
+                  'orden', v.orden,
+                  'requisitos_gastos', v.requisitos_gastos
+                ) ORDER BY v.orden, v.created_at
+              )
+              FROM module_miauto_cronograma_vehiculo v
+              WHERE v.cronograma_id = c.id
+            ), '[]'::jsonb) AS vehicles,
+            COALESCE((
+              SELECT jsonb_agg(
+                jsonb_build_object(
+                  'id', r.id,
+                  'viajes', r.viajes,
+                  'bono_auto', r.bono_auto,
+                  'bono_auto_moneda', r.bono_auto_moneda,
+                  'cuotas_por_vehiculo', r.cuotas_por_vehiculo,
+                  'cuota_moneda_por_vehiculo', r.cuota_moneda_por_vehiculo,
+                  'orden', r.orden,
+                  'pct_comision', r.pct_comision,
+                  'cobro_saldo', r.cobro_saldo
+                ) ORDER BY r.orden, r.created_at
+              )
+              FROM module_miauto_cronograma_rule r
+              WHERE r.cronograma_id = c.id
+            ), '[]'::jsonb) AS rules
+     FROM module_miauto_cronograma c
+     WHERE c.id = $1`,
     [id]
   );
   if (res.rows.length === 0) return null;
   const row = res.rows[0];
-  const [vehicles, rules] = await Promise.all([
-    query(
-      'SELECT id, name, inicial, inicial_moneda, cuotas_semanales, image, orden, requisitos_gastos FROM module_miauto_cronograma_vehiculo WHERE cronograma_id = $1 ORDER BY orden, created_at',
-      [id]
-    ),
-    query(
-      'SELECT id, viajes, bono_auto, bono_auto_moneda, cuotas_por_vehiculo, cuota_moneda_por_vehiculo, orden, pct_comision, cobro_saldo FROM module_miauto_cronograma_rule WHERE cronograma_id = $1 ORDER BY orden, created_at',
-      [id]
-    ),
-  ]);
   return {
     id: row.id,
     name: row.name,
@@ -492,7 +540,7 @@ export async function getCronogramaById(id) {
     tasa_interes_mora: parseFloat(row.tasa_interes_mora) || 0,
     bono_tiempo_activo: !!row.bono_tiempo_activo,
     requisitos_vehiculo: parseRequisitosVehiculo(row.requisitos_vehiculo),
-    vehicles: (vehicles.rows || []).map((v) => ({
+    vehicles: (row.vehicles || []).map((v) => ({
       id: v.id,
       name: v.name,
       inicial: parseFloat(v.inicial) || 0,
@@ -501,7 +549,7 @@ export async function getCronogramaById(id) {
       image: v.image || undefined,
       requisitos_gastos: parseRequisitosGastosVehiculo(v.requisitos_gastos),
     })),
-    rules: (rules.rows || []).map((r) => ({
+    rules: (row.rules || []).map((r) => ({
       id: r.id,
       viajes: r.viajes || '',
       bono_auto: parseFloat(r.bono_auto) || 0,
@@ -511,6 +559,11 @@ export async function getCronogramaById(id) {
       pct_comision: r.pct_comision != null ? parseFloat(r.pct_comision) : 0,
     })),
   };
+}
+
+/** Variante financiera: conserva vehículos, reglas y mora, pero no transfiere imágenes. */
+export async function getCronogramaCalculoById(id) {
+  return getCronogramaById(id, { includeImages: false });
 }
 
 /**

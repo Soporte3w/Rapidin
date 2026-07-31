@@ -17,7 +17,7 @@ import {
   type MiautoOtrosGastoRow,
 } from '../../utils/miautoOtrosGastos';
 import { monedaCuotasLabel, symMoneda } from '../../utils/miautoAlquilerVentaList';
-import { MIAUTO_NO_CACHE_HEADERS, emptyListIfNotAbort, isAxiosAbortError, unwrapApiData } from '../../utils/miautoApiUtils';
+import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError, unwrapApiData } from '../../utils/miautoApiUtils';
 import {
   driverDisplayRentSale,
   getMiautoAdjuntoUrl,
@@ -628,24 +628,19 @@ export default function YegoMiAutoRentSaleDetail() {
       else setLoading(true);
       setError('');
       const req = { signal, headers: MIAUTO_NO_CACHE_HEADERS };
-      const [resSol, resCuotas, resComp, resCompOtros, resEvidencias, resNotasVenta, resContratos] = await Promise.all([
-        api.get(`/miauto/solicitudes/${id}`, req),
-        api.get(`/miauto/solicitudes/${id}/cuotas-semanales`, req),
-        api.get(`/miauto/solicitudes/${id}/comprobantes-cuota-semanal`, req).catch(emptyListIfNotAbort),
-        api.get(`/miauto/solicitudes/${id}/comprobantes-otros-gastos`, req).catch(emptyListIfNotAbort),
-        api.get(`/miauto/solicitudes/${id}/evidencias-fleet`, req).catch(emptyListIfNotAbort),
-        api.get(`/miauto/solicitudes/${id}/notas-venta`, req).catch(emptyListIfNotAbort),
-        api.get(`/miauto/solicitudes/${id}/contratos`, req).catch(emptyListIfNotAbort),
-      ]);
-      const sol = resSol.data?.data ?? resSol.data;
-      const { cuotas: rawCuotas, cuotasSemanalesBonificadas: bonoNum } = parseCuotasSemanalesPayload(resCuotas);
-      const cuotasEnvelope = resCuotas.data?.data ?? resCuotas.data ?? {};
+      const response = await api.get(`/miauto/solicitudes/${id}/dashboard`, req);
+      const dashboard = response.data?.data ?? response.data ?? {};
+      const sol = dashboard.solicitud;
+      const cuotasEnvelope = dashboard.cuotas ?? {};
+      const { cuotas: rawCuotas, cuotasSemanalesBonificadas: bonoNum } = parseCuotasSemanalesPayload({
+        data: cuotasEnvelope,
+      });
       const bonoResumen = (cuotasEnvelope as { bono_tiempo?: BonoTiempoResumen }).bono_tiempo ?? null;
-      const comp = resComp.data?.data ?? resComp.data ?? [];
-      const compOtros = resCompOtros.data?.data ?? resCompOtros.data ?? [];
-      const evFleet = resEvidencias.data?.data ?? resEvidencias.data ?? [];
-      const notas = resNotasVenta.data?.data ?? resNotasVenta.data ?? [];
-      const contratosData = resContratos.data?.data ?? resContratos.data ?? [];
+      const comp = dashboard.comprobantes_cuota_semanal ?? [];
+      const compOtros = dashboard.comprobantes_otros_gastos ?? [];
+      const evFleet = dashboard.evidencias_fleet ?? [];
+      const notas = dashboard.notas_venta ?? [];
+      const contratosData = dashboard.contratos ?? [];
       setSolicitud(sol || null);
       setCuotas(rawCuotas as CuotaSemanal[]);
       setComprobantesPagos(Array.isArray(comp) ? comp : []);

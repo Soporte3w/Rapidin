@@ -9,7 +9,7 @@ import {
   mondayOfWeekContainingYmd,
 } from '../../../utils/miautoLimaWeekRange.js';
 import {
-  getCronogramaById,
+  getCronogramaCalculoById,
   getMonedaCuotaSemanalPorVehiculo,
   getRuleForTripCount,
   resolveMonedaCuotaSemanal,
@@ -32,7 +32,9 @@ import {
 import { MIAUTO_PARK_ID } from '../utils/miautoDriverLookup.js';
 import {
   analizarRachaBonoTiempo,
+  buildResumenBonoTiempo,
   getResumenBonoTiempo,
+  listBonosTiempo,
   reconciliarBonosTiempo,
 } from '../bonos/miautoBonoTiempoService.js';
 
@@ -1321,7 +1323,7 @@ export async function updateMoraDiaria(solicitudId = null, options = {}) {
     if (cronoId == null) return null;
     const key = String(cronoId);
     if (cronogramaById.has(key)) return cronogramaById.get(key);
-    const c = await getCronogramaById(cronoId);
+    const c = await getCronogramaCalculoById(cronoId);
     cronogramaById.set(key, c);
     return c;
   };
@@ -1979,7 +1981,7 @@ export async function loadMiautoComprobanteDerivacionContext(solicitudId) {
   );
   const sol = solRes.rows[0];
   if (!sol?.cronograma_id) return null;
-  const cronograma = await getCronogramaById(sol.cronograma_id);
+  const cronograma = await getCronogramaCalculoById(sol.cronograma_id);
   const cascRes = await query(
     `SELECT * FROM module_miauto_cuota_semanal WHERE solicitud_id = $1 AND deleted_at IS NULL`,
     [solicitudId]
@@ -2576,7 +2578,7 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
   const solRow = solRes.rows[0];
   if (!solRow?.cronograma_id) return 0;
 
-  const cronograma = await getCronogramaById(solRow.cronograma_id);
+  const cronograma = await getCronogramaCalculoById(solRow.cronograma_id);
   const vehId = solRow.cronograma_vehiculo_id;
 
   const res = await query(
@@ -2722,18 +2724,25 @@ export async function persistPaidAmountCapsForSolicitud(solicitudId, options = {
 async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
   const incluirAbonoPendiente = options.incluirAbonoComprobantePendiente === true;
   const solRes = await query(
-    `SELECT cronograma_id, cronograma_vehiculo_id, fecha_inicio_cobro_semanal, country,
-            COALESCE(cuotas_semanales_bonificadas, 0)::int AS cuotas_semanales_bonificadas
-     FROM module_miauto_solicitud WHERE id = $1`,
+    `SELECT s.cronograma_id, s.cronograma_vehiculo_id, s.fecha_inicio_cobro_semanal, s.country,
+            COALESCE(s.cuotas_semanales_bonificadas, 0)::int AS cuotas_semanales_bonificadas,
+            COALESCE(c.bono_tiempo_activo, false) AS bono_tiempo_activo
+     FROM module_miauto_solicitud s
+     LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id
+     WHERE s.id = $1`,
     [solicitudId]
   );
   const solRow = solRes.rows[0];
   if (!solRow) {
-    return { cuotas: [], bonificadas_db: 0 };
+    return {
+      cuotas: [],
+      bonificadas_db: 0,
+      bono_tiempo: { enabled: false, racha: 0, bonos: [] },
+    };
   }
   const countrySol = String(solRow.country || 'PE').toUpperCase() === 'CO' ? 'CO' : 'PE';
-  const [cronograma, tipoCambioUsd, res] = await Promise.all([
-    solRow.cronograma_id != null ? getCronogramaById(solRow.cronograma_id) : Promise.resolve(null),
+  const [cronograma, tipoCambioUsd, res, bonos] = await Promise.all([
+    solRow.cronograma_id != null ? getCronogramaCalculoById(solRow.cronograma_id) : Promise.resolve(null),
     tipoCambioUsdALocalEfectivo(countrySol),
     query(
       `SELECT id, solicitud_id, week_start_date, due_date, num_viajes, bono_auto, cuota_semanal, amount_due, paid_amount, pago_puntual, late_fee, status, moneda, pct_comision, cobro_saldo,
@@ -2745,6 +2754,7 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
        ORDER BY week_start_date ASC NULLS LAST, due_date ASC NULLS LAST, id ASC`,
       [solicitudId]
     ),
+    solRow.bono_tiempo_activo ? listBonosTiempo(solicitudId) : Promise.resolve([]),
   ]);
   const vehId = solRow.cronograma_vehiculo_id;
   const fiRaw = solRow.fecha_inicio_cobro_semanal;
@@ -2854,7 +2864,8 @@ async function fetchCuotasSemanalesPayload(solicitudId, options = {}) {
       })
     );
   }
-  return { cuotas, bonificadas_db, fecha_inicio_cobro_semanal: fiRaw };
+  const bonoTiempo = buildResumenBonoTiempo(solRow, rows, bonos);
+  return { cuotas, bonificadas_db, fecha_inicio_cobro_semanal: fiRaw, bono_tiempo: bonoTiempo };
 }
 
 /**
@@ -2894,14 +2905,45 @@ async function pendingTotalMapsForSolicitudIdsBatched(solicitudIds, batchSize = 
  * @param {{ incluirAbonoComprobantePendiente?: boolean }} [options] Solo staff/admin: proyectar abono de comprobantes en revisión en `cuota_final` / `pending_total`.
  */
 export async function getCuotasSemanalesConRacha(solicitudId, options = {}) {
-  const { cuotas, bonificadas_db: fromDb, fecha_inicio_cobro_semanal } = await fetchCuotasSemanalesPayload(solicitudId, options);
+  const { cuotas, bonificadas_db: fromDb, fecha_inicio_cobro_semanal, bono_tiempo } = await fetchCuotasSemanalesPayload(solicitudId, options);
   const fechaInicio = ymdFromDbDate(fecha_inicio_cobro_semanal);
   const depositWeek = fechaInicio ? mondayOfWeekContainingYmd(fechaInicio) : null;
   const racha = analizarRachaBonoTiempo(cuotas, depositWeek).progress;
   const fromCuotas = (cuotas || []).filter((c) => c.status === 'bonificada').length;
   const cuotasSemanalesBonificadas = Math.max(fromDb, fromCuotas);
   const totalCuotasCargadas = (cuotas || []).length;
-  return { data: cuotas, racha, cuotas_semanales_bonificadas: cuotasSemanalesBonificadas, total_cuotas_cargadas: totalCuotasCargadas };
+  return { data: cuotas, racha, cuotas_semanales_bonificadas: cuotasSemanalesBonificadas, total_cuotas_cargadas: totalCuotasCargadas, bono_tiempo };
+}
+
+/** Construye exactamente el envelope utilizado por la API de cuotas semanales. */
+export async function getCuotasSemanalesApiPayload(solicitudId, options = {}) {
+  const cuotasPayload = await getCuotasSemanalesConRacha(solicitudId, options);
+  const {
+    data,
+    racha,
+    cuotas_semanales_bonificadas: bonificadas,
+    total_cuotas_cargadas: totalCargadasRaw,
+    bono_tiempo: bonoTiempo = { enabled: false, racha: 0, bonos: [] },
+  } = cuotasPayload;
+  const rachaNum = typeof racha === 'number' && Number.isFinite(racha)
+    ? Math.max(0, Math.floor(racha))
+    : 0;
+  const bonoAplicado = typeof bonificadas === 'number' && Number.isFinite(bonificadas)
+    ? Math.max(0, Math.floor(bonificadas))
+    : 0;
+  const bonosConsolidados = bonoTiempo.enabled && Array.isArray(bonoTiempo.bonos)
+    ? bonoTiempo.bonos.length
+    : 0;
+  const totalCargadas = typeof totalCargadasRaw === 'number'
+    ? Math.max(0, Math.floor(totalCargadasRaw))
+    : 0;
+  return {
+    data,
+    racha: bonoTiempo.enabled ? bonoTiempo.racha : rachaNum,
+    cuotas_semanales_bonificadas: bonoTiempo.enabled ? bonosConsolidados : bonoAplicado,
+    total_cuotas_cargadas: totalCargadas,
+    bono_tiempo: bonoTiempo,
+  };
 }
 
 /**
@@ -2946,7 +2988,7 @@ export async function recalcMontosCuotasSemanalesDesdeCronograma(opts = {}) {
     const crId = String(row.cronograma_id);
     let cronograma = cronogramaCache.get(crId);
     if (!cronograma) {
-      cronograma = await getCronogramaById(crId);
+      cronograma = await getCronogramaCalculoById(crId);
       cronogramaCache.set(crId, cronograma);
     }
     if (!cronograma) continue;

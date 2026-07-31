@@ -52,6 +52,13 @@ import {
   montoConvertidoPenUsdFormatted,
   resolveTipoCambioUsdALocalFromRows,
 } from '../../utils/miautoPenUsdConversion';
+import {
+  configuredExpenseKeys,
+  mergeRequisitosFromApi,
+  mergeRequisitosGastosFromApi,
+  type RequisitosGastosVehiculo,
+  type RequisitosVehiculo,
+} from './miautoCronogramaConfigDomain';
 
 const TIPO_OTROS_GASTOS_ACCENT: Record<string, string> = {
   gps: 'border-l-blue-500',
@@ -155,8 +162,20 @@ interface SolicitudSummary {
   fecha_inicio_cobro_semanal?: string;
   placa_asignada?: string;
   facturador_customer_id?: number | string | null;
-  cronograma?: { id: string; name: string; tasa_interes_mora?: number; bono_tiempo_activo?: boolean } | null;
-  cronograma_vehiculo?: { id: string; name: string; cuotas_semanales?: number; inicial_moneda?: string } | null;
+  cronograma?: {
+    id: string;
+    name: string;
+    tasa_interes_mora?: number;
+    bono_tiempo_activo?: boolean;
+    requisitos_vehiculo?: Partial<RequisitosVehiculo> | null;
+  } | null;
+  cronograma_vehiculo?: {
+    id: string;
+    name: string;
+    cuotas_semanales?: number;
+    inicial_moneda?: string;
+    requisitos_gastos?: Partial<RequisitosGastosVehiculo> | null;
+  } | null;
   otros_gastos?: MiautoOtrosGastoRow[];
 }
 
@@ -1320,6 +1339,22 @@ export default function YegoMiAutoRentSaleDetail() {
     () => (Array.isArray(solicitud?.otros_gastos) ? solicitud.otros_gastos : []),
     [solicitud?.otros_gastos]
   );
+  const activeOtrosGastoTypes = useMemo(() => {
+    const rawRequirements = solicitud?.cronograma_vehiculo?.requisitos_gastos;
+    if (!rawRequirements) return [];
+    const requirements = mergeRequisitosGastosFromApi(rawRequirements);
+    const vehicleType = mergeRequisitosFromApi(
+      solicitud?.cronograma?.requisitos_vehiculo,
+    ).tipo_vehiculo;
+    return configuredExpenseKeys(requirements, vehicleType).map(canonicalOtrosGastoType);
+  }, [
+    solicitud?.cronograma?.requisitos_vehiculo,
+    solicitud?.cronograma_vehiculo?.requisitos_gastos,
+  ]);
+  const activeOtrosGastoTypeSet = useMemo(
+    () => new Set(activeOtrosGastoTypes),
+    [activeOtrosGastoTypes],
+  );
   const otrosGastosSummary = useMemo(() => otrosGastosRows.reduce((summary, expense) => {
     const currency = expense.moneda || 'PEN';
     summary.totals[currency] = roundToTwoDecimals(
@@ -1337,6 +1372,7 @@ export default function YegoMiAutoRentSaleDetail() {
   }), [otrosGastosRows]);
   const otrosGastosGroups = useMemo(() => {
     const grouped = new Map<string, MiautoOtrosGastoRow[]>();
+    for (const type of activeOtrosGastoTypes) grouped.set(type, []);
     for (const expense of otrosGastosRows) {
       const type = canonicalOtrosGastoType(expense.tipo);
       const expenses = grouped.get(type) || [];
@@ -1358,7 +1394,7 @@ export default function YegoMiAutoRentSaleDetail() {
         return totals;
       }, {} as Record<string, number>),
     }));
-  }, [otrosGastosRows]);
+  }, [activeOtrosGastoTypes, otrosGastosRows]);
 
   const comprobantesByCuotaId = useMemo(() => {
     const by: Record<string, ComprobanteCuotaSemanal[]> = {};
@@ -2685,16 +2721,18 @@ export default function YegoMiAutoRentSaleDetail() {
               </button>
             </div>
 
-            {otrosGastosRows.length === 0 ? (
+            {otrosGastosGroups.length === 0 ? (
               <p className="text-sm text-gray-500 text-center py-8 px-4">No hay cuotas de otros gastos para este contrato.</p>
             ) : (
               <div className="px-4 pb-3 pt-2">
                 {/* Resumen general */}
                 <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
                   <span className="font-semibold text-gray-700">
-                    Total: {Object.entries(otrosGastosSummary.totals)
-                      .map(([currency, total]) => `${symMoneda(currency)} ${total.toFixed(2)} ${currency}`)
-                      .join(' · ')}
+                    Total: {Object.keys(otrosGastosSummary.totals).length > 0
+                      ? Object.entries(otrosGastosSummary.totals)
+                        .map(([currency, total]) => `${symMoneda(currency)} ${total.toFixed(2)} ${currency}`)
+                        .join(' · ')
+                      : '—'}
                   </span>
                   <span className="text-gray-300">·</span>
                   <span>{otrosGastosRows.length} cuotas</span>
@@ -2738,6 +2776,7 @@ export default function YegoMiAutoRentSaleDetail() {
                     const paidCount = paid;
                     const pct = cuotasTotal > 0 ? Math.round((paidCount / cuotasTotal) * 100) : 0;
                     const label = labelOtrosGastoType(type);
+                    const isConfiguredActive = activeOtrosGastoTypeSet.has(type);
                     const accentBorder = TIPO_OTROS_GASTOS_ACCENT[type] || 'border-l-gray-400';
                     const accentBar = TIPO_OTROS_GASTOS_BAR[type] || 'bg-gray-400';
 
@@ -2753,6 +2792,11 @@ export default function YegoMiAutoRentSaleDetail() {
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="text-sm font-bold text-gray-900">{label}</span>
+                                {isConfiguredActive && (
+                                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-semibold text-green-700">
+                                    Activo
+                                  </span>
+                                )}
                                 <span className="text-xs font-semibold text-gray-500">{periods.join(', ')}</span>
                                 <span className="text-[11px] text-gray-400">{cuotasTotal} cuotas</span>
                               </div>
@@ -2765,16 +2809,22 @@ export default function YegoMiAutoRentSaleDetail() {
                             </div>
                           </div>
                           <span className="ml-3 shrink-0 text-sm font-semibold text-gray-900">
-                            {Object.entries(totals)
-                              .map(([currency, total]) => `${symMoneda(currency)} ${total.toFixed(2)}`)
-                              .join(' · ')}
+                            {Object.keys(totals).length > 0
+                              ? Object.entries(totals)
+                                .map(([currency, total]) => `${symMoneda(currency)} ${total.toFixed(2)}`)
+                                .join(' · ')
+                              : '—'}
                           </span>
                         </button>
 
                         {isOpen && (
                           <div className="border-t border-gray-100 px-3 py-3">
                             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                              {expenses.map((og) => {
+                              {expenses.length === 0 ? (
+                                <p className="col-span-full rounded-md border border-dashed border-gray-200 px-4 py-5 text-center text-xs text-gray-500">
+                                  Este gasto está activo en el cronograma, pero aún no tiene cuotas generadas.
+                                </p>
+                              ) : expenses.map((og) => {
                                 const gastoSym = symMoneda(og.moneda || 'PEN');
                                 const receipts = comprobantesOtrosGastosPorGasto.get(og.id) || [];
                                 const latestReceipt = receipts[0];

@@ -580,13 +580,16 @@ export const getSolicitudById = async (id, options = {}) => {
     ),
     row.cronograma_id
       ? query(
-          'SELECT id, name, country, active, tasa_interes_mora, bono_tiempo_activo FROM module_miauto_cronograma WHERE id = $1',
+          `SELECT id, name, country, active, tasa_interes_mora, bono_tiempo_activo,
+                  requisitos_vehiculo
+           FROM module_miauto_cronograma WHERE id = $1`,
           [row.cronograma_id]
         )
       : Promise.resolve({ rows: [] }),
     row.cronograma_vehiculo_id
       ? query(
-          `SELECT id, name, inicial, inicial_moneda, cuotas_semanales, ${vehicleImageExpression}
+          `SELECT id, name, inicial, inicial_moneda, cuotas_semanales, requisitos_gastos,
+                  ${vehicleImageExpression}
            FROM module_miauto_cronograma_vehiculo WHERE id = $1`,
           [row.cronograma_vehiculo_id]
         )
@@ -626,6 +629,7 @@ export const getSolicitudById = async (id, options = {}) => {
         active: crono.active,
         tasa_interes_mora: crono.tasa_interes_mora != null ? parseFloat(crono.tasa_interes_mora) : 0,
         bono_tiempo_activo: !!crono.bono_tiempo_activo,
+        requisitos_vehiculo: crono.requisitos_vehiculo || null,
       }
     : null;
 
@@ -637,6 +641,7 @@ export const getSolicitudById = async (id, options = {}) => {
         inicial: parseFloat(v.inicial) || 0,
         inicial_moneda: v.inicial_moneda || 'USD',
         cuotas_semanales: parseInt(v.cuotas_semanales, 10) || 0,
+        requisitos_gastos: v.requisitos_gastos || null,
         image: v.image,
       }
     : null;

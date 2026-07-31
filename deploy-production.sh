@@ -38,11 +38,48 @@ Variables opcionales:
   WEB_ROOT                Destino frontend (default: /var/www/rapidin_front)
   WEB_OWNER_GROUP         Propietario del frontend, por ejemplo www-data:www-data
   BACKEND_HEALTHCHECK_URL URL HTTP opcional para validar el backend
+  APT_LOCK_WAIT_SECONDS   Espera máxima por bloqueos de APT (default: 300)
 USAGE
 }
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "No se encontró el comando requerido: $1"
+}
+
+run_apt_get_with_lock_wait() {
+  local description="$1"
+  shift
+  local wait_seconds="${APT_LOCK_WAIT_SECONDS:-300}"
+  local deadline
+  local output
+
+  [[ "$wait_seconds" =~ ^[0-9]+$ ]] || fail "APT_LOCK_WAIT_SECONDS debe ser un entero no negativo"
+  deadline=$((SECONDS + wait_seconds))
+
+  while true; do
+    if output="$(
+      LC_ALL=C DEBIAN_FRONTEND=noninteractive \
+        apt-get -o DPkg::Lock::Timeout=10 "$@" 2>&1
+    )"; then
+      [[ -z "$output" ]] || printf '%s\n' "$output"
+      return
+    fi
+
+    if [[ "$output" != *'Could not get lock'* \
+      && "$output" != *'Unable to lock'* \
+      && "$output" != *'Unable to acquire the dpkg frontend lock'* ]]; then
+      printf '%s\n' "$output" >&2
+      fail "APT falló durante: $description"
+    fi
+
+    if (( SECONDS >= deadline )); then
+      printf '%s\n' "$output" >&2
+      fail "APT continuó bloqueado después de ${wait_seconds}s durante: $description"
+    fi
+
+    log "APT está ocupado por otro proceso; esperando 5s para reintentar: $description"
+    sleep 5
+  done
 }
 
 ensure_postgresql_client_tools() {
@@ -53,8 +90,8 @@ ensure_postgresql_client_tools() {
 
   log "Faltan pg_dump/pg_restore; instalando el cliente PostgreSQL"
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-client
+    run_apt_get_with_lock_wait "actualizar el catálogo de paquetes" update
+    run_apt_get_with_lock_wait "instalar postgresql-client" install -y postgresql-client
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y postgresql
   elif command -v yum >/dev/null 2>&1; then

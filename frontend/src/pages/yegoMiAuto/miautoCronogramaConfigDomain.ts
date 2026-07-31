@@ -161,7 +161,7 @@ export function createDefaultRequisitosGastosVehiculo(): RequisitosGastosVehicul
     soat: {
       monto: 0,
       moneda: 'PEN',
-      cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 4 },
+      cobro: { tipo: 'mensual_antes_vencimiento', meses_anticipo: 5 },
     },
     impuesto_vehicular: {
       monto: 0,

@@ -5,6 +5,7 @@
 
 const FACTILIZA_DNI_BASE_URL = 'https://api.factiliza.com/pe/v1/dni/info';
 const FACTILIZA_LICENSE_BASE_URL = 'https://api.factiliza.com/v1/licencia/info';
+const FACTILIZA_SOAT_BASE_URL = 'https://api.factiliza.com/v1/placa/soat';
 const configuredFactilizaTimeoutMs = Number(process.env.FACTILIZA_TIMEOUT_MS);
 const FACTILIZA_TIMEOUT_MS = Number.isFinite(configuredFactilizaTimeoutMs) && configuredFactilizaTimeoutMs >= 1000
   ? configuredFactilizaTimeoutMs
@@ -16,13 +17,19 @@ function normalizedDni(dni) {
   return value;
 }
 
-async function requestFactiliza(baseUrl, dni, resourceName) {
+export function normalizedPlate(plate) {
+  const value = String(plate ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!/^[A-Z0-9]{5,8}$/.test(value)) throw new Error('Placa inválida para consultar SOAT');
+  return value;
+}
+
+async function requestFactiliza(baseUrl, identifier, resourceName, normalizeIdentifier = normalizedDni) {
   const rawToken = process.env.FACTILIZA_API_TOKEN;
   if (!rawToken || !rawToken.trim()) {
     throw new Error('Servicio Factiliza no configurado. Configure FACTILIZA_API_TOKEN en el entorno');
   }
   const authHeader = rawToken.trim().startsWith('Bearer ') ? rawToken.trim() : `Bearer ${rawToken.trim()}`;
-  const url = `${baseUrl}/${normalizedDni(dni)}`;
+  const url = `${baseUrl}/${normalizeIdentifier(identifier)}`;
   const response = await fetch(url, {
     method: 'GET',
     headers: {
@@ -107,5 +114,48 @@ export const getLicenseInfo = async (dni) => {
     expiresAt: clean(license.fecha_vencimiento),
     status: clean(license.estado),
     restrictions: clean(license.restricciones),
+  };
+};
+
+/**
+ * Obtiene el SOAT vigente asociado a una placa peruana.
+ * @param {string} plate - Placa del vehículo
+ * @returns {Promise<{
+ *   plate: string,
+ *   companyName: string|null,
+ *   startsAt: string|null,
+ *   expiresAt: string|null,
+ *   status: string|null,
+ *   policyNumber: string|null,
+ *   insurerSbsCode: string|null,
+ *   uniquePolicyCode: string|null
+ * }>}
+ */
+export const getSoatInfo = async (plate) => {
+  const body = await requestFactiliza(
+    FACTILIZA_SOAT_BASE_URL,
+    plate,
+    'SOAT',
+    normalizedPlate,
+  );
+  const data = body?.data || body;
+  if (!data || typeof data !== 'object' || !data.fecha_fin) {
+    throw new Error('Factiliza no devolvió información de SOAT para esta placa');
+  }
+
+  const clean = (value) => {
+    const text = String(value ?? '').trim();
+    return text || null;
+  };
+
+  return {
+    plate: normalizedPlate(data.placa || plate),
+    companyName: clean(data.nombre_compania),
+    startsAt: clean(data.fecha_inicio),
+    expiresAt: clean(data.fecha_fin),
+    status: clean(data.estado),
+    policyNumber: clean(data.numero_poliza),
+    insurerSbsCode: clean(data.codigo_sbs_aseguradora),
+    uniquePolicyCode: clean(data.codigo_unico_poliza),
   };
 };

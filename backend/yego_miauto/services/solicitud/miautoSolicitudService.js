@@ -23,6 +23,7 @@ import {
 } from '../utils/miautoDriverLookup.js';
 import { buildDriverNameSearchSql } from '../../../utils/driverNameSearch.js';
 import { enqueueMiautoLicenseValidation } from '../licencia/miautoLicenseValidationService.js';
+import { enqueueMiautoSoatValidation } from '../soat/miautoSoatValidationService.js';
 
 const MINIMO_USD_PARCIAL = 500;
 
@@ -738,12 +739,13 @@ export const createSolicitud = async (data, userId = null) => {
 
   await assertCronogramaPermitePagoInicial(cronograma_id, pago_tipo);
   const appsArr = normalizeAppsToCodes(apps);
+  const normalizedAssignedPlate = placa_asignada ? normalizePlacaAsignada(placa_asignada) : null;
   const result = await query(
     `INSERT INTO module_miauto_solicitud
        (country, dni, phone, email, license_number, description, apps_trabajadas,
         driver_id_fleet, cronograma_id, cronograma_vehiculo_id, pago_tipo, pago_estado,
-        fecha_inicio_cobro_semanal, placa_asignada, status, updated_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        fecha_inicio_cobro_semanal, placa_asignada, status, updated_by, soat_validation_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      RETURNING *`,
     [
       country || 'PE',
@@ -759,9 +761,10 @@ export const createSolicitud = async (data, userId = null) => {
       pago_tipo,
       pago_estado || 'pendiente',
       fecha_inicio_cobro_semanal,
-      placa_asignada ? normalizePlacaAsignada(placa_asignada) : null,
+      normalizedAssignedPlate,
       status || 'pendiente',
       userId,
+      normalizedAssignedPlate ? 'pending' : 'not_applicable',
     ]
   );
   enqueueMiautoLicenseValidation({
@@ -769,20 +772,33 @@ export const createSolicitud = async (data, userId = null) => {
     dni,
     country: country || 'PE',
   });
+  enqueueMiautoSoatValidation({
+    solicitudId: result.rows[0].id,
+    placa: normalizedAssignedPlate,
+  });
   return getSolicitudById(result.rows[0].id);
 };
 
 export const updateSolicitud = async (id, data, userId = null) => {
-  if (data.cronograma_id !== undefined || data.pago_tipo !== undefined) {
+  let currentSolicitud = null;
+  if (
+    data.cronograma_id !== undefined
+    || data.pago_tipo !== undefined
+    || data.placa_asignada !== undefined
+  ) {
     const currentResult = await query(
-      'SELECT cronograma_id, pago_tipo FROM module_miauto_solicitud WHERE id = $1',
+      'SELECT cronograma_id, pago_tipo, placa_asignada FROM module_miauto_solicitud WHERE id = $1',
       [id]
     );
     if (currentResult.rows.length === 0) return null;
-    const current = currentResult.rows[0];
-    const cronogramaId = data.cronograma_id !== undefined ? data.cronograma_id : current.cronograma_id;
-    const pagoTipo = data.pago_tipo !== undefined ? data.pago_tipo : current.pago_tipo;
-    await assertCronogramaPermitePagoInicial(cronogramaId, pagoTipo);
+    currentSolicitud = currentResult.rows[0];
+    if (data.cronograma_id !== undefined || data.pago_tipo !== undefined) {
+      const cronogramaId = data.cronograma_id !== undefined
+        ? data.cronograma_id
+        : currentSolicitud.cronograma_id;
+      const pagoTipo = data.pago_tipo !== undefined ? data.pago_tipo : currentSolicitud.pago_tipo;
+      await assertCronogramaPermitePagoInicial(cronogramaId, pagoTipo);
+    }
   }
 
   const updates = [];
@@ -871,13 +887,34 @@ export const updateSolicitud = async (id, data, userId = null) => {
     params.push(data.fecha_inicio_cobro_semanal);
     n += 1;
   }
+  let changedPlate = null;
+  let plateWasChanged = false;
   if (data.placa_asignada !== undefined) {
-    const p = data.placa_asignada == null || String(data.placa_asignada).trim() === ''
+    changedPlate = data.placa_asignada == null || String(data.placa_asignada).trim() === ''
       ? null
       : normalizePlacaAsignada(data.placa_asignada);
     updates.push(`placa_asignada = $${n}`);
-    params.push(p);
+    params.push(changedPlate);
     n += 1;
+    const currentPlate = currentSolicitud?.placa_asignada
+      ? normalizePlacaAsignada(currentSolicitud.placa_asignada)
+      : null;
+    plateWasChanged = changedPlate !== currentPlate;
+    if (plateWasChanged) {
+      updates.push(`soat_validation_status = $${n}`);
+      params.push(changedPlate ? 'pending' : 'not_applicable');
+      n += 1;
+      updates.push('soat_validation_attempts = 0');
+      updates.push('soat_validation_checked_at = NULL');
+      updates.push('soat_validation_error = NULL');
+      updates.push('soat_fecha_inicio = NULL');
+      updates.push('soat_fecha_vencimiento = NULL');
+      updates.push('soat_compania = NULL');
+      updates.push('soat_estado = NULL');
+      updates.push('soat_numero_poliza = NULL');
+      updates.push('soat_codigo_sbs_aseguradora = NULL');
+      updates.push('soat_codigo_unico_poliza = NULL');
+    }
   }
   if (updates.length === 0) return getSolicitudById(id);
   if (userId) {
@@ -913,6 +950,9 @@ export const updateSolicitud = async (id, data, userId = null) => {
        WHERE id = $1 AND (observations IS NULL OR TRIM(observations) = '')`,
       [id]
     );
+  }
+  if (plateWasChanged && changedPlate) {
+    enqueueMiautoSoatValidation({ solicitudId: id, placa: changedPlate });
   }
   return getSolicitudById(id);
 };

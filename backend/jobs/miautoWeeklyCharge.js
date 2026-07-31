@@ -1,5 +1,5 @@
 /**
- * Mi Auto — crons America/Lima: mora 1:00 diaria; lunes 6:00 generación+cascada; lunes 7:10 cobro Fleet.
+ * Mi Auto — crons America/Lima: mora 1:00 diaria; generación semanal administrable; lunes 7:10 cobro Fleet.
  * @see initializeJobs → startMiautoWeeklyChargeJob
  */
 import cron from 'node-cron';
@@ -39,10 +39,13 @@ import {
   generateExpenseCyclesForActiveContracts,
   refreshAdditionalExpenseStatuses,
 } from '../yego_miauto/services/gastos/miautoOtrosGastosService.js';
+import { getMiautoAutomationConfig } from '../yego_miauto/services/config/miautoAutomationConfigService.js';
+import { matchesMiautoWeeklyGenerationSchedule } from '../yego_miauto/services/config/miautoAutomationConfig.js';
 
 const TIMEZONE = 'America/Lima';
 const FLEET_MS_BETWEEN_COBROS = 1500;
 const INCOME_RETRY_BASE_MS = Math.max(500, Number(process.env.MIAUTO_INCOME_RETRY_BASE_MS || 2500));
+let weeklyGenerationPollRunning = false;
 
 function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -499,6 +502,7 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
 export async function runWeeklyCuotaGenerationMonday(options = {}) {
   const incomeMaxAttempts = Math.max(1, Math.min(12, Number(options.incomeMaxAttempts) || 1));
   const reportDetails = !!options.reportDetails;
+  const scheduleLabel = options.scheduleLabel || 'ejecución semanal';
 
   // CronLock: evitar doble ejecución
   const lock = await acquireCronLock('miauto_generacion_cuotas', 600);
@@ -508,7 +512,7 @@ export async function runWeeklyCuotaGenerationMonday(options = {}) {
   }
 
   logger.info('miauto.weekly_generation.start', {
-    schedule: 'lunes 6:00 Lima',
+    schedule: scheduleLabel,
     incomeMaxAttempts,
     executionId: lock.executionId,
   });
@@ -904,10 +908,29 @@ async function runDailyAdditionalExpenses() {
   }
 }
 
+export async function runConfiguredWeeklyCuotaGeneration(now = new Date()) {
+  if (weeklyGenerationPollRunning) return { skipped: true, reason: 'poll_en_ejecucion' };
+  weeklyGenerationPollRunning = true;
+  try {
+    const config = await getMiautoAutomationConfig();
+    if (!matchesMiautoWeeklyGenerationSchedule(config, now)) {
+      return { skipped: true, reason: 'fuera_de_horario' };
+    }
+    return await runWeeklyCuotaGenerationMonday({
+      scheduleLabel: `configurado día ${config.weekly_generation_day} ${config.weekly_generation_time} ${config.timezone}`,
+    });
+  } catch (err) {
+    logger.error('Mi Auto: error evaluando automatización semanal:', err);
+    return { skipped: true, reason: 'error_configuracion' };
+  } finally {
+    weeklyGenerationPollRunning = false;
+  }
+}
+
 export function startMiautoWeeklyChargeJob() {
   cron.schedule('0 1 * * *', runDailyMora, { timezone: TIMEZONE });
   cron.schedule('15 2 * * *', runDailyAdditionalExpenses, { timezone: TIMEZONE });
-  cron.schedule('0 6 * * 1', runWeeklyCuotaGenerationMonday, { timezone: TIMEZONE });
+  cron.schedule('* * * * *', runConfiguredWeeklyCuotaGeneration, { timezone: TIMEZONE });
   cron.schedule('10 7 * * 1', runWeeklyFleetChargeMonday, { timezone: TIMEZONE });
-  logger.info('Mi Auto: mora 1:00 | gastos 2:15 | lun 6:00 cuotas | lun 7:10 Fleet (Lima)');
+  logger.info('Mi Auto: mora 1:00 | gastos 2:15 | cuotas según configuración | lun 7:10 Fleet (Lima)');
 }

@@ -16,6 +16,7 @@ import {
   ClipboardList,
   ShieldCheck,
   TableProperties,
+  CalendarClock,
 } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
@@ -58,6 +59,29 @@ export {
 } from './miautoCronogramaConfigDomain';
 
 type CronogramaModalTab = 'general' | 'vehicles' | 'rules';
+
+type MiautoAutomationConfig = {
+  weekly_generation_enabled: boolean;
+  weekly_generation_day: number;
+  weekly_generation_time: string;
+  timezone: string;
+};
+
+const DEFAULT_AUTOMATION_CONFIG: MiautoAutomationConfig = {
+  weekly_generation_enabled: true,
+  weekly_generation_day: 1,
+  weekly_generation_time: '06:00',
+  timezone: 'America/Lima',
+};
+
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: 'Lunes' },
+  { value: 2, label: 'Martes' },
+  { value: 3, label: 'Miércoles' },
+  { value: 4, label: 'Jueves' },
+  { value: 5, label: 'Viernes' },
+  { value: 6, label: 'Sábado' },
+];
 
 const MODAL_TABS: Array<{
   id: CronogramaModalTab;
@@ -111,6 +135,9 @@ export default function YegoMiAutoConfig() {
   const [tipoCambioCO, setTipoCambioCO] = useState<string>('');
   const [loadingTipoCambio, setLoadingTipoCambio] = useState(true);
   const [savingTipoCambio, setSavingTipoCambio] = useState<string | null>(null);
+  const [automationConfig, setAutomationConfig] = useState<MiautoAutomationConfig>(DEFAULT_AUTOMATION_CONFIG);
+  const [loadingAutomation, setLoadingAutomation] = useState(true);
+  const [savingAutomation, setSavingAutomation] = useState(false);
 
   const PAGE_SIZE = 8;
 
@@ -165,8 +192,16 @@ export default function YegoMiAutoConfig() {
     initialFetchDone.current = true;
     setLoading(true);
     setLoadingTipoCambio(true);
-    Promise.all([api.get('/miauto/cronogramas'), api.get('/miauto/tipo-cambio/all')])
-      .then(([resCron, resTc]) => {
+    setLoadingAutomation(true);
+    Promise.all([
+      api.get('/miauto/cronogramas'),
+      api.get('/miauto/tipo-cambio/all'),
+      api.get('/miauto/automation-config').catch((error: any) => {
+        toast.error(error.response?.data?.message || 'Error al cargar la automatización');
+        return null;
+      }),
+    ])
+      .then(([resCron, resTc, resAutomation]) => {
         const data = resCron.data?.data ?? resCron.data;
         setCronogramas(Array.isArray(data) ? data : []);
         const list = resTc.data?.data ?? resTc.data ?? [];
@@ -175,18 +210,52 @@ export default function YegoMiAutoConfig() {
         const co = arr.find((r: { country: string }) => r.country === 'CO');
         setTipoCambioPE(pe?.valor_usd_a_local != null ? String(pe.valor_usd_a_local) : '');
         setTipoCambioCO(co?.valor_usd_a_local != null ? String(co.valor_usd_a_local) : '');
+        if (resAutomation) {
+          const automation = resAutomation.data?.data ?? resAutomation.data;
+          setAutomationConfig({
+            weekly_generation_enabled: automation?.weekly_generation_enabled !== false,
+            weekly_generation_day: Number(automation?.weekly_generation_day) || 1,
+            weekly_generation_time: String(automation?.weekly_generation_time || '06:00').slice(0, 5),
+            timezone: automation?.timezone || 'America/Lima',
+          });
+        }
       })
       .catch((e: any) => {
         toast.error(e.response?.data?.message || 'Error al cargar');
         setCronogramas([]);
         setTipoCambioPE('');
         setTipoCambioCO('');
+        setAutomationConfig(DEFAULT_AUTOMATION_CONFIG);
       })
       .finally(() => {
         setLoading(false);
         setLoadingTipoCambio(false);
+        setLoadingAutomation(false);
       });
   }, []);
+
+  const saveAutomationConfig = useCallback(async () => {
+    if (!/^\d{2}:\d{2}$/.test(automationConfig.weekly_generation_time)) {
+      toast.error('Selecciona una hora válida');
+      return;
+    }
+    try {
+      setSavingAutomation(true);
+      const response = await api.put('/miauto/automation-config', automationConfig);
+      const saved = response.data?.data ?? response.data;
+      setAutomationConfig({
+        weekly_generation_enabled: saved.weekly_generation_enabled !== false,
+        weekly_generation_day: Number(saved.weekly_generation_day),
+        weekly_generation_time: String(saved.weekly_generation_time).slice(0, 5),
+        timezone: saved.timezone || 'America/Lima',
+      });
+      toast.success('Automatización de cuotas actualizada');
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error al guardar la automatización');
+    } finally {
+      setSavingAutomation(false);
+    }
+  }, [automationConfig]);
 
   const saveTipoCambio = useCallback(async (country: 'PE' | 'CO') => {
     const valor = country === 'PE' ? tipoCambioPE : tipoCambioCO;
@@ -611,6 +680,96 @@ export default function YegoMiAutoConfig() {
             <PlusCircle className="w-5 h-5" />
             Crear cronograma
           </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+        <div className="flex items-center gap-3 border-b border-gray-200 px-4 py-3">
+          <span className="grid h-9 w-9 place-items-center rounded-lg bg-red-50 text-[#8B1A1A]">
+            <CalendarClock className="h-5 w-5" />
+          </span>
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">Generación automática de cuotas</h2>
+            <p className="text-xs text-gray-500">Programa cuándo se generan las cuotas semanales de todos los contratos elegibles.</p>
+          </div>
+        </div>
+        <div className="p-4 sm:p-6">
+          {loadingAutomation ? (
+            <div className="flex justify-center py-4">
+              <div className="h-8 w-8 animate-spin rounded-full border-2 border-red-600 border-t-transparent" />
+            </div>
+          ) : (
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+              <div className="grid flex-1 gap-4 sm:grid-cols-3">
+                <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-4">
+                  <p className="mb-3 text-sm font-medium text-gray-700">Estado</p>
+                  <label className="inline-flex cursor-pointer items-center gap-3">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={automationConfig.weekly_generation_enabled}
+                      onClick={() => setAutomationConfig((current) => ({
+                        ...current,
+                        weekly_generation_enabled: !current.weekly_generation_enabled,
+                      }))}
+                      className={`relative inline-flex h-6 w-11 rounded-full border-2 border-transparent transition-colors ${
+                        automationConfig.weekly_generation_enabled ? 'bg-green-500' : 'bg-gray-300'
+                      }`}
+                    >
+                      <span className={`pointer-events-none absolute left-0.5 top-1/2 h-5 w-5 -translate-y-1/2 rounded-full bg-white shadow transition-transform ${
+                        automationConfig.weekly_generation_enabled ? 'translate-x-4' : 'translate-x-0'
+                      }`} />
+                    </button>
+                    <span className={`text-sm font-semibold ${automationConfig.weekly_generation_enabled ? 'text-green-700' : 'text-gray-600'}`}>
+                      {automationConfig.weekly_generation_enabled ? 'Activa' : 'Inactiva'}
+                    </span>
+                  </label>
+                </div>
+                <div>
+                  <label htmlFor="miauto-weekly-generation-day" className="mb-1.5 block text-sm font-medium text-gray-700">Día de ejecución</label>
+                  <select
+                    id="miauto-weekly-generation-day"
+                    value={automationConfig.weekly_generation_day}
+                    onChange={(event) => setAutomationConfig((current) => ({
+                      ...current,
+                      weekly_generation_day: Number(event.target.value),
+                    }))}
+                    disabled={!automationConfig.weekly_generation_enabled}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
+                  >
+                    {WEEKDAY_OPTIONS.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="miauto-weekly-generation-time" className="mb-1.5 block text-sm font-medium text-gray-700">Hora de ejecución</label>
+                  <input
+                    id="miauto-weekly-generation-time"
+                    type="time"
+                    value={automationConfig.weekly_generation_time}
+                    onChange={(event) => setAutomationConfig((current) => ({
+                      ...current,
+                      weekly_generation_time: event.target.value,
+                    }))}
+                    disabled={!automationConfig.weekly_generation_enabled}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">Zona horaria: Lima (UTC-5)</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={saveAutomationConfig}
+                disabled={savingAutomation}
+                className="inline-flex h-10 items-center justify-center rounded-lg bg-[#8B1A1A] px-5 text-sm font-medium text-white hover:bg-[#6B1515] disabled:opacity-50"
+              >
+                {savingAutomation ? 'Guardando...' : 'Guardar automatización'}
+              </button>
+            </div>
+          )}
+          <p className="mt-4 text-xs leading-relaxed text-gray-500">
+            El proceso usa los ingresos de la última semana cerrada y conserva la protección contra ejecuciones duplicadas.
+            Si está inactivo, no se crearán nuevas cuotas por esta automatización.
+          </p>
         </div>
       </div>
 

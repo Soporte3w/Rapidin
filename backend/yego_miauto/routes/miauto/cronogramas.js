@@ -11,8 +11,41 @@ import {
   deleteCronograma,
   toggleCronogramaActive,
 } from '../../services/cronograma/miautoCronogramaService.js';
+import {
+  getMiautoAutomationConfig,
+  updateMiautoAutomationConfig,
+} from '../../services/config/miautoAutomationConfigService.js';
 
 const router = Router();
+
+// GET /api/miauto/automation-config
+router.get('/automation-config', async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para ver esta configuración', 403);
+    return successResponse(res, await getMiautoAutomationConfig());
+  } catch (error) {
+    logger.error('Error obteniendo automatización Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al obtener la automatización', 500);
+  }
+});
+
+// PUT /api/miauto/automation-config
+router.put('/automation-config', async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para configurar automatizaciones', 403);
+    const config = await updateMiautoAutomationConfig(req.body || {}, req.user?.id || null);
+    logger.info('miauto.automation_config.updated', {
+      userId: req.user?.id || null,
+      weeklyGenerationEnabled: config.weekly_generation_enabled,
+      weeklyGenerationDay: config.weekly_generation_day,
+      weeklyGenerationTime: config.weekly_generation_time,
+    });
+    return successResponse(res, config, 'Automatización actualizada');
+  } catch (error) {
+    logger.error('Error actualizando automatización Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al actualizar la automatización', 400);
+  }
+});
 
 function auditMiautoMutation(eventType, entityType, entityId, payload = {}) {
   businessLog(eventType, payload, {

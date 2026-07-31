@@ -2861,7 +2861,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                         {pagandoGastoManualId === og.id
                                           ? <RefreshCw className="h-3 w-3 animate-spin" />
                                           : <CheckCircle2 className="h-3 w-3" />}
-                                        Marcar pagado
+                                        Registrar pago
                                       </button>
                                     )}
                                   </div>

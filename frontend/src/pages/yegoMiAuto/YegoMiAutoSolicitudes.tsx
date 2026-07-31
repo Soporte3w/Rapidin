@@ -3,9 +3,9 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import api from '../../services/api';
 import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError } from '../../utils/miautoApiUtils';
-import { FileText, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Ban } from 'lucide-react';
+import { FileText, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Ban, CheckCircle2, XCircle, Clock3 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { formatDate } from '../../utils/date';
+import { formatDate, formatDateUTC } from '../../utils/date';
 import { DateRangePicker } from '../../components/DateRangePicker';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { RapidinSearchField } from '../../components/RapidinSearchField';
@@ -18,6 +18,12 @@ interface Solicitud {
   phone?: string | null;
   email?: string | null;
   license_number: string | null;
+  license_category?: string | null;
+  license_factiliza_status?: string | null;
+  license_issued_date?: string | null;
+  license_expiration_date?: string | null;
+  license_validation_status?: 'pending' | 'valid' | 'invalid' | 'error' | 'not_applicable';
+  license_validation_attempts?: number;
   status: string;
   created_at: string;
 }
@@ -127,6 +133,39 @@ function EmptyState() {
   );
 }
 
+function LicenseCell({ solicitud }: { solicitud: Solicitud }) {
+  const status = solicitud.license_validation_status || 'pending';
+  const titleParts = [
+    solicitud.license_factiliza_status && `Estado: ${solicitud.license_factiliza_status}`,
+    solicitud.license_expiration_date && `Vence: ${formatDateUTC(solicitud.license_expiration_date, 'es-ES')}`,
+  ].filter(Boolean);
+
+  return (
+    <div className="flex flex-col gap-1" title={titleParts.join(' · ') || undefined}>
+      <span>{solicitud.license_number || '—'}</span>
+      {status === 'valid' && (
+        <span className="inline-flex w-fit items-center gap-1 rounded bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-800">
+          <CheckCircle2 className="h-3.5 w-3.5" /> Validada{solicitud.license_category ? ` · ${solicitud.license_category}` : ''}
+        </span>
+      )}
+      {status === 'invalid' && (
+        <span className="inline-flex w-fit items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-800">
+          <XCircle className="h-3.5 w-3.5" /> No válida{solicitud.license_category ? ` · ${solicitud.license_category}` : ''}
+        </span>
+      )}
+      {(status === 'pending' || status === 'error') && (
+        <span className="inline-flex w-fit items-center gap-1 text-xs text-amber-700">
+          <Clock3 className="h-3.5 w-3.5" /> {
+            status === 'error'
+              ? (Number(solicitud.license_validation_attempts) < 3 ? 'Por reintentar' : 'Error de consulta')
+              : 'Pendiente de validar'
+          }
+        </span>
+      )}
+    </div>
+  );
+}
+
 function SolicitudesFilters({
   filters,
   onFiltersChange,
@@ -230,7 +269,7 @@ function SolicitudesTable({
               <tr key={s.id} className="hover:bg-gray-50">
                 <td className="px-4 py-3 text-sm font-medium text-gray-900">{s.dni}</td>
                 <td className="px-4 py-3 text-sm text-gray-700">{conductorCellText(s) || '—'}</td>
-                <td className="px-4 py-3 text-sm text-gray-700">{s.license_number || '—'}</td>
+                <td className="px-4 py-3 text-sm text-gray-700"><LicenseCell solicitud={s} /></td>
                 <td className="px-4 py-3">
                   <span
                     className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${STATUS_CLASS[s.status] || 'bg-gray-100 text-gray-700'}`}

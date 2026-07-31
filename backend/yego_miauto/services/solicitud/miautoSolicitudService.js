@@ -22,6 +22,7 @@ import {
   resolveFleetDriverIdFromDni,
 } from '../utils/miautoDriverLookup.js';
 import { buildDriverNameSearchSql } from '../../../utils/driverNameSearch.js';
+import { enqueueMiautoLicenseValidation } from '../licencia/miautoLicenseValidationService.js';
 
 const MINIMO_USD_PARCIAL = 500;
 
@@ -157,13 +158,19 @@ export const listSolicitudes = async (filters = {}) => {
   const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * limitNum;
 
   const selectFields = forDriver
-    ? `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.country, s.pago_tipo, s.pago_estado, s.fecha_inicio_cobro_semanal,
+    ? `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.license_category, s.license_factiliza_status,
+            s.license_issued_date, s.license_expiration_date, s.license_restrictions, s.license_validation_status,
+            s.license_validation_attempts, s.license_validation_checked_at,
+            s.status, s.created_at, s.country, s.pago_tipo, s.pago_estado, s.fecha_inicio_cobro_semanal,
             s.placa_asignada, s.appointment_date, s.reagendo_count, s.observations, s.rejection_reason, s.withdrawn_at, s.withdrawal_reason,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
             c.id AS cronograma_id, c.name AS cronograma_name, c.tasa_interes_mora AS cronograma_tasa_interes_mora, c.bono_tiempo_activo AS cronograma_bono_tiempo_activo,
             v.id AS vehiculo_id,
             v.name AS vehiculo_name, v.inicial AS vehiculo_inicial, v.inicial_moneda AS vehiculo_inicial_moneda, v.cuotas_semanales AS vehiculo_cuotas_semanales, v.image AS vehiculo_image`
-    : `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.driver_id_fleet,
+    : `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.license_category, s.license_factiliza_status,
+            s.license_issued_date, s.license_expiration_date, s.license_restrictions, s.license_validation_status,
+            s.license_validation_attempts, s.license_validation_checked_at,
+            s.status, s.created_at, s.driver_id_fleet,
             s.placa_asignada, s.cronograma_id, s.cronograma_vehiculo_id,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
             c.name AS cronograma_name,
@@ -277,6 +284,14 @@ export const listSolicitudes = async (filters = {}) => {
       phone: r.phone || undefined,
       email: r.email || undefined,
       license_number: licenseNum || undefined,
+      license_category: r.license_category || undefined,
+      license_factiliza_status: r.license_factiliza_status || undefined,
+      license_issued_date: r.license_issued_date || undefined,
+      license_expiration_date: r.license_expiration_date || undefined,
+      license_restrictions: r.license_restrictions || undefined,
+      license_validation_status: r.license_validation_status || 'pending',
+      license_validation_attempts: Number(r.license_validation_attempts) || 0,
+      license_validation_checked_at: r.license_validation_checked_at || undefined,
       status: r.status,
       created_at: r.created_at,
       driver_name: driverName || undefined,
@@ -540,7 +555,10 @@ export const getSolicitudById = async (id, options = {}) => {
   const skipYangoLicenseLookup = options.skipYangoLicenseLookup === true;
   const vehicleImageExpression = options.includeVehicleImage === false ? 'NULL::text AS image' : 'image';
   const result = await query(
-    `SELECT id, country, dni, phone, email, license_number, description,
+    `SELECT id, country, dni, phone, email, license_number, license_category, license_factiliza_status,
+            license_issued_date, license_expiration_date, license_restrictions, license_validation_status,
+            license_validation_attempts, license_validation_checked_at,
+            description,
             status, rejection_reason, cited_at, cited_by, appointment_date, reagendo_count,
             reviewed_at, reviewed_by, withdrawn_at, withdrawal_reason, observations, created_at, updated_at, driver_id_fleet,
             cronograma_id, cronograma_vehiculo_id, pago_tipo, pago_estado, fecha_inicio_cobro_semanal, placa_asignada,
@@ -741,6 +759,11 @@ export const createSolicitud = async (data, userId = null) => {
       userId,
     ]
   );
+  enqueueMiautoLicenseValidation({
+    solicitudId: result.rows[0].id,
+    dni,
+    country: country || 'PE',
+  });
   return getSolicitudById(result.rows[0].id);
 };
 

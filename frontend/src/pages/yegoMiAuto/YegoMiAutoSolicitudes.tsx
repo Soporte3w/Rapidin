@@ -155,11 +155,7 @@ function LicenseCell({ solicitud }: { solicitud: Solicitud }) {
       )}
       {(status === 'pending' || status === 'error') && (
         <span className="inline-flex w-fit items-center gap-1 text-xs text-amber-700">
-          <Clock3 className="h-3.5 w-3.5" /> {
-            status === 'error'
-              ? (Number(solicitud.license_validation_attempts) < 3 ? 'Por reintentar' : 'Error de consulta')
-              : 'Pendiente de validar'
-          }
+          <Clock3 className="h-3.5 w-3.5" /> {status === 'error' ? 'Error de consulta' : 'Pendiente de validar'}
         </span>
       )}
     </div>

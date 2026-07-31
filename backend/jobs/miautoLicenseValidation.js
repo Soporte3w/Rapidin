@@ -6,16 +6,11 @@ const configuredBatchSize = Number(process.env.MIAUTO_LICENSE_VALIDATION_BATCH_S
 const BATCH_SIZE = Number.isInteger(configuredBatchSize) && configuredBatchSize > 0
   ? Math.min(configuredBatchSize, 100)
   : 10;
-const configuredIntervalMs = Number(process.env.MIAUTO_LICENSE_VALIDATION_INTERVAL_MS);
-const INTERVAL_MS = Number.isFinite(configuredIntervalMs) && configuredIntervalMs >= 10_000
-  ? configuredIntervalMs
-  : 60_000;
 const configuredDelayMs = Number(process.env.MIAUTO_LICENSE_VALIDATION_DELAY_MS);
 const DELAY_MS = Number.isFinite(configuredDelayMs) && configuredDelayMs >= 0
   ? configuredDelayMs
   : 400;
 
-let running = false;
 let started = false;
 let missingTokenLogged = false;
 
@@ -23,7 +18,20 @@ function delay(ms) {
   return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
-export async function runMiautoLicenseValidationBatch() {
+async function getInitialBackfillCutoff() {
+  const result = await query(
+    `SELECT applied_at
+     FROM public.rapidin_schema_migrations
+     WHERE filename = '042_miauto_license_validation.sql'
+     LIMIT 1`
+  );
+  if (!result.rows[0]?.applied_at) {
+    throw new Error('No se encontró la fecha de aplicación de la migración 042');
+  }
+  return result.rows[0].applied_at;
+}
+
+export async function runMiautoLicenseValidationBatch(createdBefore) {
   if (!String(process.env.FACTILIZA_API_TOKEN || '').trim()) {
     if (!missingTokenLogged) {
       logger.warn('Mi Auto: backfill de licencias pausado; falta FACTILIZA_API_TOKEN');
@@ -37,22 +45,15 @@ export async function runMiautoLicenseValidationBatch() {
     `SELECT id, dni, country
      FROM module_miauto_solicitud
      WHERE country = 'PE'
-       AND (
-         license_validation_status = 'pending'
-         OR (
-           license_validation_status = 'error'
-           AND license_validation_attempts < 3
-           AND license_validation_checked_at <= CURRENT_TIMESTAMP - INTERVAL '15 minutes'
-         )
-       )
+       AND license_validation_status = 'pending'
        AND dni ~ '^\\d{8}$'
-     ORDER BY CASE WHEN license_validation_status = 'pending' THEN 0 ELSE 1 END,
-              created_at ASC, id ASC
+       AND created_at <= $2
+     ORDER BY created_at ASC, id ASC
      LIMIT $1`,
-    [BATCH_SIZE]
+    [BATCH_SIZE, createdBefore]
   );
 
-  const stats = { valid: 0, invalid: 0, error: 0 };
+  const stats = { valid: 0, invalid: 0, error: 0, persistenceErrors: 0 };
   for (let index = 0; index < result.rows.length; index += 1) {
     const row = result.rows[index];
     const validation = await validateMiautoLicense({
@@ -61,6 +62,7 @@ export async function runMiautoLicenseValidationBatch() {
       country: row.country,
     });
     stats[validation.status] = (stats[validation.status] || 0) + 1;
+    if (validation.persisted === false) stats.persistenceErrors += 1;
     if (index + 1 < result.rows.length) await delay(DELAY_MS);
   }
 
@@ -73,30 +75,33 @@ export async function runMiautoLicenseValidationBatch() {
   return { processed: result.rows.length, ...stats };
 }
 
-async function guardedRun() {
-  if (running) return;
-  running = true;
-  try {
-    await runMiautoLicenseValidationBatch();
-  } catch (error) {
-    logger.error('Mi Auto: error procesando validaciones de licencia', { error: error.message });
-  } finally {
-    running = false;
+async function runInitialBackfill() {
+  const createdBefore = await getInitialBackfillCutoff();
+  let totalProcessed = 0;
+  while (true) {
+    const result = await runMiautoLicenseValidationBatch(createdBefore);
+    totalProcessed += result.processed;
+    if (result.persistenceErrors > 0) {
+      throw new Error(`No se persistieron ${result.persistenceErrors} validaciones; el backfill se detuvo`);
+    }
+    if (result.pending || result.processed < BATCH_SIZE) break;
   }
+  logger.info('Mi Auto: backfill inicial de licencias finalizado', { processed: totalProcessed });
 }
 
 export function startMiautoLicenseValidationJob() {
   if (started) return;
   started = true;
 
-  const initialRun = setTimeout(guardedRun, 5_000);
-  const interval = setInterval(guardedRun, INTERVAL_MS);
+  const initialRun = setTimeout(() => {
+    runInitialBackfill().catch((error) => {
+      logger.error('Mi Auto: error en el backfill inicial de licencias', { error: error.message });
+    });
+  }, 5_000);
   initialRun.unref?.();
-  interval.unref?.();
 
-  logger.info('Mi Auto: validador de licencias iniciado', {
+  logger.info('Mi Auto: backfill inicial de licencias programado', {
     batchSize: BATCH_SIZE,
-    intervalMs: INTERVAL_MS,
     delayMs: DELAY_MS,
   });
 }

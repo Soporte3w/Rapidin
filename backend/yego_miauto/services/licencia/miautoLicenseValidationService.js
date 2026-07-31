@@ -78,16 +78,18 @@ export async function validateMiautoLicense({ solicitudId, dni, country = 'PE' }
     return { status, license };
   } catch (error) {
     const message = String(error?.message || 'Error desconocido consultando Factiliza').slice(0, ERROR_MAX_LENGTH);
+    let persisted = true;
     try {
       await saveSkippedValidation(solicitudId, 'error', message, true);
     } catch (persistenceError) {
+      persisted = false;
       logger.error('No se pudo registrar el error de validación de licencia Mi Auto', {
         solicitudId,
         error: persistenceError.message,
       });
     }
-    logger.warn('Validación de licencia Mi Auto pendiente de reintento', { solicitudId, error: message });
-    return { status: 'error', error: message };
+    logger.warn('Validación de licencia Mi Auto finalizó con error', { solicitudId, error: message });
+    return { status: 'error', error: message, persisted };
   }
 }
 

@@ -2855,7 +2855,7 @@ export default function YegoMiAutoRentSaleDetail() {
                                         type="button"
                                         disabled={Boolean(pagandoGastoManualId)}
                                         onClick={() => setGastoManualPagoTarget(og)}
-                                        className="inline-flex items-center gap-1 rounded border border-green-300 bg-green-50 px-1.5 py-0.5 font-semibold text-green-700 hover:bg-green-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                        className="inline-flex items-center gap-1 rounded border border-red-300 bg-red-50 px-1.5 py-0.5 font-semibold text-[#8B1A1A] hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
                                         title="Registrar esta cuota como pagada sin descontar saldo en Yango Fleet"
                                       >
                                         {pagandoGastoManualId === og.id
@@ -2992,7 +2992,7 @@ export default function YegoMiAutoRentSaleDetail() {
                 type="button"
                 disabled={Boolean(pagandoGastoManualId)}
                 onClick={() => void confirmManualAdditionalExpensePayment()}
-                className="inline-flex h-9 items-center gap-2 rounded-md bg-green-700 px-3 text-sm font-semibold text-white hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex h-9 items-center gap-2 rounded-md bg-[#8B1A1A] px-3 text-sm font-semibold text-white hover:bg-[#741616] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {pagandoGastoManualId
                   ? <RefreshCw className="h-4 w-4 animate-spin" />

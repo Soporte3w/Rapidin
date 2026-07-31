@@ -126,6 +126,7 @@ flock -n 9 || fail "Ya existe otro despliegue Rapidín en ejecución"
 git_cmd=(git -c "safe.directory=$REPO_ROOT" -C "$REPO_ROOT")
 current_branch="$("${git_cmd[@]}" branch --show-current)"
 [[ "$current_branch" == 'main' ]] || fail "El despliegue solo está permitido desde main; rama actual: $current_branch"
+starting_head="$("${git_cmd[@]}" rev-parse HEAD)"
 
 tracked_status="$("${git_cmd[@]}" status --porcelain=v1 --untracked-files=no)"
 if [[ -n "$tracked_status" ]]; then
@@ -139,6 +140,18 @@ log "Actualizando main desde origin/main"
 local_head="$("${git_cmd[@]}" rev-parse HEAD)"
 remote_head="$("${git_cmd[@]}" rev-parse origin/main)"
 [[ "$local_head" == "$remote_head" ]] || fail "main local no coincide con origin/main después del pull"
+
+if [[ "$starting_head" != "$local_head" ]]; then
+  if [[ -n "${RAPIDIN_DEPLOY_REEXEC_HEAD:-}" ]]; then
+    fail "origin/main volvió a cambiar durante el reinicio del despliegue; ejecuta nuevamente"
+  fi
+  log "El código cambió con git pull; reiniciando el Bash desde el commit actualizado"
+  export RAPIDIN_DEPLOY_REEXEC_HEAD="$local_head"
+  flock -u 9
+  exec 9>&-
+  exec "$REPO_ROOT/deploy-production.sh"
+fi
+
 log "Se desplegará el commit $("${git_cmd[@]}" rev-parse --short HEAD)"
 
 ensure_dependencies "$BACKEND_DIR" production

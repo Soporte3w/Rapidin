@@ -29,6 +29,10 @@ el backend. Cuando encuentra archivos pendientes:
 5. Vuelve a comprobar que no quede ninguna migración pendiente.
 6. Verifica que los ocho índices de rendimiento estén válidos y listos.
 
+Si `git pull` descarga un commit nuevo, el proceso se reinicia una sola vez
+desde el Bash actualizado. Esto evita continuar el despliegue con instrucciones
+antiguas que ya estaban cargadas antes del pull.
+
 Si cualquiera de esos pasos falla, el despliegue se detiene antes de reiniciar
 PM2 o publicar el frontend. Después del despliegue:
 

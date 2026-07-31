@@ -86,13 +86,14 @@ async function loadMonedaContextForSolicitud(solicitudId) {
   }
   const country = sol.rows[0]?.country;
   const cvId = sol.rows[0]?.cronograma_vehiculo_id;
-  const tcEff = await tipoCambioUsdALocalEfectivo(country);
+  const [tcEff, cv] = await Promise.all([
+    tipoCambioUsdALocalEfectivo(country),
+    cvId
+      ? query('SELECT inicial_moneda FROM module_miauto_cronograma_vehiculo WHERE id = $1', [cvId])
+      : Promise.resolve({ rows: [] }),
+  ]);
   const monedaLocal = tcEff.monedaLocal;
-  let inicialMoneda = 'USD';
-  if (cvId) {
-    const cv = await query('SELECT inicial_moneda FROM module_miauto_cronograma_vehiculo WHERE id = $1', [cvId]);
-    inicialMoneda = cv.rows[0]?.inicial_moneda === 'USD' ? 'USD' : monedaLocal;
-  }
+  const inicialMoneda = !cvId || cv.rows[0]?.inicial_moneda === 'USD' ? 'USD' : monedaLocal;
   return { country, cronograma_vehiculo_id: cvId, inicialMoneda, valorUsdALocal: tcEff.valorUsdALocal, monedaLocal };
 }
 
@@ -151,19 +152,21 @@ async function montoEnMonedaCuotaInicial(solicitudId, monto, moneda) {
 /** Total validado por solicitud en moneda de la cuota inicial y en USD (para regla de 500 USD en pago parcial).
  * Incluye comprobantes de cuota inicial (comprobante_pago) y comprobantes de otros gastos validados. */
 export async function getTotalValidado(solicitudId) {
-  const sumPago = await query(
-    `SELECT COALESCE(SUM(COALESCE(monto, 0)), 0) AS total FROM module_miauto_comprobante_pago WHERE solicitud_id = $1 AND estado = 'validado'`,
-    [solicitudId]
-  );
+  const [sumPago, ctx, sumOg] = await Promise.all([
+    query(
+      `SELECT COALESCE(SUM(COALESCE(monto, 0)), 0) AS total FROM module_miauto_comprobante_pago WHERE solicitud_id = $1 AND estado = 'validado'`,
+      [solicitudId]
+    ),
+    loadMonedaContextForSolicitud(solicitudId),
+    query(
+      `SELECT monto, moneda FROM module_miauto_comprobante_otros_gastos WHERE solicitud_id = $1 AND estado = 'validado'`,
+      [solicitudId]
+    ),
+  ]);
   let total = round2(parseFloat(sumPago.rows[0]?.total) || 0);
 
-  const ctx = await loadMonedaContextForSolicitud(solicitudId);
   const { inicialMoneda, valorUsdALocal } = ctx;
 
-  const sumOg = await query(
-    `SELECT monto, moneda FROM module_miauto_comprobante_otros_gastos WHERE solicitud_id = $1 AND estado = 'validado'`,
-    [solicitudId]
-  );
   for (const row of sumOg.rows || []) {
     const monto = parseFloat(row.monto) || 0;
     if (monto <= 0) continue;

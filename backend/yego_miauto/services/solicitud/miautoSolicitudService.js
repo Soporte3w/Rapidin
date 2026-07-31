@@ -1,8 +1,7 @@
 import { query } from '../../../config/database.js';
 import {
   assertCronogramaPermitePagoInicial,
-  getCronogramasByIds,
-  getMonedaCuotaSemanalPorVehiculo,
+  getCuotaMonedasByAssignments,
 } from '../cronograma/miautoCronogramaService.js';
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../../../utils/helpers.js';
 import { generateWeeklyCharge } from '../cobros/CobroEngine.js';
@@ -223,35 +222,35 @@ export const listSolicitudes = async (filters = {}) => {
   const phonesForLookupList = dataResult.rows
     .filter((r) => r.phone && (!nameFromRapidinList(r) || !licenseOnSolicitud(r)))
     .map((r) => r.phone);
-  const driverInfoList = await getDriverInfoByPhones(MIAUTO_PARK_ID, phonesForLookupList);
-
-  // Working drivers por placa
   const placas = [...new Set(dataResult.rows.map((r) => r.placa_asignada).filter(Boolean))];
-  const workingByPlaca = new Map();
-  const statusByDriverIdList = new Map();
   const fleetIds = [...new Set(dataResult.rows.map((r) => r.driver_id_fleet).filter(Boolean))];
-  if (placas.length > 0) {
-    const { rows: wRows } = await query(
-      `SELECT UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) AS placa_norm,
-              first_name, last_name
-       FROM drivers
-       WHERE TRIM(COALESCE(park_id::text, '')) = $1
-         AND work_status = 'working'
-         AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) = ANY($2::text[])`,
-      [MIAUTO_PARK_ID, placas.map((p) => p.toUpperCase().replace(/\s/g, ''))]
-    );
-    for (const w of wRows) {
-      workingByPlaca.set(w.placa_norm, [w.first_name, w.last_name].filter(Boolean).join(' ').trim());
-    }
+  const [driverInfoList, workingResult, statusResult] = await Promise.all([
+    getDriverInfoByPhones(MIAUTO_PARK_ID, phonesForLookupList),
+    placas.length > 0
+      ? query(
+          `SELECT UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) AS placa_norm,
+                  first_name, last_name
+           FROM drivers
+           WHERE TRIM(COALESCE(park_id::text, '')) = $1
+             AND work_status = 'working'
+             AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) = ANY($2::text[])`,
+          [MIAUTO_PARK_ID, placas.map((p) => p.toUpperCase().replace(/\s/g, ''))]
+        )
+      : Promise.resolve({ rows: [] }),
+    fleetIds.length > 0
+      ? query(
+          'SELECT driver_id, work_status, first_name, last_name FROM drivers WHERE driver_id = ANY($1::text[])',
+          [fleetIds]
+        )
+      : Promise.resolve({ rows: [] }),
+  ]);
+  const workingByPlaca = new Map();
+  for (const w of workingResult.rows || []) {
+    workingByPlaca.set(w.placa_norm, [w.first_name, w.last_name].filter(Boolean).join(' ').trim());
   }
-  if (fleetIds.length > 0) {
-    const { rows: sRows } = await query(
-      `SELECT driver_id, work_status, first_name, last_name FROM drivers WHERE driver_id = ANY($1::text[])`,
-      [fleetIds]
-    );
-    for (const s of sRows) {
-      statusByDriverIdList.set(s.driver_id, { status: s.work_status, name: [s.first_name, s.last_name].filter(Boolean).join(' ').trim() });
-    }
+  const statusByDriverIdList = new Map();
+  for (const s of statusResult.rows || []) {
+    statusByDriverIdList.set(s.driver_id, { status: s.work_status, name: [s.first_name, s.last_name].filter(Boolean).join(' ').trim() });
   }
 
   const rows = dataResult.rows.map((r) => {
@@ -400,10 +399,9 @@ export const listAlquilerVenta = async (filters = {}) => {
   const total = countResult.rows[0]?.total ?? 0;
   const rows = dataResult.rows || [];
   const solicitudIds = rows.map((r) => r.id);
-  const cronogramaIds = [...new Set(rows.map((row) => row.cronograma_id).filter(Boolean))];
 
   const cuotaSummaryBySolicitud = {};
-  const [summaryRes, cronogramaCache] = await Promise.all([
+  const [summaryRes, monedaByAssignment] = await Promise.all([
     solicitudIds.length > 0
       ? query(
           `SELECT c.solicitud_id,
@@ -419,7 +417,7 @@ export const listAlquilerVenta = async (filters = {}) => {
           [solicitudIds]
         )
       : Promise.resolve({ rows: [] }),
-    getCronogramasByIds(cronogramaIds),
+    getCuotaMonedasByAssignments(rows),
   ]);
   for (const r of summaryRes.rows || []) {
     cuotaSummaryBySolicitud[r.solicitud_id] = {
@@ -442,35 +440,35 @@ export const listAlquilerVenta = async (filters = {}) => {
   const phonesForLookup = rows
     .filter((r) => r.phone && (!nameFromRapidin(r) || !licenseFromSolicitud(r)))
     .map((r) => r.phone);
-  const driverInfoAv = await getDriverInfoByPhones(MIAUTO_PARK_ID, phonesForLookup);
-
-  // Working drivers por placa
   const placasAv = [...new Set(rows.map((r) => r.placa_asignada).filter(Boolean))];
-  const workingByPlacaAv = new Map();
-  const statusByDriverId = new Map();
   const fleetIds = [...new Set(rows.map((r) => r.driver_id_fleet).filter(Boolean))];
-  if (placasAv.length > 0) {
-    const { rows: wRows } = await query(
-      `SELECT UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) AS placa_norm,
-              first_name, last_name
-       FROM drivers
-       WHERE TRIM(COALESCE(park_id::text, '')) = $1
-         AND work_status = 'working'
-         AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) = ANY($2::text[])`,
-      [MIAUTO_PARK_ID, placasAv.map((p) => p.toUpperCase().replace(/\s/g, ''))]
-    );
-    for (const w of wRows) {
-      workingByPlacaAv.set(w.placa_norm, [w.first_name, w.last_name].filter(Boolean).join(' ').trim());
-    }
+  const [driverInfoAv, workingResult, statusResult] = await Promise.all([
+    getDriverInfoByPhones(MIAUTO_PARK_ID, phonesForLookup),
+    placasAv.length > 0
+      ? query(
+          `SELECT UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) AS placa_norm,
+                  first_name, last_name
+           FROM drivers
+           WHERE TRIM(COALESCE(park_id::text, '')) = $1
+             AND work_status = 'working'
+             AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(car_number, '')), ' ', '', 'g')) = ANY($2::text[])`,
+          [MIAUTO_PARK_ID, placasAv.map((p) => p.toUpperCase().replace(/\s/g, ''))]
+        )
+      : Promise.resolve({ rows: [] }),
+    fleetIds.length > 0
+      ? query(
+          'SELECT driver_id, work_status, first_name, last_name FROM drivers WHERE driver_id = ANY($1::text[])',
+          [fleetIds]
+        )
+      : Promise.resolve({ rows: [] }),
+  ]);
+  const workingByPlacaAv = new Map();
+  for (const w of workingResult.rows || []) {
+    workingByPlacaAv.set(w.placa_norm, [w.first_name, w.last_name].filter(Boolean).join(' ').trim());
   }
-  if (fleetIds.length > 0) {
-    const { rows: sRows } = await query(
-      `SELECT driver_id, work_status, first_name, last_name FROM drivers WHERE driver_id = ANY($1::text[])`,
-      [fleetIds]
-    );
-    for (const s of sRows) {
-      statusByDriverId.set(s.driver_id, { status: s.work_status, name: [s.first_name, s.last_name].filter(Boolean).join(' ').trim() });
-    }
+  const statusByDriverId = new Map();
+  for (const s of statusResult.rows || []) {
+    statusByDriverId.set(s.driver_id, { status: s.work_status, name: [s.first_name, s.last_name].filter(Boolean).join(' ').trim() });
   }
 
   const data = rows.map((r) => {
@@ -501,11 +499,8 @@ export const listAlquilerVenta = async (filters = {}) => {
       moneda_dominante: 'PEN',
     };
     const cuotasPlan = r.vehiculo_cuotas_semanales != null ? parseInt(r.vehiculo_cuotas_semanales, 10) || 0 : 0;
-    const crono = r.cronograma_id ? cronogramaCache.get(String(r.cronograma_id)) : null;
-    const monedaCronograma =
-      crono && r.cronograma_vehiculo_id
-        ? getMonedaCuotaSemanalPorVehiculo(crono, r.cronograma_vehiculo_id)
-        : 'PEN';
+    const assignmentKey = `${r.cronograma_id || ''}:${r.cronograma_vehiculo_id || ''}`;
+    const monedaCronograma = monedaByAssignment.get(assignmentKey) || 'PEN';
     const moneda =
       summary.total_cuotas > 0 && summary.moneda_dominante
         ? summary.moneda_dominante
@@ -613,7 +608,7 @@ export const getSolicitudById = async (id, options = {}) => {
   row.total_validado_usd = validadoPack.totalUsd;
 
   // Datos del conductor desde Yango
-  if (row.driver_id_fleet) {
+  if (row.driver_id_fleet && !skipYangoLicenseLookup) {
     try {
       const { getContractorProfile } = await import('../../../services/yangoService.js');
       const profile = await getContractorProfile(row.driver_id_fleet);

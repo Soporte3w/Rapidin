@@ -599,6 +599,22 @@ export async function listSolicitudes({
   return { data: result.rows, pagination: { page: safePage, limit: safeLimit, total: count.rows[0].total } };
 }
 
+/** Lista liviana para la selección masiva de destinatarios de Mi Moto. */
+export async function listMessageRecipients() {
+  const result = await q(
+    `SELECT s.id, s.first_name, s.last_name, s.phone, s.document_number,
+            s.placa_asignada, s.cronograma_id,
+            ${LIVE_CRONOGRAMA_NAME_SQL} AS cronograma_name,
+            ${LIVE_VEHICLE_NAME_SQL} AS vehiculo_name
+     FROM module_mimoto_solicitud s
+     LEFT JOIN module_mimoto_cronograma c ON c.id = s.cronograma_id
+     LEFT JOIN module_mimoto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id
+     WHERE s.deleted_at IS NULL AND s.status IN ('aprobado', 'activo')
+     ORDER BY s.created_at DESC`
+  );
+  return result.rows || [];
+}
+
 export async function isSolicitudOwnedByDriver(solicitudId, phone) {
   let normalized;
   try {

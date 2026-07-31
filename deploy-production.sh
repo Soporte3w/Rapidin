@@ -246,10 +246,12 @@ npm --prefix "$BACKEND_DIR" run db:indexes:performance -- --check
 
 pm2 describe "$PM2_PROCESS" >/dev/null 2>&1 || fail "No existe el proceso PM2: $PM2_PROCESS"
 log "Reiniciando únicamente el backend PM2: $PM2_PROCESS"
-pm2 restart "$PM2_PROCESS" --update-env
+NODE_ENV=production pm2 restart "$PM2_PROCESS" --update-env
 
 backend_pid="$(pm2 pid "$PM2_PROCESS" | tail -n 1 | tr -d '[:space:]')"
 [[ "$backend_pid" =~ ^[1-9][0-9]*$ ]] || fail "PM2 no reportó un PID activo para $PM2_PROCESS"
+backend_node_env="$(tr '\0' '\n' < "/proc/$backend_pid/environ" | sed -n 's/^NODE_ENV=//p' | tail -n 1)"
+[[ "$backend_node_env" == 'production' ]] || fail "El backend reinició sin NODE_ENV=production"
 log "Backend online con PID $backend_pid"
 
 if [[ -n "${BACKEND_HEALTHCHECK_URL:-}" ]]; then

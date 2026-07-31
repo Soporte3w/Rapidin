@@ -61,6 +61,66 @@ function toTitleCase(str) {
     .join(' ');
 }
 
+function phoneNormForQuery(phone, country) {
+  const digits = (phone || '').toString().replace(/\D/g, '');
+  if (country === 'CO') {
+    return digits.length === 12 && digits.startsWith('57') ? `+${digits}` : `+57${digits}`;
+  }
+  return digits.length === 11 && digits.startsWith('51')
+    ? `+${digits}`
+    : digits.length >= 9
+      ? `+51${digits.slice(-9)}`
+      : `+${digits}`;
+}
+
+/**
+ * Resuelve en un único viaje a PostgreSQL los conductores Rapidín y sus
+ * préstamos activos para una lista de opciones proveniente de Yego.
+ */
+async function getRapidinMatchesForDriverOptions(options) {
+  if (!Array.isArray(options) || options.length === 0) return new Map();
+
+  const result = await query(
+    `WITH candidates AS (
+       SELECT *
+       FROM jsonb_to_recordset($1::jsonb) AS c(
+         row_key integer,
+         country text,
+         park_id text,
+         phone_norm text,
+         raw_phone text,
+         digits_only text
+       )
+     )
+     SELECT c.row_key,
+            rd.id,
+            rd.phone,
+            rd.dni,
+            EXISTS (
+              SELECT 1
+              FROM module_rapidin_loans l
+              WHERE l.driver_id = rd.id AND l.status = 'active'
+            ) AS has_active_loan
+     FROM candidates c
+     LEFT JOIN LATERAL (
+       SELECT d.id, d.phone, d.dni
+       FROM module_rapidin_drivers d
+       WHERE d.country::text = c.country
+         AND COALESCE(d.park_id, '') = c.park_id
+         AND (
+           d.phone = c.phone_norm
+           OR d.phone = c.raw_phone
+           OR REGEXP_REPLACE(COALESCE(d.phone, ''), '[^0-9]', '', 'g') = c.digits_only
+         )
+       LIMIT 1
+     ) rd ON TRUE
+     ORDER BY c.row_key`,
+    [JSON.stringify(options)]
+  );
+
+  return new Map((result.rows || []).map((row) => [Number(row.row_key), row]));
+}
+
 /** GET /api/admin/driver-search?q=Juan&country=PE - Buscar conductores por nombre solo en tabla drivers (work_status=working) */
 router.get('/driver-search', async (req, res) => {
   try {
@@ -94,15 +154,23 @@ router.get('/driver-search', async (req, res) => {
       rDrivers = { rows: [] };
     }
 
-    // Cada fila de drivers es una opción distinta (driver_id + park_id únicos). No agrupar por teléfono.
-    const phoneNormForQuery = (phone, c) => {
-      const digits = (phone || '').toString().replace(/\D/g, '');
-      if (c === 'CO') return digits.length === 12 && digits.startsWith('57') ? `+${digits}` : `+57${digits}`;
-      return digits.length === 11 && digits.startsWith('51') ? `+${digits}` : digits.length >= 9 ? `+51${digits.slice(-9)}` : `+${digits}`;
-    };
+    const rapidinMatches = await getRapidinMatchesForDriverOptions(
+      rDrivers.rows.map((row, rowKey) => {
+        const countryMapped = (row.license_country || '').toLowerCase() === 'col' ? 'CO' : 'PE';
+        return {
+          row_key: rowKey,
+          country: countryMapped,
+          park_id: (row.park_id || '').toString().trim(),
+          phone_norm: phoneNormForQuery(row.phone, countryMapped),
+          raw_phone: row.phone || '',
+          digits_only: (row.phone || '').toString().replace(/\D/g, ''),
+        };
+      })
+    );
 
+    // Cada fila de drivers es una opción distinta (driver_id + park_id únicos). No agrupar por teléfono.
     const results = [];
-    for (const row of rDrivers.rows) {
+    for (const [rowKey, row] of rDrivers.rows.entries()) {
       const countryMapped = (row.license_country || '').toLowerCase() === 'col' ? 'CO' : 'PE';
       const driverId = row.driver_id != null ? String(row.driver_id) : String(row.id);
       const parkId = row.park_id || null;
@@ -114,25 +182,12 @@ router.get('/driver-search', async (req, res) => {
       // Documento y teléfono por opción: de esta fila de drivers; si existe en rapidin para este park_id, usar los de rapidin
       let item_phone = row.phone || '';
       let item_dni = (row.document_number || '').toString().trim();
-      const phoneNorm = phoneNormForQuery(row.phone, countryMapped);
-      const digitsOnly = (row.phone || '').toString().replace(/\D/g, '');
-
-      const rapidinRow = await query(
-        `SELECT id, phone, dni FROM module_rapidin_drivers 
-         WHERE country = $1 AND COALESCE(park_id, '') = $2 
-           AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
-         LIMIT 1`,
-        [countryMapped, (parkId || '').toString().trim(), phoneNorm, row.phone, digitsOnly]
-      );
-      if (rapidinRow.rows.length > 0) {
-        const r = rapidinRow.rows[0];
+      const rapidinMatch = rapidinMatches.get(rowKey);
+      if (rapidinMatch?.id) {
+        const r = rapidinMatch;
         if (r.phone != null && String(r.phone).trim() !== '') item_phone = String(r.phone).trim();
         if (r.dni != null && String(r.dni).trim() !== '') item_dni = String(r.dni).trim();
-        const loan = await query(
-          'SELECT id FROM module_rapidin_loans WHERE driver_id = $1 AND status = $2 LIMIT 1',
-          [r.id, 'active']
-        );
-        has_active_loan = loan.rows.length > 0;
+        has_active_loan = rapidinMatch.has_active_loan === true;
       }
 
       results.push({
@@ -189,29 +244,26 @@ router.get('/driver-flotas', async (req, res) => {
       [licenseCountry, phoneNorm, rawPhone, digitsOnly]
     );
 
-    for (const row of driversRows.rows) {
+    const rapidinMatches = await getRapidinMatchesForDriverOptions(
+      driversRows.rows.map((row, rowKey) => ({
+        row_key: rowKey,
+        country: c,
+        park_id: (row.park_id || '').toString().trim(),
+        phone_norm: phoneNorm,
+        raw_phone: rawPhone,
+        digits_only: digitsOnly,
+      }))
+    );
+
+    for (const [rowKey, row] of driversRows.rows.entries()) {
       const parkId = row.park_id || null;
       const key = (parkId || '').toString().trim() || '__null__';
       const flotaName = await getPartnerNameById(parkId) || parkId || 'Sin flota';
 
       // ¿Tiene préstamo activo? Buscar en module_rapidin_drivers por phone+country+park_id y luego en loans
-      let hasActiveLoan = false;
-      let rapidinDriverId = null;
-      const rapidinRow = await query(
-        `SELECT id FROM module_rapidin_drivers 
-         WHERE country = $1 AND COALESCE(park_id, '') = $2 
-           AND (phone = $3 OR phone = $4 OR REGEXP_REPLACE(COALESCE(phone,''), '[^0-9]', '', 'g') = $5)
-         LIMIT 1`,
-        [c, (parkId || '').toString().trim(), phoneNorm, rawPhone, digitsOnly]
-      );
-      if (rapidinRow.rows.length > 0) {
-        rapidinDriverId = rapidinRow.rows[0].id;
-        const loan = await query(
-          'SELECT id FROM module_rapidin_loans WHERE driver_id = $1 AND status = $2 LIMIT 1',
-          [rapidinDriverId, 'active']
-        );
-        hasActiveLoan = loan.rows.length > 0;
-      }
+      const rapidinMatch = rapidinMatches.get(rowKey);
+      const rapidinDriverId = rapidinMatch?.id || null;
+      const hasActiveLoan = rapidinMatch?.has_active_loan === true;
 
       flotasMap.set(key, {
         park_id: parkId,

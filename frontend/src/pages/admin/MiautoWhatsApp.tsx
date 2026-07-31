@@ -81,7 +81,6 @@ interface PreviewItem {
 
 const PAGE_SIZES = [10, 20, 50, 100];
 const HISTORY_PAGE_SIZE = 50;
-const RENT_SALE_API_PAGE_SIZE = 100;
 
 function cleanPhone(phone?: string) {
   return String(phone || '').replace(/[^\d+]/g, '');
@@ -163,33 +162,17 @@ const MiautoWhatsApp: React.FC = () => {
     try {
       setLoading(true);
       if (refreshCuotas) cuotasRequestsRef.current.clear();
-      const firstResponse = await api.get('/miauto/alquiler-venta', {
-        params: { country: 'PE', page: 1, limit: RENT_SALE_API_PAGE_SIZE },
+      const response = await api.get('/miauto/admin/whatsapp/recipients', {
+        params: { country: 'PE' },
       });
-      const firstPage = Array.isArray(firstResponse.data?.data) ? firstResponse.data.data : [];
-      const totalPages = Math.max(1, Number(firstResponse.data?.pagination?.totalPages) || 1);
-      const remainingResponses = totalPages > 1
-        ? await Promise.all(
-            Array.from({ length: totalPages - 1 }, (_, index) =>
-              api.get('/miauto/alquiler-venta', {
-                params: { country: 'PE', page: index + 2, limit: RENT_SALE_API_PAGE_SIZE },
-              })
-            )
-          )
-        : [];
-      const raw = [
-        ...firstPage,
-        ...remainingResponses.flatMap((response) =>
-          Array.isArray(response.data?.data) ? response.data.data : []
-        ),
-      ];
+      const raw = Array.isArray(response.data?.data) ? response.data.data : [];
       const rows = uniqueRows(raw.map((s: any): SolicitudRow => ({
         id: s.id,
-        first_name: s.driver_name || s.working_driver_name || s.full_name || '',
-        phone: s.phone || s.whatsapp_phone || '',
-        cronograma_name: s.cronograma?.name || s.cronograma_name || '',
-        cronograma_id: s.cronograma?.id || s.cronograma_id || '',
-        vehiculo_name: s.vehiculo?.name || s.vehiculo_name || s.cronograma_vehiculo?.name || '',
+        first_name: s.driver_name || '',
+        phone: s.phone || '',
+        cronograma_name: s.cronograma_name || '',
+        cronograma_id: s.cronograma_id || '',
+        vehiculo_name: s.vehiculo_name || '',
       })));
       const availableIds = new Set(rows.map((row) => row.id));
       setSolicitudes(rows);

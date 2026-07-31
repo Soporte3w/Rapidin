@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import {
   enqueueBulkWhatsApp,
+  getWhatsAppRecipients,
   getWhatsAppLog,
   getWhatsAppLogDays,
   getWhatsAppQueueStatuses,
@@ -13,6 +14,19 @@ import { errorResponse, successResponse } from '../../../utils/responses.js';
 import { logger } from '../../../utils/logger.js';
 
 const router = Router();
+
+router.get('/admin/whatsapp/recipients', async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'Sin permisos', 403);
+    }
+    const recipients = await getWhatsAppRecipients({ country: req.query.country });
+    return successResponse(res, recipients);
+  } catch (error) {
+    logger.error('Error cargando destinatarios WhatsApp:', error);
+    return errorResponse(res, error.message, 500);
+  }
+});
 
 /**
  * POST /api/miauto/admin/whatsapp/enviar

@@ -207,6 +207,40 @@ export async function getWhatsAppQueueStatuses(ids = []) {
  */
 const WHATSAPP_LOG_DATE_EXPRESSION = 'COALESCE(sent_at, queued_at, created_at)';
 
+/**
+ * Lista liviana para selección de destinatarios. No incluye cuotas, imágenes,
+ * resúmenes financieros ni configuración completa de cronogramas.
+ */
+export async function getWhatsAppRecipients({ country = 'PE' } = {}) {
+  const normalizedCountry = String(country || 'PE').toUpperCase() === 'CO' ? 'CO' : 'PE';
+  const { rows } = await query(
+    `SELECT s.id,
+            s.phone,
+            s.cronograma_id,
+            COALESCE(
+              NULLIF(BTRIM(CONCAT_WS(' ', rd.first_name, rd.last_name)), ''),
+              NULLIF(BTRIM(CONCAT_WS(' ', yd.first_name, yd.last_name)), ''),
+              'Conductor'
+            ) AS driver_name,
+            c.name AS cronograma_name,
+            v.name AS vehiculo_name
+     FROM module_miauto_solicitud s
+     LEFT JOIN module_rapidin_drivers rd ON rd.id::text = s.driver_id_fleet
+     LEFT JOIN LATERAL (
+       SELECT d.first_name, d.last_name
+       FROM drivers d
+       WHERE d.driver_id = s.driver_id_fleet
+       LIMIT 1
+     ) yd ON TRUE
+     LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id
+     LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id
+     WHERE s.status = 'aprobado' AND s.country = $1
+     ORDER BY s.fecha_inicio_cobro_semanal DESC NULLS LAST, s.created_at DESC`,
+    [normalizedCountry]
+  );
+  return rows || [];
+}
+
 function appendWhatsAppLogFilters({ solicitudId, status, date, search } = {}) {
   const conditions = [];
   const params = [];

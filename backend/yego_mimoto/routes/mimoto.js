@@ -13,6 +13,7 @@ import {
   isSolicitudOwnedByDriver,
   listCronogramas,
   listFleets,
+  listMessageRecipients,
   listSolicitudes,
   toggleCronogramaActive,
   updateCronograma,
@@ -160,6 +161,11 @@ router.get('/solicitudes', handler('listando solicitudes', async (req, res) =>
     page: req.query.page,
     limit: req.query.limit,
   }))));
+
+router.get('/message-recipients', handler('listando destinatarios', async (req, res) => {
+  if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos', 403);
+  return successResponse(res, await listMessageRecipients());
+}));
 
 router.post('/solicitudes', handler('creando solicitud', async (req, res) =>
   successResponse(res, await createSolicitud(req.body, actorId(req)), 'Solicitud creada', 201)));

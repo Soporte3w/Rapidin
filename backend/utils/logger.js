@@ -36,13 +36,26 @@ const baseFormat = winston.format.combine(
   winston.format.json()
 );
 
+const LOG_MAX_SIZE_BYTES = 20 * 1024 * 1024;
+const LOG_MAX_FILES = 5;
+
+function rotatingFile(filename, options = {}) {
+  return new winston.transports.File({
+    filename,
+    maxsize: LOG_MAX_SIZE_BYTES,
+    maxFiles: LOG_MAX_FILES,
+    tailable: true,
+    ...options,
+  });
+}
+
 const logger = winston.createLogger({
   level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
   format: baseFormat,
   defaultMeta: { service: 'rapidin-api', channel: 'combined' },
   transports: [
-    new winston.transports.File({ filename: 'error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'combined.log' }),
+    rotatingFile('error.log', { level: 'error' }),
+    rotatingFile('combined.log'),
   ],
 });
 
@@ -50,21 +63,21 @@ const businessLogger = winston.createLogger({
   level: 'info',
   format: baseFormat,
   defaultMeta: { service: 'rapidin-api', channel: 'business' },
-  transports: [new winston.transports.File({ filename: 'business.log' })],
+  transports: [rotatingFile('business.log')],
 });
 
 const technicalLogger = winston.createLogger({
   level: 'info',
   format: baseFormat,
   defaultMeta: { service: 'rapidin-api', channel: 'technical' },
-  transports: [new winston.transports.File({ filename: 'technical.log' })],
+  transports: [rotatingFile('technical.log')],
 });
 
 const auditLogger = winston.createLogger({
   level: 'info',
   format: baseFormat,
   defaultMeta: { service: 'rapidin-api', channel: 'audit' },
-  transports: [new winston.transports.File({ filename: 'audit.log' })],
+  transports: [rotatingFile('audit.log')],
 });
 
 if (process.env.NODE_ENV !== 'production') {

@@ -26,11 +26,6 @@ import {
   unwrap,
 } from './mimotoApi';
 
-type SolicitudListResponse = {
-  data: MimotoSolicitud[];
-  pagination: { page: number; limit: number; total: number };
-};
-
 type MessageLog = {
   id: string;
   driver_name: string;
@@ -68,7 +63,6 @@ type PreviewItem = {
 };
 
 const PAGE_SIZES = [10, 20, 50, 100];
-const API_PAGE_SIZE = 200;
 const HISTORY_PAGE_SIZE = 50;
 
 function safeName(row: MimotoSolicitud) {
@@ -136,19 +130,7 @@ export default function YegoMiMotoMessages() {
   const loadSolicitudes = useCallback(async () => {
     setLoading(true);
     try {
-      const first = unwrap<SolicitudListResponse>(await api.get('/mimoto/solicitudes', {
-        params: { page: 1, limit: API_PAGE_SIZE, status: 'aprobado,activo' },
-      }));
-      const totalPages = Math.max(1, Math.ceil((first?.pagination?.total || 0) / API_PAGE_SIZE));
-      const remaining = totalPages > 1
-        ? await Promise.all(Array.from({ length: totalPages - 1 }, (_, index) => api.get('/mimoto/solicitudes', {
-            params: { page: index + 2, limit: API_PAGE_SIZE, status: 'aprobado,activo' },
-          })))
-        : [];
-      const rows = [
-        ...(first?.data || []),
-        ...remaining.flatMap((response) => unwrap<SolicitudListResponse>(response)?.data || []),
-      ];
+      const rows = unwrap<MimotoSolicitud[]>(await api.get('/mimoto/message-recipients')) || [];
       const availableIds = new Set(rows.map((row) => row.id));
       setSolicitudes(rows);
       setSelectedIds((current) => new Set([...current].filter((id) => availableIds.has(id))));

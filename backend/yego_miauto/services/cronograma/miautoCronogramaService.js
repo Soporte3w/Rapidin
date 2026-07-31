@@ -593,6 +593,61 @@ export async function getCronogramasByIds(ids) {
   return map;
 }
 
+/**
+ * Obtiene solo la moneda semanal requerida por listados de Alquiler/Venta.
+ * Evita cargar cronogramas completos, reglas e imágenes para resolver un dato.
+ */
+export async function getCuotaMonedasByAssignments(assignments) {
+  const unique = new Map();
+  for (const assignment of assignments || []) {
+    const cronogramaId = assignment?.cronograma_id;
+    const vehicleId = assignment?.cronograma_vehiculo_id;
+    if (!cronogramaId || !vehicleId) continue;
+    unique.set(`${cronogramaId}:${vehicleId}`, {
+      cronograma_id: cronogramaId,
+      vehicle_id: vehicleId,
+    });
+  }
+  if (unique.size === 0) return new Map();
+
+  const result = await query(
+    `WITH requested AS (
+       SELECT *
+       FROM jsonb_to_recordset($1::jsonb) AS requested(cronograma_id uuid, vehicle_id uuid)
+     ),
+     vehicle_positions AS (
+       SELECT v.cronograma_id,
+              v.id AS vehicle_id,
+              (ROW_NUMBER() OVER (
+                PARTITION BY v.cronograma_id
+                ORDER BY v.orden, v.id
+              ) - 1)::int AS vehicle_index
+       FROM module_miauto_cronograma_vehiculo v
+       WHERE v.cronograma_id IN (SELECT DISTINCT cronograma_id FROM requested)
+     )
+     SELECT requested.cronograma_id,
+            requested.vehicle_id,
+            COALESCE((
+              SELECT rule.cuota_moneda_por_vehiculo ->> positions.vehicle_index
+              FROM module_miauto_cronograma_rule rule
+              WHERE rule.cronograma_id = requested.cronograma_id
+                AND rule.cuota_moneda_por_vehiculo ->> positions.vehicle_index IN ('USD', 'PEN')
+              ORDER BY rule.orden, rule.id
+              LIMIT 1
+            ), 'PEN') AS moneda
+     FROM requested
+     LEFT JOIN vehicle_positions positions
+       ON positions.cronograma_id = requested.cronograma_id
+      AND positions.vehicle_id = requested.vehicle_id`,
+    [JSON.stringify([...unique.values()])]
+  );
+
+  return new Map((result.rows || []).map((row) => [
+    `${row.cronograma_id}:${row.vehicle_id}`,
+    row.moneda === 'USD' ? 'USD' : 'PEN',
+  ]));
+}
+
 function normalizeTasaInteresMora(value) {
   if (value == null || value === '') return 0;
   const num = parseFloat(value);

@@ -56,6 +56,11 @@ export const validateUUID = [
   validateResults
 ];
 
+export const validateSolicitudExpenseUUIDs = [
+  param('id').isUUID().withMessage('ID de solicitud inválido'),
+  param('expenseId').isUUID().withMessage('ID de cuota de otros gastos inválido'),
+  validateResults
+];
 
 
 

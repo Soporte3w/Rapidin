@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText, Download, RefreshCw, Settings2 } from 'lucide-react';
+import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText, Download, RefreshCw, Settings2, CheckCircle2 } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
@@ -79,6 +79,13 @@ function formatOtrosGastoDueDate(dueDate: string): string {
   const [year, month, day] = String(dueDate || '').slice(0, 10).split('-');
   const monthLabel = MONTHS_SHORT[Number(month) - 1];
   return year && monthLabel && day ? `${year} · ${day}-${monthLabel}` : '—';
+}
+
+function saldoPendienteOtroGasto(expense: MiautoOtrosGastoRow): number {
+  return roundToTwoDecimals(Math.max(
+    0,
+    Number(expense.pending_amount ?? Number(expense.amount_due) - Number(expense.paid_amount || 0))
+  ));
 }
 
 interface CuotaSemanal {
@@ -352,6 +359,8 @@ export default function YegoMiAutoRentSaleDetail() {
   const [generatingGastos, setGeneratingGastos] = useState(false);
   const [showGastoConfigModal, setShowGastoConfigModal] = useState(false);
   const [showGastoFleetChargeModal, setShowGastoFleetChargeModal] = useState(false);
+  const [gastoManualPagoTarget, setGastoManualPagoTarget] = useState<MiautoOtrosGastoRow | null>(null);
+  const [pagandoGastoManualId, setPagandoGastoManualId] = useState<string | null>(null);
   const [loadingGastoFleetCharge, setLoadingGastoFleetCharge] = useState(false);
   const [chargingGastoFleet, setChargingGastoFleet] = useState(false);
   const [gastoFleetPreview, setGastoFleetPreview] = useState<OtroGastoCobroFleetPreview | null>(null);
@@ -1138,6 +1147,24 @@ export default function YegoMiAutoRentSaleDetail() {
       setChargingGastoFleet(false);
     }
   }, [fetchDetail, gastoFleetPreview, id, loadAdditionalExpenseFleetCharge, selectedAdditionalExpenseFleetIds]);
+
+  const confirmManualAdditionalExpensePayment = useCallback(async () => {
+    if (!id || !gastoManualPagoTarget) return;
+    try {
+      setPagandoGastoManualId(gastoManualPagoTarget.id);
+      const response = await api.post(
+        `/miauto/solicitudes/${id}/otros-gastos/${gastoManualPagoTarget.id}/marcar-pagado`
+      );
+      const result = response.data?.data ?? response.data;
+      toast.success(result?.alreadyPaid ? 'La cuota ya estaba pagada' : 'Cuota marcada como pagada');
+      setGastoManualPagoTarget(null);
+      await fetchDetail(undefined, { refresh: true });
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'No se pudo marcar la cuota como pagada');
+    } finally {
+      setPagandoGastoManualId(null);
+    }
+  }, [fetchDetail, gastoManualPagoTarget, id]);
 
   const openAdditionalExpenseReceiptFromCard = useCallback((expense: MiautoOtrosGastoRow) => {
     if (!expense.pending_fleet_application_id) return;
@@ -2824,9 +2851,18 @@ export default function YegoMiAutoRentSaleDetail() {
                                         {pendingReceiptApplied ? 'Pendiente banco' : 'Comprobante listo'}
                                       </span>
                                     ) : (
-                                      <span className="rounded bg-gray-100 px-1.5 py-0.5 font-semibold text-gray-500">
-                                        Pendiente de cobro
-                                      </span>
+                                      <button
+                                        type="button"
+                                        disabled={Boolean(pagandoGastoManualId)}
+                                        onClick={() => setGastoManualPagoTarget(og)}
+                                        className="inline-flex items-center gap-1 rounded border border-green-300 bg-green-50 px-1.5 py-0.5 font-semibold text-green-700 hover:bg-green-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                        title="Registrar esta cuota como pagada sin descontar saldo en Yango Fleet"
+                                      >
+                                        {pagandoGastoManualId === og.id
+                                          ? <RefreshCw className="h-3 w-3 animate-spin" />
+                                          : <CheckCircle2 className="h-3 w-3" />}
+                                        Marcar pagado
+                                      </button>
                                     )}
                                   </div>
                                   {displayedReceipt && (
@@ -2896,6 +2932,78 @@ export default function YegoMiAutoRentSaleDetail() {
         onSave={saveGastoConfiguration}
         onSaveAndGenerate={saveAndGenerateAdditionalExpenses}
       />
+
+      {gastoManualPagoTarget && createPortal(
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="gasto-manual-payment-title"
+          onClick={() => {
+            if (!pagandoGastoManualId) setGastoManualPagoTarget(null);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-lg bg-white shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-gray-200 px-5 py-4">
+              <div>
+                <h3 id="gasto-manual-payment-title" className="text-base font-bold text-gray-900">
+                  Marcar cuota como pagada
+                </h3>
+                <p className="mt-1 text-xs text-gray-500">
+                  {labelOtrosGastoType(gastoManualPagoTarget.tipo)} · Cuota {gastoManualPagoTarget.numero_cuota || gastoManualPagoTarget.week_index}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={Boolean(pagandoGastoManualId)}
+                onClick={() => setGastoManualPagoTarget(null)}
+                className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
+                aria-label="Cerrar"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="px-5 py-4">
+              <div className="rounded-md border border-green-200 bg-green-50 p-3">
+                <p className="text-sm font-semibold text-green-900">
+                  Saldo a registrar: {symMoneda(gastoManualPagoTarget.moneda || 'PEN')} {saldoPendienteOtroGasto(gastoManualPagoTarget).toFixed(2)}
+                </p>
+                <p className="mt-1 text-xs text-green-800">
+                  Esta operación registra el pago manualmente y no consulta ni descuenta saldo en Yango Fleet.
+                </p>
+              </div>
+              <p className="mt-3 text-xs text-gray-500">
+                La operación quedará registrada con el usuario administrador que la confirma.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-gray-200 px-5 py-4">
+              <button
+                type="button"
+                disabled={Boolean(pagandoGastoManualId)}
+                onClick={() => setGastoManualPagoTarget(null)}
+                className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(pagandoGastoManualId)}
+                onClick={() => void confirmManualAdditionalExpensePayment()}
+                className="inline-flex h-9 items-center gap-2 rounded-md bg-green-700 px-3 text-sm font-semibold text-white hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {pagandoGastoManualId
+                  ? <RefreshCw className="h-4 w-4 animate-spin" />
+                  : <CheckCircle2 className="h-4 w-4" />}
+                {pagandoGastoManualId ? 'Registrando...' : 'Confirmar pagado'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
 
       {showGastoFleetChargeModal && createPortal(
         <div

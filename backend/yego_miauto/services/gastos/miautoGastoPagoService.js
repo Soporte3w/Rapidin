@@ -1,4 +1,5 @@
 import { getClient } from '../../../config/database.js';
+import { randomUUID } from 'node:crypto';
 import { round2 } from '../utils/miautoMoneyUtils.js';
 import { expenseStatus } from './miautoGastoRules.js';
 
@@ -126,5 +127,100 @@ export async function applyPaymentToExpense({
     throw error;
   } finally {
     if (ownsTransaction) client.release();
+  }
+}
+
+function paymentConflictError(conflict) {
+  if (conflict?.pending_receipt) return 'Esta cuota ya tiene un comprobante pendiente';
+  if (conflict?.fleet_in_progress) return 'Esta cuota tiene un cobro Fleet en proceso';
+  if (conflict?.fleet_receipt_pending) return 'Primero sube el comprobante del cobro Fleet anterior';
+  return null;
+}
+
+/**
+ * Cierra manualmente el saldo de una cuota de otros gastos.
+ * Registra trazabilidad financiera con origen manual y no consulta ni descuenta Fleet.
+ */
+export async function markExpensePaidManually({ solicitudId, expenseId, userId = null }) {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    const expenseResult = await client.query(
+      `SELECT id, solicitud_id, amount_due, paid_amount, status, moneda
+       FROM module_miauto_otros_gastos
+       WHERE id = $1::uuid AND solicitud_id = $2::uuid AND deleted_at IS NULL
+       FOR UPDATE`,
+      [expenseId, solicitudId]
+    );
+    const expense = expenseResult.rows[0];
+    if (!expense) {
+      const error = new Error('Cuota de otros gastos no encontrada');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const amountDue = round2(Number(expense.amount_due) || 0);
+    const paidBefore = round2(Number(expense.paid_amount) || 0);
+    const pendingAmount = round2(Math.max(0, amountDue - paidBefore));
+    if (pendingAmount <= 0.005 || expense.status === 'paid') {
+      await client.query('COMMIT');
+      return {
+        alreadyPaid: true,
+        expenseId,
+        applied: 0,
+        paidAfter: paidBefore,
+        pendingAfter: 0,
+        statusAfter: 'paid',
+      };
+    }
+
+    const conflictResult = await client.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM module_miauto_comprobante_otros_gastos
+         WHERE otros_gastos_id = $1::uuid AND estado = 'pendiente'
+       ) AS pending_receipt,
+       EXISTS (
+         SELECT 1 FROM module_miauto_gasto_cobro_fleet_intento
+         WHERE otros_gastos_id = $1::uuid AND estado IN ('processing', 'reconcile')
+       ) AS fleet_in_progress,
+       EXISTS (
+         SELECT 1 FROM module_miauto_gasto_pago_aplicacion
+         WHERE otros_gastos_id = $1::uuid AND origen = 'fleet'
+           AND comprobante_id IS NULL AND reversed_at IS NULL
+       ) AS fleet_receipt_pending`,
+      [expenseId]
+    );
+    const conflictMessage = paymentConflictError(conflictResult.rows[0]);
+    if (conflictMessage) {
+      const error = new Error(conflictMessage);
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const currency = String(expense.moneda || 'PEN').trim().toUpperCase();
+    const application = await applyPaymentToExpense({
+      client,
+      solicitudId,
+      expenseId,
+      source: 'manual',
+      sourceKey: `manual-admin:${expenseId}:${randomUUID()}`,
+      originalAmount: pendingAmount,
+      originalCurrency: currency,
+      appliedAmount: pendingAmount,
+      appliedCurrency: currency,
+      exchangeRate: 1,
+      userId,
+      metadata: {
+        operation: 'mark_paid',
+        affects_fleet_balance: false,
+      },
+    });
+    await client.query('COMMIT');
+    return { alreadyPaid: false, ...application };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
 }

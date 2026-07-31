@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { validateUUID } from '../../../middleware/validations.js';
+import { validateSolicitudExpenseUUIDs, validateUUID } from '../../../middleware/validations.js';
 import { uploadVoucher } from '../../../middleware/upload.js';
 import { successResponse, errorResponse } from '../../../utils/responses.js';
 import { logger, businessLog } from '../../../utils/logger.js';
@@ -17,6 +17,7 @@ import {
   listBySolicitud as listOtrosGastosBySolicitud,
   updateExpenseConfiguration,
 } from '../../services/gastos/miautoOtrosGastosService.js';
+import { markExpensePaidManually } from '../../services/gastos/miautoGastoPagoService.js';
 import { getSolicitudById } from '../../services/solicitud/miautoSolicitudService.js';
 import {
   getAdditionalExpenseChargePreview,
@@ -331,6 +332,44 @@ router.post('/solicitudes/:id/otros-gastos/cobrar', validateUUID, async (req, re
     return errorResponse(res, error.message || 'Error al confirmar el cobro Fleet', error.statusCode || 500);
   }
 });
+
+router.post(
+  '/solicitudes/:id/otros-gastos/:expenseId/marcar-pagado',
+  validateSolicitudExpenseUUIDs,
+  async (req, res) => {
+    try {
+      if (req.user?.role === 'driver') {
+        return errorResponse(res, 'Sin permisos para marcar cuotas como pagadas', 403);
+      }
+      const result = await markExpensePaidManually({
+        solicitudId: req.params.id,
+        expenseId: req.params.expenseId,
+        userId: req.user?.id || null,
+      });
+      businessLog('miauto.otros_gastos.manual_payment_confirmed', {
+        solicitudId: req.params.id,
+        otrosGastosId: req.params.expenseId,
+        applied: result.applied,
+        currency: result.appliedCurrency,
+        alreadyPaid: result.alreadyPaid,
+        affectsFleetBalance: false,
+      }, {
+        entityType: 'module_miauto_otros_gastos',
+        entityId: req.params.expenseId,
+        actorType: 'user',
+        actorId: req.user?.id || null,
+      });
+      return successResponse(
+        res,
+        result,
+        result.alreadyPaid ? 'La cuota ya estaba pagada' : 'Cuota marcada como pagada'
+      );
+    } catch (error) {
+      logger.error('Error marcando otro gasto como pagado:', error);
+      return errorResponse(res, error.message || 'Error al marcar la cuota como pagada', error.statusCode || 400);
+    }
+  }
+);
 
 router.get('/solicitudes/:id/otros-gastos/configuracion', validateUUID, async (req, res) => {
   try {

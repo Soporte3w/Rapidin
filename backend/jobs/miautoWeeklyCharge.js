@@ -50,6 +50,8 @@ import {
   filterMiautoFleetRetryCuotas,
   getMiautoFleetRetryDecision,
   getMiautoFleetRetryableCuotaIds,
+  initializeMiautoFleetChargeRun,
+  queueMiautoFleetChargeAttempts,
 } from '../yego_miauto/services/cuotas/miautoFleetChargeRunService.js';
 
 const TIMEZONE = 'America/Lima';
@@ -438,6 +440,20 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
   let processedGlobal = 0;
   const total = cuotas.length;
 
+  function logQueueProgress(cuota, status) {
+    logger.info('miauto.fleet_queue.progress', {
+      cuotaId: cuota?.id || null,
+      solicitudId: cuota?.solicitud_id || null,
+      processed: processedGlobal,
+      total,
+      remaining: Math.max(0, total - processedGlobal),
+      success,
+      partial,
+      failed,
+      status,
+    });
+  }
+
   for (const chunk of chunks) {
     const head = chunk[0];
     const parkId = fleetParkIdForMiAuto(head.park_id);
@@ -454,6 +470,8 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
           reason: br.error || 'Error consultando saldo Fleet',
           balance: null,
         }, { externalDriverId: ext, parkId });
+        processedGlobal += 1;
+        logQueueProgress(c, 'failed');
       }
       logger.warn('miauto.fleet_queue.balance_error', {
         cuotasEnChunk: chunk.length,
@@ -462,7 +480,6 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
         parkId,
         error: br.error,
       });
-      processedGlobal += chunk.length;
       continue;
     }
 
@@ -476,6 +493,8 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
           reason: 'Sin saldo disponible',
           balance: snapshot,
         }, { externalDriverId: ext, parkId });
+        processedGlobal += 1;
+        logQueueProgress(c, 'failed');
       }
       logger.info('miauto.fleet_queue.sin_saldo_snapshot', {
         cuotasEnChunk: chunk.length,
@@ -484,7 +503,6 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
         parkId,
         balance: snapshot,
       });
-      processedGlobal += chunk.length;
       continue;
     }
 
@@ -514,6 +532,7 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
             error: String(error?.message || error),
             action: 'cobro_omitido_para_evitar_retiro_sin_auditoria',
           });
+          logQueueProgress(chunk[j], 'failed');
           if (processedGlobal < total) await delay(FLEET_MS_BETWEEN_COBROS);
           continue;
         }
@@ -565,6 +584,7 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
         }
       }
       processedGlobal += 1;
+      logQueueProgress(chunk[j], result.failed ? 'failed' : result.partial ? 'partial' : 'success');
       if (processedGlobal < total) await delay(FLEET_MS_BETWEEN_COBROS);
     }
     await acumularCobroFleetDistribuidoEnSemanaOrigen(sourceCuota, distribuidoDesdeSemanaOrigen);
@@ -726,6 +746,8 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
     });
     // Mora: ya aplicada por el cron 1:00 (mismo lunes); no duplicar antes del cobro.
     const { cuotas, solicitudPendingMap } = await getCuotasToCharge();
+    await initializeMiautoFleetChargeRun(run.id, cuotas.length);
+    await queueMiautoFleetChargeAttempts(run.id, cuotas);
     const { success, partial, failed } = await processCobroCuotaQueue(cuotas, {
       solicitudPendingMap,
       simulateFleetWithdraw,
@@ -815,23 +837,6 @@ async function runFleetCobroManual(options = {}) {
 
   let run = null;
   try {
-    run = await claimMiautoFleetChargeRun({
-      executionType: 'manual',
-      attemptNumber: null,
-      executionId: lock.executionId,
-      sourceRunId: sourceId,
-      triggeredBy: options.triggeredBy || null,
-    });
-    if (!run) throw new Error('No se pudo registrar el proceso de reproceso');
-    await appendMiautoFleetCobroJobAuditEvent({
-      tipo: 'cobro_job_inicio',
-      job: jobLabel,
-      source_run_id: sourceId,
-      solicitud_id: solicitudId,
-      run_id: run.id,
-      triggered_by: options.triggeredBy || null,
-    });
-
     const currentQueue = await getCuotasToCharge();
     const solicitudCuotas = solicitudId
       ? filterMiautoFleetCuotasBySolicitud(currentQueue.cuotas, solicitudId)
@@ -842,6 +847,61 @@ async function runFleetCobroManual(options = {}) {
     const cuotas = sourceId
       ? filterMiautoFleetRetryCuotas(currentQueue.cuotas, requestedIds)
       : solicitudCuotas;
+    if (cuotas.length === 0) {
+      await releaseCronLock('miauto_cobro_fleet', lock.executionId);
+      return {
+        ok: false,
+        error: solicitudId
+          ? 'El conductor ya no tiene una cuota pendiente con vencimiento de hoy'
+          : 'No hay cuotas pendientes de hoy para procesar',
+      };
+    }
+
+    run = await claimMiautoFleetChargeRun({
+      executionType: 'manual',
+      attemptNumber: null,
+      executionId: lock.executionId,
+      sourceRunId: sourceId,
+      triggeredBy: options.triggeredBy || null,
+    });
+    if (!run) throw new Error('No se pudo registrar el proceso de reproceso');
+    await initializeMiautoFleetChargeRun(run.id, cuotas.length);
+    await queueMiautoFleetChargeAttempts(run.id, cuotas);
+    await appendMiautoFleetCobroJobAuditEvent({
+      tipo: 'cobro_job_inicio',
+      job: jobLabel,
+      source_run_id: sourceId,
+      solicitud_id: solicitudId,
+      run_id: run.id,
+      triggered_by: options.triggeredBy || null,
+    });
+    const started = {
+      ok: true,
+      accepted: true,
+      status: 'running',
+      run_id: run.id,
+      source_run_id: sourceId,
+      solicitud_id: solicitudId,
+      cuotas_solicitadas: requestedIds.size,
+      cuotas_procesadas: cuotas.length,
+    };
+    if (typeof options.onRunStarted === 'function') {
+      try {
+        options.onRunStarted(started);
+      } catch (callbackError) {
+        logger.warn('miauto.fleet_manual_retry.start_callback_failed', {
+          runId: run.id,
+          error: String(callbackError?.message || callbackError),
+        });
+      }
+    }
+    logger.info('miauto.fleet_manual_retry.started', {
+      runId: run.id,
+      sourceRunId: sourceId,
+      solicitudId,
+      queueCount: cuotas.length,
+      background: typeof options.onRunStarted === 'function',
+    });
     const { success, partial, failed } = await processCobroCuotaQueue(cuotas, {
       solicitudPendingMap: currentQueue.solicitudPendingMap,
       cobroReferenciaSource: sourceId
@@ -913,6 +973,28 @@ async function runFleetCobroManual(options = {}) {
   }
 }
 
+async function startFleetCobroManual(options = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    void runFleetCobroManual({
+      ...options,
+      onRunStarted: settle,
+    }).then((result) => {
+      settle(result);
+    }).catch((error) => {
+      settle({ ok: false, error: String(error?.message || error) });
+      logger.error('miauto.fleet_manual_background.unhandled', {
+        error: String(error?.message || error),
+      });
+    });
+  });
+}
+
 /**
  * Reprocesa en bloque las cuotas fallidas o parciales de un proceso semanal.
  * Las ya pagadas quedan fuera al reconstruir la cola actual.
@@ -923,9 +1005,19 @@ export async function runFleetCobroPendientesDeRun(sourceRunId, options = {}) {
   return runFleetCobroManual({ ...options, sourceRunId: sourceId });
 }
 
+export async function startFleetCobroPendientesDeRun(sourceRunId, options = {}) {
+  const sourceId = String(sourceRunId || '').trim();
+  if (!sourceId) return { ok: false, error: 'run_id vacío' };
+  return startFleetCobroManual({ ...options, sourceRunId: sourceId });
+}
+
 /** Reprocesa en bloque todas las cuotas Fleet pendientes con vencimiento de hoy. */
 export async function runFleetCobroPendientesDeHoy(options = {}) {
   return runFleetCobroManual(options);
+}
+
+export async function startFleetCobroPendientesDeHoy(options = {}) {
+  return startFleetCobroManual(options);
 }
 
 /** Cobra únicamente las cuotas de hoy de un conductor/contrato. */
@@ -933,6 +1025,12 @@ export async function runFleetCobroSolicitudDeHoy(solicitudId, options = {}) {
   const sid = String(solicitudId || '').trim();
   if (!sid) return { ok: false, error: 'solicitud_id vacío' };
   return runFleetCobroManual({ ...options, solicitudId: sid });
+}
+
+export async function startFleetCobroSolicitudDeHoy(solicitudId, options = {}) {
+  const sid = String(solicitudId || '').trim();
+  if (!sid) return { ok: false, error: 'solicitud_id vacío' };
+  return startFleetCobroManual({ ...options, solicitudId: sid });
 }
 
 /**

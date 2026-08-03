@@ -488,7 +488,16 @@ export function parseCuotasSemanalesPayload(resCuotas: { data?: unknown }): {
   totalCuotasCargadas: number;
 } {
   const bodyCuotas = resCuotas.data ?? {};
-  const inner = (bodyCuotas as { data?: unknown }).data ?? bodyCuotas;
+  const bodyObj = bodyCuotas as {
+    data?: unknown;
+    racha?: unknown;
+    cuotas_semanales_bonificadas?: unknown;
+    total_cuotas_cargadas?: unknown;
+  };
+  const isCuotasEnvelope = bodyObj.racha !== undefined
+    || bodyObj.cuotas_semanales_bonificadas !== undefined
+    || bodyObj.total_cuotas_cargadas !== undefined;
+  const inner = isCuotasEnvelope ? bodyCuotas : bodyObj.data ?? bodyCuotas;
   const innerObj = inner as { data?: unknown; racha?: unknown; cuotas_semanales_bonificadas?: unknown; total_cuotas_cargadas?: unknown };
   const raw = innerObj?.data ?? innerObj;
   const list = Array.isArray(raw) ? raw : ((raw as { data?: unknown[] })?.data ?? []);

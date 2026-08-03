@@ -1960,9 +1960,9 @@ export default function YegoMiAutoRentSaleDetail() {
           </div>
           <div className="flex items-center gap-2">
             <Calendar className="w-4 h-4 text-gray-400" />
-            <div>
+            <div className="min-w-0">
               <span className="text-gray-500 block">Inicio cobro</span>
-              <span className="font-medium text-gray-900">
+              <span className="block font-medium text-gray-900">
                 {solicitud.fecha_inicio_cobro_semanal
                   ? formatDate(solicitud.fecha_inicio_cobro_semanal, 'es-ES')
                   : '—'}
@@ -1971,10 +1971,10 @@ export default function YegoMiAutoRentSaleDetail() {
                 <button
                   type="button"
                   onClick={openStartDateCorrectionModal}
-                  className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-[#8B1A1A] hover:underline"
+                  className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-[#8B1A1A]/20 bg-red-50 px-2.5 text-xs font-semibold text-[#8B1A1A] shadow-sm transition-colors hover:border-[#8B1A1A]/40 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-[#8B1A1A]/20"
                   title="Corregir inicio de cobro"
                 >
-                  <Pencil className="h-3 w-3" />
+                  <Pencil className="h-3.5 w-3.5" />
                   Modificar
                 </button>
               )}

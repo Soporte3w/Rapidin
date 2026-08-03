@@ -180,16 +180,6 @@ interface SolicitudSummary {
   otros_gastos?: MiautoOtrosGastoRow[];
 }
 
-interface BonoTiempoResumen {
-  enabled: boolean;
-  racha: number;
-  bonos: Array<{
-    id: string;
-    target_week_number: number;
-    status: 'reservado' | 'aplicado';
-  }>;
-}
-
 function miautoMontoFacturableNotaVentaCuota(cuota: CuotaSemanal) {
   const pagoDirecto = miautoNum(cuota.paid_amount);
   const recaudo = Math.max(0, miautoNum(cuota.partner_fees_83));
@@ -403,7 +393,6 @@ export default function YegoMiAutoRentSaleDetail() {
   const [conformidadEliminarModal, setConformidadEliminarModal] = useState<{ comprobanteId: string } | null>(null);
   const [eliminandoConformidadId, setEliminandoConformidadId] = useState<string | null>(null);
   const [bonoAplicado, setBonoAplicado] = useState<number>(0);
-  const [bonoTiempoResumen, setBonoTiempoResumen] = useState<BonoTiempoResumen | null>(null);
   const [tabCronograma, setTabCronograma] = useState<'semanales' | 'otros_gastos'>('semanales');
   const [ogTipoFilterAdmin, setOgTipoFilterAdmin] = useState<string | null>(null);
   const [gastoConfig, setGastoConfig] = useState<MiautoGastoConfiguration | null>(null);
@@ -753,7 +742,6 @@ export default function YegoMiAutoRentSaleDetail() {
       const { cuotas: rawCuotas, cuotasSemanalesBonificadas: bonoNum } = parseCuotasSemanalesPayload({
         data: cuotasEnvelope,
       });
-      const bonoResumen = (cuotasEnvelope as { bono_tiempo?: BonoTiempoResumen }).bono_tiempo ?? null;
       const comp = dashboard.comprobantes_cuota_semanal ?? [];
       const compOtros = dashboard.comprobantes_otros_gastos ?? [];
       const evFleet = dashboard.evidencias_fleet ?? [];
@@ -768,7 +756,6 @@ export default function YegoMiAutoRentSaleDetail() {
 
       setEvidenciasFleet(Array.isArray(evFleet) ? evFleet : []);
       setBonoAplicado(bonoNum);
-      setBonoTiempoResumen(bonoResumen);
     } catch (e: any) {
       if (isAxiosAbortError(e)) return;
       const msg = e.response?.data?.message || 'Error al cargar el detalle';
@@ -785,7 +772,6 @@ export default function YegoMiAutoRentSaleDetail() {
   
         setEvidenciasFleet([]);
         setBonoAplicado(0);
-        setBonoTiempoResumen(null);
       }
     } finally {
       if (signal?.aborted) return;
@@ -852,13 +838,12 @@ export default function YegoMiAutoRentSaleDetail() {
         pago_puntual: checked,
       });
       const result = unwrapApiData<{
-        bono_tiempo?: BonoTiempoResumen;
+        bono_tiempo?: { enabled?: boolean };
         cuotas_semanales_bonificadas?: number;
       }>(response);
       const nextBonusSummary = result?.bono_tiempo;
       const nextBonusCount = Math.max(0, Number(result?.cuotas_semanales_bonificadas) || 0);
       if (nextBonusSummary?.enabled) {
-        setBonoTiempoResumen(nextBonusSummary);
         setBonoAplicado(nextBonusCount);
       }
       toast.success(checked ? 'Pago puntual marcado' : 'Pago puntual desmarcado');
@@ -1811,18 +1796,6 @@ export default function YegoMiAutoRentSaleDetail() {
             </div>
           )}
         </div>
-        {bonoTiempoActivo && (
-          <>
-            <p className="text-xs text-gray-500 px-1">
-              Bono tiempo: la primera semana de depósito no cuenta. Cada 4 cuotas pagadas puntualmente y con al menos 120 viajes reserva una cuota final. Si se desmarca una antes de aplicar el bono, la reserva se elimina.
-            </p>
-            {bonoTiempoResumen?.bonos.some((bono) => bono.status === 'reservado') && (
-              <p className="text-xs text-amber-700 px-1">
-                Hay un bono consolidado reservado para una cuota final aún no generada.
-              </p>
-            )}
-          </>
-        )}
       </div>
 
       {/* Datos del contrato */}

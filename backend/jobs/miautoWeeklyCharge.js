@@ -816,7 +816,7 @@ async function runFleetCobroManual(options = {}) {
       sourceRunId: sourceId,
       triggeredBy: options.triggeredBy || null,
     });
-    if (!run) throw new Error('No se pudo registrar la corrida de reproceso');
+    if (!run) throw new Error('No se pudo registrar el proceso de reproceso');
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_inicio',
       job: jobLabel,

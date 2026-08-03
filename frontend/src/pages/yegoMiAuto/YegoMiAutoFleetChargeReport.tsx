@@ -266,7 +266,7 @@ export default function YegoMiAutoFleetChargeReport() {
             </div>
             <div>
               <h1 className="text-lg font-bold leading-tight text-white lg:text-xl">Historial de cobros Fleet</h1>
-              <p className="mt-0.5 text-xs text-white/90 lg:text-sm">Corridas del cobro semanal, pendientes y motivo por conductor</p>
+              <p className="mt-0.5 text-xs text-white/90 lg:text-sm">Procesos de cobro semanal, pendientes y motivo por conductor</p>
             </div>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
@@ -379,7 +379,7 @@ export default function YegoMiAutoFleetChargeReport() {
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
             <div>
               <h2 className="font-semibold text-gray-900">Ejecuciones</h2>
-              <p className="text-xs text-gray-500">Últimas 50 corridas registradas</p>
+              <p className="text-xs text-gray-500">Últimos 50 procesos registrados</p>
             </div>
             <button type="button" onClick={() => void loadRuns()} disabled={loadingRuns} className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 disabled:opacity-40" title="Actualizar">
               <RefreshCw className={`h-4 w-4 ${loadingRuns ? 'animate-spin' : ''}`} />
@@ -488,8 +488,8 @@ export default function YegoMiAutoFleetChargeReport() {
           ) : (
             <div className="grid min-h-64 place-items-center px-6 text-center text-sm text-gray-500">
               {detail?.run.error || (runs.length === 0
-                ? 'Todavía no hay una corrida registrada. La cola pendiente actual se muestra arriba.'
-                : 'Esta corrida no tiene intentos individuales registrados.')}
+                ? 'Todavía no hay un proceso de cobro registrado. Los pendientes de hoy se muestran arriba.'
+                : 'Este proceso no tiene intentos individuales registrados.')}
             </div>
           )}
         </section>

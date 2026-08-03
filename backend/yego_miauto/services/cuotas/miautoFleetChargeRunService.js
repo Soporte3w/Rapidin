@@ -16,6 +16,12 @@ export function filterMiautoFleetRetryCuotas(cuotas, requestedIds) {
   ));
 }
 
+export function filterMiautoFleetCuotasBySolicitud(cuotas, solicitudId) {
+  const sid = String(solicitudId || '').trim();
+  if (!sid) return [];
+  return (cuotas || []).filter((cuota) => String(cuota?.solicitud_id || '') === sid);
+}
+
 export async function claimMiautoFleetChargeRun({
   executionType,
   attemptNumber,

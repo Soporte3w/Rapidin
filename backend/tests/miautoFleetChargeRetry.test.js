@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { filterMiautoFleetRetryCuotas } from '../yego_miauto/services/cuotas/miautoFleetChargeRunService.js';
+import {
+  filterMiautoFleetCuotasBySolicitud,
+  filterMiautoFleetRetryCuotas,
+} from '../yego_miauto/services/cuotas/miautoFleetChargeRunService.js';
 
 test('el reproceso selecciona solo cuotas solicitadas que continúan abiertas', () => {
   const cuotas = [
@@ -17,9 +20,23 @@ test('el reproceso selecciona solo cuotas solicitadas que continúan abiertas', 
   );
 });
 
-test('el reproceso no incorpora otras cuotas pendientes fuera de la corrida', () => {
+test('el reproceso no incorpora otras cuotas pendientes fuera del proceso', () => {
   assert.deepEqual(
     filterMiautoFleetRetryCuotas([{ id: 'otra', status: 'pending' }], ['objetivo']),
     [],
   );
+});
+
+test('el cobro individual conserva solo las cuotas del contrato seleccionado', () => {
+  const cuotas = [
+    { id: 'a', solicitud_id: 'contrato-1' },
+    { id: 'b', solicitud_id: 'contrato-2' },
+    { id: 'c', solicitud_id: 'contrato-1' },
+  ];
+
+  assert.deepEqual(
+    filterMiautoFleetCuotasBySolicitud(cuotas, 'contrato-1').map((row) => row.id),
+    ['a', 'c'],
+  );
+  assert.deepEqual(filterMiautoFleetCuotasBySolicitud(cuotas, ''), []);
 });

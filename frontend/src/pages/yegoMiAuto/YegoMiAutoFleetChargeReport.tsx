@@ -3,10 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
   ArrowLeft,
-  Banknote,
   CheckCircle2,
   ChevronRight,
   Clock3,
+  FileText,
   History,
   RefreshCw,
 } from 'lucide-react';
@@ -143,6 +143,7 @@ export default function YegoMiAutoFleetChargeReport() {
   const [loadingPending, setLoadingPending] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [retrying, setRetrying] = useState<'week' | 'today' | null>(null);
+  const [chargingSolicitudId, setChargingSolicitudId] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   const loadRuns = useCallback(async (preferredRunId?: string | null) => {
@@ -211,7 +212,7 @@ export default function YegoMiAutoFleetChargeReport() {
 
   const showRetryResult = useCallback(async (result: FleetRetryResult) => {
     toast.success(
-      `Reproceso terminado: ${result.success} completas, ${result.partial} parciales y ${result.failed} fallidas`,
+      `Cobro terminado: ${result.success} completas, ${result.partial} parciales y ${result.failed} fallidas`,
     );
     await Promise.all([loadRuns(result.run_id), loadPending()]);
     setSelectedRunId(result.run_id);
@@ -254,6 +255,23 @@ export default function YegoMiAutoFleetChargeReport() {
     }
   }, [canRetry, pending, retrying, showRetryResult]);
 
+  const chargeDriverToday = useCallback(async (item: FleetPendingItem) => {
+    if (!canRetry || retrying || chargingSolicitudId) return;
+    const confirmed = window.confirm(
+      `Se intentará cobrar únicamente la cuota de hoy de ${item.driver_name}. ¿Deseas continuar?`,
+    );
+    if (!confirmed) return;
+    try {
+      setChargingSolicitudId(item.solicitud_id);
+      const response = await api.post(`/miauto/fleet-charge-runs/pending/${item.solicitud_id}/charge`);
+      await showRetryResult(unwrap<FleetRetryResult>(response));
+    } catch (requestError: any) {
+      toast.error(requestError.response?.data?.message || 'No se pudo cobrar al conductor');
+    } finally {
+      setChargingSolicitudId(null);
+    }
+  }, [canRetry, chargingSolicitudId, retrying, showRetryResult]);
+
   const selectedRun = detail?.run || runs.find((run) => run.id === selectedRunId) || null;
 
   return (
@@ -274,7 +292,7 @@ export default function YegoMiAutoFleetChargeReport() {
               <button
                 type="button"
                 onClick={() => void chargeToday()}
-                disabled={retrying !== null || pending?.cuotas_count === 0 || loadingPending}
+                disabled={retrying !== null || chargingSolicitudId !== null || pending?.cuotas_count === 0 || loadingPending}
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50"
               >
                 <RefreshCw className={`h-4 w-4 ${retrying === 'today' ? 'animate-spin' : ''}`} />
@@ -310,7 +328,7 @@ export default function YegoMiAutoFleetChargeReport() {
           <button
             type="button"
             onClick={() => void loadPending()}
-            disabled={loadingPending || retrying !== null}
+            disabled={loadingPending || retrying !== null || chargingSolicitudId !== null}
             className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
           >
             <RefreshCw className={`h-4 w-4 ${loadingPending ? 'animate-spin' : ''}`} />
@@ -342,9 +360,22 @@ export default function YegoMiAutoFleetChargeReport() {
                     </td>
                     <td className="px-4 py-3"><span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">Pendiente de cobro</span></td>
                     <td className="px-4 py-3">
-                      <button type="button" onClick={() => navigate(`/admin/yego-mi-auto/rent-sale/${item.solicitud_id}`)} className="inline-flex items-center gap-1 text-xs font-semibold text-[#8B1A1A] hover:underline">
-                        <Banknote className="h-3.5 w-3.5" /> Ver contrato
-                      </button>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {canRetry && (
+                          <button
+                            type="button"
+                            onClick={() => void chargeDriverToday(item)}
+                            disabled={retrying !== null || chargingSolicitudId !== null}
+                            className="inline-flex items-center gap-1 rounded-md bg-[#8B1A1A] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#6B1515] disabled:opacity-40"
+                          >
+                            <RefreshCw className={`h-3.5 w-3.5 ${chargingSolicitudId === item.solicitud_id ? 'animate-spin' : ''}`} />
+                            {chargingSolicitudId === item.solicitud_id ? 'Cobrando...' : 'Cobrar conductor'}
+                          </button>
+                        )}
+                        <button type="button" onClick={() => navigate(`/admin/yego-mi-auto/rent-sale/${item.solicitud_id}`)} className="inline-flex items-center gap-1 text-xs font-semibold text-[#8B1A1A] hover:underline">
+                          <FileText className="h-3.5 w-3.5" /> Abrir contrato
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -475,7 +506,7 @@ export default function YegoMiAutoFleetChargeReport() {
                         <td className="px-4 py-3">
                           {attempt.solicitud_id && (
                             <button type="button" onClick={() => navigate(`/admin/yego-mi-auto/rent-sale/${attempt.solicitud_id}`)} className="inline-flex items-center gap-1 text-xs font-semibold text-[#8B1A1A] hover:underline">
-                              <Banknote className="h-3.5 w-3.5" /> Ver contrato
+                              <FileText className="h-3.5 w-3.5" /> Abrir contrato
                             </button>
                           )}
                         </td>

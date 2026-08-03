@@ -46,6 +46,7 @@ import {
   claimMiautoFleetChargeRun,
   finishMiautoFleetChargeAttempt,
   finishMiautoFleetChargeRun,
+  filterMiautoFleetCuotasBySolicitud,
   filterMiautoFleetRetryCuotas,
   getMiautoFleetRetryDecision,
   getMiautoFleetRetryableCuotaIds,
@@ -801,7 +802,12 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
 
 async function runFleetCobroManual(options = {}) {
   const sourceId = String(options.sourceRunId || '').trim() || null;
-  const jobLabel = sourceId ? 'reproceso_admin_semana' : 'reproceso_admin_hoy';
+  const solicitudId = String(options.solicitudId || '').trim() || null;
+  const jobLabel = sourceId
+    ? 'reproceso_admin_semana'
+    : solicitudId
+      ? 'cobro_admin_conductor_hoy'
+      : 'reproceso_admin_hoy';
   const lock = await acquireCronLock('miauto_cobro_fleet', 7200);
   if (!lock.acquired) {
     return { ok: false, error: lock.reason, skipped: true };
@@ -821,20 +827,28 @@ async function runFleetCobroManual(options = {}) {
       tipo: 'cobro_job_inicio',
       job: jobLabel,
       source_run_id: sourceId,
+      solicitud_id: solicitudId,
       run_id: run.id,
       triggered_by: options.triggeredBy || null,
     });
 
     const currentQueue = await getCuotasToCharge();
+    const solicitudCuotas = solicitudId
+      ? filterMiautoFleetCuotasBySolicitud(currentQueue.cuotas, solicitudId)
+      : currentQueue.cuotas;
     const requestedIds = sourceId
       ? new Set(await getMiautoFleetRetryableCuotaIds(sourceId))
-      : new Set(currentQueue.cuotas.map((cuota) => String(cuota.id)));
+      : new Set(solicitudCuotas.map((cuota) => String(cuota.id)));
     const cuotas = sourceId
       ? filterMiautoFleetRetryCuotas(currentQueue.cuotas, requestedIds)
-      : currentQueue.cuotas;
+      : solicitudCuotas;
     const { success, partial, failed } = await processCobroCuotaQueue(cuotas, {
       solicitudPendingMap: currentQueue.solicitudPendingMap,
-      cobroReferenciaSource: sourceId ? 'fleet_reproceso_admin_semana' : 'fleet_reproceso_admin_hoy',
+      cobroReferenciaSource: sourceId
+        ? 'fleet_reproceso_admin_semana'
+        : solicitudId
+          ? 'fleet_cobro_admin_conductor_hoy'
+          : 'fleet_reproceso_admin_hoy',
       beginAttempt: (cuota, context) => beginMiautoFleetChargeAttempt(run.id, cuota, context),
       finishAttempt: (attempt, result) => finishMiautoFleetChargeAttempt(attempt.id, result),
     });
@@ -842,7 +856,9 @@ async function runFleetCobroManual(options = {}) {
     const afterQueue = await getCuotasToCharge();
     const remainingCount = sourceId
       ? afterQueue.cuotas.filter((cuota) => requestedIds.has(String(cuota.id))).length
-      : afterQueue.cuotas.length;
+      : solicitudId
+        ? filterMiautoFleetCuotasBySolicitud(afterQueue.cuotas, solicitudId).length
+        : afterQueue.cuotas.length;
     await finishMiautoFleetChargeRun(run.id, {
       queueCount: cuotas.length,
       success,
@@ -854,6 +870,7 @@ async function runFleetCobroManual(options = {}) {
       tipo: 'cobro_job_fin',
       job: jobLabel,
       source_run_id: sourceId,
+      solicitud_id: solicitudId,
       run_id: run.id,
       cuotas_solicitadas: requestedIds.size,
       cuotas_en_cola: cuotas.length,
@@ -868,6 +885,7 @@ async function runFleetCobroManual(options = {}) {
       ok: true,
       run_id: run.id,
       source_run_id: sourceId,
+      solicitud_id: solicitudId,
       cuotas_solicitadas: requestedIds.size,
       cuotas_procesadas: cuotas.length,
       success,
@@ -896,7 +914,7 @@ async function runFleetCobroManual(options = {}) {
 }
 
 /**
- * Reprocesa en bloque las cuotas fallidas o parciales de una corrida semanal.
+ * Reprocesa en bloque las cuotas fallidas o parciales de un proceso semanal.
  * Las ya pagadas quedan fuera al reconstruir la cola actual.
  */
 export async function runFleetCobroPendientesDeRun(sourceRunId, options = {}) {
@@ -908,6 +926,13 @@ export async function runFleetCobroPendientesDeRun(sourceRunId, options = {}) {
 /** Reprocesa en bloque todas las cuotas Fleet pendientes con vencimiento de hoy. */
 export async function runFleetCobroPendientesDeHoy(options = {}) {
   return runFleetCobroManual(options);
+}
+
+/** Cobra únicamente las cuotas de hoy de un conductor/contrato. */
+export async function runFleetCobroSolicitudDeHoy(solicitudId, options = {}) {
+  const sid = String(solicitudId || '').trim();
+  if (!sid) return { ok: false, error: 'solicitud_id vacío' };
+  return runFleetCobroManual({ ...options, solicitudId: sid });
 }
 
 /**

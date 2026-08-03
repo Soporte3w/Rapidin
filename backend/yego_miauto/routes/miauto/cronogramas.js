@@ -22,6 +22,7 @@ import {
 import {
   runFleetCobroPendientesDeRun,
   runFleetCobroPendientesDeHoy,
+  runFleetCobroSolicitudDeHoy,
 } from '../../../jobs/miautoWeeklyCharge.js';
 import { getMiautoFleetPendingQueuePreview } from '../../services/cuotas/miautoFleetChargeService.js';
 
@@ -105,6 +106,36 @@ router.post('/fleet-charge-runs/retry-today', async (req, res) => {
   } catch (error) {
     logger.error('Error cobrando la cola Fleet de hoy Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al cobrar los pendientes de hoy', 500);
+  }
+});
+
+router.post('/fleet-charge-runs/pending/:solicitudId/charge', async (req, res) => {
+  try {
+    const isAdmin = req.user?.role === 'admin' || req.user?.base_role === 'admin';
+    if (!isAdmin) return errorResponse(res, 'Solo un administrador puede ejecutar cobros Fleet', 403);
+    const solicitudId = String(req.params.solicitudId || '').trim();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(solicitudId)) {
+      return errorResponse(res, 'ID de contrato inválido', 400);
+    }
+    const result = await runFleetCobroSolicitudDeHoy(solicitudId, { triggeredBy: req.user?.id || null });
+    if (!result.ok) return errorResponse(res, result.error || 'No se pudo cobrar al conductor', 409);
+    if (result.cuotas_procesadas === 0) {
+      return errorResponse(res, 'El conductor ya no tiene una cuota pendiente con vencimiento de hoy', 409);
+    }
+    businessLog('miauto.fleet_charge.manual_driver_today', {
+      solicitudId,
+      runId: result.run_id,
+      processed: result.cuotas_procesadas,
+      success: result.success,
+      partial: result.partial,
+      failed: result.failed,
+      remaining: result.pendientes_despues,
+      userId: req.user?.id || null,
+    });
+    return successResponse(res, result, 'Cobro del conductor completado');
+  } catch (error) {
+    logger.error('Error cobrando conductor Fleet Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al cobrar al conductor', 500);
   }
 });
 

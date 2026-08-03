@@ -3,6 +3,7 @@
  * Extraído de miautoCuotaSemanalService.js (v5 — Mayo 2026).
  */
 import { getClient, query } from '../../../config/database.js';
+import { randomUUID } from 'crypto';
 import { logger } from '../../../utils/logger.js';
 import {
   fleetCookieCobroForMiAuto,
@@ -122,9 +123,11 @@ async function withdrawWithOngoingRetry({
   parkId,
   logLabel,
   condition,
+  idempotencyToken,
 }) {
   const maxAttempts = fleetWithdrawMaxAttempts();
   const delayMs = fleetWithdrawRetryDelayMs();
+  const stableIdempotencyToken = String(idempotencyToken || '').trim() || randomUUID();
   let attempt = 1;
   let result = await withdrawFromContractor(
     externalDriverId,
@@ -133,6 +136,7 @@ async function withdrawWithOngoingRetry({
     cookie,
     parkId,
     condition,
+    stableIdempotencyToken,
   );
   while (
     !result.success &&
@@ -156,6 +160,7 @@ async function withdrawWithOngoingRetry({
       cookie,
       parkId,
       condition,
+      stableIdempotencyToken,
     );
   }
   return result;
@@ -1212,6 +1217,7 @@ export async function processCobroCuota(
       cookie: cookieMiAuto,
       parkId,
       logLabel: `cuota:${cuotaRow.id}:${driverName}`,
+      idempotencyToken: options.idempotencyToken || null,
     });
   }
 

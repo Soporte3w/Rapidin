@@ -9,6 +9,9 @@ export const MIAUTO_AUTOMATION_DEFAULTS = Object.freeze({
   weekly_fleet_charge_enabled: true,
   weekly_fleet_charge_day: 1,
   weekly_fleet_charge_time: '07:10',
+  weekly_fleet_retry_enabled: true,
+  weekly_fleet_retry_interval_minutes: 60,
+  weekly_fleet_retry_max_attempts: 6,
   daily_additional_expenses_enabled: true,
   daily_additional_expenses_time: '02:15',
   timezone: MIAUTO_AUTOMATION_TIMEZONE,
@@ -19,6 +22,11 @@ function normalizeBoolean(value, fallback) {
   if (value === 'true' || value === '1' || value === 1) return true;
   if (value === 'false' || value === '0' || value === 0) return false;
   return fallback;
+}
+
+function normalizeIntegerRange(value, fallback, min, max) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
 }
 
 export function normalizeMiautoAutomationTime(value, fallback = MIAUTO_AUTOMATION_DEFAULTS.weekly_generation_time) {
@@ -52,6 +60,22 @@ export function normalizeMiautoAutomationConfig(value = {}) {
     weekly_fleet_charge_time: normalizeMiautoAutomationTime(
       value.weekly_fleet_charge_time,
       MIAUTO_AUTOMATION_DEFAULTS.weekly_fleet_charge_time,
+    ),
+    weekly_fleet_retry_enabled: normalizeBoolean(
+      value.weekly_fleet_retry_enabled,
+      MIAUTO_AUTOMATION_DEFAULTS.weekly_fleet_retry_enabled,
+    ),
+    weekly_fleet_retry_interval_minutes: normalizeIntegerRange(
+      value.weekly_fleet_retry_interval_minutes,
+      MIAUTO_AUTOMATION_DEFAULTS.weekly_fleet_retry_interval_minutes,
+      5,
+      240,
+    ),
+    weekly_fleet_retry_max_attempts: normalizeIntegerRange(
+      value.weekly_fleet_retry_max_attempts,
+      MIAUTO_AUTOMATION_DEFAULTS.weekly_fleet_retry_max_attempts,
+      1,
+      12,
     ),
     daily_additional_expenses_enabled: normalizeBoolean(
       value.daily_additional_expenses_enabled,
@@ -111,6 +135,26 @@ export function validateMiautoAutomationConfig(value = {}) {
     enabled: 'daily_additional_expenses_enabled',
     time: 'daily_additional_expenses_time',
   });
+  const retryEnabled = value.weekly_fleet_retry_enabled == null
+    ? MIAUTO_AUTOMATION_DEFAULTS.weekly_fleet_retry_enabled
+    : value.weekly_fleet_retry_enabled;
+  if (typeof retryEnabled !== 'boolean') {
+    throw new Error('weekly_fleet_retry_enabled debe ser booleano');
+  }
+  const retryInterval = Number(
+    value.weekly_fleet_retry_interval_minutes
+      ?? MIAUTO_AUTOMATION_DEFAULTS.weekly_fleet_retry_interval_minutes,
+  );
+  if (!Number.isInteger(retryInterval) || retryInterval < 5 || retryInterval > 240) {
+    throw new Error('weekly_fleet_retry_interval_minutes debe estar entre 5 y 240');
+  }
+  const retryAttempts = Number(
+    value.weekly_fleet_retry_max_attempts
+      ?? MIAUTO_AUTOMATION_DEFAULTS.weekly_fleet_retry_max_attempts,
+  );
+  if (!Number.isInteger(retryAttempts) || retryAttempts < 1 || retryAttempts > 12) {
+    throw new Error('weekly_fleet_retry_max_attempts debe estar entre 1 y 12');
+  }
 
   return {
     weekly_generation_enabled: generation.enabled,
@@ -119,6 +163,9 @@ export function validateMiautoAutomationConfig(value = {}) {
     weekly_fleet_charge_enabled: fleet.enabled,
     weekly_fleet_charge_day: fleet.day,
     weekly_fleet_charge_time: fleet.time,
+    weekly_fleet_retry_enabled: retryEnabled,
+    weekly_fleet_retry_interval_minutes: retryInterval,
+    weekly_fleet_retry_max_attempts: retryAttempts,
     daily_additional_expenses_enabled: additionalExpenses.enabled,
     daily_additional_expenses_time: additionalExpenses.time,
     timezone: MIAUTO_AUTOMATION_TIMEZONE,
@@ -139,6 +186,47 @@ function limaTime(now) {
     minute: '2-digit',
     hourCycle: 'h23',
   }).format(now);
+}
+
+function minuteOfDay(time) {
+  const [hour, minute] = String(time || '00:00').slice(0, 5).split(':').map(Number);
+  return (hour * 60) + minute;
+}
+
+export function isMiautoFleetRetryWindow(configValue, now = new Date()) {
+  const config = normalizeMiautoAutomationConfig(configValue);
+  if (!config.weekly_fleet_charge_enabled || !config.weekly_fleet_retry_enabled) return false;
+  const isoWeekday = weekdaysSinceMondayMon0(getLimaYmd(now)) + 1;
+  if (isoWeekday !== config.weekly_fleet_charge_day) return false;
+  return minuteOfDay(limaTime(now)) > minuteOfDay(config.weekly_fleet_charge_time);
+}
+
+export function decideMiautoFleetRetry(configValue, latestRun, now = new Date()) {
+  const config = normalizeMiautoAutomationConfig(configValue);
+  if (!isMiautoFleetRetryWindow(config, now)) return { due: false, reason: 'fuera_de_ventana' };
+  if (!latestRun) {
+    return { due: true, executionType: 'scheduled', attemptNumber: 0, reason: 'recuperacion_ejecucion_omitida' };
+  }
+  if (latestRun.status === 'running') return { due: false, reason: 'ejecucion_en_curso' };
+  if (
+    latestRun.status === 'completed'
+    && Number(latestRun.remaining_count) <= 0
+    && Number(latestRun.failed_count) <= 0
+  ) {
+    return { due: false, reason: 'sin_pendientes' };
+  }
+
+  const nextAttempt = Number(latestRun.attempt_number) + 1;
+  if (nextAttempt > config.weekly_fleet_retry_max_attempts) {
+    return { due: false, reason: 'maximo_reintentos_alcanzado' };
+  }
+
+  const referenceAt = new Date(latestRun.reference_at);
+  const elapsedMinutes = (now.getTime() - referenceAt.getTime()) / 60000;
+  if (!Number.isFinite(elapsedMinutes) || elapsedMinutes < config.weekly_fleet_retry_interval_minutes) {
+    return { due: false, reason: 'intervalo_pendiente' };
+  }
+  return { due: true, executionType: 'retry', attemptNumber: nextAttempt, reason: 'pendientes_por_reprocesar' };
 }
 
 export function matchesMiautoWeeklyGenerationSchedule(configValue, now = new Date()) {

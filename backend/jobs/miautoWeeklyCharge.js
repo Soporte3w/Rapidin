@@ -41,6 +41,13 @@ import {
 } from '../yego_miauto/services/gastos/miautoOtrosGastosService.js';
 import { getMiautoAutomationConfig } from '../yego_miauto/services/config/miautoAutomationConfigService.js';
 import { getMiautoAutomationActions } from '../yego_miauto/services/config/miautoAutomationConfig.js';
+import {
+  beginMiautoFleetChargeAttempt,
+  claimMiautoFleetChargeRun,
+  finishMiautoFleetChargeAttempt,
+  finishMiautoFleetChargeRun,
+  getMiautoFleetRetryDecision,
+} from '../yego_miauto/services/cuotas/miautoFleetChargeRunService.js';
 
 const TIMEZONE = 'America/Lima';
 const FLEET_MS_BETWEEN_COBROS = 1500;
@@ -403,6 +410,26 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
   const simulateReason = options.simulateReason || null;
   const { cuotaWeekMonday } = currentMondayCuotaContext();
   const cobroReferenciaSource = options.cobroReferenciaSource || (simulateFleetWithdraw ? 'fleet_7_10_simulado' : 'fleet_7_10');
+  const beginAttempt = typeof options.beginAttempt === 'function' ? options.beginAttempt : null;
+  const finishAttempt = typeof options.finishAttempt === 'function' ? options.finishAttempt : null;
+
+  async function auditRejectedCuota(cuota, result, context) {
+    if (!beginAttempt || !finishAttempt) return;
+    try {
+      const attempt = await beginAttempt(cuota, context);
+      await finishAttempt(attempt, {
+        ...result,
+        externalDriverId: context.externalDriverId,
+        parkId: context.parkId,
+      });
+    } catch (error) {
+      logger.error('miauto.fleet_queue.audit_failed', {
+        cuotaId: cuota?.id,
+        solicitudId: cuota?.solicitud_id,
+        error: String(error?.message || error),
+      });
+    }
+  }
 
   const chunks = chunkCuotasFleetMismaCuenta(cuotas);
   let processedGlobal = 0;
@@ -418,6 +445,12 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
     if (!br.success) {
       for (const c of chunk) {
         failed += 1;
+        await auditRejectedCuota(c, {
+          failed: true,
+          partial: false,
+          reason: br.error || 'Error consultando saldo Fleet',
+          balance: null,
+        }, { externalDriverId: ext, parkId });
       }
       logger.warn('miauto.fleet_queue.balance_error', {
         cuotasEnChunk: chunk.length,
@@ -434,6 +467,12 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
     if (snapshot <= 0) {
       for (const c of chunk) {
         failed += 1;
+        await auditRejectedCuota(c, {
+          failed: true,
+          partial: false,
+          reason: 'Sin saldo disponible',
+          balance: snapshot,
+        }, { externalDriverId: ext, parkId });
       }
       logger.info('miauto.fleet_queue.sin_saldo_snapshot', {
         cuotasEnChunk: chunk.length,
@@ -459,12 +498,49 @@ async function processCobroCuotaQueue(cuotas, options = {}) {
     let distribuidoDesdeSemanaOrigen = 0;
 
     for (let j = 0; j < chunk.length; j++) {
+      let attempt = null;
+      if (beginAttempt) {
+        try {
+          attempt = await beginAttempt(chunk[j], { externalDriverId: ext, parkId });
+        } catch (error) {
+          failed += 1;
+          processedGlobal += 1;
+          logger.error('miauto.fleet_queue.audit_reservation_failed', {
+            cuotaId: chunk[j]?.id,
+            solicitudId: chunk[j]?.solicitud_id,
+            error: String(error?.message || error),
+            action: 'cobro_omitido_para_evitar_retiro_sin_auditoria',
+          });
+          if (processedGlobal < total) await delay(FLEET_MS_BETWEEN_COBROS);
+          continue;
+        }
+      }
+      const balanceBefore = sharedFleetBalancePEN.remaining;
       const result = await processCobroCuota(chunk[j], null, null, {
         sharedFleetBalancePEN,
         solicitudPendingMap,
         simulateFleetWithdraw,
         simulateReason,
+        idempotencyToken: attempt?.idempotency_token || null,
       });
+      const auditedResult = {
+        ...result,
+        balance: balanceBefore,
+        externalDriverId: ext,
+        parkId,
+      };
+      if (attempt && finishAttempt) {
+        try {
+          await finishAttempt(attempt, auditedResult);
+        } catch (error) {
+          logger.error('miauto.fleet_queue.audit_finish_failed', {
+            cuotaId: chunk[j]?.id,
+            solicitudId: chunk[j]?.solicitud_id,
+            attemptId: attempt.id,
+            error: String(error?.message || error),
+          });
+        }
+      }
       if (result.failed) {
         failed += 1;
         const rid = chunk[j]?.id;
@@ -609,25 +685,42 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
   const auditJob = String(options.auditJob || 'semanal_configurado');
   const simulateFleetWithdraw = !!options.simulateFleetWithdraw;
   const scheduleLabel = options.scheduleLabel || 'ejecución semanal configurada';
+  const executionType = options.executionType || 'scheduled';
+  const attemptNumber = Number.isInteger(Number(options.attemptNumber))
+    ? Number(options.attemptNumber)
+    : 0;
 
-  const lock = await acquireCronLock('miauto_cobro_fleet', 600);
+  const lock = await acquireCronLock('miauto_cobro_fleet', 7200);
   if (!lock.acquired) {
     logger.warn('miauto.fleet_job.lock_skip', { reason: lock.reason });
     return { ok: false, error: lock.reason, skipped: true };
   }
 
-  logger.info('miauto.fleet_job.start', {
-    schedule: scheduleLabel,
-    executionId: lock.executionId,
-    simulateFleetWithdraw,
-  });
-  await appendMiautoFleetCobroJobAuditEvent({
-    tipo: 'cobro_job_inicio',
-    job: auditJob,
-    timezone: TIMEZONE,
-    simulate_fleet_withdraw: simulateFleetWithdraw,
-  });
+  let run = null;
   try {
+    logger.info('miauto.fleet_job.start', {
+      schedule: scheduleLabel,
+      executionId: lock.executionId,
+      simulateFleetWithdraw,
+      executionType,
+      attemptNumber,
+    });
+    run = await claimMiautoFleetChargeRun({
+      executionType,
+      attemptNumber,
+      executionId: lock.executionId,
+    });
+    if (!run) {
+      await releaseCronLock('miauto_cobro_fleet', lock.executionId);
+      logger.info('miauto.fleet_job.duplicate_skip', { executionType, attemptNumber });
+      return { ok: true, skipped: true, reason: 'ejecucion_ya_registrada' };
+    }
+    await appendMiautoFleetCobroJobAuditEvent({
+      tipo: 'cobro_job_inicio',
+      job: auditJob,
+      timezone: TIMEZONE,
+      simulate_fleet_withdraw: simulateFleetWithdraw,
+    });
     // Mora: ya aplicada por el cron 1:00 (mismo lunes); no duplicar antes del cobro.
     const { cuotas, solicitudPendingMap } = await getCuotasToCharge();
     const { success, partial, failed } = await processCobroCuotaQueue(cuotas, {
@@ -635,6 +728,16 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       simulateFleetWithdraw,
       simulateReason: options.simulateReason || auditJob,
       cobroReferenciaSource: simulateFleetWithdraw ? 'fleet_7_10_simulado' : 'fleet_7_10',
+      beginAttempt: (cuota, context) => beginMiautoFleetChargeAttempt(run.id, cuota, context),
+      finishAttempt: (attempt, result) => finishMiautoFleetChargeAttempt(attempt.id, result),
+    });
+    const remainingQueue = await getCuotasToCharge();
+    await finishMiautoFleetChargeRun(run.id, {
+      queueCount: cuotas.length,
+      success,
+      partial,
+      failed,
+      remainingCount: remainingQueue.cuotas.length,
     });
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_fin',
@@ -643,6 +746,7 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       success,
       partial,
       failed,
+      remaining: remainingQueue.cuotas.length,
       simulate_fleet_withdraw: simulateFleetWithdraw,
     });
     logger.info('miauto.fleet_job.finish', {
@@ -654,8 +758,27 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       simulateFleetWithdraw,
     });
     await releaseCronLock('miauto_cobro_fleet', lock.executionId);
-    return { ok: true, success, partial, failed, cuotas_en_cola: cuotas.length, simulated: simulateFleetWithdraw };
+    return {
+      ok: true,
+      run_id: run.id,
+      success,
+      partial,
+      failed,
+      cuotas_en_cola: cuotas.length,
+      pendientes_despues: remainingQueue.cuotas.length,
+      simulated: simulateFleetWithdraw,
+    };
   } catch (err) {
+    if (run?.id) {
+      try {
+        await finishMiautoFleetChargeRun(run.id, { error: String(err?.message || err) });
+      } catch (auditError) {
+        logger.error('miauto.fleet_job.audit_finish_failed', {
+          runId: run.id,
+          error: String(auditError?.message || auditError),
+        });
+      }
+    }
     await releaseCronLock('miauto_cobro_fleet', lock.executionId);
     await appendMiautoFleetCobroJobAuditEvent({
       tipo: 'cobro_job_error',
@@ -917,10 +1040,6 @@ export async function runConfiguredAutomation(now = new Date()) {
   try {
     const config = await getMiautoAutomationConfig();
     const actions = getMiautoAutomationActions(config, now);
-    if (actions.length === 0) {
-      return { skipped: true, reason: 'fuera_de_horario' };
-    }
-
     const result = {};
     if (actions.includes('additional_expenses')) {
       result.additionalExpenses = await runDailyAdditionalExpenses();
@@ -934,7 +1053,22 @@ export async function runConfiguredAutomation(now = new Date()) {
       result.fleet = await runWeeklyFleetChargeMonday({
         auditJob: 'semanal_configurado',
         scheduleLabel: `configurado día ${config.weekly_fleet_charge_day} ${config.weekly_fleet_charge_time} ${config.timezone}`,
+        executionType: 'scheduled',
+        attemptNumber: 0,
       });
+    } else {
+      const retry = await getMiautoFleetRetryDecision(config, now);
+      if (retry.due) {
+        result.fleetRetry = await runWeeklyFleetChargeMonday({
+          auditJob: retry.executionType === 'retry' ? 'reintento_configurado' : 'recuperacion_configurada',
+          scheduleLabel: retry.reason,
+          executionType: retry.executionType,
+          attemptNumber: retry.attemptNumber,
+        });
+      }
+    }
+    if (Object.keys(result).length === 0) {
+      return { skipped: true, reason: 'fuera_de_horario' };
     }
     return result;
   } catch (err) {

@@ -15,6 +15,7 @@ import {
   getMiautoAutomationConfig,
   updateMiautoAutomationConfig,
 } from '../../services/config/miautoAutomationConfigService.js';
+import { listMiautoFleetChargeRuns } from '../../services/cuotas/miautoFleetChargeRunService.js';
 
 const router = Router();
 
@@ -42,6 +43,9 @@ router.put('/automation-config', async (req, res) => {
       weeklyFleetChargeEnabled: config.weekly_fleet_charge_enabled,
       weeklyFleetChargeDay: config.weekly_fleet_charge_day,
       weeklyFleetChargeTime: config.weekly_fleet_charge_time,
+      weeklyFleetRetryEnabled: config.weekly_fleet_retry_enabled,
+      weeklyFleetRetryIntervalMinutes: config.weekly_fleet_retry_interval_minutes,
+      weeklyFleetRetryMaxAttempts: config.weekly_fleet_retry_max_attempts,
       dailyAdditionalExpensesEnabled: config.daily_additional_expenses_enabled,
       dailyAdditionalExpensesTime: config.daily_additional_expenses_time,
     });
@@ -49,6 +53,17 @@ router.put('/automation-config', async (req, res) => {
   } catch (error) {
     logger.error('Error actualizando automatización Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al actualizar la automatización', 400);
+  }
+});
+
+// GET /api/miauto/fleet-charge-runs
+router.get('/fleet-charge-runs', async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para ver los cobros automáticos', 403);
+    return successResponse(res, await listMiautoFleetChargeRuns(req.query.limit));
+  } catch (error) {
+    logger.error('Error obteniendo ejecuciones de cobro Fleet Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al obtener las ejecuciones de cobro Fleet', 500);
   }
 });
 

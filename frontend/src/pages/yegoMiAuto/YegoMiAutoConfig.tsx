@@ -67,6 +67,9 @@ type MiautoAutomationConfig = {
   weekly_fleet_charge_enabled: boolean;
   weekly_fleet_charge_day: number;
   weekly_fleet_charge_time: string;
+  weekly_fleet_retry_enabled: boolean;
+  weekly_fleet_retry_interval_minutes: number;
+  weekly_fleet_retry_max_attempts: number;
   daily_additional_expenses_enabled: boolean;
   daily_additional_expenses_time: string;
   timezone: string;
@@ -79,9 +82,28 @@ const DEFAULT_AUTOMATION_CONFIG: MiautoAutomationConfig = {
   weekly_fleet_charge_enabled: true,
   weekly_fleet_charge_day: 1,
   weekly_fleet_charge_time: '07:10',
+  weekly_fleet_retry_enabled: true,
+  weekly_fleet_retry_interval_minutes: 60,
+  weekly_fleet_retry_max_attempts: 6,
   daily_additional_expenses_enabled: true,
   daily_additional_expenses_time: '02:15',
   timezone: 'America/Lima',
+};
+
+type MiautoFleetChargeRun = {
+  id: string;
+  business_date: string;
+  execution_type: 'scheduled' | 'retry' | 'manual';
+  attempt_number: number | null;
+  status: 'running' | 'completed' | 'failed';
+  queue_count: number;
+  success_count: number;
+  partial_count: number;
+  failed_count: number;
+  remaining_count: number;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
 };
 
 const WEEKDAY_OPTIONS = [
@@ -148,6 +170,7 @@ export default function YegoMiAutoConfig() {
   const [automationConfig, setAutomationConfig] = useState<MiautoAutomationConfig>(DEFAULT_AUTOMATION_CONFIG);
   const [loadingAutomation, setLoadingAutomation] = useState(true);
   const [savingAutomation, setSavingAutomation] = useState(false);
+  const [fleetChargeRuns, setFleetChargeRuns] = useState<MiautoFleetChargeRun[]>([]);
 
   const PAGE_SIZE = 8;
 
@@ -210,8 +233,9 @@ export default function YegoMiAutoConfig() {
         toast.error(error.response?.data?.message || 'Error al cargar la automatización');
         return null;
       }),
+      api.get('/miauto/fleet-charge-runs', { params: { limit: 5 } }).catch(() => null),
     ])
-      .then(([resCron, resTc, resAutomation]) => {
+      .then(([resCron, resTc, resAutomation, resFleetRuns]) => {
         const data = resCron.data?.data ?? resCron.data;
         setCronogramas(Array.isArray(data) ? data : []);
         const list = resTc.data?.data ?? resTc.data ?? [];
@@ -229,11 +253,16 @@ export default function YegoMiAutoConfig() {
             weekly_fleet_charge_enabled: automation?.weekly_fleet_charge_enabled !== false,
             weekly_fleet_charge_day: Number(automation?.weekly_fleet_charge_day) || 1,
             weekly_fleet_charge_time: String(automation?.weekly_fleet_charge_time || '07:10').slice(0, 5),
+            weekly_fleet_retry_enabled: automation?.weekly_fleet_retry_enabled !== false,
+            weekly_fleet_retry_interval_minutes: Number(automation?.weekly_fleet_retry_interval_minutes) || 60,
+            weekly_fleet_retry_max_attempts: Number(automation?.weekly_fleet_retry_max_attempts) || 6,
             daily_additional_expenses_enabled: automation?.daily_additional_expenses_enabled !== false,
             daily_additional_expenses_time: String(automation?.daily_additional_expenses_time || '02:15').slice(0, 5),
             timezone: automation?.timezone || 'America/Lima',
           });
         }
+        const runs = resFleetRuns?.data?.data ?? resFleetRuns?.data ?? [];
+        setFleetChargeRuns(Array.isArray(runs) ? runs : []);
       })
       .catch((e: any) => {
         toast.error(e.response?.data?.message || 'Error al cargar');
@@ -254,8 +283,12 @@ export default function YegoMiAutoConfig() {
       !/^\d{2}:\d{2}$/.test(automationConfig.weekly_generation_time)
       || !/^\d{2}:\d{2}$/.test(automationConfig.weekly_fleet_charge_time)
       || !/^\d{2}:\d{2}$/.test(automationConfig.daily_additional_expenses_time)
+      || automationConfig.weekly_fleet_retry_interval_minutes < 5
+      || automationConfig.weekly_fleet_retry_interval_minutes > 240
+      || automationConfig.weekly_fleet_retry_max_attempts < 1
+      || automationConfig.weekly_fleet_retry_max_attempts > 12
     ) {
-      toast.error('Selecciona horas válidas para las automatizaciones');
+      toast.error('Revisa las horas y los límites de reintentos');
       return;
     }
     try {
@@ -269,6 +302,9 @@ export default function YegoMiAutoConfig() {
         weekly_fleet_charge_enabled: saved.weekly_fleet_charge_enabled !== false,
         weekly_fleet_charge_day: Number(saved.weekly_fleet_charge_day),
         weekly_fleet_charge_time: String(saved.weekly_fleet_charge_time).slice(0, 5),
+        weekly_fleet_retry_enabled: saved.weekly_fleet_retry_enabled !== false,
+        weekly_fleet_retry_interval_minutes: Number(saved.weekly_fleet_retry_interval_minutes),
+        weekly_fleet_retry_max_attempts: Number(saved.weekly_fleet_retry_max_attempts),
         daily_additional_expenses_enabled: saved.daily_additional_expenses_enabled !== false,
         daily_additional_expenses_time: String(saved.daily_additional_expenses_time).slice(0, 5),
         timezone: saved.timezone || 'America/Lima',
@@ -869,6 +905,109 @@ export default function YegoMiAutoConfig() {
                     <p className="mt-1 text-xs text-gray-500">Zona horaria: Lima (UTC-5)</p>
                   </div>
                 </div>
+                <div className="mt-4 grid gap-4 rounded-xl border border-blue-100 bg-blue-50/50 p-4 sm:grid-cols-3">
+                  <div>
+                    <p className="mb-3 text-sm font-medium text-gray-700">Reintentar faltantes</p>
+                    <label className="inline-flex cursor-pointer items-center gap-3">
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={automationConfig.weekly_fleet_retry_enabled}
+                        onClick={() => setAutomationConfig((current) => ({
+                          ...current,
+                          weekly_fleet_retry_enabled: !current.weekly_fleet_retry_enabled,
+                        }))}
+                        disabled={!automationConfig.weekly_fleet_charge_enabled}
+                        className={`relative inline-flex h-6 w-11 rounded-full border-2 border-transparent transition-colors disabled:opacity-50 ${
+                          automationConfig.weekly_fleet_retry_enabled ? 'bg-green-500' : 'bg-gray-300'
+                        }`}
+                      >
+                        <span className={`pointer-events-none absolute left-0.5 top-1/2 h-5 w-5 -translate-y-1/2 rounded-full bg-white shadow transition-transform ${
+                          automationConfig.weekly_fleet_retry_enabled ? 'translate-x-4' : 'translate-x-0'
+                        }`} />
+                      </button>
+                      <span className="text-sm font-semibold text-gray-700">
+                        {automationConfig.weekly_fleet_retry_enabled ? 'Activo' : 'Inactivo'}
+                      </span>
+                    </label>
+                  </div>
+                  <div>
+                    <label htmlFor="miauto-fleet-retry-interval" className="mb-1.5 block text-sm font-medium text-gray-700">Intervalo (minutos)</label>
+                    <input
+                      id="miauto-fleet-retry-interval"
+                      type="number"
+                      min={5}
+                      max={240}
+                      value={automationConfig.weekly_fleet_retry_interval_minutes}
+                      onChange={(event) => setAutomationConfig((current) => ({
+                        ...current,
+                        weekly_fleet_retry_interval_minutes: Number(event.target.value),
+                      }))}
+                      disabled={!automationConfig.weekly_fleet_charge_enabled || !automationConfig.weekly_fleet_retry_enabled}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="miauto-fleet-retry-attempts" className="mb-1.5 block text-sm font-medium text-gray-700">Máximo de reintentos</label>
+                    <input
+                      id="miauto-fleet-retry-attempts"
+                      type="number"
+                      min={1}
+                      max={12}
+                      value={automationConfig.weekly_fleet_retry_max_attempts}
+                      onChange={(event) => setAutomationConfig((current) => ({
+                        ...current,
+                        weekly_fleet_retry_max_attempts: Number(event.target.value),
+                      }))}
+                      disabled={!automationConfig.weekly_fleet_charge_enabled || !automationConfig.weekly_fleet_retry_enabled}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
+                    />
+                  </div>
+                  <p className="text-xs text-blue-800 sm:col-span-3">
+                    Cada reintento vuelve a consultar únicamente cuotas con saldo pendiente. Las ya pagadas no ingresan otra vez a la cola.
+                  </p>
+                </div>
+                {fleetChargeRuns.length > 0 && (
+                  <div className="mt-4 overflow-hidden rounded-xl border border-gray-200">
+                    <div className="border-b border-gray-200 bg-gray-50 px-4 py-2.5">
+                      <h4 className="text-sm font-semibold text-gray-800">Últimas ejecuciones de cobro</h4>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-xs">
+                        <thead className="bg-white text-left text-gray-500">
+                          <tr>
+                            <th className="px-4 py-2 font-medium">Fecha</th>
+                            <th className="px-4 py-2 font-medium">Ejecución</th>
+                            <th className="px-4 py-2 font-medium">Estado</th>
+                            <th className="px-4 py-2 font-medium">En cola</th>
+                            <th className="px-4 py-2 font-medium">Completas</th>
+                            <th className="px-4 py-2 font-medium">Parciales</th>
+                            <th className="px-4 py-2 font-medium">Fallidas</th>
+                            <th className="px-4 py-2 font-medium">Pendientes</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {fleetChargeRuns.map((run) => (
+                            <tr key={run.id} className="text-gray-700">
+                              <td className="whitespace-nowrap px-4 py-2.5">{String(run.business_date).slice(0, 10)}</td>
+                              <td className="whitespace-nowrap px-4 py-2.5">{run.execution_type === 'retry' ? `Reintento ${run.attempt_number}` : 'Programada'}</td>
+                              <td className={`whitespace-nowrap px-4 py-2.5 font-medium ${
+                                run.status === 'failed' ? 'text-red-700' : run.status === 'running' ? 'text-blue-700' : 'text-green-700'
+                              }`} title={run.error || undefined}>
+                                {run.status === 'failed' ? 'Falló' : run.status === 'running' ? 'En curso' : 'Terminó'}
+                              </td>
+                              <td className="px-4 py-2.5">{run.queue_count}</td>
+                              <td className="px-4 py-2.5 text-green-700">{run.success_count}</td>
+                              <td className="px-4 py-2.5 text-amber-700">{run.partial_count}</td>
+                              <td className="px-4 py-2.5 text-red-700">{run.failed_count}</td>
+                              <td className="px-4 py-2.5 font-semibold">{run.remaining_count}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </section>
 
               <section className="border-t border-gray-200 pt-5">

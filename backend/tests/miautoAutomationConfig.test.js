@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  decideMiautoFleetRetry,
   getMiautoAutomationActions,
   getMiautoWeeklyAutomationActions,
+  isMiautoFleetRetryWindow,
   matchesMiautoDailyAdditionalExpensesSchedule,
   matchesMiautoWeeklyFleetChargeSchedule,
   matchesMiautoWeeklyGenerationSchedule,
@@ -19,6 +21,9 @@ test('normaliza la configuración histórica al horario vigente', () => {
     weekly_fleet_charge_enabled: true,
     weekly_fleet_charge_day: 1,
     weekly_fleet_charge_time: '07:10',
+    weekly_fleet_retry_enabled: true,
+    weekly_fleet_retry_interval_minutes: 60,
+    weekly_fleet_retry_max_attempts: 6,
     daily_additional_expenses_enabled: true,
     daily_additional_expenses_time: '02:15',
     timezone: 'America/Lima',
@@ -34,6 +39,9 @@ test('valida día y hora administrables', () => {
     weekly_fleet_charge_enabled: true,
     weekly_fleet_charge_day: 6,
     weekly_fleet_charge_time: '22:40',
+    weekly_fleet_retry_enabled: true,
+    weekly_fleet_retry_interval_minutes: 45,
+    weekly_fleet_retry_max_attempts: 4,
     daily_additional_expenses_enabled: false,
     daily_additional_expenses_time: '03:25',
   }), {
@@ -43,6 +51,9 @@ test('valida día y hora administrables', () => {
     weekly_fleet_charge_enabled: true,
     weekly_fleet_charge_day: 6,
     weekly_fleet_charge_time: '22:40',
+    weekly_fleet_retry_enabled: true,
+    weekly_fleet_retry_interval_minutes: 45,
+    weekly_fleet_retry_max_attempts: 4,
     daily_additional_expenses_enabled: false,
     daily_additional_expenses_time: '03:25',
     timezone: 'America/Lima',
@@ -88,6 +99,20 @@ test('valida día y hora administrables', () => {
     }),
     /daily_additional_expenses_time debe tener formato HH:mm/,
   );
+  assert.throws(
+    () => validateMiautoAutomationConfig({
+      weekly_generation_enabled: true,
+      weekly_generation_day: 1,
+      weekly_generation_time: '06:00',
+      weekly_fleet_charge_enabled: true,
+      weekly_fleet_charge_day: 1,
+      weekly_fleet_charge_time: '07:10',
+      weekly_fleet_retry_interval_minutes: 2,
+      daily_additional_expenses_enabled: true,
+      daily_additional_expenses_time: '02:15',
+    }),
+    /retry_interval_minutes debe estar entre 5 y 240/,
+  );
 });
 
 test('ejecuta únicamente en el minuto configurado de Lima', () => {
@@ -127,6 +152,56 @@ test('el cobro Fleet usa su propia programación administrable', () => {
     ...config,
     weekly_fleet_charge_enabled: false,
   }, mondaySevenTenLima), false);
+});
+
+test('abre reintentos solo después del cobro y en el mismo día configurado', () => {
+  const config = {
+    weekly_fleet_charge_enabled: true,
+    weekly_fleet_charge_day: 1,
+    weekly_fleet_charge_time: '07:10',
+    weekly_fleet_retry_enabled: true,
+  };
+  assert.equal(isMiautoFleetRetryWindow(config, new Date('2026-08-03T12:10:00.000Z')), false);
+  assert.equal(isMiautoFleetRetryWindow(config, new Date('2026-08-03T12:11:00.000Z')), true);
+  assert.equal(isMiautoFleetRetryWindow(config, new Date('2026-08-04T13:00:00.000Z')), false);
+  assert.equal(isMiautoFleetRetryWindow({ ...config, weekly_fleet_retry_enabled: false }, new Date('2026-08-03T13:00:00.000Z')), false);
+});
+
+test('recupera una ejecución omitida y reintenta únicamente tras el intervalo', () => {
+  const config = {
+    weekly_fleet_charge_enabled: true,
+    weekly_fleet_charge_day: 1,
+    weekly_fleet_charge_time: '07:10',
+    weekly_fleet_retry_enabled: true,
+    weekly_fleet_retry_interval_minutes: 60,
+    weekly_fleet_retry_max_attempts: 6,
+  };
+  const now = new Date('2026-08-03T13:30:00.000Z');
+  assert.deepEqual(decideMiautoFleetRetry(config, null, now), {
+    due: true,
+    executionType: 'scheduled',
+    attemptNumber: 0,
+    reason: 'recuperacion_ejecucion_omitida',
+  });
+  assert.deepEqual(decideMiautoFleetRetry(config, {
+    status: 'completed',
+    attempt_number: 0,
+    remaining_count: 2,
+    failed_count: 2,
+    reference_at: '2026-08-03T13:00:00.000Z',
+  }, now), { due: false, reason: 'intervalo_pendiente' });
+  assert.deepEqual(decideMiautoFleetRetry(config, {
+    status: 'completed',
+    attempt_number: 0,
+    remaining_count: 2,
+    failed_count: 2,
+    reference_at: '2026-08-03T12:00:00.000Z',
+  }, now), {
+    due: true,
+    executionType: 'retry',
+    attemptNumber: 1,
+    reason: 'pendientes_por_reprocesar',
+  });
 });
 
 test('si ambos horarios coinciden ordena generación antes de Fleet', () => {

@@ -1636,7 +1636,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const driverDisplayName = driverDisplayRentSale(solicitud, driverNameFromState);
 
   return (
-    <div ref={detailPageRef} className="space-y-6 lg:flex lg:min-h-0 lg:flex-col lg:gap-6 lg:space-y-0">
+    <div ref={detailPageRef} className="space-y-6 lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:gap-6 lg:space-y-0 lg:overflow-hidden">
       {nextNavigationItem && (
         <div className="flex shrink-0 justify-end">
           <button

@@ -7,8 +7,6 @@ import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
 import { buildMiAutoMessage } from '../../utils/miautoWhatsAppMessageBuilder';
-import { TablePaginationBar } from '../../components/TablePaginationBar';
-import { useTablePagination } from '../../hooks/useTablePagination';
 import {
   canonicalOtrosGastoType,
   labelOtrosGastoType,
@@ -1442,7 +1440,6 @@ export default function YegoMiAutoRentSaleDetail() {
   const cuotasPagadas = cuotas.filter((c) => c.status === 'paid' || c.status === 'bonificada').length;
   const cuotasVencidas = cuotas.filter((c) => c.status === 'overdue').length;
 
-  const cronPg = useTablePagination(cuotas);
   const otrosGastosRows = useMemo(
     () => (Array.isArray(solicitud?.otros_gastos) ? solicitud.otros_gastos : []),
     [solicitud?.otros_gastos]
@@ -1924,7 +1921,7 @@ export default function YegoMiAutoRentSaleDetail() {
                 <col style={{ width: '6%' }} />
                 <col style={{ width: '8.5%' }} />
               </colgroup>
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr className="border-b border-gray-200 bg-gray-50/80">
                   <th className="sticky left-0 z-[1] bg-gray-50/95 py-2.5 pl-3 pr-1.5 align-middle text-left text-[11px] font-semibold uppercase tracking-wide text-gray-700 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)] leading-tight">
                     <span className="block">Semana</span>
@@ -1978,11 +1975,11 @@ export default function YegoMiAutoRentSaleDetail() {
                 </tr>
               </thead>
               <tbody>
-                {cronPg.paginatedItems.map((c, index) => {
+                {cuotas.map((c, index) => {
                   const numeroSemana =
                     miautoSemanaLista(cuotas, c.week_start_date) ??
                     miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date) ??
-                    (cronPg.page - 1) * cronPg.limit + index + 1;
+                    index + 1;
                   const comps = comprobantesByCuotaId[c.id] ?? [];
                   const origenComp = (cp: ComprobanteCuotaSemanal) => (cp.origen || 'conductor').toLowerCase();
                   const compsConductor = comps.filter((cp) => origenComp(cp) === 'conductor');
@@ -2801,17 +2798,6 @@ export default function YegoMiAutoRentSaleDetail() {
             </table>
             </div>
           </div>
-          {cuotas.length > 0 && (
-            <TablePaginationBar
-              page={cronPg.page}
-              setPage={cronPg.setPage}
-              totalPages={cronPg.totalPages}
-              limit={cronPg.limit}
-              setLimit={cronPg.setLimit}
-              pageSizes={cronPg.pageSizes}
-              containerClassName="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 py-3 border-t border-gray-100"
-            />
-          )}
           </>
         )}
         </>

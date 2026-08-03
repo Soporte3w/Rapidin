@@ -3052,7 +3052,7 @@ export default function YegoMiAutoRentSaleDetail() {
         )}
         </div>
 
-        {tabCronograma === 'semanales' && cuotas.length > cronPg.limit && (
+        {tabCronograma === 'semanales' && cuotas.length > 0 && (
           <TablePaginationBar
             page={cronPg.page}
             setPage={cronPg.setPage}

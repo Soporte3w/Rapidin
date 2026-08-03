@@ -25,6 +25,11 @@ import { buildDriverNameSearchSql } from '../../../utils/driverNameSearch.js';
 import { enqueueMiautoLicenseValidation } from '../licencia/miautoLicenseValidationService.js';
 import { enqueueMiautoSoatValidation } from '../soat/miautoSoatValidationService.js';
 import { normalizeMiautoPlate, selectWorkingDriverForPlate } from '../utils/miautoPlateIdentity.js';
+import {
+  MiautoStartDateCorrectionError,
+  assertBootstrapWeeklyQuotaForStartDateCorrection,
+  buildMiautoStartDateCorrection,
+} from '../utils/miautoStartDateCorrection.js';
 
 const MINIMO_USD_PARCIAL = 500;
 
@@ -1247,6 +1252,183 @@ export const noVinoRechazar = async (id, userId = null) => {
   }
   await query(sql, params);
   return getSolicitudById(id);
+};
+
+/**
+ * Corrige el inicio de cobro de un contrato recién activado.
+ *
+ * La fecha participa en la identificación de la semana de depósito, los bonos y
+ * el vencimiento inicial. Por eso solo se reprograma automáticamente mientras
+ * exista únicamente la cuota bootstrap, sin movimientos ni documentos asociados.
+ * Los gastos adicionales conservan su fecha de entrega independiente; solo se
+ * sincroniza cuando todavía no existen ciclos ni cuotas de gasto generadas.
+ */
+export const corregirFechaInicioCobro = async (id, nextValue, userId = null) => {
+  return withTransaction(async () => {
+    const solicitudResult = await query(
+      `SELECT id, status, fecha_inicio_cobro_semanal, fecha_entrega_vehiculo,
+              COALESCE(cuotas_semanales_bonificadas, 0)::int AS cuotas_bonificadas
+       FROM module_miauto_solicitud
+       WHERE id = $1::uuid AND deleted_at IS NULL
+       FOR UPDATE`,
+      [id]
+    );
+    const solicitud = solicitudResult.rows[0];
+    if (!solicitud) return null;
+    if (solicitud.status !== 'aprobado' || !solicitud.fecha_inicio_cobro_semanal) {
+      throw new MiautoStartDateCorrectionError(
+        'Solo se puede modificar el inicio de cobro de un contrato aprobado y ya activado',
+        400,
+        'contract_not_active',
+      );
+    }
+
+    const correction = buildMiautoStartDateCorrection(
+      String(solicitud.fecha_inicio_cobro_semanal).slice(0, 10),
+      nextValue,
+    );
+    if (!correction.changed) {
+      return {
+        correction,
+        fecha_entrega_actualizada: false,
+      };
+    }
+    if (solicitud.cuotas_bonificadas > 0) {
+      throw new MiautoStartDateCorrectionError(
+        'No se puede modificar automáticamente porque el contrato ya tiene bonos aplicados. La fecha se mantuvo sin cambios.',
+      );
+    }
+
+    const cuotasResult = await query(
+      `SELECT id, week_start_date::text, due_date::text, status,
+              amount_due, paid_amount, num_viajes, partner_fees_raw,
+              partner_fees_83, bono_auto, cobro_saldo, cobro_desde_saldo_conductor,
+              saldo_favor_conductor, late_fee, mora_extra, mora_extra_total,
+              pago_puntual, fecha_ultimo_abono, fecha_primer_comprobante
+       FROM module_miauto_cuota_semanal
+       WHERE solicitud_id = $1::uuid AND deleted_at IS NULL
+       ORDER BY week_start_date, created_at, id
+       FOR UPDATE`,
+      [id]
+    );
+    const firstCuota = assertBootstrapWeeklyQuotaForStartDateCorrection(
+      cuotasResult.rows,
+      correction.currentWeekStart,
+    );
+    if (
+      Math.abs(Number(firstCuota.cobro_desde_saldo_conductor || 0)) > 0.005
+      || Math.abs(Number(firstCuota.saldo_favor_conductor || 0)) > 0.005
+      || Math.abs(Number(firstCuota.mora_extra_total || 0)) > 0.005
+      || firstCuota.fecha_ultimo_abono
+      || firstCuota.fecha_primer_comprobante
+    ) {
+      throw new MiautoStartDateCorrectionError(
+        'No se puede modificar automáticamente porque la cuota inicial ya tiene movimientos registrados. La fecha se mantuvo sin cambios.',
+      );
+    }
+
+    const linkedActivityResult = await query(
+      `SELECT
+         EXISTS (
+           SELECT 1 FROM module_miauto_comprobante_cuota_semanal
+           WHERE cuota_semanal_id = $1::uuid
+         ) AS has_receipts,
+         EXISTS (
+           SELECT 1 FROM module_miauto_evidencia_cobro_fleet
+           WHERE cuota_semanal_id = $1::uuid
+         ) AS has_evidence,
+         EXISTS (
+           SELECT 1 FROM module_miauto_nota_venta_cuota
+           WHERE cuota_semanal_id = $1::uuid
+         ) AS has_sale_notes,
+         EXISTS (
+           SELECT 1 FROM module_miauto_paid_adjustment_log
+           WHERE cuota_semanal_id = $1::uuid
+         ) AS has_paid_adjustments,
+         EXISTS (
+           SELECT 1 FROM module_miauto_fleet_charge_attempt
+           WHERE cuota_semanal_id = $1::uuid
+         ) AS has_fleet_attempts,
+         EXISTS (
+           SELECT 1 FROM module_miauto_bono_tiempo
+           WHERE target_cuota_semanal_id = $1::uuid
+              OR source_cuota_ids @> jsonb_build_array($1::text)
+         ) AS has_time_bonus`,
+      [firstCuota.id]
+    );
+    if (Object.values(linkedActivityResult.rows[0] || {}).some(Boolean)) {
+      throw new MiautoStartDateCorrectionError(
+        'No se puede modificar automáticamente porque la cuota inicial tiene comprobantes, cobros o documentos asociados. La fecha se mantuvo sin cambios.',
+      );
+    }
+
+    const expenseStateResult = await query(
+      `SELECT
+         EXISTS (
+           SELECT 1 FROM module_miauto_otros_gastos
+           WHERE solicitud_id = $1::uuid AND deleted_at IS NULL
+         ) AS has_expenses,
+         EXISTS (
+           SELECT 1 FROM module_miauto_gasto_ciclo
+           WHERE solicitud_id = $1::uuid
+         ) AS has_expense_cycles`,
+      [id]
+    );
+    const expenseState = expenseStateResult.rows[0] || {};
+    const currentDeliveryDate = solicitud.fecha_entrega_vehiculo
+      ? String(solicitud.fecha_entrega_vehiculo).slice(0, 10)
+      : null;
+    const updateDeliveryDate = currentDeliveryDate === correction.currentDate
+      && !expenseState.has_expenses
+      && !expenseState.has_expense_cycles;
+
+    await query(
+      `UPDATE module_miauto_solicitud
+       SET fecha_inicio_cobro_semanal = $2::date,
+           fecha_entrega_vehiculo = CASE WHEN $3::boolean THEN $2::date ELSE fecha_entrega_vehiculo END,
+           updated_by = COALESCE($4::uuid, updated_by),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1::uuid`,
+      [id, correction.nextDate, updateDeliveryDate, userId]
+    );
+    await query(
+      `UPDATE module_miauto_cuota_semanal
+       SET week_start_date = $2::date,
+           due_date = $3::date,
+           updated_by = COALESCE($4::uuid, updated_by),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1::uuid`,
+      [firstCuota.id, correction.nextWeekStart, correction.nextDate, userId]
+    );
+
+    await query(
+      `INSERT INTO module_miauto_billing_audit_trail
+         (cuota_semanal_id, solicitud_id, week_start_date, semana_ordinal,
+          event_type, billing_context, generated_by, actor_id)
+       VALUES ($1::uuid, $2::uuid, $3::date, 1,
+               'start_date_corrected', $4::jsonb, 'admin_start_date_correction', $5::uuid)`,
+      [
+        firstCuota.id,
+        id,
+        correction.nextWeekStart,
+        JSON.stringify({
+          correction: {
+            previous_start_date: correction.currentDate,
+            new_start_date: correction.nextDate,
+            previous_week_start: correction.currentWeekStart,
+            new_week_start: correction.nextWeekStart,
+            delivery_date_updated: updateDeliveryDate,
+          },
+        }),
+        userId,
+      ]
+    );
+
+    return {
+      correction,
+      fecha_entrega_actualizada: updateDeliveryDate,
+    };
+  });
 };
 
 /**

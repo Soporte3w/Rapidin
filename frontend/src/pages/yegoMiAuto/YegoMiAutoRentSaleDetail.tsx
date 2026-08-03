@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText, Download, RefreshCw, Settings2, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, FileText, Banknote, Calendar, User, Car, Tag, TrendingUp, ExternalLink, X, ChevronDown, ChevronRight, AlertCircle, Award, Upload, Trash2, Plus, ReceiptText, Download, RefreshCw, Settings2, CheckCircle2, Pencil } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
@@ -431,6 +431,9 @@ export default function YegoMiAutoRentSaleDetail() {
     x: number;
     y: number;
   } | null>(null);
+  const [showStartDateCorrectionModal, setShowStartDateCorrectionModal] = useState(false);
+  const [startDateCorrection, setStartDateCorrection] = useState('');
+  const [savingStartDateCorrection, setSavingStartDateCorrection] = useState(false);
   const [showGastoFleetChargeModal, setShowGastoFleetChargeModal] = useState(false);
   const [gastoManualPagoTarget, setGastoManualPagoTarget] = useState<MiautoOtrosGastoRow | null>(null);
   const [pagandoGastoManualId, setPagandoGastoManualId] = useState<string | null>(null);
@@ -497,6 +500,8 @@ export default function YegoMiAutoRentSaleDetail() {
     setGastoConfigFocus(null);
     setGastoConfigContextMenu(null);
     setShowGastoConfigModal(false);
+    setShowStartDateCorrectionModal(false);
+    setStartDateCorrection('');
   }, [id]);
   const evidenciaFleetFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
@@ -808,6 +813,28 @@ export default function YegoMiAutoRentSaleDetail() {
       else setLoading(false);
     }
   }, [id]);
+
+  const openStartDateCorrectionModal = useCallback(() => {
+    setStartDateCorrection(String(solicitud?.fecha_inicio_cobro_semanal || '').slice(0, 10));
+    setShowStartDateCorrectionModal(true);
+  }, [solicitud?.fecha_inicio_cobro_semanal]);
+
+  const saveStartDateCorrection = useCallback(async () => {
+    if (!id || !startDateCorrection) return;
+    try {
+      setSavingStartDateCorrection(true);
+      const response = await api.patch(`/miauto/solicitudes/${id}/fecha-inicio-cobro`, {
+        fecha_inicio_cobro_semanal: startDateCorrection,
+      });
+      toast.success(response.data?.message || 'Inicio de cobro modificado correctamente');
+      setShowStartDateCorrectionModal(false);
+      await fetchDetail(undefined, { refresh: true });
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'No se pudo modificar el inicio de cobro');
+    } finally {
+      setSavingStartDateCorrection(false);
+    }
+  }, [fetchDetail, id, startDateCorrection]);
 
   const notasVentaByCuotaId = useMemo(() => {
     const by: Record<string, NotaVentaMiAuto> = {};
@@ -1940,6 +1967,17 @@ export default function YegoMiAutoRentSaleDetail() {
                   ? formatDate(solicitud.fecha_inicio_cobro_semanal, 'es-ES')
                   : '—'}
               </span>
+              {user?.role !== 'driver' && solicitud.fecha_inicio_cobro_semanal && (
+                <button
+                  type="button"
+                  onClick={openStartDateCorrectionModal}
+                  className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-[#8B1A1A] hover:underline"
+                  title="Corregir inicio de cobro"
+                >
+                  <Pencil className="h-3 w-3" />
+                  Modificar
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -4296,6 +4334,97 @@ export default function YegoMiAutoRentSaleDetail() {
           </div>
         </div>,
         document.body
+      )}
+
+      {showStartDateCorrectionModal && createPortal(
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="start-date-correction-title"
+          onClick={() => {
+            if (!savingStartDateCorrection) setShowStartDateCorrectionModal(false);
+          }}
+        >
+          <form
+            className="w-full max-w-md overflow-hidden rounded-lg bg-white shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveStartDateCorrection();
+            }}
+          >
+            <div className="flex items-start justify-between border-b border-gray-200 px-5 py-4">
+              <div>
+                <h3 id="start-date-correction-title" className="text-base font-bold text-gray-900">
+                  Modificar inicio de cobro
+                </h3>
+                <p className="mt-1 text-xs text-gray-500">
+                  Fecha actual: {solicitud.fecha_inicio_cobro_semanal
+                    ? formatDate(solicitud.fecha_inicio_cobro_semanal, 'es-ES')
+                    : '—'}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={savingStartDateCorrection}
+                onClick={() => setShowStartDateCorrectionModal(false)}
+                className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
+                aria-label="Cerrar"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              <label className="block text-sm font-semibold text-gray-700">
+                Nueva fecha de inicio de cobro
+                <input
+                  type="date"
+                  required
+                  value={startDateCorrection}
+                  onChange={(event) => setStartDateCorrection(event.target.value)}
+                  disabled={savingStartDateCorrection}
+                  className="mt-1.5 h-10 w-full rounded-md border border-gray-300 px-3 text-sm text-gray-900 outline-none focus:border-[#8B1A1A] focus:ring-1 focus:ring-[#8B1A1A] disabled:bg-gray-100"
+                />
+              </label>
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">
+                La corrección reprogramará la semana de depósito y su vencimiento inicial. Por seguridad,
+                solo se permite antes de que existan cuotas posteriores, comprobantes, cobros o bonos.
+              </div>
+              <p className="text-xs leading-relaxed text-gray-500">
+                Los otros gastos conservan su fecha de entrega independiente. Si aún no se generaron,
+                la fecha de entrega inicial también se sincronizará.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-gray-200 bg-gray-50 px-5 py-4">
+              <button
+                type="button"
+                disabled={savingStartDateCorrection}
+                onClick={() => setShowStartDateCorrectionModal(false)}
+                className="h-9 rounded-md border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={
+                  savingStartDateCorrection
+                  || !startDateCorrection
+                  || startDateCorrection === String(solicitud.fecha_inicio_cobro_semanal || '').slice(0, 10)
+                }
+                className="inline-flex h-9 items-center gap-2 rounded-md bg-[#8B1A1A] px-4 text-sm font-semibold text-white hover:bg-[#741616] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {savingStartDateCorrection
+                  ? <RefreshCw className="h-4 w-4 animate-spin" />
+                  : <CheckCircle2 className="h-4 w-4" />}
+                {savingStartDateCorrection ? 'Guardando...' : 'Guardar cambio'}
+              </button>
+            </div>
+          </form>
+        </div>,
+        document.body,
       )}
 
       {id && (

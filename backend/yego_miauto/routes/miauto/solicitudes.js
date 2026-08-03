@@ -12,6 +12,7 @@ import {
   marcarLlegada,
   noVinoRechazar,
   generarYegoMiAuto,
+  corregirFechaInicioCobro,
   ActiveSolicitudError,
   getActiveSolicitudInfo,
   anexarContratoAdicional,
@@ -306,6 +307,44 @@ router.patch('/solicitudes/:id/generar-yego-mi-auto', validateUUID, async (req, 
   } catch (error) {
     logger.error('Error generando Yego Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al generar Yego Mi Auto', 400);
+  }
+});
+
+// PATCH /api/miauto/solicitudes/:id/fecha-inicio-cobro
+router.patch('/solicitudes/:id/fecha-inicio-cobro', validateUUID, async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'Sin permisos para modificar el inicio de cobro', 403);
+    }
+    const result = await corregirFechaInicioCobro(
+      req.params.id,
+      req.body?.fecha_inicio_cobro_semanal,
+      req.user?.id,
+    );
+    if (!result) return errorResponse(res, 'Solicitud no encontrada', 404);
+    if (result.correction.changed) {
+      auditMiautoMutation('solicitud.start_date_corrected', 'solicitud', req.params.id, {
+        fecha_anterior: result.correction.currentDate,
+        fecha_nueva: result.correction.nextDate,
+        fecha_entrega_actualizada: result.fecha_entrega_actualizada,
+      });
+    }
+    return successResponse(
+      res,
+      result,
+      result.correction.changed
+        ? 'Inicio de cobro modificado correctamente'
+        : 'La fecha seleccionada ya era el inicio de cobro',
+    );
+  } catch (error) {
+    const statusCode = Number(error?.statusCode) || 400;
+    logger.error('Error modificando inicio de cobro Mi Auto:', error);
+    return errorResponse(
+      res,
+      error.message || 'Error al modificar el inicio de cobro',
+      statusCode,
+      error?.code ? { code: error.code } : undefined,
+    );
   }
 });
 

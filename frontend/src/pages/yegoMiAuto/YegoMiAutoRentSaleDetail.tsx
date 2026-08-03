@@ -363,10 +363,13 @@ export default function YegoMiAutoRentSaleDetail() {
     : null;
   const detailPageRef = useRef<HTMLDivElement>(null);
   const tabContentScrollRef = useRef<HTMLDivElement>(null);
+  const weeklyTableScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     detailPageRef.current?.scrollIntoView({ block: 'start' });
+    if (detailPageRef.current) detailPageRef.current.scrollTop = 0;
     if (tabContentScrollRef.current) tabContentScrollRef.current.scrollTop = 0;
+    if (weeklyTableScrollRef.current) weeklyTableScrollRef.current.scrollTop = 0;
   }, [id]);
 
   const getBackToListState = (): AlquilerVentaBackState | undefined => {
@@ -1487,6 +1490,9 @@ export default function YegoMiAutoRentSaleDetail() {
     initialLimit: 20,
     pageSizes: [10, 20, 50],
   });
+  useEffect(() => {
+    if (weeklyTableScrollRef.current) weeklyTableScrollRef.current.scrollTop = 0;
+  }, [cronPg.limit, cronPg.page]);
   const otrosGastosRows = useMemo(
     () => (Array.isArray(solicitud?.otros_gastos) ? solicitud.otros_gastos : []),
     [solicitud?.otros_gastos]
@@ -1636,7 +1642,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const driverDisplayName = driverDisplayRentSale(solicitud, driverNameFromState);
 
   return (
-    <div ref={detailPageRef} className="space-y-6 lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:gap-6 lg:space-y-0 lg:overflow-hidden">
+    <div ref={detailPageRef} className="space-y-6 lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:gap-6 lg:space-y-0 lg:overflow-y-auto lg:pr-1">
       {nextNavigationItem && (
         <div className="flex shrink-0 justify-end">
           <button
@@ -1650,7 +1656,7 @@ export default function YegoMiAutoRentSaleDetail() {
           </button>
         </div>
       )}
-      <header className="bg-[#8B1A1A] rounded-lg p-4 lg:p-5">
+      <header className="bg-[#8B1A1A] rounded-lg p-4 lg:sticky lg:top-0 lg:z-30 lg:shrink-0 lg:p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-3">
@@ -1983,7 +1989,7 @@ export default function YegoMiAutoRentSaleDetail() {
       </div>
 
       {/* Cronograma semanal + Otros gastos (pestañas) */}
-      <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden relative min-h-[200px] lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
+      <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden relative min-h-[200px] lg:flex lg:h-[calc(100vh-8rem)] lg:min-h-[680px] lg:flex-none lg:flex-col">
         <div className="flex shrink-0 border-b border-gray-200 px-2 sm:px-3 gap-0.5" role="tablist" aria-label="Cronograma y otros gastos">
           <button
             type="button"
@@ -2013,7 +2019,14 @@ export default function YegoMiAutoRentSaleDetail() {
           </button>
         </div>
 
-        <div ref={tabContentScrollRef} className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
+        <div
+          ref={tabContentScrollRef}
+          className={`lg:min-h-0 lg:flex-1 ${
+            tabCronograma === 'semanales'
+              ? 'lg:overflow-hidden'
+              : 'lg:overflow-y-auto lg:overscroll-contain'
+          }`}
+        >
         {tabCronograma === 'semanales' && (
         <>
         {cuotas.length === 0 ? (
@@ -2022,8 +2035,11 @@ export default function YegoMiAutoRentSaleDetail() {
           </div>
         ) : (
           <>
-          <div className="px-4 pt-3 pb-1">
-            <div className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0 rounded-lg border border-gray-100 bg-white">
+          <div className="px-4 pt-3 pb-1 lg:h-full lg:min-h-0">
+            <div
+              ref={weeklyTableScrollRef}
+              className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0 rounded-lg border border-gray-100 bg-white lg:h-full lg:overflow-auto"
+            >
             <table className="w-full min-w-[1280px] table-fixed border-collapse text-sm">
               <colgroup>
                 <col style={{ width: '8.5%' }} />

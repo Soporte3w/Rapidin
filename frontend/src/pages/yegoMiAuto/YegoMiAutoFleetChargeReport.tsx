@@ -59,6 +59,15 @@ type FleetChargeDetail = {
   attempts: FleetChargeAttempt[];
 };
 
+type FleetRetryResult = {
+  run_id: string;
+  cuotas_procesadas: number;
+  success: number;
+  partial: number;
+  failed: number;
+  pendientes_despues: number;
+};
+
 function unwrap<T>(response: { data?: { data?: T } | T }): T {
   const body = response.data as { data?: T } | T | undefined;
   if (body && typeof body === 'object' && 'data' in body) return body.data as T;
@@ -111,7 +120,7 @@ export default function YegoMiAutoFleetChargeReport() {
   const [detail, setDetail] = useState<FleetChargeDetail | null>(null);
   const [loadingRuns, setLoadingRuns] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [retrying, setRetrying] = useState(false);
+  const [retrying, setRetrying] = useState<'week' | 'all' | null>(null);
   const [error, setError] = useState('');
 
   const loadRuns = useCallback(async (preferredRunId?: string | null) => {
@@ -164,34 +173,47 @@ export default function YegoMiAutoFleetChargeReport() {
     [detail],
   );
 
-  const retryPending = useCallback(async () => {
+  const showRetryResult = useCallback(async (result: FleetRetryResult) => {
+    toast.success(
+      `Reproceso terminado: ${result.success} completas, ${result.partial} parciales y ${result.failed} fallidas`,
+    );
+    await loadRuns(result.run_id);
+    setSelectedRunId(result.run_id);
+  }, [loadRuns]);
+
+  const retryWeek = useCallback(async () => {
     if (!canRetry || !detail || retryableAttempts.length === 0 || retrying) return;
     const confirmed = window.confirm(
-      `Se volverá a consultar Fleet y se intentará retirar saldo para ${retryableAttempts.length} cuota(s) pendiente(s). ¿Deseas continuar?`,
+      `Se reintentará el cobro para los ${retryableAttempts.length} conductor(es) pendientes de esta semana. ¿Deseas continuar?`,
     );
     if (!confirmed) return;
     try {
-      setRetrying(true);
+      setRetrying('week');
       const response = await api.post(`/miauto/fleet-charge-runs/${detail.run.id}/retry`);
-      const result = unwrap<{
-        run_id: string;
-        cuotas_procesadas: number;
-        success: number;
-        partial: number;
-        failed: number;
-        pendientes_despues: number;
-      }>(response);
-      toast.success(
-        `Reproceso terminado: ${result.success} completas, ${result.partial} parciales y ${result.failed} fallidas`,
-      );
-      await loadRuns(result.run_id);
-      setSelectedRunId(result.run_id);
+      await showRetryResult(unwrap<FleetRetryResult>(response));
     } catch (requestError: any) {
-      toast.error(requestError.response?.data?.message || 'No se pudo reprocesar la cola pendiente');
+      toast.error(requestError.response?.data?.message || 'No se pudo reprocesar la semana seleccionada');
     } finally {
-      setRetrying(false);
+      setRetrying(null);
     }
-  }, [canRetry, detail, loadRuns, retryableAttempts.length, retrying]);
+  }, [canRetry, detail, retryableAttempts.length, retrying, showRetryResult]);
+
+  const retryAll = useCallback(async () => {
+    if (!canRetry || retrying) return;
+    const confirmed = window.confirm(
+      'Se reintentará el cobro de todos los conductores con cuotas Fleet pendientes, sin importar la semana. ¿Deseas continuar?',
+    );
+    if (!confirmed) return;
+    try {
+      setRetrying('all');
+      const response = await api.post('/miauto/fleet-charge-runs/retry-all');
+      await showRetryResult(unwrap<FleetRetryResult>(response));
+    } catch (requestError: any) {
+      toast.error(requestError.response?.data?.message || 'No se pudo reprocesar toda la cola pendiente');
+    } finally {
+      setRetrying(null);
+    }
+  }, [canRetry, retrying, showRetryResult]);
 
   const selectedRun = detail?.run || runs.find((run) => run.id === selectedRunId) || null;
 
@@ -208,14 +230,27 @@ export default function YegoMiAutoFleetChargeReport() {
               <p className="mt-0.5 text-xs text-white/90 lg:text-sm">Corridas del cobro semanal, pendientes y motivo por conductor</p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => navigate('/admin/yego-mi-auto/rent-sale')}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-white/15 px-3 py-2 text-sm font-medium text-white hover:bg-white/25"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Volver a Alquiler / Venta
-          </button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            {canRetry && (
+              <button
+                type="button"
+                onClick={() => void retryAll()}
+                disabled={retrying !== null}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50"
+              >
+                <RefreshCw className={`h-4 w-4 ${retrying === 'all' ? 'animate-spin' : ''}`} />
+                {retrying === 'all' ? 'Reprocesando todo...' : 'Reintentar todos los pendientes'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => navigate('/admin/yego-mi-auto/rent-sale')}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-white/15 px-3 py-2 text-sm font-medium text-white hover:bg-white/25"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Volver a Alquiler / Venta
+            </button>
+          </div>
         </div>
       </header>
 
@@ -282,12 +317,16 @@ export default function YegoMiAutoFleetChargeReport() {
             </div>
             <button
               type="button"
-              onClick={() => void retryPending()}
-              disabled={!canRetry || !detail || retryableAttempts.length === 0 || retrying || detail.run.status === 'running'}
+              onClick={() => void retryWeek()}
+              disabled={!canRetry || !detail || retryableAttempts.length === 0 || retrying !== null || detail.run.status === 'running'}
               className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#8B1A1A] px-4 py-2 text-sm font-semibold text-white hover:bg-[#6B1515] disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <RefreshCw className={`h-4 w-4 ${retrying ? 'animate-spin' : ''}`} />
-              {retrying ? 'Reprocesando...' : canRetry ? `Reprocesar pendientes (${retryableAttempts.length})` : 'Solo administradores'}
+              <RefreshCw className={`h-4 w-4 ${retrying === 'week' ? 'animate-spin' : ''}`} />
+              {retrying === 'week'
+                ? 'Reprocesando semana...'
+                : canRetry
+                  ? `Reintentar faltantes de esta semana (${retryableAttempts.length})`
+                  : 'Solo administradores'}
             </button>
           </div>
 

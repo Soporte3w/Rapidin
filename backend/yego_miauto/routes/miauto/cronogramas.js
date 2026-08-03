@@ -19,7 +19,10 @@ import {
   getMiautoFleetChargeRunDetail,
   listMiautoFleetChargeRuns,
 } from '../../services/cuotas/miautoFleetChargeRunService.js';
-import { runFleetCobroPendientesDeRun } from '../../../jobs/miautoWeeklyCharge.js';
+import {
+  runFleetCobroPendientesDeRun,
+  runFleetCobroTodosPendientes,
+} from '../../../jobs/miautoWeeklyCharge.js';
 
 const router = Router();
 
@@ -71,6 +74,29 @@ router.get('/fleet-charge-runs', async (req, res) => {
   }
 });
 
+router.post('/fleet-charge-runs/retry-all', async (req, res) => {
+  try {
+    const isAdmin = req.user?.role === 'admin' || req.user?.base_role === 'admin';
+    if (!isAdmin) return errorResponse(res, 'Solo un administrador puede reprocesar cobros Fleet', 403);
+    const result = await runFleetCobroTodosPendientes({ triggeredBy: req.user?.id || null });
+    if (!result.ok) return errorResponse(res, result.error || 'No se pudo reprocesar la cola Fleet', 409);
+    businessLog('miauto.fleet_charge.manual_retry_all', {
+      retryRunId: result.run_id,
+      requested: result.cuotas_solicitadas,
+      processed: result.cuotas_procesadas,
+      success: result.success,
+      partial: result.partial,
+      failed: result.failed,
+      remaining: result.pendientes_despues,
+      userId: req.user?.id || null,
+    });
+    return successResponse(res, result, 'Reproceso general Fleet completado');
+  } catch (error) {
+    logger.error('Error reprocesando toda la cola Fleet Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al reprocesar toda la cola Fleet', 500);
+  }
+});
+
 router.get('/fleet-charge-runs/:runId', async (req, res) => {
   try {
     if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para ver los cobros automáticos', 403);
@@ -114,7 +140,7 @@ router.post('/fleet-charge-runs/:runId/retry', async (req, res) => {
       remaining: result.pendientes_despues,
       userId: req.user?.id || null,
     });
-    return successResponse(res, result, 'Reproceso Fleet completado');
+    return successResponse(res, result, 'Reproceso de la semana completado');
   } catch (error) {
     logger.error('Error reprocesando cobros Fleet Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al reprocesar cobros Fleet', 500);

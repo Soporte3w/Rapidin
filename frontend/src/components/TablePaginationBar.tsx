@@ -11,6 +11,8 @@ type Props = {
   limit: number;
   setLimit: (n: number) => void;
   pageSizes: readonly number[];
+  totalItems?: number;
+  compact?: boolean;
   /** Clases del contenedor (padding/márgenes según la tabla) */
   containerClassName?: string;
 };
@@ -25,9 +27,74 @@ export function TablePaginationBar({
   limit,
   setLimit,
   pageSizes,
+  totalItems,
+  compact = false,
   containerClassName = DEFAULT_CONTAINER,
 }: Props) {
   const sizes = pageSizes.length > 0 ? pageSizes : [5, 10, 20, 50];
+  const firstItem = totalItems && totalItems > 0 ? (page - 1) * limit + 1 : 0;
+  const lastItem = totalItems && totalItems > 0 ? Math.min(page * limit, totalItems) : 0;
+
+  if (compact) {
+    return (
+      <div className={containerClassName}>
+        <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
+          {typeof totalItems === 'number' && (
+            <span className="font-medium text-gray-600">
+              Mostrando {firstItem}–{lastItem} de {totalItems} cuotas
+            </span>
+          )}
+          <label className="flex items-center gap-2">
+            <span>Filas:</span>
+            <select
+              value={limit}
+              onChange={(e) => setLimit(Number(e.target.value))}
+              className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 focus:border-[#8B1A1A] focus:ring-2 focus:ring-[#8B1A1A]/20"
+              aria-label="Filas por página"
+            >
+              {sizes.map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1}
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 text-gray-600 transition-colors hover:border-[#8B1A1A] hover:bg-red-50 hover:text-[#8B1A1A] disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Página anterior"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700">
+            <span>Página</span>
+            <select
+              value={page}
+              onChange={(e) => setPage(Number(e.target.value))}
+              className="rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-[#8B1A1A] focus:ring-2 focus:ring-[#8B1A1A]/20"
+              aria-label="Ir a la página"
+            >
+              {Array.from({ length: totalPages }, (_, index) => index + 1).map((pageNumber) => (
+                <option key={pageNumber} value={pageNumber}>{pageNumber}</option>
+              ))}
+            </select>
+            <span>de {totalPages}</span>
+          </label>
+          <button
+            type="button"
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages}
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 text-gray-600 transition-colors hover:border-[#8B1A1A] hover:bg-red-50 hover:text-[#8B1A1A] disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Página siguiente"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={containerClassName}>

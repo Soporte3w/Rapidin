@@ -7,6 +7,8 @@ import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { formatDate, formatDateTime, formatDateUTC } from '../../utils/date';
 import { buildMiAutoMessage } from '../../utils/miautoWhatsAppMessageBuilder';
+import { TablePaginationBar } from '../../components/TablePaginationBar';
+import { useTablePagination } from '../../hooks/useTablePagination';
 import {
   canonicalOtrosGastoType,
   labelOtrosGastoType,
@@ -1440,6 +1442,11 @@ export default function YegoMiAutoRentSaleDetail() {
   const cuotasPagadas = cuotas.filter((c) => c.status === 'paid' || c.status === 'bonificada').length;
   const cuotasVencidas = cuotas.filter((c) => c.status === 'overdue').length;
 
+  const cronPg = useTablePagination(cuotas, {
+    initialLimit: 20,
+    pageSizes: [10, 20, 50],
+    storageKey: 'miauto.admin.cronograma.pageSize',
+  });
   const otrosGastosRows = useMemo(
     () => (Array.isArray(solicitud?.otros_gastos) ? solicitud.otros_gastos : []),
     [solicitud?.otros_gastos]
@@ -1975,11 +1982,11 @@ export default function YegoMiAutoRentSaleDetail() {
                 </tr>
               </thead>
               <tbody>
-                {cuotas.map((c, index) => {
+                {cronPg.paginatedItems.map((c, index) => {
                   const numeroSemana =
                     miautoSemanaLista(cuotas, c.week_start_date) ??
                     miautoSemanaOrdinalPorVencimiento(cuotas, c.due_date, c.week_start_date) ??
-                    index + 1;
+                    (cronPg.page - 1) * cronPg.limit + index + 1;
                   const comps = comprobantesByCuotaId[c.id] ?? [];
                   const origenComp = (cp: ComprobanteCuotaSemanal) => (cp.origen || 'conductor').toLowerCase();
                   const compsConductor = comps.filter((cp) => origenComp(cp) === 'conductor');
@@ -3071,6 +3078,20 @@ export default function YegoMiAutoRentSaleDetail() {
         </>
         )}
         </div>
+
+        {tabCronograma === 'semanales' && cuotas.length > cronPg.limit && (
+          <TablePaginationBar
+            page={cronPg.page}
+            setPage={cronPg.setPage}
+            totalPages={cronPg.totalPages}
+            limit={cronPg.limit}
+            setLimit={cronPg.setLimit}
+            pageSizes={cronPg.pageSizes}
+            totalItems={cuotas.length}
+            compact
+            containerClassName="flex shrink-0 flex-col items-center justify-between gap-3 border-t border-gray-200 bg-white px-4 py-2.5 sm:flex-row"
+          />
+        )}
 
         {refreshingDetail && (
           <div

@@ -34,6 +34,7 @@ import {
   mondayOfWeekContainingYmd,
 } from '../utils/miautoLimaWeekRange.js';
 import { appendMiautoFleetCobroJobAuditEvent } from '../utils/miautoFleetCobroAuditLog.js';
+import { normalizeMiautoPlate, selectWorkingDriverForPlate } from '../yego_miauto/services/utils/miautoPlateIdentity.js';
 import { acquireCronLock, releaseCronLock } from '../utils/cronLock.js';
 import {
   generateExpenseCyclesForActiveContracts,
@@ -97,38 +98,23 @@ function ymdFromDbDate(value) {
 
 /**
  * Viajes desde el conductor working de la placa, no del driver_id_fleet.
- * Aplica para todos los conductores. Si no hay conductor working con esa placa → viajes = 0.
- * @returns {{ driver_id: string, park_id: string } | null}
+ * Aplica para todos los conductores. Si no hay una coincidencia única, se detiene
+ * la generación de esa cuota para no atribuir viajes o bonos a otra placa.
+ * @returns {{ driver_id: string, park_id: string }}
  */
 async function resolveTripsFromPlacaDriver(placa, driverIdFleet = null) {
   if (!placa) return null;
-  const placaNorm = String(placa).trim().toUpperCase().replace(/\s+/g, '');
-  const placaSql = `UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '\\\\s', '', 'g')) = \$2`;
-
-  if (driverIdFleet) {
-    const match = await query(
-      `SELECT d.driver_id, d.park_id FROM drivers d
-       WHERE TRIM(COALESCE(d.park_id::text, '')) = \$1
-         AND d.work_status = 'working'
-         AND d.driver_id = \$3
-         AND ${placaSql}
-       LIMIT 1`,
-      [MIAUTO_PARK_ID, placaNorm, driverIdFleet]
-    );
-    if (match.rows.length > 0) {
-      return { driver_id: match.rows[0].driver_id, park_id: match.rows[0].park_id || MIAUTO_PARK_ID };
-    }
-  }
-
+  const placaNorm = normalizeMiautoPlate(placa);
   const res = await query(
     `SELECT d.driver_id, d.park_id FROM drivers d
      WHERE TRIM(COALESCE(d.park_id::text, '')) = \$1
        AND d.work_status = 'working'
-       AND ${placaSql}
-     LIMIT 1`,
+       AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '[^A-Z0-9]', '', 'g')) = \$2
+     ORDER BY d.driver_id::text`,
     [MIAUTO_PARK_ID, placaNorm]
   );
-  return res.rows.length > 0 ? { driver_id: res.rows[0].driver_id, park_id: res.rows[0].park_id || MIAUTO_PARK_ID } : null;
+  const selected = selectWorkingDriverForPlate(res.rows, driverIdFleet);
+  return { driver_id: selected.driver_id, park_id: selected.park_id || MIAUTO_PARK_ID };
 }
 
 /**
@@ -172,7 +158,18 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
     });
     return { outcome: 'income_failed', incomeError: 'driver_yango_no_resuelto' };
   } else {
-    const placaTrips = await resolveTripsFromPlacaDriver(sol.placa_asignada, sol.external_driver_id);
+    let placaTrips;
+    try {
+      placaTrips = await resolveTripsFromPlacaDriver(sol.placa_asignada, sol.external_driver_id);
+    } catch (error) {
+      logger.error('miauto.cuota.placa_driver_ambiguo', {
+        solicitudId: sol.solicitud_id,
+        placa: sol.placa_asignada || null,
+        error: String(error?.message || error),
+        action: 'omitir_cuota_para_no_atribuir_viajes_incorrectos',
+      });
+      return { outcome: 'income_failed', incomeError: `placa: ${error.message}` };
+    }
     // Viajes: del conductor working de la placa. Si no hay → 0.
     const viajesSource = placaTrips;
     const viajes = viajesSource

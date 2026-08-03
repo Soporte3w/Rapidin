@@ -41,6 +41,7 @@ import {
 } from '../../utils/miautoRentSaleHelpers';
 import { MiautoComprobantesResumenSemana } from '../../components/yegoMiAuto/MiautoComprobantesResumenSemana';
 import { MiautoGenerarCuotaModal } from '../../components/yegoMiAuto/MiautoGenerarCuotaModal';
+import { MiautoAttachContractModal } from '../../components/yegoMiAuto/MiautoAttachContractModal';
 import {
   MiautoGastosConfigurationModal,
   type MiautoGastoConfigFocus,
@@ -163,6 +164,10 @@ interface SolicitudSummary {
   yango_work_status?: string;
   country?: string;
   status: string;
+  origen_registro?: 'solicitud' | 'contrato_adicional';
+  conductor_id?: string;
+  pago_tipo?: string;
+  pago_estado?: string;
   fecha_inicio_cobro_semanal?: string;
   placa_asignada?: string;
   facturador_customer_id?: number | string | null;
@@ -181,6 +186,22 @@ interface SolicitudSummary {
     requisitos_gastos?: Partial<RequisitosGastosVehiculo> | null;
   } | null;
   otros_gastos?: MiautoOtrosGastoRow[];
+}
+
+interface ContratoRelacionadoMiAuto {
+  id: string;
+  conductor_id: string;
+  origen_registro?: 'solicitud' | 'contrato_adicional';
+  status: string;
+  placa_asignada?: string | null;
+  fecha_inicio_cobro_semanal?: string | null;
+  cronograma_name?: string | null;
+  vehiculo_name?: string | null;
+  contrato_numero: number;
+  etapa: 'activo' | 'por_activar';
+  total_cuotas?: number;
+  cuotas_pagadas?: number;
+  cuotas_vencidas?: number;
 }
 
 function miautoMontoFacturableNotaVentaCuota(cuota: CuotaSemanal) {
@@ -483,6 +504,8 @@ export default function YegoMiAutoRentSaleDetail() {
   const [showNotasVentaModal, setShowNotasVentaModal] = useState(false);
   const [notasVenta, setNotasVenta] = useState<NotaVentaMiAuto[]>([]);
   const [contratos, setContratos] = useState<ContratoDocumentoMiAuto[]>([]);
+  const [contratosRelacionados, setContratosRelacionados] = useState<ContratoRelacionadoMiAuto[]>([]);
+  const [showAttachContractModal, setShowAttachContractModal] = useState(false);
   const [subiendoContrato, setSubiendoContrato] = useState(false);
   const [eliminandoContratoId, setEliminandoContratoId] = useState<string | null>(null);
   const [showContratoMenu, setShowContratoMenu] = useState(false);
@@ -750,12 +773,14 @@ export default function YegoMiAutoRentSaleDetail() {
       const evFleet = dashboard.evidencias_fleet ?? [];
       const notas = dashboard.notas_venta ?? [];
       const contratosData = dashboard.contratos ?? [];
+      const relatedContractsData = dashboard.contratos_relacionados ?? [];
       setSolicitud(sol || null);
       setCuotas(rawCuotas as CuotaSemanal[]);
       setComprobantesPagos(Array.isArray(comp) ? comp : []);
       setComprobantesOtrosGastos(Array.isArray(compOtros) ? compOtros : []);
       setNotasVenta(Array.isArray(notas) ? notas : []);
       setContratos(Array.isArray(contratosData) ? contratosData : []);
+      setContratosRelacionados(Array.isArray(relatedContractsData) ? relatedContractsData : []);
 
       setEvidenciasFleet(Array.isArray(evFleet) ? evFleet : []);
       setBonoAplicado(bonoNum);
@@ -772,6 +797,7 @@ export default function YegoMiAutoRentSaleDetail() {
         setComprobantesOtrosGastos([]);
         setNotasVenta([]);
         setContratos([]);
+        setContratosRelacionados([]);
   
         setEvidenciasFleet([]);
         setBonoAplicado(0);
@@ -1616,6 +1642,15 @@ export default function YegoMiAutoRentSaleDetail() {
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowAttachContractModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-[#8B1A1A] transition-colors hover:bg-red-50"
+              title="Anexar otro contrato al mismo conductor"
+            >
+              <Plus className="h-4 w-4" />
+              Anexar contrato
+            </button>
             {solicitud?.status === 'aprobado' && solicitud?.fecha_inicio_cobro_semanal && (
               <>
                 <button
@@ -1661,17 +1696,17 @@ export default function YegoMiAutoRentSaleDetail() {
                 type="button"
                 onClick={() => setShowContratoMenu((prev) => !prev)}
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-medium transition-colors"
-                title="Opciones del contrato"
+                title="Opciones del documento contractual"
               >
                 <FileText className="w-4 h-4" />
-                Contrato
+                Documento contractual
                 <ChevronDown className={`w-4 h-4 transition-transform ${showContratoMenu ? 'rotate-180' : ''}`} />
               </button>
 
               {showContratoMenu && (
                 <div className="absolute right-0 top-full z-30 mt-2 w-64 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl">
                   <div className="border-b border-gray-100 px-3 py-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Contrato</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Documento contractual</p>
                     <p className="mt-0.5 truncate text-sm font-medium text-gray-900">
                       {contratoActivo?.file_name || 'Sin contrato activo'}
                     </p>
@@ -1726,6 +1761,68 @@ export default function YegoMiAutoRentSaleDetail() {
           </div>
         </div>
       </header>
+
+      <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-[#8B1A1A]">Contratos del conductor</h2>
+            <p className="text-xs text-gray-500">Selecciona un contrato para ver y administrar sus procesos independientes.</p>
+          </div>
+          <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700">
+            {contratosRelacionados.length} contrato{contratosRelacionados.length === 1 ? '' : 's'}
+          </span>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {contratosRelacionados.map((contract) => {
+            const selected = contract.id === id;
+            return (
+              <button
+                key={contract.id}
+                type="button"
+                onClick={() => {
+                  if (selected) return;
+                  navigate(`/admin/yego-mi-auto/rent-sale/${contract.id}`, {
+                    state: { ...listState, driver_name: driverDisplayName },
+                  });
+                }}
+                className={`rounded-lg border p-3 text-left transition-colors ${
+                  selected
+                    ? 'border-[#8B1A1A] bg-red-50 ring-1 ring-[#8B1A1A]/20'
+                    : 'border-gray-200 hover:border-[#8B1A1A]/50 hover:bg-gray-50'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Contrato {contract.contrato_numero}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${contract.etapa === 'activo' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>
+                    {contract.etapa === 'activo' ? 'Activo' : 'Por activar'}
+                  </span>
+                </div>
+                <p className="mt-2 font-mono text-base font-bold tracking-wide text-gray-900">{contract.placa_asignada || 'Sin placa'}</p>
+                <p className="truncate text-xs text-gray-600">{contract.vehiculo_name || contract.cronograma_name || 'Sin vehículo configurado'}</p>
+                <p className="mt-2 text-[11px] text-gray-500">
+                  {Number(contract.cuotas_pagadas || 0)} pagadas · {Number(contract.cuotas_vencidas || 0)} vencidas
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      {!solicitud.fecha_inicio_cobro_semanal && solicitud.origen_registro === 'contrato_adicional' && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+          <div>
+            <p className="text-sm font-semibold text-amber-900">Contrato adicional pendiente de activación</p>
+            <p className="text-xs text-amber-800">Registra y valida el pago inicial antes de iniciar el cronograma semanal.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate(`/admin/yego-mi-auto/requests/${id}`)}
+            className="rounded-lg bg-amber-800 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-900"
+          >
+            Configurar pago e iniciar
+          </button>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-3">
         <button
@@ -4199,6 +4296,21 @@ export default function YegoMiAutoRentSaleDetail() {
           </div>
         </div>,
         document.body
+      )}
+
+      {id && (
+        <MiautoAttachContractModal
+          open={showAttachContractModal}
+          sourceContractId={id}
+          country={solicitud.country || 'PE'}
+          onClose={() => setShowAttachContractModal(false)}
+          onCreated={(contractId) => {
+            setShowAttachContractModal(false);
+            navigate(`/admin/yego-mi-auto/rent-sale/${contractId}`, {
+              state: { ...listState, driver_name: driverDisplayName },
+            });
+          }}
+        />
       )}
 
       {id && <MiautoGenerarCuotaModal

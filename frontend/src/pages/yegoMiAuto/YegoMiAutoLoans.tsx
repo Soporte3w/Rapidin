@@ -254,7 +254,7 @@ export default function YegoMiAutoLoans() {
             <div>
               <h1 className="text-lg lg:text-xl font-bold text-white leading-tight">Alquiler / Venta</h1>
               <p className="text-xs lg:text-sm text-white/90 mt-0.5">
-                Contratos Mi Auto con cobro semanal activo — {countryLabel}
+                Contratos Mi Auto activos y por activar — {countryLabel}
               </p>
             </div>
           </div>

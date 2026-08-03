@@ -1,4 +1,4 @@
-import { query } from '../../../config/database.js';
+import { query, withTransaction } from '../../../config/database.js';
 import {
   assertCronogramaPermitePagoInicial,
   getCuotaMonedasByAssignments,
@@ -24,6 +24,7 @@ import {
 import { buildDriverNameSearchSql } from '../../../utils/driverNameSearch.js';
 import { enqueueMiautoLicenseValidation } from '../licencia/miautoLicenseValidationService.js';
 import { enqueueMiautoSoatValidation } from '../soat/miautoSoatValidationService.js';
+import { normalizeMiautoPlate, selectWorkingDriverForPlate } from '../utils/miautoPlateIdentity.js';
 
 const MINIMO_USD_PARCIAL = 500;
 
@@ -52,10 +53,43 @@ function trimOrUndefined(x) {
   return s === '' ? undefined : s;
 }
 
-/** Normaliza placa para almacenamiento (mayúsculas, sin espacios internos). */
-function normalizePlacaAsignada(value) {
-  if (value == null) return '';
-  return String(value).trim().toUpperCase().replace(/\s+/g, '');
+/** Normaliza placa para almacenamiento y comparación (mayúsculas, solo alfanuméricos). */
+export function normalizePlacaAsignada(value) {
+  return normalizeMiautoPlate(value);
+}
+
+export function normalizeMiautoDocument(value) {
+  const digits = String(value || '').replace(/[^0-9]/g, '').replace(/^0+/, '');
+  return digits || null;
+}
+
+async function ensureMiautoConductor(country, dni) {
+  const normalized = normalizeMiautoDocument(dni);
+  if (!normalized) throw new Error('No se pudo identificar al conductor por su documento');
+  const result = await query(
+    `INSERT INTO module_miauto_conductor (country, document_number, document_normalized)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (country, document_normalized)
+     DO UPDATE SET document_number = COALESCE(EXCLUDED.document_number, module_miauto_conductor.document_number),
+                   updated_at = CURRENT_TIMESTAMP
+     RETURNING id`,
+    [country || 'PE', dni || null, normalized]
+  );
+  return result.rows[0].id;
+}
+
+async function assertActivePlateAvailable(placa, excludeSolicitudId = null) {
+  const normalized = normalizePlacaAsignada(placa);
+  if (!normalized) return;
+  const result = await query(
+    `SELECT id FROM module_miauto_solicitud
+     WHERE status = 'aprobado' AND deleted_at IS NULL
+       AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(placa_asignada, '')), '[^A-Z0-9]', '', 'g')) = $1
+       AND ($2::uuid IS NULL OR id <> $2::uuid)
+     LIMIT 1`,
+    [normalized, excludeSolicitudId]
+  );
+  if (result.rows.length > 0) throw new Error('La placa ya pertenece a otro contrato activo');
 }
 
 function normalizeAppsToCodes(apps) {
@@ -99,6 +133,11 @@ export const listSolicitudes = async (filters = {}) => {
     LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id
     LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id `;
   let where = ' WHERE 1=1 ';
+  // Los contratos anexados no son solicitudes nuevas y no deben aparecer en la bandeja administrativa.
+  // El conductor sí recibe todos sus contratos mediante este listado.
+  if (!forDriver) {
+    where += " AND COALESCE(s.origen_registro, 'solicitud') = 'solicitud' ";
+  }
   if (status) {
     where += ` AND s.status = $${n}`;
     params.push(status);
@@ -163,6 +202,7 @@ export const listSolicitudes = async (filters = {}) => {
             s.license_issued_date, s.license_expiration_date, s.license_restrictions, s.license_validation_status,
             s.license_validation_attempts, s.license_validation_checked_at,
             s.status, s.created_at, s.country, s.pago_tipo, s.pago_estado, s.fecha_inicio_cobro_semanal,
+            s.conductor_id, s.origen_registro,
             s.placa_asignada, s.appointment_date, s.reagendo_count, s.observations, s.rejection_reason, s.withdrawn_at, s.withdrawal_reason,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
             c.id AS cronograma_id, c.name AS cronograma_name, c.tasa_interes_mora AS cronograma_tasa_interes_mora, c.bono_tiempo_activo AS cronograma_bono_tiempo_activo,
@@ -171,7 +211,7 @@ export const listSolicitudes = async (filters = {}) => {
     : `SELECT s.id, s.dni, s.phone, s.email, s.license_number, s.license_category, s.license_factiliza_status,
             s.license_issued_date, s.license_expiration_date, s.license_restrictions, s.license_validation_status,
             s.license_validation_attempts, s.license_validation_checked_at,
-            s.status, s.created_at, s.driver_id_fleet,
+            s.status, s.created_at, s.driver_id_fleet, s.conductor_id, s.origen_registro,
             s.placa_asignada, s.cronograma_id, s.cronograma_vehiculo_id,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
             c.name AS cronograma_name,
@@ -295,6 +335,8 @@ export const listSolicitudes = async (filters = {}) => {
       license_validation_checked_at: r.license_validation_checked_at || undefined,
       status: r.status,
       created_at: r.created_at,
+      conductor_id: r.conductor_id || undefined,
+      origen_registro: r.origen_registro || 'solicitud',
       driver_name: driverName || undefined,
       working_driver_name: workingName || undefined,
       fired_driver_name: isFired ? driverName : undefined,
@@ -400,7 +442,7 @@ export const listAlquilerVenta = async (filters = {}) => {
      LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id
      LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id`;
 
-  const listSql = `SELECT s.id, s.cronograma_id, s.cronograma_vehiculo_id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.fecha_inicio_cobro_semanal, s.placa_asignada, s.driver_id_fleet,
+  const listSql = `SELECT s.id, s.conductor_id, s.origen_registro, s.cronograma_id, s.cronograma_vehiculo_id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.fecha_inicio_cobro_semanal, s.placa_asignada, s.driver_id_fleet,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
             c.name AS cronograma_name, v.name AS vehiculo_name, v.inicial AS vehiculo_inicial, v.inicial_moneda AS vehiculo_inicial_moneda, v.cuotas_semanales AS vehiculo_cuotas_semanales
      ${fromBase}
@@ -523,6 +565,8 @@ export const listAlquilerVenta = async (filters = {}) => {
         : monedaCronograma;
     return {
       id: r.id,
+      conductor_id: r.conductor_id || undefined,
+      origen_registro: r.origen_registro || 'solicitud',
       dni: r.dni,
       phone: r.phone || undefined,
       email: r.email || undefined,
@@ -562,6 +606,7 @@ export const getSolicitudById = async (id, options = {}) => {
             description,
             status, rejection_reason, cited_at, cited_by, appointment_date, reagendo_count,
             reviewed_at, reviewed_by, withdrawn_at, withdrawal_reason, observations, created_at, updated_at, driver_id_fleet,
+            conductor_id, origen_registro, recaudo_driver_id,
             cronograma_id, cronograma_vehiculo_id, pago_tipo, pago_estado, fecha_inicio_cobro_semanal, placa_asignada,
             facturador_customer_id,
             (SELECT cv.inicial_moneda
@@ -784,14 +829,19 @@ export const createSolicitud = async (data, userId = null) => {
   if (activeInfo) throw new ActiveSolicitudError(activeInfo.status, activeInfo.park_id);
 
   await assertCronogramaPermitePagoInicial(cronograma_id, pago_tipo);
+  const conductorId = await ensureMiautoConductor(driverCountry, dni);
   const appsArr = normalizeAppsToCodes(apps);
   const normalizedAssignedPlate = placa_asignada ? normalizePlacaAsignada(placa_asignada) : null;
+  if ((status || 'pendiente') === 'aprobado') {
+    await assertActivePlateAvailable(normalizedAssignedPlate);
+  }
   const result = await query(
     `INSERT INTO module_miauto_solicitud
        (country, dni, phone, email, license_number, description, apps_trabajadas,
         driver_id_fleet, cronograma_id, cronograma_vehiculo_id, pago_tipo, pago_estado,
-        fecha_inicio_cobro_semanal, placa_asignada, status, updated_by, soat_validation_status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        fecha_inicio_cobro_semanal, placa_asignada, status, updated_by, soat_validation_status,
+        conductor_id, origen_registro)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'solicitud')
      RETURNING *`,
     [
       country || 'PE',
@@ -811,6 +861,7 @@ export const createSolicitud = async (data, userId = null) => {
       status || 'pendiente',
       userId,
       normalizedAssignedPlate ? 'pending' : 'not_applicable',
+      conductorId,
     ]
   );
   enqueueMiautoLicenseValidation({
@@ -825,15 +876,148 @@ export const createSolicitud = async (data, userId = null) => {
   return getSolicitudById(result.rows[0].id);
 };
 
+async function resolveWorkingDriverForContractPlate(placa, preferredDriverId = null) {
+  const candidates = await query(
+    `SELECT d.driver_id, d.park_id, d.first_name, d.last_name
+     FROM drivers d
+     WHERE TRIM(COALESCE(d.park_id::text, '')) = $1
+       AND d.work_status = 'working'
+       AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '[^A-Z0-9]', '', 'g')) = $2
+     ORDER BY d.driver_id::text`,
+    [MIAUTO_PARK_ID, placa]
+  );
+  return selectWorkingDriverForPlate(candidates.rows, preferredDriverId);
+}
+
+export async function listContratosRelacionados(solicitudId) {
+  const source = await query(
+    'SELECT conductor_id FROM module_miauto_solicitud WHERE id = $1 AND deleted_at IS NULL',
+    [solicitudId]
+  );
+  const conductorId = source.rows[0]?.conductor_id;
+  if (!conductorId) return [];
+  const result = await query(
+    `SELECT s.id, s.conductor_id, s.origen_registro, s.status, s.placa_asignada,
+            s.fecha_inicio_cobro_semanal, s.created_at, s.cronograma_id,
+            s.cronograma_vehiculo_id, c.name AS cronograma_name, v.name AS vehiculo_name,
+            COUNT(cs.id)::int AS total_cuotas,
+            COUNT(cs.id) FILTER (
+              WHERE cs.status IN ('paid', 'bonificada')
+                 OR COALESCE(cs.paid_amount, 0) >= COALESCE(cs.amount_due, 0) + COALESCE(cs.late_fee, 0) + COALESCE(cs.mora_extra, 0) - 0.005
+            )::int AS cuotas_pagadas,
+            COUNT(cs.id) FILTER (
+              WHERE cs.status = 'overdue'
+                AND COALESCE(cs.paid_amount, 0) < COALESCE(cs.amount_due, 0) + COALESCE(cs.late_fee, 0) + COALESCE(cs.mora_extra, 0) - 0.005
+            )::int AS cuotas_vencidas
+     FROM module_miauto_solicitud s
+     LEFT JOIN module_miauto_cronograma c ON c.id = s.cronograma_id
+     LEFT JOIN module_miauto_cronograma_vehiculo v ON v.id = s.cronograma_vehiculo_id
+     LEFT JOIN module_miauto_cuota_semanal cs ON cs.solicitud_id = s.id AND cs.deleted_at IS NULL
+     WHERE s.conductor_id = $1 AND s.status = 'aprobado' AND s.deleted_at IS NULL
+     GROUP BY s.id, c.name, v.name
+     ORDER BY s.created_at ASC, s.id ASC`,
+    [conductorId]
+  );
+  return result.rows.map((row, index) => ({
+    ...row,
+    contrato_numero: index + 1,
+    etapa: row.fecha_inicio_cobro_semanal ? 'activo' : 'por_activar',
+  }));
+}
+
+export async function anexarContratoAdicional(sourceSolicitudId, data, userId = null) {
+  const placa = normalizePlacaAsignada(data?.placa_asignada);
+  const cronogramaId = trimOrUndefined(data?.cronograma_id);
+  const cronogramaVehiculoId = trimOrUndefined(data?.cronograma_vehiculo_id);
+  const pagoTipo = trimOrUndefined(data?.pago_tipo) || 'completo';
+  if (!placa) throw new Error('La placa del nuevo contrato es requerida');
+  if (!cronogramaId || !cronogramaVehiculoId) throw new Error('Debe seleccionar el cronograma y el vehículo');
+
+  const created = await withTransaction(async () => {
+    const sourceResult = await query(
+      `SELECT id, conductor_id, country, dni, phone, email, license_number, description,
+              apps_trabajadas, driver_id_fleet, status, facturador_customer_id
+       FROM module_miauto_solicitud
+       WHERE id = $1 AND deleted_at IS NULL
+       FOR UPDATE`,
+      [sourceSolicitudId]
+    );
+    const source = sourceResult.rows[0];
+    if (!source) throw new Error('Contrato de origen no encontrado');
+    if (source.status !== 'aprobado') throw new Error('Solo se puede anexar un contrato a un conductor con contrato aprobado');
+
+    await assertCronogramaPermitePagoInicial(cronogramaId, pagoTipo);
+    const vehicleResult = await query(
+      `SELECT 1
+       FROM module_miauto_cronograma_vehiculo v
+       INNER JOIN module_miauto_cronograma c ON c.id = v.cronograma_id
+       WHERE v.id = $1 AND v.cronograma_id = $2 AND c.active = true`,
+      [cronogramaVehiculoId, cronogramaId]
+    );
+    if (vehicleResult.rows.length === 0) throw new Error('El vehículo no pertenece al cronograma seleccionado o está inactivo');
+
+    const duplicatePlate = await query(
+      `SELECT id FROM module_miauto_solicitud
+       WHERE status = 'aprobado' AND deleted_at IS NULL
+         AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(placa_asignada, '')), '[^A-Z0-9]', '', 'g')) = $1
+       LIMIT 1`,
+      [placa]
+    );
+    if (duplicatePlate.rows.length > 0) throw new Error('La placa ya pertenece a otro contrato activo');
+
+    const plateDriver = await resolveWorkingDriverForContractPlate(placa, source.driver_id_fleet);
+    const conductorId = source.conductor_id || await ensureMiautoConductor(source.country, source.dni);
+    const inserted = await query(
+      `INSERT INTO module_miauto_solicitud
+         (conductor_id, origen_registro, country, dni, phone, email, license_number,
+          description, apps_trabajadas, driver_id_fleet, recaudo_driver_id,
+          cronograma_id, cronograma_vehiculo_id, pago_tipo, pago_estado,
+          fecha_inicio_cobro_semanal, placa_asignada, status, facturador_customer_id,
+          updated_by, soat_validation_status)
+       VALUES ($1, 'contrato_adicional', $2, $3, $4, $5, $6,
+               $7, $8::jsonb, $9, $9, $10, $11, $12, 'pendiente',
+               NULL, $13, 'aprobado', $14, $15, 'pending')
+       RETURNING id, country, dni, placa_asignada`,
+      [
+        conductorId,
+        source.country,
+        source.dni,
+        source.phone,
+        source.email,
+        source.license_number,
+        source.description,
+        JSON.stringify(source.apps_trabajadas || []),
+        plateDriver.driver_id,
+        cronogramaId,
+        cronogramaVehiculoId,
+        pagoTipo,
+        placa,
+        source.facturador_customer_id,
+        userId,
+      ]
+    );
+    return inserted.rows[0];
+  });
+
+  enqueueMiautoLicenseValidation({
+    solicitudId: created.id,
+    dni: created.dni,
+    country: created.country,
+  });
+  enqueueMiautoSoatValidation({ solicitudId: created.id, placa: created.placa_asignada });
+  return getSolicitudById(created.id, { skipYangoLicenseLookup: true });
+}
+
 export const updateSolicitud = async (id, data, userId = null) => {
   let currentSolicitud = null;
   if (
     data.cronograma_id !== undefined
     || data.pago_tipo !== undefined
     || data.placa_asignada !== undefined
+    || data.status !== undefined
   ) {
     const currentResult = await query(
-      'SELECT cronograma_id, pago_tipo, placa_asignada FROM module_miauto_solicitud WHERE id = $1',
+      'SELECT cronograma_id, pago_tipo, placa_asignada, status FROM module_miauto_solicitud WHERE id = $1',
       [id]
     );
     if (currentResult.rows.length === 0) return null;
@@ -845,6 +1029,9 @@ export const updateSolicitud = async (id, data, userId = null) => {
       const pagoTipo = data.pago_tipo !== undefined ? data.pago_tipo : currentSolicitud.pago_tipo;
       await assertCronogramaPermitePagoInicial(cronogramaId, pagoTipo);
     }
+    const targetStatus = data.status !== undefined ? data.status : currentSolicitud.status;
+    const targetPlate = data.placa_asignada !== undefined ? data.placa_asignada : currentSolicitud.placa_asignada;
+    if (targetStatus === 'aprobado') await assertActivePlateAvailable(targetPlate, id);
   }
 
   const updates = [];

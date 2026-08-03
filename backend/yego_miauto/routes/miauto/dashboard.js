@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { validateUUID } from '../../../middleware/validations.js';
 import { successResponse, errorResponse } from '../../../utils/responses.js';
 import { logger } from '../../../utils/logger.js';
-import { getSolicitudById } from '../../services/solicitud/miautoSolicitudService.js';
+import { getSolicitudById, listContratosRelacionados } from '../../services/solicitud/miautoSolicitudService.js';
 import { getCuotasSemanalesApiPayload } from '../../services/cuotas/miautoCuotaSemanalService.js';
 import { listBySolicitud as listComprobantesCuotaSemanal } from '../../services/comprobantes/miautoComprobanteCuotaSemanalService.js';
 import { listBySolicitud as listComprobantesOtrosGastos } from '../../services/comprobantes/miautoComprobanteOtrosGastosService.js';
@@ -39,6 +39,7 @@ router.get('/solicitudes/:id/dashboard', validateUUID, async (req, res) => {
       evidenciasFleet,
       notasVenta,
       contratos,
+      contratosRelacionados,
     ] = await Promise.all([
       getSolicitudById(solicitudId, {
         skipYangoLicenseLookup: true,
@@ -50,6 +51,7 @@ router.get('/solicitudes/:id/dashboard', validateUUID, async (req, res) => {
       optionalList('evidencias Fleet', () => listEvidenciasFleet(solicitudId)),
       optionalList('notas de venta', () => listNotasVentaBySolicitud(solicitudId)),
       optionalList('contratos', () => listContratosBySolicitud(solicitudId)),
+      optionalList('contratos relacionados', () => listContratosRelacionados(solicitudId)),
     ]);
     if (!solicitud) return errorResponse(res, 'Solicitud no encontrada', 404);
     return successResponse(res, {
@@ -60,6 +62,7 @@ router.get('/solicitudes/:id/dashboard', validateUUID, async (req, res) => {
       evidencias_fleet: evidenciasFleet,
       notas_venta: notasVenta,
       contratos,
+      contratos_relacionados: contratosRelacionados,
     });
   } catch (error) {
     logger.error('Error cargando dashboard de solicitud Mi Auto:', error);

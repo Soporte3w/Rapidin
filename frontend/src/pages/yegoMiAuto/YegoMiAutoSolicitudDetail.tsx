@@ -549,6 +549,7 @@ export default function YegoMiAutoSolicitudDetail() {
           ? FLOW_STEPS.filter((s) => s.key !== 'rechazado')
           : FLOW_STEPS.filter((s) => s.key === 'pendiente' || s.key === 'citado');
   const currentFlowIndex = Math.max(0, flowSteps.findIndex((s) => s.key === solicitud.status));
+  const isAdditionalContract = solicitud.origen_registro === 'contrato_adicional';
   const statusModalTitle =
     newStatus === 'citado' ? 'Agendar cita' : newStatus === 'rechazado' ? 'Rechazar solicitud' : 'Cambiar estado';
 
@@ -557,13 +558,13 @@ export default function YegoMiAutoSolicitudDetail() {
       <header className="flex flex-wrap items-center gap-4">
         <button
           type="button"
-          onClick={() => navigate('/admin/yego-mi-auto/requests')}
+          onClick={() => navigate(isAdditionalContract ? `/admin/yego-mi-auto/rent-sale/${id}` : '/admin/yego-mi-auto/requests')}
           className="p-2 rounded-lg border border-gray-300 hover:bg-gray-50"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex-1 min-w-0">
-          <h1 className="text-xl font-bold text-gray-900">Solicitud Mi Auto</h1>
+          <h1 className="text-xl font-bold text-gray-900">{isAdditionalContract ? 'Configuración de contrato adicional' : 'Solicitud Mi Auto'}</h1>
           <p className="text-sm text-gray-600">
             DNI {solicitud.dni} · {STATUS_LABELS[solicitud.status] || solicitud.status}
           </p>
@@ -576,7 +577,7 @@ export default function YegoMiAutoSolicitudDetail() {
             <div className="px-4 py-3 border-b border-gray-200">
               <h2 className="text-base font-semibold text-gray-900 flex items-center gap-2">
                 <FileText className="w-5 h-5 text-[#8B1A1A]" />
-                Datos de la solicitud
+                {isAdditionalContract ? 'Datos del contrato' : 'Datos de la solicitud'}
               </h2>
             </div>
             <dl className="p-4 lg:p-5 space-y-4 text-sm">
@@ -653,7 +654,7 @@ export default function YegoMiAutoSolicitudDetail() {
             </div>
             <div className="p-4 lg:p-5">
               {adjuntos.length === 0 ? (
-                <p className="text-sm text-gray-500 py-2">No hay adjuntos en esta solicitud.</p>
+                <p className="text-sm text-gray-500 py-2">No hay adjuntos en {isAdditionalContract ? 'este contrato' : 'esta solicitud'}.</p>
               ) : (
                 <ul className="flex flex-row flex-wrap gap-4">
                   {adjuntos.map((a: { id: string; tipo: string; file_name: string; file_path: string }) => {

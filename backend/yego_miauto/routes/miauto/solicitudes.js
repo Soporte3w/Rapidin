@@ -14,6 +14,8 @@ import {
   generarYegoMiAuto,
   ActiveSolicitudError,
   getActiveSolicitudInfo,
+  anexarContratoAdicional,
+  listContratosRelacionados,
 } from '../../services/solicitud/miautoSolicitudService.js';
 import { getPartnerNameById } from '../../../services/partnersService.js';
 import { getContractorProfile, searchFleetContractorFull } from '../../../services/yangoService.js';
@@ -56,6 +58,25 @@ async function getParkIdByRapidinDriverId(rapidinDriverId) {
 function sameFlota(activeParkId, currentParkId) {
   if (activeParkId == null) return true;
   return activeParkId === currentParkId;
+}
+
+async function ensureSolicitudOwnedByDriver(solicitudId, req, res) {
+  if (req.user?.role !== 'driver') return true;
+  const result = await pool.query(
+    'SELECT phone, country FROM module_miauto_solicitud WHERE id = $1 AND deleted_at IS NULL',
+    [solicitudId]
+  );
+  const solicitud = result.rows[0];
+  if (!solicitud) return true;
+  const authPhone = String(req.user?.phone || '').replace(/[^0-9]/g, '');
+  const contractPhone = String(solicitud.phone || '').replace(/[^0-9]/g, '');
+  const authCountry = String(req.user?.country || 'PE').trim();
+  const contractCountry = String(solicitud.country || '').trim();
+  if (!authPhone || authPhone !== contractPhone || authCountry !== contractCountry) {
+    errorResponse(res, 'No tienes permiso para acceder a este contrato', 403);
+    return false;
+  }
+  return true;
 }
 
 // GET /api/miauto/alquiler-venta
@@ -218,9 +239,48 @@ router.post('/solicitudes', async (req, res) => {
   }
 });
 
+// GET /api/miauto/solicitudes/:id/contratos-relacionados
+router.get('/solicitudes/:id/contratos-relacionados', validateUUID, async (req, res) => {
+  try {
+    if (!(await ensureSolicitudOwnedByDriver(req.params.id, req, res))) return;
+    const contratos = await listContratosRelacionados(req.params.id);
+    return successResponse(res, contratos);
+  } catch (error) {
+    logger.error('Error listando contratos relacionados Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al listar contratos', 500);
+  }
+});
+
+// POST /api/miauto/solicitudes/:id/contratos-adicionales
+router.post('/solicitudes/:id/contratos-adicionales', validateUUID, async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'Sin permisos para anexar contratos', 403);
+    }
+    const contrato = await anexarContratoAdicional(req.params.id, {
+      cronograma_id: trimOrUndefined(req.body?.cronograma_id),
+      cronograma_vehiculo_id: trimOrUndefined(req.body?.cronograma_vehiculo_id),
+      pago_tipo: trimOrUndefined(req.body?.pago_tipo),
+      placa_asignada: trimOrUndefined(req.body?.placa_asignada),
+    }, req.user?.id);
+    auditMiautoMutation('contrato_adicional.created', 'solicitud', contrato?.id, {
+      contrato_origen_id: req.params.id,
+      placa_asignada: contrato?.placa_asignada,
+    });
+    return successResponse(res, contrato, 'Contrato adicional anexado', 201);
+  } catch (error) {
+    const message = error?.code === '23505' && error?.constraint === 'uq_miauto_active_contract_plate'
+      ? 'La placa ya pertenece a otro contrato activo'
+      : error.message;
+    logger.error('Error anexando contrato adicional Mi Auto:', error);
+    return errorResponse(res, message || 'Error al anexar contrato', 400);
+  }
+});
+
 // GET /api/miauto/solicitudes/:id
 router.get('/solicitudes/:id', validateUUID, async (req, res) => {
   try {
+    if (!(await ensureSolicitudOwnedByDriver(req.params.id, req, res))) return;
     const solicitud = await getSolicitudById(req.params.id, {
       skipYangoLicenseLookup: req.user?.role !== 'driver',
     });

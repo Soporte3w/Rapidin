@@ -38,6 +38,7 @@ import YegoMiAutoConfig from './pages/yegoMiAuto/YegoMiAutoConfig';
 import YegoMiAutoAnalysis from './pages/yegoMiAuto/YegoMiAutoAnalysis';
 import YegoMiAutoLoans from './pages/yegoMiAuto/YegoMiAutoLoans';
 import YegoMiAutoRentSaleDetail from './pages/yegoMiAuto/YegoMiAutoRentSaleDetail';
+import YegoMiAutoFleetChargeReport from './pages/yegoMiAuto/YegoMiAutoFleetChargeReport';
 import YegoMiAutoValidarComprobantes from './pages/yegoMiAuto/YegoMiAutoValidarComprobantes';
 import YegoMiAutoSolicitudes from './pages/yegoMiAuto/YegoMiAutoSolicitudes';
 import YegoMiAutoSolicitudDetail from './pages/yegoMiAuto/YegoMiAutoSolicitudDetail';
@@ -280,6 +281,7 @@ function App() {
             <Route path="/admin/yego-mi-auto/analysis" element={<ProtectedRoute><Layout><YegoMiAutoAnalysis /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/validar-comprobantes" element={<ProtectedRoute><Layout><YegoMiAutoValidarComprobantes /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/rent-sale" element={<ProtectedRoute><Layout><YegoMiAutoLoans /></Layout></ProtectedRoute>} />
+            <Route path="/admin/yego-mi-auto/fleet-cobros" element={<ProtectedRoute><Layout><YegoMiAutoFleetChargeReport /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/rent-sale/:id" element={<ProtectedRoute><Layout><YegoMiAutoRentSaleDetail /></Layout></ProtectedRoute>} />
             <Route path="/admin/yego-mi-auto/loans" element={<Navigate to="/admin/yego-mi-auto/rent-sale" replace />} />
             <Route path="/admin/yego-mi-auto/system-users" element={<ProtectedRoute><Layout><SystemUsersPage /></Layout></ProtectedRoute>} />

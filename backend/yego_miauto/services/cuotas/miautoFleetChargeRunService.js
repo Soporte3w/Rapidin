@@ -6,20 +6,32 @@ import {
   normalizeMiautoAutomationConfig,
 } from '../config/miautoAutomationConfig.js';
 
+export function filterMiautoFleetRetryCuotas(cuotas, requestedIds) {
+  const ids = requestedIds instanceof Set
+    ? requestedIds
+    : new Set((requestedIds || []).map((id) => String(id)));
+  return (cuotas || []).filter((cuota) => (
+    ids.has(String(cuota?.id))
+    && ['pending', 'overdue', 'partial'].includes(String(cuota?.status || ''))
+  ));
+}
+
 export async function claimMiautoFleetChargeRun({
   executionType,
   attemptNumber,
   executionId = null,
+  sourceRunId = null,
+  triggeredBy = null,
   now = new Date(),
 }) {
   const businessDate = getLimaYmd(now);
   const result = await query(
     `INSERT INTO module_miauto_fleet_charge_run
-       (business_date, execution_type, attempt_number, execution_id)
-     VALUES ($1::date, $2, $3, $4::uuid)
+       (business_date, execution_type, attempt_number, execution_id, source_run_id, triggered_by)
+     VALUES ($1::date, $2, $3, $4::uuid, $5::uuid, $6::uuid)
      ON CONFLICT DO NOTHING
      RETURNING *`,
-    [businessDate, executionType, attemptNumber, executionId],
+    [businessDate, executionType, attemptNumber, executionId, sourceRunId, triggeredBy],
   );
   return result.rows[0] || null;
 }
@@ -162,7 +174,8 @@ export async function getMiautoFleetRetryDecision(configValue, now = new Date())
 export async function listMiautoFleetChargeRuns(limit = 10) {
   const safeLimit = Math.max(1, Math.min(50, Number(limit) || 10));
   const result = await query(
-    `SELECT id, business_date, execution_type, attempt_number, status,
+    `SELECT id, business_date, execution_type, attempt_number, source_run_id,
+            triggered_by, status,
             queue_count, success_count, partial_count, failed_count,
             remaining_count, error, started_at, finished_at
        FROM module_miauto_fleet_charge_run
@@ -171,4 +184,66 @@ export async function listMiautoFleetChargeRuns(limit = 10) {
     [safeLimit],
   );
   return result.rows;
+}
+
+export async function getMiautoFleetChargeRunDetail(runId) {
+  const runResult = await query(
+    `SELECT id, business_date, execution_type, attempt_number, source_run_id,
+            triggered_by, status, queue_count, success_count, partial_count,
+            failed_count, remaining_count, error, started_at, finished_at
+       FROM module_miauto_fleet_charge_run
+      WHERE id = $1::uuid`,
+    [runId],
+  );
+  const run = runResult.rows[0];
+  if (!run) return null;
+
+  const attemptsResult = await query(
+    `SELECT a.id, a.run_id, a.cuota_semanal_id, a.solicitud_id,
+            a.external_driver_id, a.park_id, a.status, a.reason,
+            a.balance_fleet, a.amount_charged_fleet, a.amount_credited_cuota,
+            a.started_at, a.finished_at,
+            c.week_start_date, c.due_date, c.amount_due, c.paid_amount,
+            c.status AS cuota_status,
+            s.license_number, s.dni, s.placa_asignada,
+            COALESCE(
+              NULLIF(TRIM(CONCAT_WS(' ', d.first_name, d.last_name)), ''),
+              NULLIF(TRIM(d.full_name), ''),
+              s.license_number,
+              s.dni,
+              'Conductor'
+            ) AS driver_name,
+            (
+              a.status IN ('failed', 'partial', 'running')
+              AND c.status IN ('pending', 'overdue', 'partial')
+            ) AS retryable
+       FROM module_miauto_fleet_charge_attempt a
+       LEFT JOIN module_miauto_cuota_semanal c ON c.id = a.cuota_semanal_id
+       LEFT JOIN module_miauto_solicitud s ON s.id = a.solicitud_id
+       LEFT JOIN LATERAL (
+         SELECT candidate.first_name, candidate.last_name, candidate.full_name
+           FROM drivers candidate
+          WHERE candidate.driver_id = a.external_driver_id
+            AND TRIM(COALESCE(candidate.park_id::text, '')) = TRIM(COALESCE(a.park_id, ''))
+          LIMIT 1
+       ) d ON true
+      WHERE a.run_id = $1::uuid
+      ORDER BY a.started_at ASC, a.id ASC`,
+    [runId],
+  );
+  return { run, attempts: attemptsResult.rows };
+}
+
+export async function getMiautoFleetRetryableCuotaIds(runId) {
+  const result = await query(
+    `SELECT DISTINCT a.cuota_semanal_id::text AS cuota_id
+       FROM module_miauto_fleet_charge_attempt a
+       INNER JOIN module_miauto_cuota_semanal c ON c.id = a.cuota_semanal_id
+      WHERE a.run_id = $1::uuid
+        AND a.status IN ('failed', 'partial', 'running')
+        AND c.status IN ('pending', 'overdue', 'partial')
+        AND c.deleted_at IS NULL`,
+    [runId],
+  );
+  return result.rows.map((row) => String(row.cuota_id));
 }

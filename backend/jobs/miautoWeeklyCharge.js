@@ -46,7 +46,9 @@ import {
   claimMiautoFleetChargeRun,
   finishMiautoFleetChargeAttempt,
   finishMiautoFleetChargeRun,
+  filterMiautoFleetRetryCuotas,
   getMiautoFleetRetryDecision,
+  getMiautoFleetRetryableCuotaIds,
 } from '../yego_miauto/services/cuotas/miautoFleetChargeRunService.js';
 
 const TIMEZONE = 'America/Lima';
@@ -794,6 +796,101 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
       failed: 0,
       cuotas_en_cola: 0,
     };
+  }
+}
+
+/**
+ * Reprocesa únicamente las cuotas que fallaron o quedaron parciales en una corrida previa.
+ * La cola se vuelve a calcular antes de cobrar, por lo que una cuota ya pagada nunca se retira otra vez.
+ */
+export async function runFleetCobroPendientesDeRun(sourceRunId, options = {}) {
+  const sourceId = String(sourceRunId || '').trim();
+  if (!sourceId) return { ok: false, error: 'run_id vacío' };
+
+  const lock = await acquireCronLock('miauto_cobro_fleet', 7200);
+  if (!lock.acquired) {
+    return { ok: false, error: lock.reason, skipped: true };
+  }
+
+  let run = null;
+  try {
+    run = await claimMiautoFleetChargeRun({
+      executionType: 'manual',
+      attemptNumber: null,
+      executionId: lock.executionId,
+      sourceRunId: sourceId,
+      triggeredBy: options.triggeredBy || null,
+    });
+    if (!run) throw new Error('No se pudo registrar la corrida de reproceso');
+    await appendMiautoFleetCobroJobAuditEvent({
+      tipo: 'cobro_job_inicio',
+      job: 'reproceso_admin',
+      source_run_id: sourceId,
+      run_id: run.id,
+      triggered_by: options.triggeredBy || null,
+    });
+
+    const requestedIds = new Set(await getMiautoFleetRetryableCuotaIds(sourceId));
+    const currentQueue = await getCuotasToCharge();
+    const cuotas = filterMiautoFleetRetryCuotas(currentQueue.cuotas, requestedIds);
+    const { success, partial, failed } = await processCobroCuotaQueue(cuotas, {
+      solicitudPendingMap: currentQueue.solicitudPendingMap,
+      cobroReferenciaSource: 'fleet_reproceso_admin',
+      beginAttempt: (cuota, context) => beginMiautoFleetChargeAttempt(run.id, cuota, context),
+      finishAttempt: (attempt, result) => finishMiautoFleetChargeAttempt(attempt.id, result),
+    });
+
+    const afterQueue = await getCuotasToCharge();
+    const remainingCount = afterQueue.cuotas.filter((cuota) => requestedIds.has(String(cuota.id))).length;
+    await finishMiautoFleetChargeRun(run.id, {
+      queueCount: cuotas.length,
+      success,
+      partial,
+      failed,
+      remainingCount,
+    });
+    await appendMiautoFleetCobroJobAuditEvent({
+      tipo: 'cobro_job_fin',
+      job: 'reproceso_admin',
+      source_run_id: sourceId,
+      run_id: run.id,
+      cuotas_solicitadas: requestedIds.size,
+      cuotas_en_cola: cuotas.length,
+      success,
+      partial,
+      failed,
+      remaining: remainingCount,
+      triggered_by: options.triggeredBy || null,
+    });
+    await releaseCronLock('miauto_cobro_fleet', lock.executionId);
+    return {
+      ok: true,
+      run_id: run.id,
+      source_run_id: sourceId,
+      cuotas_solicitadas: requestedIds.size,
+      cuotas_procesadas: cuotas.length,
+      success,
+      partial,
+      failed,
+      pendientes_despues: remainingCount,
+    };
+  } catch (error) {
+    if (run?.id) {
+      try {
+        await finishMiautoFleetChargeRun(run.id, { error: String(error?.message || error) });
+      } catch (auditError) {
+        logger.error('miauto.fleet_manual_retry.audit_finish_failed', {
+          runId: run.id,
+          error: String(auditError?.message || auditError),
+        });
+      }
+    }
+    await releaseCronLock('miauto_cobro_fleet', lock.executionId);
+    logger.error('miauto.fleet_manual_retry.failed', {
+      sourceRunId: sourceId,
+      error: String(error?.message || error),
+    });
+    return { ok: false, error: String(error?.message || error) };
   }
 }
 

@@ -15,7 +15,11 @@ import {
   getMiautoAutomationConfig,
   updateMiautoAutomationConfig,
 } from '../../services/config/miautoAutomationConfigService.js';
-import { listMiautoFleetChargeRuns } from '../../services/cuotas/miautoFleetChargeRunService.js';
+import {
+  getMiautoFleetChargeRunDetail,
+  listMiautoFleetChargeRuns,
+} from '../../services/cuotas/miautoFleetChargeRunService.js';
+import { runFleetCobroPendientesDeRun } from '../../../jobs/miautoWeeklyCharge.js';
 
 const router = Router();
 
@@ -64,6 +68,56 @@ router.get('/fleet-charge-runs', async (req, res) => {
   } catch (error) {
     logger.error('Error obteniendo ejecuciones de cobro Fleet Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al obtener las ejecuciones de cobro Fleet', 500);
+  }
+});
+
+router.get('/fleet-charge-runs/:runId', async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para ver los cobros automáticos', 403);
+    const runId = String(req.params.runId || '').trim();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId)) {
+      return errorResponse(res, 'ID de ejecución inválido', 400);
+    }
+    const detail = await getMiautoFleetChargeRunDetail(runId);
+    if (!detail) return errorResponse(res, 'Ejecución de cobro no encontrada', 404);
+    return successResponse(res, detail);
+  } catch (error) {
+    logger.error('Error obteniendo detalle de cobro Fleet Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al obtener el detalle del cobro Fleet', 500);
+  }
+});
+
+router.post('/fleet-charge-runs/:runId/retry', async (req, res) => {
+  try {
+    const isAdmin = req.user?.role === 'admin' || req.user?.base_role === 'admin';
+    if (!isAdmin) return errorResponse(res, 'Solo un administrador puede reprocesar cobros Fleet', 403);
+    const runId = String(req.params.runId || '').trim();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId)) {
+      return errorResponse(res, 'ID de ejecución inválido', 400);
+    }
+    const source = await getMiautoFleetChargeRunDetail(runId);
+    if (!source) return errorResponse(res, 'Ejecución de cobro no encontrada', 404);
+    const retryableCount = source.attempts.filter((attempt) => attempt.retryable).length;
+    if (retryableCount === 0) {
+      return errorResponse(res, 'Esta ejecución ya no tiene cuotas pendientes para reprocesar', 409);
+    }
+    const result = await runFleetCobroPendientesDeRun(runId, { triggeredBy: req.user?.id || null });
+    if (!result.ok) return errorResponse(res, result.error || 'No se pudo reprocesar la cola pendiente', 409);
+    businessLog('miauto.fleet_charge.manual_retry', {
+      sourceRunId: runId,
+      retryRunId: result.run_id,
+      requested: result.cuotas_solicitadas,
+      processed: result.cuotas_procesadas,
+      success: result.success,
+      partial: result.partial,
+      failed: result.failed,
+      remaining: result.pendientes_despues,
+      userId: req.user?.id || null,
+    });
+    return successResponse(res, result, 'Reproceso Fleet completado');
+  } catch (error) {
+    logger.error('Error reprocesando cobros Fleet Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al reprocesar cobros Fleet', 500);
   }
 });
 

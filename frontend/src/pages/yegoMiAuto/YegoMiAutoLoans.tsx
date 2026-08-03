@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { Banknote } from 'lucide-react';
+import { Banknote, History } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatDate } from '../../utils/date';
 import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError } from '../../utils/miautoApiUtils';
@@ -246,16 +246,26 @@ export default function YegoMiAutoLoans() {
   return (
     <div className="space-y-4 lg:space-y-6">
       <header className="bg-[#8B1A1A] rounded-lg p-4 lg:p-5">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-[#6B1515] rounded-lg flex items-center justify-center flex-shrink-0">
-            <Banknote className="w-5 h-5 text-white" />
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-[#6B1515] rounded-lg flex items-center justify-center flex-shrink-0">
+              <Banknote className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-lg lg:text-xl font-bold text-white leading-tight">Alquiler / Venta</h1>
+              <p className="text-xs lg:text-sm text-white/90 mt-0.5">
+                Contratos Mi Auto con cobro semanal activo — {countryLabel}
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-lg lg:text-xl font-bold text-white leading-tight">Alquiler / Venta</h1>
-            <p className="text-xs lg:text-sm text-white/90 mt-0.5">
-              Contratos Mi Auto con cobro semanal activo — {countryLabel}
-            </p>
-          </div>
+          <button
+            type="button"
+            onClick={() => navigate('/admin/yego-mi-auto/fleet-cobros')}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-white/15 px-3 py-2 text-sm font-medium text-white hover:bg-white/25"
+          >
+            <History className="h-4 w-4" />
+            Historial cobros Fleet
+          </button>
         </div>
       </header>
 

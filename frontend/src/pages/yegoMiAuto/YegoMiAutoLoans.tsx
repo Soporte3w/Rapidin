@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { Banknote, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { Banknote } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatDate } from '../../utils/date';
 import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError } from '../../utils/miautoApiUtils';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { RapidinSearchField } from '../../components/RapidinSearchField';
+import { TablePaginationBar } from '../../components/TablePaginationBar';
 import {
   ALQUILER_VENTA_CUOTA_ESTADO_OPTIONS,
   conductorDisplay,
@@ -37,16 +38,8 @@ const COUNTRY_OPTIONS = [
 ];
 
 const PAGE_SIZES = [10, 20, 50];
-const PAGINATION_BTN =
-  'w-9 h-9 flex items-center justify-center rounded-full border-2 border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors';
+const PAGE_SIZE_STORAGE_KEY = 'miauto.admin.rentSale.pageSize';
 const API_PAGE_CHUNK = 500;
-
-function getVisiblePageNumbers(page: number, totalPages: number): number[] {
-  if (totalPages <= 5) return Array.from({ length: totalPages }, (_, i) => i + 1);
-  if (page <= 3) return [1, 2, 3, 4, 5];
-  if (page >= totalPages - 2) return Array.from({ length: 5 }, (_, i) => totalPages - 4 + i);
-  return [page - 2, page - 1, page, page + 1, page + 2];
-}
 
 function foldLower(s: string): string {
   return s
@@ -96,7 +89,15 @@ export default function YegoMiAutoLoans() {
     isReturnFromDetail ? (searchState?.country ?? ((user?.country as string) || '')) : ((user?.country as string) || '')
   );
   const [page, setPage] = useState(isReturnFromDetail && searchState?.page != null ? searchState.page : 1);
-  const [pageSize, setPageSize] = useState(isReturnFromDetail && searchState?.pageSize != null ? searchState.pageSize : 20);
+  const [pageSize, setPageSize] = useState(() => {
+    if (isReturnFromDetail && searchState?.pageSize != null) return searchState.pageSize;
+    try {
+      const stored = Number(window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY));
+      return PAGE_SIZES.includes(stored) ? stored : 20;
+    } catch {
+      return 20;
+    }
+  });
   const [driverSearchInput, setDriverSearchInput] = useState(isReturnFromDetail ? (searchState?.driverSearchInput ?? '') : '');
   const debouncedSearch = useDebouncedValue(driverSearchInput, 400);
   const [cronogramaId, setCronogramaId] = useState(isReturnFromDetail ? (searchState?.cronogramaId ?? '') : '');
@@ -212,17 +213,14 @@ export default function YegoMiAutoLoans() {
     return () => ac.abort();
   }, [fetchAlquilerVentaAllPages, navigate, location.pathname]);
 
-  const goToPage = useCallback(
-    (p: number) => {
-      const tp = Math.max(1, Math.ceil(totalFiltered / pageSize) || 1);
-      setPage(Math.max(1, Math.min(p, tp)));
-    },
-    [totalFiltered, pageSize]
-  );
-
   const handleLimitChange = useCallback((newLimit: number) => {
     setPageSize(newLimit);
     setPage(1);
+    try {
+      window.localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(newLimit));
+    } catch {
+      // El listado sigue funcionando aunque el navegador bloquee el almacenamiento.
+    }
   }, []);
 
   const openRentSaleDetail = useCallback((row: AlquilerVentaListItem) => {
@@ -438,76 +436,19 @@ export default function YegoMiAutoLoans() {
             </table>
           </div>
 
-          {totalPages > 1 && (
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 py-4 bg-white rounded-lg border border-gray-200">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-gray-600">Por página:</span>
-                <select
-                  value={pageSize}
-                  onChange={(e) => handleLimitChange(Number(e.target.value))}
-                  className="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white text-gray-700 focus:ring-2 focus:ring-red-500"
-                >
-                  {PAGE_SIZES.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => goToPage(1)}
-                  disabled={pageClamped <= 1 || loading}
-                  className={PAGINATION_BTN}
-                  aria-label="Primera página"
-                >
-                  <ChevronsLeft className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => goToPage(pageClamped - 1)}
-                  disabled={pageClamped <= 1 || loading}
-                  className={PAGINATION_BTN}
-                  aria-label="Anterior"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                {getVisiblePageNumbers(pageClamped, totalPages).map((pageNum) => (
-                  <button
-                    key={pageNum}
-                    type="button"
-                    onClick={() => goToPage(pageNum)}
-                    disabled={loading}
-                    className={`min-w-[2.25rem] w-9 h-9 flex items-center justify-center rounded-full text-sm font-semibold transition-colors ${
-                      pageClamped === pageNum
-                        ? 'bg-red-600 text-white border-2 border-red-600'
-                        : 'border-2 border-red-600 text-red-600 hover:bg-red-50'
-                    }`}
-                  >
-                    {pageNum}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => goToPage(pageClamped + 1)}
-                  disabled={pageClamped >= totalPages || loading}
-                  className={PAGINATION_BTN}
-                  aria-label="Siguiente"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => goToPage(totalPages)}
-                  disabled={pageClamped >= totalPages || loading}
-                  className={PAGINATION_BTN}
-                  aria-label="Última página"
-                >
-                  <ChevronsRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+          {totalFiltered > 0 && (
+            <TablePaginationBar
+              page={pageClamped}
+              setPage={setPage}
+              totalPages={totalPages}
+              limit={pageSize}
+              setLimit={handleLimitChange}
+              pageSizes={PAGE_SIZES}
+              totalItems={totalFiltered}
+              itemLabel="conductores"
+              compact
+              containerClassName="flex flex-col items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3 sm:flex-row"
+            />
           )}
         </>
       )}

@@ -13,6 +13,7 @@ type Props = {
   pageSizes: readonly number[];
   totalItems?: number;
   compact?: boolean;
+  itemLabel?: string;
   /** Clases del contenedor (padding/márgenes según la tabla) */
   containerClassName?: string;
 };
@@ -29,6 +30,7 @@ export function TablePaginationBar({
   pageSizes,
   totalItems,
   compact = false,
+  itemLabel = 'cuotas',
   containerClassName = DEFAULT_CONTAINER,
 }: Props) {
   const sizes = pageSizes.length > 0 ? pageSizes : [5, 10, 20, 50];
@@ -41,7 +43,7 @@ export function TablePaginationBar({
         <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
           {typeof totalItems === 'number' && (
             <span className="font-medium text-gray-600">
-              Mostrando {firstItem}–{lastItem} de {totalItems} cuotas
+              Mostrando {firstItem}–{lastItem} de {totalItems} {itemLabel}
             </span>
           )}
           <label className="flex items-center gap-2">

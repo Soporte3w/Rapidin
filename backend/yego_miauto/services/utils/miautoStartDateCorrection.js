@@ -38,8 +38,22 @@ export function normalizeMiautoStartDate(value) {
   return ymd;
 }
 
+export function normalizeMiautoStoredStartDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return normalizeMiautoStartDate(value.toISOString().slice(0, 10));
+  }
+  const raw = String(value || '').trim();
+  const match = /^(\d{4}-\d{2}-\d{2})(?:T|\s|$)/.exec(raw);
+  if (match) return normalizeMiautoStartDate(match[1]);
+  throw new MiautoStartDateCorrectionError(
+    'La fecha actual de inicio de cobro almacenada no es válida',
+    500,
+    'invalid_stored_start_date',
+  );
+}
+
 export function buildMiautoStartDateCorrection(currentValue, nextValue) {
-  const currentDate = normalizeMiautoStartDate(String(currentValue || '').slice(0, 10));
+  const currentDate = normalizeMiautoStoredStartDate(currentValue);
   const nextDate = normalizeMiautoStartDate(nextValue);
   return {
     currentDate,

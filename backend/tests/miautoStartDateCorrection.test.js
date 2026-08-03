@@ -7,6 +7,7 @@ import {
   assertBootstrapWeeklyQuotaForStartDateCorrection,
   buildMiautoStartDateCorrection,
   normalizeMiautoStartDate,
+  normalizeMiautoStoredStartDate,
 } from '../yego_miauto/services/utils/miautoStartDateCorrection.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,16 @@ test('calcula la semana de depósito anterior y nueva al corregir la fecha', () 
     nextWeekStart: '2026-08-03',
     changed: true,
   });
+});
+
+test('normaliza la fecha DATE que PostgreSQL entrega como objeto Date', () => {
+  const databaseDate = new Date('2026-08-03T00:00:00.000Z');
+  assert.equal(normalizeMiautoStoredStartDate(databaseDate), '2026-08-03');
+  assert.equal(normalizeMiautoStoredStartDate('2026-08-03T00:00:00.000Z'), '2026-08-03');
+  assert.equal(
+    buildMiautoStartDateCorrection(databaseDate, '2026-08-10').currentDate,
+    '2026-08-03',
+  );
 });
 
 test('solo acepta la cuota inicial cubierta y sin actividad financiera', () => {

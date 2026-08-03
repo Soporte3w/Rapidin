@@ -29,6 +29,7 @@ import {
   MiautoStartDateCorrectionError,
   assertBootstrapWeeklyQuotaForStartDateCorrection,
   buildMiautoStartDateCorrection,
+  normalizeMiautoStoredStartDate,
 } from '../utils/miautoStartDateCorrection.js';
 
 const MINIMO_USD_PARCIAL = 500;
@@ -1284,7 +1285,7 @@ export const corregirFechaInicioCobro = async (id, nextValue, userId = null) => 
     }
 
     const correction = buildMiautoStartDateCorrection(
-      String(solicitud.fecha_inicio_cobro_semanal).slice(0, 10),
+      solicitud.fecha_inicio_cobro_semanal,
       nextValue,
     );
     if (!correction.changed) {
@@ -1376,7 +1377,7 @@ export const corregirFechaInicioCobro = async (id, nextValue, userId = null) => 
     );
     const expenseState = expenseStateResult.rows[0] || {};
     const currentDeliveryDate = solicitud.fecha_entrega_vehiculo
-      ? String(solicitud.fecha_entrega_vehiculo).slice(0, 10)
+      ? normalizeMiautoStoredStartDate(solicitud.fecha_entrega_vehiculo)
       : null;
     const updateDeliveryDate = currentDeliveryDate === correction.currentDate
       && !expenseState.has_expenses

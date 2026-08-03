@@ -68,6 +68,26 @@ type FleetRetryResult = {
   pendientes_despues: number;
 };
 
+type FleetPendingItem = {
+  cuota_semanal_id: string;
+  solicitud_id: string;
+  week_start_date: string | null;
+  due_date: string | null;
+  status: string;
+  pending_amount: number;
+  moneda: string;
+  license_number: string | null;
+  placa_asignada: string | null;
+  driver_name: string;
+};
+
+type FleetPendingSummary = {
+  cuotas_count: number;
+  conductores_count: number;
+  items: FleetPendingItem[];
+  truncated: boolean;
+};
+
 function unwrap<T>(response: { data?: { data?: T } | T }): T {
   const body = response.data as { data?: T } | T | undefined;
   if (body && typeof body === 'object' && 'data' in body) return body.data as T;
@@ -118,7 +138,9 @@ export default function YegoMiAutoFleetChargeReport() {
   const [runs, setRuns] = useState<FleetChargeRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [detail, setDetail] = useState<FleetChargeDetail | null>(null);
+  const [pending, setPending] = useState<FleetPendingSummary | null>(null);
   const [loadingRuns, setLoadingRuns] = useState(true);
+  const [loadingPending, setLoadingPending] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [retrying, setRetrying] = useState<'week' | 'all' | null>(null);
   const [error, setError] = useState('');
@@ -156,9 +178,23 @@ export default function YegoMiAutoFleetChargeReport() {
     }
   }, []);
 
+  const loadPending = useCallback(async () => {
+    setLoadingPending(true);
+    try {
+      const response = await api.get('/miauto/fleet-charge-runs/pending', { params: { limit: 500 } });
+      setPending(unwrap<FleetPendingSummary>(response));
+    } catch (requestError: any) {
+      setPending(null);
+      setError(requestError.response?.data?.message || 'No se pudo consultar la cola pendiente Fleet');
+    } finally {
+      setLoadingPending(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadRuns();
-  }, [loadRuns]);
+    void loadPending();
+  }, [loadPending, loadRuns]);
 
   useEffect(() => {
     if (!selectedRunId) {
@@ -177,9 +213,9 @@ export default function YegoMiAutoFleetChargeReport() {
     toast.success(
       `Reproceso terminado: ${result.success} completas, ${result.partial} parciales y ${result.failed} fallidas`,
     );
-    await loadRuns(result.run_id);
+    await Promise.all([loadRuns(result.run_id), loadPending()]);
     setSelectedRunId(result.run_id);
-  }, [loadRuns]);
+  }, [loadPending, loadRuns]);
 
   const retryWeek = useCallback(async () => {
     if (!canRetry || !detail || retryableAttempts.length === 0 || retrying) return;
@@ -199,9 +235,12 @@ export default function YegoMiAutoFleetChargeReport() {
   }, [canRetry, detail, retryableAttempts.length, retrying, showRetryResult]);
 
   const retryAll = useCallback(async () => {
-    if (!canRetry || retrying) return;
+    if (!canRetry || retrying || pending?.cuotas_count === 0) return;
+    const queueLabel = pending
+      ? `${pending.conductores_count} conductor(es) y ${pending.cuotas_count} cuota(s)`
+      : 'todos los conductores con cuotas pendientes';
     const confirmed = window.confirm(
-      'Se reintentará el cobro de todos los conductores con cuotas Fleet pendientes, sin importar la semana. ¿Deseas continuar?',
+      `Se intentará el cobro de ${queueLabel} de la cola Fleet actual. ¿Deseas continuar?`,
     );
     if (!confirmed) return;
     try {
@@ -213,7 +252,7 @@ export default function YegoMiAutoFleetChargeReport() {
     } finally {
       setRetrying(null);
     }
-  }, [canRetry, retrying, showRetryResult]);
+  }, [canRetry, pending, retrying, showRetryResult]);
 
   const selectedRun = detail?.run || runs.find((run) => run.id === selectedRunId) || null;
 
@@ -235,11 +274,13 @@ export default function YegoMiAutoFleetChargeReport() {
               <button
                 type="button"
                 onClick={() => void retryAll()}
-                disabled={retrying !== null}
+                disabled={retrying !== null || pending?.cuotas_count === 0 || loadingPending}
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50"
               >
                 <RefreshCw className={`h-4 w-4 ${retrying === 'all' ? 'animate-spin' : ''}`} />
-                {retrying === 'all' ? 'Reprocesando todo...' : 'Reintentar todos los pendientes'}
+                {retrying === 'all'
+                  ? 'Procesando cobros...'
+                  : `Cobrar todos los pendientes${pending ? ` (${pending.cuotas_count})` : ''}`}
               </button>
             )}
             <button
@@ -255,6 +296,66 @@ export default function YegoMiAutoFleetChargeReport() {
       </header>
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+
+      <section className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-gray-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="font-semibold text-gray-900">Cola pendiente actual</h2>
+            <p className="text-xs text-gray-500">
+              {loadingPending
+                ? 'Consultando cuotas que Fleet procesaría ahora...'
+                : `${pending?.conductores_count || 0} conductores · ${pending?.cuotas_count || 0} cuotas pendientes`}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadPending()}
+            disabled={loadingPending || retrying !== null}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+          >
+            <RefreshCw className={`h-4 w-4 ${loadingPending ? 'animate-spin' : ''}`} />
+            Actualizar pendientes
+          </button>
+        </div>
+        {!loadingPending && pending?.items.length ? (
+          <div className="max-h-72 overflow-auto">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="sticky top-0 bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Conductor</th>
+                  <th className="px-4 py-3 font-semibold">Cuota exigible</th>
+                  <th className="px-4 py-3 font-semibold">Pendiente</th>
+                  <th className="px-4 py-3 font-semibold">Estado</th>
+                  <th className="px-4 py-3 font-semibold">Acción</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {pending.items.map((item) => (
+                  <tr key={item.cuota_semanal_id} className="text-gray-700">
+                    <td className="px-4 py-3">
+                      <p className="font-semibold text-gray-900">{item.driver_name}</p>
+                      <p className="text-xs text-gray-500">{item.license_number || 'Sin licencia'} · {item.placa_asignada || 'Sin placa'}</p>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3">{item.due_date || item.week_start_date || '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-3 font-semibold text-[#8B1A1A]">
+                      {item.pending_amount > 0.005 ? `${item.moneda} ${formatNumber(item.pending_amount)}` : 'Por calcular'}
+                    </td>
+                    <td className="px-4 py-3"><span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">Pendiente de cobro</span></td>
+                    <td className="px-4 py-3">
+                      <button type="button" onClick={() => navigate(`/admin/yego-mi-auto/rent-sale/${item.solicitud_id}`)} className="inline-flex items-center gap-1 text-xs font-semibold text-[#8B1A1A] hover:underline">
+                        <Banknote className="h-3.5 w-3.5" /> Ver contrato
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {pending.truncated && <p className="border-t border-gray-100 px-4 py-2 text-xs text-amber-700">La vista muestra los primeros 500 registros; el botón procesa la cola completa.</p>}
+          </div>
+        ) : !loadingPending ? (
+          <p className="px-4 py-8 text-center text-sm text-gray-500">No hay cuotas pendientes para cobrar en este momento.</p>
+        ) : null}
+      </section>
 
       {selectedRun && (
         <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -315,19 +416,21 @@ export default function YegoMiAutoFleetChargeReport() {
               <h2 className="font-semibold text-gray-900">Detalle por conductor</h2>
               <p className="text-xs text-gray-500">{detail ? `${runLabel(detail.run)} · ${formatDateTime(detail.run.started_at)}` : 'Selecciona una ejecución'}</p>
             </div>
-            <button
-              type="button"
-              onClick={() => void retryWeek()}
-              disabled={!canRetry || !detail || retryableAttempts.length === 0 || retrying !== null || detail.run.status === 'running'}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#8B1A1A] px-4 py-2 text-sm font-semibold text-white hover:bg-[#6B1515] disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <RefreshCw className={`h-4 w-4 ${retrying === 'week' ? 'animate-spin' : ''}`} />
-              {retrying === 'week'
-                ? 'Reprocesando semana...'
-                : canRetry
-                  ? `Reintentar faltantes de esta semana (${retryableAttempts.length})`
-                  : 'Solo administradores'}
-            </button>
+            {detail && (
+              <button
+                type="button"
+                onClick={() => void retryWeek()}
+                disabled={!canRetry || retryableAttempts.length === 0 || retrying !== null || detail.run.status === 'running'}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#8B1A1A] px-4 py-2 text-sm font-semibold text-white hover:bg-[#6B1515] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <RefreshCw className={`h-4 w-4 ${retrying === 'week' ? 'animate-spin' : ''}`} />
+                {retrying === 'week'
+                  ? 'Reprocesando semana...'
+                  : canRetry
+                    ? `Reintentar faltantes de esta ejecución (${retryableAttempts.length})`
+                    : 'Solo administradores'}
+              </button>
+            )}
           </div>
 
           {loadingDetail ? (
@@ -384,7 +487,9 @@ export default function YegoMiAutoFleetChargeReport() {
             </div>
           ) : (
             <div className="grid min-h-64 place-items-center px-6 text-center text-sm text-gray-500">
-              {detail?.run.error || 'Esta corrida no tiene intentos individuales registrados.'}
+              {detail?.run.error || (runs.length === 0
+                ? 'Todavía no hay una corrida registrada. La cola pendiente actual se muestra arriba.'
+                : 'Esta corrida no tiene intentos individuales registrados.')}
             </div>
           )}
         </section>

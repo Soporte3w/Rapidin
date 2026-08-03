@@ -833,6 +833,11 @@ async function pendingTotalMapsForSolicitudIdsBatched(solicitudIds, batchSize = 
 
 // --- getCuotasToCharge -----------------------------------------------------
 
+export function isMiautoFleetCuotaDueForCharge(cuota, todayYmd = limaTodayYmdSync()) {
+  const dueYmd = ymdFromDbDate(cuota?.due_date) || ymdFromDbDate(cuota?.week_start_date);
+  return !!dueYmd && dueYmd <= String(todayYmd || '').slice(0, 10);
+}
+
 export async function getCuotasToCharge() {
   const res = await query(
     `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.amount_due, c.paid_amount, c.late_fee, c.mora_extra,
@@ -846,11 +851,13 @@ export async function getCuotasToCharge() {
      INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
      ${sqlYangoDriverLateralJoin(1)}
      WHERE c.status IN ('pending', 'overdue', 'partial')
+       AND c.deleted_at IS NULL
        AND s.status = 'aprobado'
+       AND COALESCE(c.due_date, c.week_start_date) <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
      ORDER BY c.solicitud_id, c.week_start_date ASC NULLS LAST, c.due_date ASC NULLS LAST, c.id ASC`,
     [MIAUTO_PARK_ID]
   );
-  let rows = res.rows || [];
+  let rows = (res.rows || []).filter((row) => isMiautoFleetCuotaDueForCharge(row));
   const sids = [...new Set(rows.map((r) => String(r.solicitud_id)))];
   const mapsBySid = await pendingTotalMapsForSolicitudIdsBatched(sids);
   rows = rows.filter((r) => {
@@ -864,6 +871,67 @@ export async function getCuotasToCharge() {
     for (const [cuotaId, pt] of m) solicitudPendingMap.set(cuotaId, pt);
   }
   return { cuotas: rows, solicitudPendingMap };
+}
+
+/** Vista de solo lectura de la cola que el cobro Fleet procesaría en este momento. */
+export async function getMiautoFleetPendingQueuePreview(limit = 500) {
+  const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 500));
+  const result = await query(
+    `SELECT c.id, c.solicitud_id, c.week_start_date, c.due_date, c.status, c.moneda,
+            GREATEST(
+              0,
+              COALESCE(c.amount_due, 0)::numeric
+                + COALESCE(c.late_fee, 0)::numeric
+                + COALESCE(c.mora_extra, 0)::numeric
+                - COALESCE(c.paid_amount, 0)::numeric
+            ) AS pending_amount,
+            s.license_number, s.placa_asignada,
+            COALESCE(
+              NULLIF(TRIM(CONCAT_WS(' ', rd.first_name, rd.last_name)), ''),
+              NULLIF(TRIM(CONCAT_WS(' ', fd.first_name, fd.last_name)), ''),
+              NULLIF(TRIM(s.license_number), ''),
+              NULLIF(TRIM(s.placa_asignada), ''),
+              'Conductor'
+            ) AS driver_name
+       FROM module_miauto_cuota_semanal c
+       INNER JOIN module_miauto_solicitud s ON s.id = c.solicitud_id
+       LEFT JOIN module_rapidin_drivers rd ON rd.id::text = s.driver_id_fleet
+       LEFT JOIN LATERAL (
+         SELECT d.first_name, d.last_name
+           FROM drivers d
+          WHERE d.driver_id = s.driver_id_fleet
+          ORDER BY CASE WHEN d.work_status = 'working' THEN 0 ELSE 1 END
+          LIMIT 1
+       ) fd ON true
+      WHERE c.status IN ('pending', 'overdue', 'partial')
+        AND s.status = 'aprobado'
+        AND c.deleted_at IS NULL
+        AND COALESCE(c.due_date, c.week_start_date) <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
+      ORDER BY c.due_date ASC NULLS LAST, c.week_start_date ASC NULLS LAST, c.id ASC`,
+  );
+  const cuotas = result.rows || [];
+  const conductores = new Set(cuotas.map((cuota) => String(cuota.solicitud_id)));
+  const items = cuotas.slice(0, safeLimit).map((cuota) => ({
+    cuota_semanal_id: String(cuota.id),
+    solicitud_id: String(cuota.solicitud_id),
+    week_start_date: ymdFromDbDate(cuota.week_start_date),
+    due_date: ymdFromDbDate(cuota.due_date),
+    status: cuota.status,
+    pending_amount: round2(Number(cuota.pending_amount) || 0),
+    moneda: cuota.moneda || 'PEN',
+    license_number: cuota.license_number || null,
+    placa_asignada: cuota.placa_asignada || null,
+    driver_name: cuota.driver_name
+      || cuota.license_number
+      || cuota.placa_asignada
+      || 'Conductor',
+  }));
+  return {
+    cuotas_count: cuotas.length,
+    conductores_count: conductores.size,
+    items,
+    truncated: items.length < cuotas.length,
+  };
 }
 
 export async function getCuotasToChargeForSolicitud(solicitudId) {
@@ -880,11 +948,13 @@ export async function getCuotasToChargeForSolicitud(solicitudId) {
      ${sqlYangoDriverLateralJoin(2)}
      WHERE c.solicitud_id = $1::uuid
        AND c.status IN ('pending', 'overdue', 'partial')
+       AND c.deleted_at IS NULL
        AND s.status = 'aprobado'
+       AND COALESCE(c.due_date, c.week_start_date) <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
      ORDER BY c.week_start_date ASC NULLS LAST, c.due_date ASC NULLS LAST, c.id ASC`,
     [solicitudId, MIAUTO_PARK_ID]
   );
-  let rows = res.rows || [];
+  let rows = (res.rows || []).filter((row) => isMiautoFleetCuotaDueForCharge(row));
   const m = await buildPendingTotalMapForSolicitud(solicitudId);
   rows = rows.filter((r) => {
     const pt = m.get(String(r.id));

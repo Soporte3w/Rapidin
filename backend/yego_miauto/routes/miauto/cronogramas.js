@@ -23,6 +23,7 @@ import {
   runFleetCobroPendientesDeRun,
   runFleetCobroTodosPendientes,
 } from '../../../jobs/miautoWeeklyCharge.js';
+import { getMiautoFleetPendingQueuePreview } from '../../services/cuotas/miautoFleetChargeService.js';
 
 const router = Router();
 
@@ -71,6 +72,16 @@ router.get('/fleet-charge-runs', async (req, res) => {
   } catch (error) {
     logger.error('Error obteniendo ejecuciones de cobro Fleet Mi Auto:', error);
     return errorResponse(res, error.message || 'Error al obtener las ejecuciones de cobro Fleet', 500);
+  }
+});
+
+router.get('/fleet-charge-runs/pending', async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') return errorResponse(res, 'Sin permisos para ver la cola Fleet', 403);
+    return successResponse(res, await getMiautoFleetPendingQueuePreview(req.query.limit));
+  } catch (error) {
+    logger.error('Error obteniendo la cola pendiente Fleet Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al obtener la cola pendiente Fleet', 500);
   }
 });
 

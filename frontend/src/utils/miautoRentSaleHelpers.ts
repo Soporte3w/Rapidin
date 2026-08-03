@@ -9,14 +9,20 @@ interface SolicitudRentSaleHeader {
   dni?: string;
   phone?: string;
   email?: string;
+  driver_name?: string;
+  working_driver_name?: string;
+  yango_work_status?: string;
 }
 
 export function driverDisplayRentSale(sol: SolicitudRentSaleHeader | null, driverNameFromState?: string): string {
-  if (driverNameFromState) return driverNameFromState;
   if (!sol) return '—';
-  if (sol.phone) return `Tel: ${sol.phone}`;
+  if (sol.yango_work_status === 'fired' && sol.working_driver_name) return sol.working_driver_name;
+  if (sol.driver_name) return sol.driver_name;
+  if (driverNameFromState) return driverNameFromState;
+  if (sol.working_driver_name) return sol.working_driver_name;
+  if (sol.dni) return sol.dni;
   if (sol.email) return sol.email;
-  return sol.dni || '—';
+  return 'Conductor sin nombre';
 }
 
 export function formatKpiMixPenUsd(pen: number, usd: number): string {

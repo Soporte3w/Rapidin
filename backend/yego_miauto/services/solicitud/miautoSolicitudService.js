@@ -574,7 +574,18 @@ export const getSolicitudById = async (id, options = {}) => {
   if (result.rows.length === 0) return null;
   const row = result.rows[0];
 
-  const [citasRes, cronoRes, vehRes, compRes, otrosGastos, validadoPack, workingRes] = await Promise.all([
+  const [
+    citasRes,
+    cronoRes,
+    vehRes,
+    compRes,
+    otrosGastos,
+    validadoPack,
+    workingRes,
+    rapidinDriverRes,
+    fleetDriverRes,
+    phoneDriverInfo,
+  ] = await Promise.all([
     query(
       'SELECT id, tipo, appointment_date, created_at, created_by, resultado FROM module_miauto_solicitud_cita WHERE solicitud_id = $1 ORDER BY created_at ASC',
       [id]
@@ -616,6 +627,28 @@ export const getSolicitudById = async (id, options = {}) => {
           [MIAUTO_PARK_ID, row.placa_asignada]
         )
       : Promise.resolve({ rows: [] }),
+    row.driver_id_fleet
+      ? query(
+          `SELECT first_name, last_name
+             FROM module_rapidin_drivers
+            WHERE id::text = $1
+            LIMIT 1`,
+          [row.driver_id_fleet]
+        )
+      : Promise.resolve({ rows: [] }),
+    row.driver_id_fleet
+      ? query(
+          `SELECT first_name, last_name, work_status
+             FROM drivers
+            WHERE driver_id = $1
+            ORDER BY (TRIM(COALESCE(park_id::text, '')) = $2) DESC
+            LIMIT 1`,
+          [row.driver_id_fleet, MIAUTO_PARK_ID]
+        )
+      : Promise.resolve({ rows: [] }),
+    row.phone
+      ? getDriverInfoByPhones(MIAUTO_PARK_ID, [row.phone])
+      : Promise.resolve({ names: {}, licenses: {} }),
   ]);
   delete row.cronograma_vehiculo_inicial_moneda;
 
@@ -668,6 +701,19 @@ export const getSolicitudById = async (id, options = {}) => {
   if (workingRes.rows.length > 0) {
     row.working_driver_name = [workingRes.rows[0].first_name, workingRes.rows[0].last_name].filter(Boolean).join(' ').trim();
   }
+  const rapidinDriverName = rapidinDriverRes.rows[0]
+    ? [rapidinDriverRes.rows[0].first_name, rapidinDriverRes.rows[0].last_name].filter(Boolean).join(' ').trim()
+    : '';
+  const fleetDriverName = fleetDriverRes.rows[0]
+    ? [fleetDriverRes.rows[0].first_name, fleetDriverRes.rows[0].last_name].filter(Boolean).join(' ').trim()
+    : '';
+  const { digits: phoneDigits, last9: phoneLast9 } = normalizePhoneForDriversMatch(row.phone);
+  row.driver_name = rapidinDriverName
+    || fleetDriverName
+    || phoneDriverInfo.names[phoneDigits]
+    || phoneDriverInfo.names[phoneLast9]
+    || null;
+  row.yango_work_status = fleetDriverRes.rows[0]?.work_status || null;
 
   // Devolver objeto plano para que cronograma y cronograma_vehiculo se serialicen correctamente en la respuesta API
   return {

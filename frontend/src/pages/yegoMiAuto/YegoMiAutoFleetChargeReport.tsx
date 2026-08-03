@@ -372,7 +372,7 @@ export default function YegoMiAutoFleetChargeReport() {
                             {chargingSolicitudId === item.solicitud_id ? 'Cobrando...' : 'Cobrar conductor'}
                           </button>
                         )}
-                        <button type="button" onClick={() => navigate(`/admin/yego-mi-auto/rent-sale/${item.solicitud_id}`)} className="inline-flex items-center gap-1 text-xs font-semibold text-[#8B1A1A] hover:underline">
+                        <button type="button" onClick={() => navigate(`/admin/yego-mi-auto/rent-sale/${item.solicitud_id}`, { state: { driver_name: item.driver_name } })} className="inline-flex items-center gap-1 text-xs font-semibold text-[#8B1A1A] hover:underline">
                           <FileText className="h-3.5 w-3.5" /> Abrir contrato
                         </button>
                       </div>
@@ -505,7 +505,7 @@ export default function YegoMiAutoFleetChargeReport() {
                         </td>
                         <td className="px-4 py-3">
                           {attempt.solicitud_id && (
-                            <button type="button" onClick={() => navigate(`/admin/yego-mi-auto/rent-sale/${attempt.solicitud_id}`)} className="inline-flex items-center gap-1 text-xs font-semibold text-[#8B1A1A] hover:underline">
+                            <button type="button" onClick={() => navigate(`/admin/yego-mi-auto/rent-sale/${attempt.solicitud_id}`, { state: { driver_name: attempt.driver_name } })} className="inline-flex items-center gap-1 text-xs font-semibold text-[#8B1A1A] hover:underline">
                               <FileText className="h-3.5 w-3.5" /> Abrir contrato
                             </button>
                           )}

@@ -158,6 +158,9 @@ interface SolicitudSummary {
   dni: string;
   phone?: string;
   email?: string;
+  driver_name?: string;
+  working_driver_name?: string;
+  yango_work_status?: string;
   country?: string;
   status: string;
   fecha_inicio_cobro_semanal?: string;
@@ -1578,6 +1581,7 @@ export default function YegoMiAutoRentSaleDetail() {
   }
 
   const bonoTiempoActivo = solicitud.cronograma?.bono_tiempo_activo === true;
+  const driverDisplayName = driverDisplayRentSale(solicitud, driverNameFromState);
 
   return (
     <div ref={detailPageRef} className="space-y-6 lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:gap-6 lg:space-y-0 lg:overflow-hidden">
@@ -1603,7 +1607,7 @@ export default function YegoMiAutoRentSaleDetail() {
               </div>
               <div>
                 <h1 className="text-lg lg:text-xl font-bold text-white leading-tight">
-                  {driverDisplayRentSale(solicitud, driverNameFromState)}
+                  {driverDisplayName}
                 </h1>
                 <p className="text-xs lg:text-sm text-white/90 mt-0.5">
                   Cronograma y métricas del contrato
@@ -3680,7 +3684,7 @@ export default function YegoMiAutoRentSaleDetail() {
                     <div>
                       <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conductor</span>
                       <p className="mt-1 text-gray-900 font-medium">
-                        {driverNameFromState || solicitud?.phone || solicitud?.dni || '—'}
+                        {driverDisplayName}
                       </p>
                     </div>
                     <div>
@@ -3763,7 +3767,7 @@ export default function YegoMiAutoRentSaleDetail() {
                     <div>
                       <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conductor</span>
                       <p className="mt-1 text-gray-900 font-medium">
-                        {metricasData?.driver_name || driverNameFromState || solicitud?.dni || '—'}
+                        {metricasData?.driver_name || driverDisplayName}
                       </p>
                     </div>
                     {loadingMetricas && (
@@ -3866,7 +3870,7 @@ export default function YegoMiAutoRentSaleDetail() {
                     <div>
                       <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conductor</span>
                       <p className="mt-1 text-gray-900 font-medium">
-                        {driverNameFromState || solicitud?.phone || solicitud?.dni || '—'}
+                        {driverDisplayName}
                       </p>
                       {solicitud?.phone && (
                         <p className="text-sm text-gray-500 mt-0.5">{solicitud.phone}</p>

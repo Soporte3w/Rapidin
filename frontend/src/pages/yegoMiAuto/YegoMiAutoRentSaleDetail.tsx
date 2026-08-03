@@ -1486,7 +1486,6 @@ export default function YegoMiAutoRentSaleDetail() {
   const cronPg = useTablePagination(cuotas, {
     initialLimit: 20,
     pageSizes: [10, 20, 50],
-    storageKey: 'miauto.admin.cronograma.pageSize',
   });
   const otrosGastosRows = useMemo(
     () => (Array.isArray(solicitud?.otros_gastos) ? solicitud.otros_gastos : []),
@@ -1637,7 +1636,7 @@ export default function YegoMiAutoRentSaleDetail() {
   const driverDisplayName = driverDisplayRentSale(solicitud, driverNameFromState);
 
   return (
-    <div ref={detailPageRef} className="space-y-6 lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:gap-6 lg:space-y-0 lg:overflow-hidden">
+    <div ref={detailPageRef} className="space-y-6 lg:flex lg:min-h-0 lg:flex-col lg:gap-6 lg:space-y-0">
       {nextNavigationItem && (
         <div className="flex shrink-0 justify-end">
           <button

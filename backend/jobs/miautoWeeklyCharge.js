@@ -801,7 +801,7 @@ export async function runWeeklyFleetChargeMonday(options = {}) {
 
 async function runFleetCobroManual(options = {}) {
   const sourceId = String(options.sourceRunId || '').trim() || null;
-  const jobLabel = sourceId ? 'reproceso_admin_semana' : 'reproceso_admin_total';
+  const jobLabel = sourceId ? 'reproceso_admin_semana' : 'reproceso_admin_hoy';
   const lock = await acquireCronLock('miauto_cobro_fleet', 7200);
   if (!lock.acquired) {
     return { ok: false, error: lock.reason, skipped: true };
@@ -834,7 +834,7 @@ async function runFleetCobroManual(options = {}) {
       : currentQueue.cuotas;
     const { success, partial, failed } = await processCobroCuotaQueue(cuotas, {
       solicitudPendingMap: currentQueue.solicitudPendingMap,
-      cobroReferenciaSource: sourceId ? 'fleet_reproceso_admin_semana' : 'fleet_reproceso_admin_total',
+      cobroReferenciaSource: sourceId ? 'fleet_reproceso_admin_semana' : 'fleet_reproceso_admin_hoy',
       beginAttempt: (cuota, context) => beginMiautoFleetChargeAttempt(run.id, cuota, context),
       finishAttempt: (attempt, result) => finishMiautoFleetChargeAttempt(attempt.id, result),
     });
@@ -905,8 +905,8 @@ export async function runFleetCobroPendientesDeRun(sourceRunId, options = {}) {
   return runFleetCobroManual({ ...options, sourceRunId: sourceId });
 }
 
-/** Reprocesa en bloque toda la cola Fleet pendiente actual. */
-export async function runFleetCobroTodosPendientes(options = {}) {
+/** Reprocesa en bloque todas las cuotas Fleet pendientes con vencimiento de hoy. */
+export async function runFleetCobroPendientesDeHoy(options = {}) {
   return runFleetCobroManual(options);
 }
 

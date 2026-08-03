@@ -835,7 +835,7 @@ async function pendingTotalMapsForSolicitudIdsBatched(solicitudIds, batchSize = 
 
 export function isMiautoFleetCuotaDueForCharge(cuota, todayYmd = limaTodayYmdSync()) {
   const dueYmd = ymdFromDbDate(cuota?.due_date) || ymdFromDbDate(cuota?.week_start_date);
-  return !!dueYmd && dueYmd <= String(todayYmd || '').slice(0, 10);
+  return !!dueYmd && dueYmd === String(todayYmd || '').slice(0, 10);
 }
 
 export async function getCuotasToCharge() {
@@ -853,7 +853,7 @@ export async function getCuotasToCharge() {
      WHERE c.status IN ('pending', 'overdue', 'partial')
        AND c.deleted_at IS NULL
        AND s.status = 'aprobado'
-       AND COALESCE(c.due_date, c.week_start_date) <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
+       AND COALESCE(c.due_date, c.week_start_date) = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
      ORDER BY c.solicitud_id, c.week_start_date ASC NULLS LAST, c.due_date ASC NULLS LAST, c.id ASC`,
     [MIAUTO_PARK_ID]
   );
@@ -906,7 +906,7 @@ export async function getMiautoFleetPendingQueuePreview(limit = 500) {
       WHERE c.status IN ('pending', 'overdue', 'partial')
         AND s.status = 'aprobado'
         AND c.deleted_at IS NULL
-        AND COALESCE(c.due_date, c.week_start_date) <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
+        AND COALESCE(c.due_date, c.week_start_date) = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
       ORDER BY c.due_date ASC NULLS LAST, c.week_start_date ASC NULLS LAST, c.id ASC`,
   );
   const cuotas = result.rows || [];
@@ -950,7 +950,7 @@ export async function getCuotasToChargeForSolicitud(solicitudId) {
        AND c.status IN ('pending', 'overdue', 'partial')
        AND c.deleted_at IS NULL
        AND s.status = 'aprobado'
-       AND COALESCE(c.due_date, c.week_start_date) <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
+       AND COALESCE(c.due_date, c.week_start_date) = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Lima')::date
      ORDER BY c.week_start_date ASC NULLS LAST, c.due_date ASC NULLS LAST, c.id ASC`,
     [solicitudId, MIAUTO_PARK_ID]
   );

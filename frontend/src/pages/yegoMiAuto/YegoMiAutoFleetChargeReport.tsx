@@ -142,7 +142,7 @@ export default function YegoMiAutoFleetChargeReport() {
   const [loadingRuns, setLoadingRuns] = useState(true);
   const [loadingPending, setLoadingPending] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [retrying, setRetrying] = useState<'week' | 'all' | null>(null);
+  const [retrying, setRetrying] = useState<'week' | 'today' | null>(null);
   const [error, setError] = useState('');
 
   const loadRuns = useCallback(async (preferredRunId?: string | null) => {
@@ -234,21 +234,21 @@ export default function YegoMiAutoFleetChargeReport() {
     }
   }, [canRetry, detail, retryableAttempts.length, retrying, showRetryResult]);
 
-  const retryAll = useCallback(async () => {
+  const chargeToday = useCallback(async () => {
     if (!canRetry || retrying || pending?.cuotas_count === 0) return;
     const queueLabel = pending
       ? `${pending.conductores_count} conductor(es) y ${pending.cuotas_count} cuota(s)`
       : 'todos los conductores con cuotas pendientes';
     const confirmed = window.confirm(
-      `Se intentará el cobro de ${queueLabel} de la cola Fleet actual. ¿Deseas continuar?`,
+      `Se intentará el cobro de ${queueLabel} con vencimiento de hoy. ¿Deseas continuar?`,
     );
     if (!confirmed) return;
     try {
-      setRetrying('all');
-      const response = await api.post('/miauto/fleet-charge-runs/retry-all');
+      setRetrying('today');
+      const response = await api.post('/miauto/fleet-charge-runs/retry-today');
       await showRetryResult(unwrap<FleetRetryResult>(response));
     } catch (requestError: any) {
-      toast.error(requestError.response?.data?.message || 'No se pudo reprocesar toda la cola pendiente');
+      toast.error(requestError.response?.data?.message || 'No se pudieron cobrar los pendientes de hoy');
     } finally {
       setRetrying(null);
     }
@@ -273,14 +273,14 @@ export default function YegoMiAutoFleetChargeReport() {
             {canRetry && (
               <button
                 type="button"
-                onClick={() => void retryAll()}
+                onClick={() => void chargeToday()}
                 disabled={retrying !== null || pending?.cuotas_count === 0 || loadingPending}
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-[#8B1A1A] hover:bg-red-50 disabled:opacity-50"
               >
-                <RefreshCw className={`h-4 w-4 ${retrying === 'all' ? 'animate-spin' : ''}`} />
-                {retrying === 'all'
+                <RefreshCw className={`h-4 w-4 ${retrying === 'today' ? 'animate-spin' : ''}`} />
+                {retrying === 'today'
                   ? 'Procesando cobros...'
-                  : `Cobrar todos los pendientes${pending ? ` (${pending.cuotas_count})` : ''}`}
+                  : `Cobrar pendientes de hoy${pending ? ` (${pending.cuotas_count})` : ''}`}
               </button>
             )}
             <button
@@ -300,11 +300,11 @@ export default function YegoMiAutoFleetChargeReport() {
       <section className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
         <div className="flex flex-col gap-3 border-b border-gray-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="font-semibold text-gray-900">Cola pendiente actual</h2>
+            <h2 className="font-semibold text-gray-900">Pendientes de hoy · cobro 7:10</h2>
             <p className="text-xs text-gray-500">
               {loadingPending
-                ? 'Consultando cuotas que Fleet procesaría ahora...'
-                : `${pending?.conductores_count || 0} conductores · ${pending?.cuotas_count || 0} cuotas pendientes`}
+                ? 'Consultando cuotas que debieron procesarse hoy a las 7:10...'
+                : `${pending?.conductores_count || 0} conductores · ${pending?.cuotas_count || 0} cuotas pendientes de hoy`}
             </p>
           </div>
           <button
@@ -353,7 +353,7 @@ export default function YegoMiAutoFleetChargeReport() {
             {pending.truncated && <p className="border-t border-gray-100 px-4 py-2 text-xs text-amber-700">La vista muestra los primeros 500 registros; el botón procesa la cola completa.</p>}
           </div>
         ) : !loadingPending ? (
-          <p className="px-4 py-8 text-center text-sm text-gray-500">No hay cuotas pendientes para cobrar en este momento.</p>
+          <p className="px-4 py-8 text-center text-sm text-gray-500">No hay cuotas pendientes con vencimiento de hoy.</p>
         ) : null}
       </section>
 

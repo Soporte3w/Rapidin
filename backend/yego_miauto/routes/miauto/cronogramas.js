@@ -21,7 +21,7 @@ import {
 } from '../../services/cuotas/miautoFleetChargeRunService.js';
 import {
   runFleetCobroPendientesDeRun,
-  runFleetCobroTodosPendientes,
+  runFleetCobroPendientesDeHoy,
 } from '../../../jobs/miautoWeeklyCharge.js';
 import { getMiautoFleetPendingQueuePreview } from '../../services/cuotas/miautoFleetChargeService.js';
 
@@ -85,13 +85,13 @@ router.get('/fleet-charge-runs/pending', async (req, res) => {
   }
 });
 
-router.post('/fleet-charge-runs/retry-all', async (req, res) => {
+router.post('/fleet-charge-runs/retry-today', async (req, res) => {
   try {
     const isAdmin = req.user?.role === 'admin' || req.user?.base_role === 'admin';
     if (!isAdmin) return errorResponse(res, 'Solo un administrador puede reprocesar cobros Fleet', 403);
-    const result = await runFleetCobroTodosPendientes({ triggeredBy: req.user?.id || null });
-    if (!result.ok) return errorResponse(res, result.error || 'No se pudo reprocesar la cola Fleet', 409);
-    businessLog('miauto.fleet_charge.manual_retry_all', {
+    const result = await runFleetCobroPendientesDeHoy({ triggeredBy: req.user?.id || null });
+    if (!result.ok) return errorResponse(res, result.error || 'No se pudieron cobrar los pendientes de hoy', 409);
+    businessLog('miauto.fleet_charge.manual_retry_today', {
       retryRunId: result.run_id,
       requested: result.cuotas_solicitadas,
       processed: result.cuotas_procesadas,
@@ -101,10 +101,10 @@ router.post('/fleet-charge-runs/retry-all', async (req, res) => {
       remaining: result.pendientes_despues,
       userId: req.user?.id || null,
     });
-    return successResponse(res, result, 'Reproceso general Fleet completado');
+    return successResponse(res, result, 'Cobro de pendientes de hoy completado');
   } catch (error) {
-    logger.error('Error reprocesando toda la cola Fleet Mi Auto:', error);
-    return errorResponse(res, error.message || 'Error al reprocesar toda la cola Fleet', 500);
+    logger.error('Error cobrando la cola Fleet de hoy Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al cobrar los pendientes de hoy', 500);
   }
 });
 

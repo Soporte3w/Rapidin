@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isMiautoFleetCuotaDueForCharge } from '../yego_miauto/services/cuotas/miautoFleetChargeService.js';
 
-test('el cobro Fleet incluye únicamente cuotas exigibles hoy o vencidas', () => {
+test('el cobro Fleet incluye únicamente cuotas exigibles hoy', () => {
   const today = '2026-08-03';
-  assert.equal(isMiautoFleetCuotaDueForCharge({ due_date: '2026-08-02' }, today), true);
+  assert.equal(isMiautoFleetCuotaDueForCharge({ due_date: '2026-08-02' }, today), false);
   assert.equal(isMiautoFleetCuotaDueForCharge({ due_date: '2026-08-03' }, today), true);
   assert.equal(isMiautoFleetCuotaDueForCharge({ due_date: '2026-08-10' }, today), false);
 });

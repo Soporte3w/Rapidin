@@ -5,7 +5,6 @@
 import cron from 'node-cron';
 import { logger, businessLog } from '../utils/logger.js';
 import { round2 } from '../yego_miauto/services/utils/miautoMoneyUtils.js';
-import { MIAUTO_PARK_ID } from '../yego_miauto/services/utils/miautoDriverLookup.js';
 import { query } from '../config/database.js';
 import {
   getContractorBalance,
@@ -34,7 +33,7 @@ import {
   mondayOfWeekContainingYmd,
 } from '../utils/miautoLimaWeekRange.js';
 import { appendMiautoFleetCobroJobAuditEvent } from '../utils/miautoFleetCobroAuditLog.js';
-import { normalizeMiautoPlate, selectWorkingDriverForPlate } from '../yego_miauto/services/utils/miautoPlateIdentity.js';
+import { resolveWorkingMiautoDriverForPlate } from '../yego_miauto/services/utils/miautoPlateDriverLookup.js';
 import { acquireCronLock, releaseCronLock } from '../utils/cronLock.js';
 import {
   generateExpenseCyclesForActiveContracts,
@@ -97,27 +96,6 @@ function ymdFromDbDate(value) {
 }
 
 /**
- * Viajes desde el conductor working de la placa, no del driver_id_fleet.
- * Aplica para todos los conductores. Si no hay una coincidencia única, se detiene
- * la generación de esa cuota para no atribuir viajes o bonos a otra placa.
- * @returns {{ driver_id: string, park_id: string }}
- */
-async function resolveTripsFromPlacaDriver(placa, driverIdFleet = null) {
-  if (!placa) return null;
-  const placaNorm = normalizeMiautoPlate(placa);
-  const res = await query(
-    `SELECT d.driver_id, d.park_id FROM drivers d
-     WHERE TRIM(COALESCE(d.park_id::text, '')) = \$1
-       AND d.work_status = 'working'
-       AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '[^A-Z0-9]', '', 'g')) = \$2
-     ORDER BY d.driver_id::text`,
-    [MIAUTO_PARK_ID, placaNorm]
-  );
-  const selected = selectWorkingDriverForPlate(res.rows, driverIdFleet);
-  return { driver_id: selected.driver_id, park_id: selected.park_id || MIAUTO_PARK_ID };
-}
-
-/**
  * Yango (o primera semana) + `generateWeeklyCharge`.
  * @param {{ incomeMaxAttempts?: number }} [options]
  *   incomeMaxAttempts: intentos a Yango por solicitud (default 1; regeneración manual 4–6).
@@ -139,7 +117,6 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
     .filter(Boolean)
     .join(' ')
     .trim() || 'Conductor';
-  const sinDriverYango = !sol.external_driver_id || String(sol.external_driver_id).trim() === '';
 
   let incomeResult;
   if (esPrimera) {
@@ -149,18 +126,13 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
       driverLabel,
       placa: placaStr ? String(sol.placa_asignada).trim() : null,
     });
-  } else if (sinDriverYango) {
-    logger.error('miauto.cuota.yango_sin_driver', {
-      solicitudId: sol.solicitud_id,
-      driverLabel,
-      placa: placaStr ? String(sol.placa_asignada).trim() : null,
-      action: 'omitir_cuota_para_no_guardar_ingresos_en_cero',
-    });
-    return { outcome: 'income_failed', incomeError: 'driver_yango_no_resuelto' };
   } else {
-    let placaTrips;
+    let plateDriver;
     try {
-      placaTrips = await resolveTripsFromPlacaDriver(sol.placa_asignada, sol.external_driver_id);
+      plateDriver = await resolveWorkingMiautoDriverForPlate(
+        sol.placa_asignada,
+        sol.external_driver_id
+      );
     } catch (error) {
       logger.error('miauto.cuota.placa_driver_ambiguo', {
         solicitudId: sol.solicitud_id,
@@ -170,32 +142,22 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
       });
       return { outcome: 'income_failed', incomeError: `placa: ${error.message}` };
     }
-    // Viajes: del conductor working de la placa. Si no hay → 0.
-    const viajesSource = placaTrips;
-    const viajes = viajesSource
-      ? await getDriverIncomeWithRetries(dateFrom, dateTo, viajesSource.driver_id, viajesSource.park_id, incomeMaxAttempts)
-      : { success: true, count_completed: 0, partner_fees: 0 };
-    // Recaudo: del recaudo_driver_id si está seteado, sino del driver_id_fleet
-    const recaudoDriver = sol.recaudo_driver_id || sol.external_driver_id;
-    const mismaFuente = viajesSource &&
-      String(recaudoDriver || '').trim() === String(viajesSource.driver_id || '').trim() &&
-      fleetParkIdForMiAuto(sol.park_id) === fleetParkIdForMiAuto(viajesSource.park_id);
-    const recaudo = mismaFuente
-      ? viajes
-      : await getDriverIncomeWithRetries(dateFrom, dateTo, recaudoDriver, sol.park_id, incomeMaxAttempts);
+    // Viajes y recaudo deben provenir de la misma identidad activa de la placa.
+    const plateIncome = await getDriverIncomeWithRetries(
+      dateFrom,
+      dateTo,
+      plateDriver.driver_id,
+      plateDriver.park_id,
+      incomeMaxAttempts
+    );
 
-    const viajesFallaron = !!viajesSource && !viajes.success;
-    if (viajesFallaron || !recaudo.success) {
-      const incomeError = [
-        viajesFallaron ? `viajes: ${viajes.error || 'error'}` : null,
-        !recaudo.success ? `recaudo: ${recaudo.error || 'error'}` : null,
-      ].filter(Boolean).join(' | ');
+    if (!plateIncome.success) {
+      const incomeError = `placa: ${plateIncome.error || 'error'}`;
       logger.error('miauto.cuota.yango_income_failed', {
         solicitudId: sol.solicitud_id,
         driverLabel,
         placa: placaStr ? String(sol.placa_asignada).trim() : null,
         incomeError,
-        mismaFuente,
         action: 'omitir_cuota_para_no_guardar_ingresos_en_cero',
       });
       return { outcome: 'income_failed', incomeError };
@@ -203,8 +165,8 @@ async function ensureCuotaOneSolicitud(sol, cuotaWeekMonday, dateFrom, dateTo, o
 
     incomeResult = {
       success: true,
-      count_completed: (viajesSource && viajes.success) ? viajes.count_completed : 0,
-      partner_fees: recaudo.partner_fees,
+      count_completed: plateIncome.count_completed || 0,
+      partner_fees: plateIncome.partner_fees || 0,
       error: null,
     };
   }

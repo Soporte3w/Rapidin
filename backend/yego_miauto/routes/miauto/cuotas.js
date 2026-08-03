@@ -5,6 +5,7 @@ import { logger } from '../../../utils/logger.js';
 import { getCuotasSemanalesApiPayload, getSemanasDisponibles, recalcularMoraGlobal, updateMoraDiaria, updatePagoPuntualCuotaSemanal } from '../../services/cuotas/miautoCuotaSemanalService.js';
 import { regenerateMiAutoCuotaForWeekMonday } from '../../../jobs/miautoWeeklyCharge.js';
 import { getDriverGoals, getDriverIncome } from '../../../services/yangoService.js';
+import { resolveWorkingMiautoDriverForPlate } from '../../services/utils/miautoPlateDriverLookup.js';
 import pool from '../../../database/connection.js';
 
 const router = Router();
@@ -186,24 +187,24 @@ router.get('/solicitudes/:id/metricas-yango', validateUUID, async (req, res) => 
       return errorResponse(res, 'Sin permisos para ver metricas', 403);
     }
     const solRes = await pool.query(
-      `SELECT s.driver_id_fleet,
-              COALESCE(d.first_name, '') AS first_name,
-              COALESCE(d.last_name, '') AS last_name,
-              d.park_id
+      `SELECT s.driver_id_fleet, s.placa_asignada
        FROM module_miauto_solicitud s
-       LEFT JOIN LATERAL (
-         SELECT first_name, last_name, park_id FROM drivers
-         WHERE driver_id::text = s.driver_id_fleet OR document_number = s.dni
-         LIMIT 1
-       ) d ON TRUE
        WHERE s.id = $1`,
       [req.params.id]
     );
     const sol = solRes.rows[0];
     if (!sol) return errorResponse(res, 'Solicitud no encontrada', 404);
-    if (!sol.driver_id_fleet) return errorResponse(res, 'La solicitud no tiene driver_id_fleet configurado', 400);
+    let plateDriver;
+    try {
+      plateDriver = await resolveWorkingMiautoDriverForPlate(
+        sol.placa_asignada,
+        sol.driver_id_fleet
+      );
+    } catch (error) {
+      return errorResponse(res, error.message, 400);
+    }
 
-    const goals = await getDriverGoals(sol.driver_id_fleet);
+    const goals = await getDriverGoals(plateDriver.driver_id);
     if (!goals.success) return errorResponse(res, goals.error || 'Error al obtener metricas de Yango', 502);
 
     let currentIncome = null;
@@ -221,7 +222,12 @@ router.get('/solicitudes/:id/metricas-yango', validateUUID, async (req, res) => 
             ? endRaw
             : `${todayLima}T23:59:59-05:00`;
 
-          const income = await getDriverIncome(dateFrom, dateTo, sol.driver_id_fleet, sol.park_id);
+          const income = await getDriverIncome(
+            dateFrom,
+            dateTo,
+            plateDriver.driver_id,
+            plateDriver.park_id
+          );
           if (income.success) {
             currentIncome = {
               partner_fees: income.partner_fees || 0,
@@ -235,7 +241,7 @@ router.get('/solicitudes/:id/metricas-yango', validateUUID, async (req, res) => 
     }
 
     return successResponse(res, {
-      driver_name: [sol.first_name, sol.last_name].filter(Boolean).join(' ').trim() || null,
+      driver_name: [plateDriver.first_name, plateDriver.last_name].filter(Boolean).join(' ').trim() || null,
       driver_tz: goals.driver_tz,
       active_goals: goals.active_goals,
       previous_goals: goals.previous_goals,

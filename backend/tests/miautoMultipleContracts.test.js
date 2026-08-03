@@ -56,3 +56,25 @@ test('el alta adicional usa una ruta propia y no la creación de solicitudes', (
   assert.match(service, /'contrato_adicional'/);
   assert.match(service, /WHERE s\.conductor_id = \$1/);
 });
+
+test('viajes y recaudo semanal usan la misma identidad activa de la placa', () => {
+  const weeklyJob = read('jobs/miautoWeeklyCharge.js');
+  const service = read('yego_miauto/services/solicitud/miautoSolicitudService.js');
+  const metricsRoute = read('yego_miauto/routes/miauto/cuotas.js');
+  const plateLookup = read('yego_miauto/services/utils/miautoPlateDriverLookup.js');
+
+  assert.match(plateLookup, /work_status = 'working'/);
+  assert.match(plateLookup, /car_number/);
+  assert.match(weeklyJob, /resolveWorkingMiautoDriverForPlate/);
+  assert.match(weeklyJob, /count_completed: plateIncome\.count_completed/);
+  assert.match(weeklyJob, /partner_fees: plateIncome\.partner_fees/);
+  assert.doesNotMatch(weeklyJob, /const recaudoDriver = sol\.recaudo_driver_id/);
+
+  assert.match(service, /plateDriver = await resolveWorkingMiautoDriverForPlate/);
+  assert.match(service, /plateDriver\.driver_id,[\s\S]*plateDriver\.park_id/);
+  assert.doesNotMatch(service, /let driverId = solData\?\.driver_id_fleet/);
+
+  assert.match(metricsRoute, /plateDriver = await resolveWorkingMiautoDriverForPlate/);
+  assert.match(metricsRoute, /getDriverGoals\(plateDriver\.driver_id\)/);
+  assert.doesNotMatch(metricsRoute, /getDriverGoals\(sol\.driver_id_fleet\)/);
+});

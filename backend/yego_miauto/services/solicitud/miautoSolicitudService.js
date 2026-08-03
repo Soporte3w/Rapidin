@@ -24,7 +24,8 @@ import {
 import { buildDriverNameSearchSql } from '../../../utils/driverNameSearch.js';
 import { enqueueMiautoLicenseValidation } from '../licencia/miautoLicenseValidationService.js';
 import { enqueueMiautoSoatValidation } from '../soat/miautoSoatValidationService.js';
-import { normalizeMiautoPlate, selectWorkingDriverForPlate } from '../utils/miautoPlateIdentity.js';
+import { normalizeMiautoPlate } from '../utils/miautoPlateIdentity.js';
+import { resolveWorkingMiautoDriverForPlate } from '../utils/miautoPlateDriverLookup.js';
 import {
   MiautoStartDateCorrectionError,
   assertBootstrapWeeklyQuotaForStartDateCorrection,
@@ -882,19 +883,6 @@ export const createSolicitud = async (data, userId = null) => {
   return getSolicitudById(result.rows[0].id);
 };
 
-async function resolveWorkingDriverForContractPlate(placa, preferredDriverId = null) {
-  const candidates = await query(
-    `SELECT d.driver_id, d.park_id, d.first_name, d.last_name
-     FROM drivers d
-     WHERE TRIM(COALESCE(d.park_id::text, '')) = $1
-       AND d.work_status = 'working'
-       AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '[^A-Z0-9]', '', 'g')) = $2
-     ORDER BY d.driver_id::text`,
-    [MIAUTO_PARK_ID, placa]
-  );
-  return selectWorkingDriverForPlate(candidates.rows, preferredDriverId);
-}
-
 export async function listContratosRelacionados(solicitudId) {
   const source = await query(
     'SELECT conductor_id FROM module_miauto_solicitud WHERE id = $1 AND deleted_at IS NULL',
@@ -971,7 +959,7 @@ export async function anexarContratoAdicional(sourceSolicitudId, data, userId = 
     );
     if (duplicatePlate.rows.length > 0) throw new Error('La placa ya pertenece a otro contrato activo');
 
-    const plateDriver = await resolveWorkingDriverForContractPlate(placa, source.driver_id_fleet);
+    const plateDriver = await resolveWorkingMiautoDriverForPlate(placa, source.driver_id_fleet);
     const conductorId = source.conductor_id || await ensureMiautoConductor(source.country, source.dni);
     const inserted = await query(
       `INSERT INTO module_miauto_solicitud
@@ -1521,38 +1509,36 @@ export const generarYegoMiAuto = async (id, options = {}) => {
   // Generar cuotas para semanas entre depósito y el lunes de hoy
   const todayMonday = mondayOfWeekContainingYmd(getLimaYmd(new Date()));
   if (todayMonday > weekStartFirstCuota) {
-    // Buscar driver Yango por placa o driver_id_fleet
+    // La identidad Yango de cada contrato se resuelve exclusivamente por su placa.
     const solDrv = await query(
       `SELECT s.driver_id_fleet, s.placa_asignada
        FROM module_miauto_solicitud s WHERE s.id = $1`,
       [id]
     );
     const solData = solDrv.rows[0];
-    let driverId = solData?.driver_id_fleet || null;
-    let parkId = MIAUTO_PARK_ID;
-
-    if (!driverId && solData?.placa_asignada) {
-      const placaNorm = String(solData.placa_asignada).trim().toUpperCase().replace(/\s+/g, '');
-      const drvRes = await query(
-        `SELECT d.driver_id, d.park_id FROM drivers d
-         WHERE TRIM(COALESCE(d.park_id::text, '')) = $1
-           AND d.work_status = 'working'
-           AND UPPER(REGEXP_REPLACE(TRIM(COALESCE(d.car_number, '')), '\\\\s', '', 'g')) = $2
-         LIMIT 1`,
-        [MIAUTO_PARK_ID, placaNorm]
+    let plateDriver = null;
+    try {
+      plateDriver = await resolveWorkingMiautoDriverForPlate(
+        solData?.placa_asignada,
+        solData?.driver_id_fleet
       );
-      if (drvRes.rows.length > 0) {
-        driverId = drvRes.rows[0].driver_id;
-        parkId = drvRes.rows[0].park_id || MIAUTO_PARK_ID;
-      }
+    } catch (error) {
+      logger.warn(
+        `Mi Auto generarYegoMiAuto: no se generan cuotas intermedias para ${id}: ${error.message}`
+      );
     }
 
-    if (driverId) {
+    if (plateDriver) {
       for (let monday = addDaysYmd(weekStartFirstCuota, 7); monday <= todayMonday; monday = addDaysYmd(monday, 7)) {
         const { dateFrom, dateTo } = limaWeekStartToMiAutoIncomeRange(monday);
         let incomeResult = { count_completed: 0, partner_fees: 0 };
         try {
-          const income = await getDriverIncome(dateFrom, dateTo, driverId, parkId);
+          const income = await getDriverIncome(
+            dateFrom,
+            dateTo,
+            plateDriver.driver_id,
+            plateDriver.park_id
+          );
           if (income.success) {
             incomeResult = { count_completed: income.count_completed || 0, partner_fees: income.partner_fees || 0 };
           }
@@ -1571,8 +1557,6 @@ export const generarYegoMiAuto = async (id, options = {}) => {
           logger.warn(`Mi Auto generarYegoMiAuto: falló cuota semana ${monday} para ${id}: ${e.message}`);
         }
       }
-    } else {
-      logger.warn(`Mi Auto generarYegoMiAuto: sin driver Yango para solicitud ${id}, no se generan cuotas intermedias`);
     }
   }
 

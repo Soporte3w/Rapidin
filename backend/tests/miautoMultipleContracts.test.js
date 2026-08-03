@@ -78,3 +78,17 @@ test('viajes y recaudo semanal usan la misma identidad activa de la placa', () =
   assert.match(metricsRoute, /getDriverGoals\(plateDriver\.driver_id\)/);
   assert.doesNotMatch(metricsRoute, /getDriverGoals\(sol\.driver_id_fleet\)/);
 });
+
+test('la reparación de la Semana 38 retira solo el recaudo duplicado y conserva el cobro Fleet', () => {
+  const migration = read('database/migrations/051_fix_miauto_duplicated_plate_income.sql');
+
+  assert.match(migration, /f76513b5-62db-4e6a-a551-8a60314cc40e/);
+  assert.match(migration, /90ae700e-38e6-4037-b682-0087ef95cc12/);
+  assert.match(migration, /partner_fees_raw = 0/);
+  assert.match(migration, /partner_fees_83 = 0/);
+  assert.match(migration, /partner_fees_yango_raw = NULL/);
+  assert.match(migration, /amount_due = 520\.00/);
+  assert.match(migration, /c\.paid_amount = 260\.00/);
+  assert.doesNotMatch(migration, /SET[\s\S]*paid_amount\s*=/);
+  assert.match(migration, /data_migration_051/);
+});

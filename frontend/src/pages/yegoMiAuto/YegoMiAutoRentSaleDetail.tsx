@@ -1648,7 +1648,7 @@ export default function YegoMiAutoRentSaleDetail() {
           </button>
         </div>
       )}
-      <header className="bg-[#8B1A1A] rounded-lg p-4 lg:sticky lg:top-0 lg:z-30 lg:shrink-0 lg:p-5">
+      <header className="rounded-lg bg-[#8B1A1A] p-4 lg:p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-3">
@@ -1982,7 +1982,7 @@ export default function YegoMiAutoRentSaleDetail() {
 
       {/* Cronograma semanal + Otros gastos (pestañas) */}
       <div className="relative min-h-[200px] rounded-lg border border-gray-200 bg-white shadow-sm">
-        <div className="flex shrink-0 border-b border-gray-200 px-2 sm:px-3 gap-0.5" role="tablist" aria-label="Cronograma y otros gastos">
+        <div className="sticky top-0 z-30 flex gap-0.5 border-b border-gray-200 bg-white px-2 shadow-sm sm:px-3" role="tablist" aria-label="Cronograma y otros gastos">
           <button
             type="button"
             role="tab"
@@ -2021,7 +2021,7 @@ export default function YegoMiAutoRentSaleDetail() {
         ) : (
           <>
           <div className="px-4 pt-3 pb-1">
-            <div className="-mx-1 overflow-x-auto rounded-lg border border-gray-100 bg-white px-1 sm:mx-0 sm:px-0">
+            <div className="-mx-1 overflow-x-auto rounded-lg border border-gray-100 bg-white px-1 sm:mx-0 sm:px-0 xl:overflow-visible">
             <table className="w-full min-w-[1280px] table-fixed border-collapse text-sm">
               <colgroup>
                 <col style={{ width: '8.5%' }} />
@@ -2037,7 +2037,7 @@ export default function YegoMiAutoRentSaleDetail() {
                 <col style={{ width: '6%' }} />
                 <col style={{ width: '8.5%' }} />
               </colgroup>
-              <thead className="sticky top-0 z-10">
+              <thead className="sticky top-0 z-20 xl:top-[49px]">
                 <tr className="border-b border-gray-200 bg-gray-50/80">
                   <th className="sticky left-0 z-[1] bg-gray-50/95 py-2.5 pl-3 pr-1.5 align-middle text-left text-[11px] font-semibold uppercase tracking-wide text-gray-700 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.06)] leading-tight">
                     <span className="block">Semana</span>

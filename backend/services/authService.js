@@ -1,9 +1,9 @@
-import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query } from '../config/database.js';
 import { generateToken } from '../config/jwt.js';
 import { RRHH_USERS_TABLE, SYSTEM_ROLES_TABLE, SYSTEM_USERS_TABLE } from '../config/systemUsers.js';
 import { logger } from '../utils/logger.js';
+import { verifyStoredPassword } from '../utils/passwordVerification.js';
 import { getPartnerNameById } from './partnersService.js';
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helpers.js';
 import { sendEvolutionGoTextMessage } from './evolutionGoWhatsAppService.js';
@@ -41,7 +41,7 @@ export const login = async (identifier, password) => {
         throw new Error('Usuario inactivo');
     }
 
-    const validPassword = await bcrypt.compare(password, user.password_hash);
+    const validPassword = await verifyStoredPassword(password, user.password_hash);
 
     if (!validPassword) {
         throw new Error('Credenciales inválidas');

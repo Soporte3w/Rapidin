@@ -21,6 +21,11 @@ type DriverOption = {
   contracts: number;
 };
 
+type WeekOption = {
+  value: string;
+  label: string;
+};
+
 function dateToYmd(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -49,6 +54,19 @@ function defaultWeekRange() {
     from: addDaysYmd(currentMonday, -14),
     to: currentMonday,
   };
+}
+
+function formatShortDate(value: string): string {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Intl.DateTimeFormat('es-PE', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  }).format(new Date(year, month - 1, day, 12, 0, 0)).replace('.', '');
+}
+
+function weekRangeLabel(monday: string): string {
+  return `${formatShortDate(monday)} – ${formatShortDate(addDaysYmd(monday, 6))}`;
 }
 
 async function responseErrorMessage(error: any): Promise<string> {
@@ -141,8 +159,34 @@ export function MiautoControlReportExportModal({
       .sort((a, b) => a.label.localeCompare(b.label, 'es'));
   }, [contracts]);
 
-  const normalizedFrom = weekFrom ? mondayOfYmd(weekFrom) : '';
-  const normalizedTo = weekTo ? mondayOfYmd(weekTo) : '';
+  const weekOptions = useMemo<WeekOption[]>(() => {
+    const currentMonday = mondayOfYmd(dateToYmd(new Date()));
+    const contractWeeks = contracts
+      .map((row) => row.fecha_inicio_cobro_semanal?.slice(0, 10))
+      .filter(Boolean)
+      .map(mondayOfYmd);
+    const firstWeek = [weekFrom, weekTo, currentMonday, ...contractWeeks]
+      .filter(Boolean)
+      .sort()[0];
+    const lastWeek = [weekFrom, weekTo, currentMonday, ...contractWeeks]
+      .filter(Boolean)
+      .sort()
+      .at(-1);
+    if (!firstWeek || !lastWeek) return [];
+
+    const options: WeekOption[] = [];
+    for (let monday = firstWeek; monday <= lastWeek; monday = addDaysYmd(monday, 7)) {
+      options.push({ value: monday, label: weekRangeLabel(monday) });
+    }
+    return options;
+  }, [contracts, weekFrom, weekTo]);
+
+  const weekToOptions = useMemo(
+    () => weekOptions.filter((option) => option.value >= weekFrom),
+    [weekOptions, weekFrom]
+  );
+  const normalizedFrom = weekFrom;
+  const normalizedTo = weekTo;
   const invalidRange = !normalizedFrom || !normalizedTo || normalizedTo < normalizedFrom;
 
   const handleExport = async () => {
@@ -197,7 +241,7 @@ export function MiautoControlReportExportModal({
         >
           <header className="flex items-start justify-between gap-4 border-b border-gray-200 px-5 py-4">
             <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-green-100 text-green-700">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-100 text-[#991B1B]">
                 <FileSpreadsheet className="h-5 w-5" />
               </div>
               <div>
@@ -214,26 +258,36 @@ export function MiautoControlReportExportModal({
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label htmlFor="miauto-report-week-from" className="mb-1.5 block text-xs font-semibold text-gray-800">Semana desde</label>
-                <input
+                <select
                   id="miauto-report-week-from"
-                  type="date"
                   value={weekFrom}
-                  onChange={(event) => setWeekFrom(event.target.value)}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-red-600 focus:ring-2 focus:ring-red-100"
-                />
+                  onChange={(event) => {
+                    const nextWeek = event.target.value;
+                    setWeekFrom(nextWeek);
+                    if (weekTo < nextWeek) setWeekTo(nextWeek);
+                  }}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-red-600 focus:ring-2 focus:ring-red-100"
+                >
+                  {weekOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label htmlFor="miauto-report-week-to" className="mb-1.5 block text-xs font-semibold text-gray-800">Semana hasta</label>
-                <input
+                <select
                   id="miauto-report-week-to"
-                  type="date"
                   value={weekTo}
                   onChange={(event) => setWeekTo(event.target.value)}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-red-600 focus:ring-2 focus:ring-red-100"
-                />
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-red-600 focus:ring-2 focus:ring-red-100"
+                >
+                  {weekToOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
               </div>
             </div>
-            <p className="-mt-3 text-xs text-gray-500">Cada fecha se ajusta automáticamente a su semana de lunes a domingo.</p>
+            <p className="-mt-3 text-xs text-gray-500">Cada opción representa una semana completa, de lunes a domingo.</p>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
@@ -267,7 +321,7 @@ export function MiautoControlReportExportModal({
               </div>
             </div>
 
-            <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-[#7F1D1D]">
               El archivo tendrá una fila por contrato y placa. Un conductor con más de un contrato aparecerá una vez por cada vehículo.
             </div>
 
@@ -282,7 +336,7 @@ export function MiautoControlReportExportModal({
               type="button"
               onClick={handleExport}
               disabled={exporting || loadingContracts || invalidRange}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-green-700 px-4 py-2 text-sm font-semibold text-white hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#991B1B] px-4 py-2 text-sm font-semibold text-white hover:bg-[#7F1D1D] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Download className="h-4 w-4" />
               {exporting ? 'Generando Excel…' : 'Descargar Excel'}

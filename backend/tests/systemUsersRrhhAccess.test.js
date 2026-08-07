@@ -20,7 +20,20 @@ test('la autenticación administrativa exige una identidad vinculada con RR. HH.
   assert.doesNotMatch(middlewareSource, /LEFT JOIN \$\{RRHH_USERS_TABLE\}/);
   assert.doesNotMatch(authServiceSource, /LEFT JOIN \$\{RRHH_USERS_TABLE\}/);
   assert.match(middlewareSource, /JOIN \$\{RRHH_USERS_TABLE\} h ON h\.id = u\.rrhh_user_id/);
-  assert.match(authServiceSource, /WHERE LOWER\(h\.email\) = LOWER\(\$1\)/);
+  assert.match(authServiceSource, /WHERE LOWER\(h\.username\) = LOWER\(\$1\)/);
+  assert.match(authServiceSource, /OR LOWER\(h\.email\) = LOWER\(\$1\)/);
+  assert.match(authServiceSource, /OR h\.dni = \$1/);
+});
+
+test('el login acepta usuario, correo o DNI de RR. HH.', async () => {
+  const validationsSource = await readBackendFile('middleware/validations.js');
+
+  const loginValidation = validationsSource.slice(
+    validationsSource.indexOf('export const validateLogin'),
+    validationsSource.indexOf('export const validateDNI'),
+  );
+  assert.doesNotMatch(loginValidation, /isEmail/);
+  assert.match(loginValidation, /isLength\(\{ min: 1, max: 255 \}\)/);
 });
 
 test('la administración de usuarios solo concede acceso desde el directorio de RR. HH.', async () => {

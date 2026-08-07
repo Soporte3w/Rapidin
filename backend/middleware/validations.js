@@ -14,7 +14,12 @@ export const validateResults = (req, res, next) => {
 };
 
 export const validateLogin = [
-  body('email').isEmail().withMessage('Email inválido'),
+  body('email')
+    .isString()
+    .withMessage('Usuario inválido')
+    .trim()
+    .isLength({ min: 1, max: 255 })
+    .withMessage('Usuario requerido'),
   body('password').notEmpty().withMessage('Contraseña requerida'),
   validateResults
 ];
@@ -61,9 +66,4 @@ export const validateSolicitudExpenseUUIDs = [
   param('expenseId').isUUID().withMessage('ID de cuota de otros gastos inválido'),
   validateResults
 ];
-
-
-
-
-
 

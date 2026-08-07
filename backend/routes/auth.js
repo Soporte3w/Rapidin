@@ -9,8 +9,8 @@ const router = express.Router();
 
 router.post('/login', validateLogin, async (req, res) => {
     try {
-        const { email, password } = req.body;
-        const result = await login(email, password);
+        const { email: identifier, password } = req.body;
+        const result = await login(identifier, password);
         return successResponse(res, result, 'Login exitoso');
     } catch (error) {
         logger.error('Error en login:', error);
@@ -67,10 +67,5 @@ router.get('/me', verifyToken, async (req, res) => {
 });
 
 export default router;
-
-
-
-
-
 
 

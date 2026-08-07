@@ -8,7 +8,7 @@ import { getPartnerNameById } from './partnersService.js';
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helpers.js';
 import { sendEvolutionGoTextMessage } from './evolutionGoWhatsAppService.js';
 
-export const login = async (email, password) => {
+export const login = async (identifier, password) => {
     const result = await query(
         `SELECT
             u.id,
@@ -25,8 +25,10 @@ export const login = async (email, password) => {
          FROM ${SYSTEM_USERS_TABLE} u
          LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
          JOIN ${RRHH_USERS_TABLE} h ON h.id = u.rrhh_user_id
-         WHERE LOWER(h.email) = LOWER($1)`,
-        [email]
+         WHERE LOWER(h.username) = LOWER($1)
+            OR LOWER(h.email) = LOWER($1)
+            OR h.dni = $1`,
+        [String(identifier || '').trim()]
     );
 
     if (result.rows.length === 0) {

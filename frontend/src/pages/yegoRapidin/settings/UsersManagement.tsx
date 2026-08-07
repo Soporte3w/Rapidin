@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import {
-  Plus,
   X,
   Pencil,
   Trash2,
@@ -14,6 +13,7 @@ import {
   KeyRound,
   UserCheck,
   UserX,
+  Search,
 } from 'lucide-react';
 import api from '../../../services/api';
 import toast from 'react-hot-toast';
@@ -111,13 +111,20 @@ type SystemRole = {
 
 type SystemUser = {
   id: string;
+  directory_user_id?: string | null;
+  system_user_id?: string | null;
+  source?: 'rrhh' | 'local';
   email: string;
   first_name?: string;
   last_name?: string;
-  role: string;
+  rrhh_role?: string | null;
+  employment_active?: boolean;
+  role?: string | null;
   country: string;
   active?: boolean;
   allowed_modules?: string[];
+  custom_allowed_modules?: string[] | null;
+  inherits_role_permissions?: boolean;
   last_access?: string | null;
 };
 
@@ -137,6 +144,8 @@ const createEmptyEditUserForm = () => ({
   country: 'PE',
   active: true,
   password: '',
+  use_role_permissions: true,
+  allowed_modules: getInitialPermissions(),
 });
 
 type ModalShellProps = {
@@ -258,6 +267,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
   const [roles, setRoles] = useState<SystemRole[]>([]);
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
+  const [search, setSearch] = useState('');
   const [open, setOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [roleOpen, setRoleOpen] = useState(false);
@@ -279,11 +289,23 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
   const activeUsers = users.filter((user) => user.active !== false).length;
   const inactiveUsers = Math.max(0, total - activeUsers);
   const activeRoles = roles.filter((role) => role.active).length;
-  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const filteredUsers = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return users;
+    return users.filter((user) => [
+      user.first_name,
+      user.last_name,
+      user.email,
+      user.rrhh_role,
+      user.role,
+    ].some((value) => String(value || '').toLowerCase().includes(term)));
+  }, [users, search]);
+  const filteredTotal = filteredUsers.length;
+  const totalPages = Math.max(1, Math.ceil(filteredTotal / limit));
   const paginatedUsers = useMemo(() => {
     const start = (page - 1) * limit;
-    return users.slice(start, start + limit);
-  }, [users, page, limit]);
+    return filteredUsers.slice(start, start + limit);
+  }, [filteredUsers, page, limit]);
   const roleOptions = useMemo(
     () => roles.length
       ? roles.filter((role) => role.active).map((role) => ({ value: role.code, label: role.name }))
@@ -306,6 +328,10 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
   useEffect(() => {
     if (totalPages > 0 && page > totalPages) setPage(totalPages);
   }, [totalPages, page]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search]);
 
   const fetchUsers = async () => {
     try {
@@ -418,8 +444,10 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
       last_name: user.last_name || '',
       role: user.role || '',
       country: user.country || 'PE',
-      active: user.active !== false,
+      active: user.active === true || (!user.system_user_id && user.employment_active !== false),
       password: '',
+      use_role_permissions: user.inherits_role_permissions !== false,
+      allowed_modules: user.custom_allowed_modules || user.allowed_modules || getInitialPermissions(),
     });
     setEditOpen(true);
   };
@@ -434,10 +462,15 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
         role: editFormData.role,
         country: editFormData.country,
         active: editFormData.active,
+        custom_allowed_modules: editFormData.use_role_permissions ? null : editFormData.allowed_modules,
       };
       if (editFormData.password.trim()) payload.password = editFormData.password;
-      await api.put(`/users/${editingUser.id}`, payload);
-      toast.success('Usuario actualizado correctamente');
+      if (editingUser.directory_user_id) {
+        await api.put(`/users/directory/${encodeURIComponent(editingUser.directory_user_id)}/access`, payload);
+      } else {
+        await api.put(`/users/${editingUser.system_user_id || editingUser.id}`, payload);
+      }
+      toast.success(editFormData.active ? 'Acceso actualizado correctamente' : 'Acceso desactivado correctamente');
       setEditOpen(false);
       setEditingUser(null);
       await refreshUsersAndRoles();
@@ -457,7 +490,11 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
     if (!userToDelete?.id) return;
     setLoadingDelete(true);
     try {
-      await api.delete(`/users/${userToDelete.id}`);
+      if (userToDelete.directory_user_id) {
+        await api.put(`/users/directory/${encodeURIComponent(userToDelete.directory_user_id)}/access`, { active: false });
+      } else {
+        await api.delete(`/users/${userToDelete.system_user_id || userToDelete.id}`);
+      }
       toast.success('Usuario desactivado correctamente');
       setDeleteOpen(false);
       setUserToDelete(null);
@@ -469,17 +506,17 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
     }
   };
 
-  const getRoleColor = (role: string) => {
+  const getRoleColor = (role?: string | null) => {
     const colors: { [key: string]: string } = {
       admin: 'bg-red-100 text-red-800 ring-red-200',
       analyst: 'bg-blue-100 text-blue-800',
       approver: 'bg-orange-100 text-orange-800',
       payer: 'bg-green-100 text-green-800',
     };
-    return colors[role] || 'bg-gray-100 text-gray-800';
+    return (role && colors[role]) || 'bg-gray-100 text-gray-800';
   };
 
-  const getRoleLabel = (role: string) => roleLabels[role] || role || 'Sin rol';
+  const getRoleLabel = (role?: string | null) => (role ? roleLabels[role] || role : 'Sin rol');
   const countRoleSections = (role: SystemRole) =>
     role.allowed_modules?.filter((permission) => permission.includes('.')).length || 0;
   const roleDeleteDisabledReason = (role: SystemRole) => {
@@ -501,7 +538,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
               </h2>
             </div>
             <p className="text-sm text-gray-500 mt-2">
-              Administra quién entra al sistema y qué secciones puede ver.
+              Directorio de RR. HH. con acceso, roles y permisos del financiador.
             </p>
           </div>
           <div className="flex flex-col sm:flex-row gap-2">
@@ -513,25 +550,18 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
               <KeyRound className="h-4 w-4" />
               Nuevo rol
             </button>
-            <button
-              onClick={() => setOpen(true)}
-              className="bg-red-700 hover:bg-red-800 text-white font-semibold py-2.5 px-4 rounded-lg transition-all shadow-sm flex items-center justify-center gap-2 text-sm whitespace-nowrap"
-            >
-              <Plus className="h-4 w-4" />
-              Nuevo usuario
-            </button>
           </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 border-t border-gray-100">
           <div className="p-4 border-b sm:border-r xl:border-b-0 border-gray-100">
-            <p className="text-xs font-semibold uppercase text-gray-500">Usuarios activos</p>
+            <p className="text-xs font-semibold uppercase text-gray-500">Con acceso</p>
             <div className="mt-2 flex items-center justify-between">
               <span className="text-2xl font-bold text-gray-950">{activeUsers}</span>
               <UserCheck className="h-5 w-5 text-green-600" />
             </div>
           </div>
           <div className="p-4 border-b sm:border-r sm:border-b-0 border-gray-100">
-            <p className="text-xs font-semibold uppercase text-gray-500">Usuarios inactivos</p>
+            <p className="text-xs font-semibold uppercase text-gray-500">Sin acceso</p>
             <div className="mt-2 flex items-center justify-between">
               <span className="text-2xl font-bold text-gray-950">{inactiveUsers}</span>
               <UserX className="h-5 w-5 text-gray-500" />
@@ -606,12 +636,26 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
       </section>
 
       <section className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="flex flex-col gap-2 px-5 py-4 border-b border-gray-100 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 px-5 py-4 border-b border-gray-100 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h3 className="text-base font-bold text-gray-950">Usuarios</h3>
-            <p className="text-xs text-gray-500 mt-0.5">Listado de cuentas con acceso administrativo.</p>
+            <h3 className="text-base font-bold text-gray-950">Directorio de usuarios</h3>
+            <p className="text-xs text-gray-500 mt-0.5">Los empleados sin una asignación aparecen automáticamente sin acceso.</p>
           </div>
-          <span className="rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700">{total} usuarios</span>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <label className="relative block">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Buscar nombre, correo o rol"
+                className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm outline-none focus:border-red-600 focus:ring-2 focus:ring-red-500 sm:w-72"
+              />
+            </label>
+            <span className="whitespace-nowrap rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700">
+              {filteredTotal === total ? `${total} usuarios` : `${filteredTotal} de ${total}`}
+            </span>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -621,7 +665,10 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                   Usuario
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                  Rol
+                  Rol RR. HH.
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  Rol financiador
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                   País
@@ -652,20 +699,29 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                     </div>
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap">
+                    <span className="px-3 py-1 text-xs font-semibold rounded-full bg-slate-100 text-slate-700">
+                      {user.rrhh_role || (user.source === 'local' ? 'Cuenta local' : 'Sin rol')}
+                    </span>
+                  </td>
+                  <td className="px-4 py-4 whitespace-nowrap">
                     <span className={`px-3 py-1 text-xs font-semibold rounded-full ${getRoleColor(user.role)}`}>
                       {getRoleLabel(user.role)}
                     </span>
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {user.country}
+                    {user.system_user_id ? user.country : '—'}
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap">
                     <span
                       className={`px-3 py-1 text-xs font-semibold rounded-full ${
-                        user.active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+                        !user.employment_active
+                          ? 'bg-amber-100 text-amber-800'
+                          : user.active
+                            ? 'bg-green-100 text-green-800'
+                            : 'bg-gray-100 text-gray-800'
                       }`}
                     >
-                      {user.active ? 'Activo' : 'Inactivo'}
+                      {!user.employment_active ? 'Inactivo en RR. HH.' : user.active ? 'Con acceso' : 'Sin acceso'}
                     </span>
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -681,26 +737,35 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                         type="button"
                         onClick={() => openEdit(user)}
                         className="p-2 text-gray-600 hover:bg-amber-50 hover:text-amber-700 rounded-lg transition-colors"
-                        title="Editar"
+                        title={user.active ? 'Editar acceso' : 'Asignar acceso'}
                       >
                         <Pencil className="h-4 w-4" />
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => openDelete(user)}
-                        className="p-2 text-gray-600 hover:bg-red-50 hover:text-red-700 rounded-lg transition-colors"
-                        title="Desactivar"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      {user.active && (
+                        <button
+                          type="button"
+                          onClick={() => openDelete(user)}
+                          className="p-2 text-gray-600 hover:bg-red-50 hover:text-red-700 rounded-lg transition-colors"
+                          title="Desactivar acceso"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
               ))}
+              {paginatedUsers.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-500">
+                    No se encontraron usuarios con ese criterio.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
-        {total > 0 && (
+        {filteredTotal > 0 && (
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 py-3 border-t border-gray-200">
             <div className="flex items-center gap-2">
               <span className="text-xs font-medium text-gray-500">Por página:</span>
@@ -982,7 +1047,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                   <Pencil className="h-5 w-5" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-bold text-gray-950">Editar usuario</h2>
+                  <h2 className="text-lg font-bold text-gray-950">{editingUser.active ? 'Editar acceso' : 'Asignar acceso'}</h2>
                   <p className="text-xs text-gray-500">{editingUser.email}</p>
                 </div>
               </div>
@@ -995,7 +1060,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
             </div>
             <div className="p-5 space-y-5 overflow-y-auto">
               <div className="rounded-lg border border-gray-200 p-4">
-                <h3 className="text-sm font-bold text-gray-950 mb-4">Cuenta</h3>
+                <h3 className="text-sm font-bold text-gray-950 mb-4">Identidad</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1.5">Email</label>
@@ -1007,6 +1072,17 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                 />
               </div>
 
+              {editingUser.source === 'rrhh' ? (
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Rol en RR. HH.</label>
+                <input
+                  type="text"
+                  value={editingUser.rrhh_role || 'Sin rol registrado'}
+                  disabled
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-600 text-sm"
+                />
+              </div>
+              ) : (
               <div>
                 <label className="block text-xs font-semibold text-gray-900 mb-1.5">Nueva contraseña (opcional)</label>
                 <input
@@ -1017,6 +1093,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
                 />
               </div>
+              )}
                 </div>
               </div>
 
@@ -1029,7 +1106,8 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                     type="text"
                     value={editFormData.first_name}
                     onChange={(e) => setEditFormData({ ...editFormData, first_name: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
+                    disabled={editingUser.source === 'rrhh'}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm disabled:border-gray-200 disabled:bg-gray-50 disabled:text-gray-600"
                   />
                 </div>
                 <div>
@@ -1038,7 +1116,8 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                     type="text"
                     value={editFormData.last_name}
                     onChange={(e) => setEditFormData({ ...editFormData, last_name: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
+                    disabled={editingUser.source === 'rrhh'}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm disabled:border-gray-200 disabled:bg-gray-50 disabled:text-gray-600"
                   />
                 </div>
               </div>
@@ -1050,6 +1129,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                   onChange={(e) => applyRoleToForm(e.target.value, 'edit')}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
                 >
+                  <option value="">Selecciona un rol</option>
                   {roleOptions.map((role) => (
                     <option key={role.value} value={role.value}>{role.label}</option>
                   ))}
@@ -1074,10 +1154,56 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                   id="edit-active"
                   checked={editFormData.active}
                   onChange={(e) => setEditFormData({ ...editFormData, active: e.target.checked })}
-                  className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                  disabled={editingUser.employment_active === false}
+                  className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500 disabled:opacity-50"
                 />
-                <label htmlFor="edit-active" className="text-sm font-medium text-gray-700">Usuario activo</label>
+                <div>
+                  <label htmlFor="edit-active" className="text-sm font-medium text-gray-700">Acceso al financiador</label>
+                  <p className="text-xs text-gray-500">
+                    {editingUser.employment_active === false
+                      ? 'RR. HH. tiene a esta persona inactiva; no puede habilitarse aquí.'
+                      : 'Al desactivarlo no se modifica su estado laboral en RR. HH.'}
+                  </p>
+                </div>
               </div>
+
+              <FormPanel
+                title="Permisos del usuario"
+                subtitle="Puede heredar la plantilla del rol o tener una selección particular."
+              >
+                <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <label className={`cursor-pointer rounded-lg border p-3 ${editFormData.use_role_permissions ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}>
+                    <input
+                      type="radio"
+                      name="permission-mode"
+                      checked={editFormData.use_role_permissions}
+                      onChange={() => setEditFormData({ ...editFormData, use_role_permissions: true })}
+                      className="mr-2 text-red-600 focus:ring-red-500"
+                    />
+                    <span className="text-sm font-semibold text-gray-800">Heredar del rol</span>
+                  </label>
+                  <label className={`cursor-pointer rounded-lg border p-3 ${!editFormData.use_role_permissions ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}>
+                    <input
+                      type="radio"
+                      name="permission-mode"
+                      checked={!editFormData.use_role_permissions}
+                      onChange={() => setEditFormData({ ...editFormData, use_role_permissions: false })}
+                      className="mr-2 text-red-600 focus:ring-red-500"
+                    />
+                    <span className="text-sm font-semibold text-gray-800">Personalizar permisos</span>
+                  </label>
+                </div>
+                {editFormData.use_role_permissions ? (
+                  <p className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                    Se aplicarán automáticamente los permisos configurados para {getRoleLabel(editFormData.role)}.
+                  </p>
+                ) : (
+                  <PermissionsSelector
+                    value={editFormData.allowed_modules}
+                    onChange={(allowed_modules) => setEditFormData({ ...editFormData, allowed_modules })}
+                  />
+                )}
+              </FormPanel>
             </div>
             <div className="flex justify-end gap-3 p-5 border-t border-gray-200 bg-gray-50">
               <button
@@ -1088,7 +1214,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
               </button>
               <button
                 onClick={handleEditSubmit}
-                disabled={loadingEdit}
+                disabled={loadingEdit || (editFormData.active && (!editFormData.role || editingUser.employment_active === false))}
                 className="px-6 py-2 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-lg transition-all font-semibold shadow-md text-sm disabled:opacity-70 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {loadingEdit && <Loader2 className="h-4 w-4 animate-spin" />}

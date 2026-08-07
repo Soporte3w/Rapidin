@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query } from '../config/database.js';
 import { generateToken } from '../config/jwt.js';
-import { SYSTEM_ROLES_TABLE, SYSTEM_USERS_TABLE } from '../config/systemUsers.js';
+import { RRHH_USERS_TABLE, SYSTEM_ROLES_TABLE, SYSTEM_USERS_TABLE } from '../config/systemUsers.js';
 import { logger } from '../utils/logger.js';
 import { getPartnerNameById } from './partnersService.js';
 import { normalizePhoneForDb, phoneDigitsForRapidinMatch } from '../utils/helpers.js';
@@ -11,13 +11,21 @@ import { sendEvolutionGoTextMessage } from './evolutionGoWhatsAppService.js';
 export const login = async (email, password) => {
     const result = await query(
         `SELECT
-            u.id, u.email, u.password_hash, u.first_name, u.last_name, u.role, u.country, u.active,
-            COALESCE(r.allowed_modules, u.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
+            u.id,
+            COALESCE(h.email, u.email) AS email,
+            COALESCE(h.password_hash, u.password_hash) AS password_hash,
+            COALESCE(h.first_name, u.first_name) AS first_name,
+            COALESCE(h.last_name, u.last_name) AS last_name,
+            u.role,
+            u.country,
+            (u.active AND COALESCE(h.is_active, true)) AS active,
+            COALESCE(u.custom_allowed_modules, r.allowed_modules, u.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
             COALESCE(r.base_role, u.role) AS base_role,
             r.name AS role_name
          FROM ${SYSTEM_USERS_TABLE} u
          LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
-         WHERE u.email = $1`,
+         LEFT JOIN ${RRHH_USERS_TABLE} h ON h.id = u.rrhh_user_id
+         WHERE LOWER(COALESCE(h.email, u.email)) = LOWER($1)`,
         [email]
     );
 
@@ -63,11 +71,23 @@ export const login = async (email, password) => {
 export const getCurrentUser = async (userId) => {
     const result = await query(
         `SELECT
-            u.id, u.email, u.first_name, u.last_name, u.role, u.country, u.active, u.last_access, u.created_at,
+            u.id,
+            COALESCE(h.email, u.email) AS email,
+            COALESCE(h.first_name, u.first_name) AS first_name,
+            COALESCE(h.last_name, u.last_name) AS last_name,
+            u.role,
+            u.country,
+            (u.active AND COALESCE(h.is_active, true)) AS active,
+            u.last_access,
+            u.created_at,
             COALESCE(r.base_role, u.role) AS base_role,
-            r.name AS role_name
+            r.name AS role_name,
+            COALESCE(u.custom_allowed_modules, r.allowed_modules, u.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
+            u.rrhh_user_id,
+            COALESCE(h.is_active, true) AS employment_active
          FROM ${SYSTEM_USERS_TABLE} u
          LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
+         LEFT JOIN ${RRHH_USERS_TABLE} h ON h.id = u.rrhh_user_id
          WHERE u.id = $1`,
         [userId]
     );

@@ -1,7 +1,12 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import { query } from '../config/database.js';
-import { LEGACY_USERS_TABLE, SYSTEM_ROLES_TABLE, SYSTEM_USERS_TABLE } from '../config/systemUsers.js';
+import { query, withTransaction } from '../config/database.js';
+import {
+  LEGACY_USERS_TABLE,
+  RRHH_USERS_TABLE,
+  SYSTEM_ROLES_TABLE,
+  SYSTEM_USERS_TABLE,
+} from '../config/systemUsers.js';
 import { verifyToken, verifyRole } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validations.js';
 import { successResponse, errorResponse } from '../utils/responses.js';
@@ -30,6 +35,12 @@ function normalizeAllowedModules(allowedModules) {
   if (!Array.isArray(allowedModules)) return DEFAULT_ALLOWED_MODULES;
   const modules = [...new Set(allowedModules.map((value) => String(value || '').trim()).filter(Boolean))];
   return modules.length > 0 ? modules : DEFAULT_ALLOWED_MODULES;
+}
+
+function normalizeCustomAllowedModules(allowedModules) {
+  if (allowedModules == null) return null;
+  if (!Array.isArray(allowedModules)) return null;
+  return [...new Set(allowedModules.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
 function normalizeRoleCode(value) {
@@ -99,20 +110,55 @@ async function syncLegacyUser(user) {
 router.get('/', async (req, res) => {
   try {
     const result = await query(
-      `SELECT
-         u.id,
-         u.email,
-         u.first_name,
-         u.last_name,
-         u.role,
-         u.country,
-         u.active,
-         COALESCE(r.allowed_modules, u.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
-         u.last_access,
-         u.created_at
-       FROM ${SYSTEM_USERS_TABLE} u
-       LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
-       ORDER BY u.created_at DESC`
+      `WITH rrhh_directory AS (
+         SELECT
+           h.id AS id,
+           h.id AS directory_user_id,
+           u.id AS system_user_id,
+           'rrhh'::text AS source,
+           h.email,
+           h.first_name,
+           h.last_name,
+           h.role AS rrhh_role,
+           h.is_active AS employment_active,
+           u.role,
+           COALESCE(u.country, 'PE') AS country,
+           (u.id IS NOT NULL AND u.active AND h.is_active) AS active,
+           COALESCE(u.custom_allowed_modules, r.allowed_modules, u.allowed_modules, ARRAY[]::text[]) AS allowed_modules,
+           u.custom_allowed_modules,
+           (u.custom_allowed_modules IS NULL) AS inherits_role_permissions,
+           u.last_access,
+           h.created_at
+         FROM ${RRHH_USERS_TABLE} h
+         LEFT JOIN ${SYSTEM_USERS_TABLE} u ON u.rrhh_user_id = h.id
+         LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
+       ), local_accounts AS (
+         SELECT
+           u.id::text AS id,
+           NULL::text AS directory_user_id,
+           u.id AS system_user_id,
+           'local'::text AS source,
+           u.email,
+           u.first_name,
+           u.last_name,
+           NULL::text AS rrhh_role,
+           true AS employment_active,
+           u.role,
+           u.country,
+           u.active,
+           COALESCE(u.custom_allowed_modules, r.allowed_modules, u.allowed_modules, ARRAY[]::text[]) AS allowed_modules,
+           u.custom_allowed_modules,
+           (u.custom_allowed_modules IS NULL) AS inherits_role_permissions,
+           u.last_access,
+           u.created_at
+         FROM ${SYSTEM_USERS_TABLE} u
+         LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
+         WHERE u.rrhh_user_id IS NULL
+       )
+       SELECT * FROM rrhh_directory
+       UNION ALL
+       SELECT * FROM local_accounts
+       ORDER BY employment_active DESC, active DESC, last_name ASC, first_name ASC, email ASC`
     );
     return successResponse(res, result.rows);
   } catch (error) {
@@ -145,6 +191,166 @@ router.get('/roles', async (req, res) => {
   } catch (error) {
     logger.error('Error obteniendo roles:', error);
     return errorResponse(res, 'Error obteniendo roles', 500);
+  }
+});
+
+router.put('/directory/:id/access', async (req, res) => {
+  try {
+    const directoryUserId = String(req.params.id || '').trim();
+    const { role, country, active, custom_allowed_modules } = req.body;
+
+    if (!directoryUserId) {
+      return errorResponse(res, 'Usuario de RR. HH. inválido', 400);
+    }
+    if (country != null && !['PE', 'CO'].includes(country)) {
+      return errorResponse(res, 'País inválido', 400);
+    }
+    if (active != null && typeof active !== 'boolean') {
+      return errorResponse(res, 'Estado de acceso inválido', 400);
+    }
+    if (custom_allowed_modules !== undefined && custom_allowed_modules !== null && !Array.isArray(custom_allowed_modules)) {
+      return errorResponse(res, 'Permisos personalizados inválidos', 400);
+    }
+
+    const updatedUser = await withTransaction(async () => {
+      const directoryResult = await query(
+        `SELECT id, email, password_hash, first_name, last_name, role, is_active
+         FROM ${RRHH_USERS_TABLE}
+         WHERE id = $1
+         FOR UPDATE`,
+        [directoryUserId]
+      );
+      const directoryUser = directoryResult.rows[0];
+      if (!directoryUser) {
+        const error = new Error('Usuario de RR. HH. no encontrado');
+        error.statusCode = 404;
+        throw error;
+      }
+
+      const existingResult = await query(
+        `SELECT id, rrhh_user_id, role, country, active, custom_allowed_modules
+         FROM ${SYSTEM_USERS_TABLE}
+         WHERE rrhh_user_id = $1 OR LOWER(email) = LOWER($2)
+         ORDER BY (rrhh_user_id = $1) DESC
+         LIMIT 1
+         FOR UPDATE`,
+        [directoryUser.id, directoryUser.email]
+      );
+      const existing = existingResult.rows[0] || null;
+      const resolvedActive = active ?? existing?.active ?? false;
+
+      if (existing?.rrhh_user_id && existing.rrhh_user_id !== directoryUser.id) {
+        const error = new Error('El email ya está vinculado a otro usuario de RR. HH.');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      if (resolvedActive && !directoryUser.is_active) {
+        const error = new Error('No se puede habilitar a un usuario inactivo en RR. HH.');
+        error.statusCode = 409;
+        throw error;
+      }
+      if (existing?.id === req.user.id && active === false) {
+        const error = new Error('No puedes desactivar tu propio acceso');
+        error.statusCode = 409;
+        throw error;
+      }
+      if (existing?.id === req.user.id && role && role !== existing.role) {
+        const error = new Error('No puedes cambiar tu propio rol');
+        error.statusCode = 409;
+        throw error;
+      }
+      if (!existing && !resolvedActive) return null;
+
+      const resolvedRoleCode = role || existing?.role;
+      const roleRecord = await getActiveRole(resolvedRoleCode);
+      if (!roleRecord) {
+        const error = new Error('Selecciona un rol activo para habilitar el acceso');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const hasCustomPermissions = Object.prototype.hasOwnProperty.call(req.body, 'custom_allowed_modules');
+      const customModules = hasCustomPermissions
+        ? normalizeCustomAllowedModules(custom_allowed_modules)
+        : existing?.custom_allowed_modules ?? null;
+      const effectiveModules = customModules ?? normalizeAllowedModules(roleRecord.allowed_modules);
+      const resolvedCountry = country || existing?.country || 'PE';
+
+      let result;
+      if (existing) {
+        result = await query(
+          `UPDATE ${SYSTEM_USERS_TABLE}
+           SET rrhh_user_id = $1,
+               email = $2,
+               password_hash = $3,
+               first_name = $4,
+               last_name = $5,
+               role = $6,
+               country = $7,
+               active = $8,
+               allowed_modules = $9,
+               custom_allowed_modules = $10,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $11
+           RETURNING id, email, password_hash, first_name, last_name, role, country, active,
+                     allowed_modules, custom_allowed_modules, rrhh_user_id, last_access, created_at`,
+          [
+            directoryUser.id,
+            directoryUser.email,
+            directoryUser.password_hash,
+            directoryUser.first_name,
+            directoryUser.last_name,
+            roleRecord.code,
+            resolvedCountry,
+            resolvedActive,
+            effectiveModules,
+            customModules,
+            existing.id,
+          ]
+        );
+      } else {
+        result = await query(
+          `INSERT INTO ${SYSTEM_USERS_TABLE}
+             (rrhh_user_id, email, password_hash, first_name, last_name, role, country, active,
+              allowed_modules, custom_allowed_modules)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           RETURNING id, email, password_hash, first_name, last_name, role, country, active,
+                     allowed_modules, custom_allowed_modules, rrhh_user_id, last_access, created_at`,
+          [
+            directoryUser.id,
+            directoryUser.email,
+            directoryUser.password_hash,
+            directoryUser.first_name,
+            directoryUser.last_name,
+            roleRecord.code,
+            resolvedCountry,
+            resolvedActive,
+            effectiveModules,
+            customModules,
+          ]
+        );
+      }
+
+      await syncLegacyUser(result.rows[0]);
+      return result.rows[0];
+    });
+
+    if (!updatedUser) {
+      return successResponse(res, null, 'El usuario ya estaba sin acceso');
+    }
+    const { password_hash, ...publicUser } = updatedUser;
+    return successResponse(
+      res,
+      publicUser,
+      publicUser.active ? 'Acceso actualizado correctamente' : 'Acceso desactivado correctamente'
+    );
+  } catch (error) {
+    logger.error('Error actualizando acceso desde RR. HH.:', error);
+    if (error.code === '23505') {
+      return errorResponse(res, 'El email ya está vinculado a otra cuenta del sistema', 409);
+    }
+    return errorResponse(res, error.message || 'Error actualizando el acceso', error.statusCode || 500);
   }
 });
 
@@ -309,7 +515,17 @@ router.post('/', async (req, res) => {
 router.put('/:id', validateUUID, async (req, res) => {
   try {
     const { id } = req.params;
-    const { first_name, last_name, role, country, active, password } = req.body;
+    const { first_name, last_name, role, country, active, password, custom_allowed_modules } = req.body;
+
+    if (id === req.user.id && active === false) {
+      return errorResponse(res, 'No puedes desactivar tu propio acceso', 409);
+    }
+    if (id === req.user.id && role && role !== req.user.role) {
+      return errorResponse(res, 'No puedes cambiar tu propio rol', 409);
+    }
+    if (custom_allowed_modules !== undefined && custom_allowed_modules !== null && !Array.isArray(custom_allowed_modules)) {
+      return errorResponse(res, 'Permisos personalizados inválidos', 400);
+    }
 
     const updates = [];
     const values = [];
@@ -341,6 +557,15 @@ router.put('/:id', validateUUID, async (req, res) => {
       updates.push(`active = $${paramCount++}`);
       values.push(active);
     }
+    if (custom_allowed_modules !== undefined) {
+      const customModules = normalizeCustomAllowedModules(custom_allowed_modules);
+      updates.push(`custom_allowed_modules = $${paramCount++}`);
+      values.push(customModules);
+      if (customModules) {
+        updates.push(`allowed_modules = $${paramCount++}`);
+        values.push(customModules);
+      }
+    }
     if (password && String(password).trim()) {
       const passwordHash = await bcrypt.hash(String(password).trim(), 10);
       updates.push(`password_hash = $${paramCount++}`);
@@ -354,7 +579,10 @@ router.put('/:id', validateUUID, async (req, res) => {
     updates.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
     const result = await query(
-      `UPDATE ${SYSTEM_USERS_TABLE} SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING id, email, password_hash, first_name, last_name, role, country, active, allowed_modules, last_access, created_at`,
+      `UPDATE ${SYSTEM_USERS_TABLE} SET ${updates.join(', ')} WHERE id = $${paramCount}
+       RETURNING id, email, password_hash, first_name, last_name, role, country, active,
+                 COALESCE(custom_allowed_modules, allowed_modules) AS allowed_modules,
+                 custom_allowed_modules, rrhh_user_id, last_access, created_at`,
       values
     );
 
@@ -373,9 +601,14 @@ router.put('/:id', validateUUID, async (req, res) => {
 
 router.delete('/:id', validateUUID, async (req, res) => {
   try {
+    if (req.params.id === req.user.id) {
+      return errorResponse(res, 'No puedes desactivar tu propio acceso', 409);
+    }
     const result = await query(
       `UPDATE ${SYSTEM_USERS_TABLE} SET active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1
-       RETURNING id, email, password_hash, first_name, last_name, role, country, active, allowed_modules, last_access, created_at`,
+       RETURNING id, email, password_hash, first_name, last_name, role, country, active,
+                 COALESCE(custom_allowed_modules, allowed_modules) AS allowed_modules,
+                 custom_allowed_modules, rrhh_user_id, last_access, created_at`,
       [req.params.id]
     );
     if (result.rows[0]) await syncLegacyUser(result.rows[0]);

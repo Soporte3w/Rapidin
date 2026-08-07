@@ -27,6 +27,21 @@ import { DEFAULT_SYSTEM_ROLE_LABELS, DEFAULT_SYSTEM_ROLE_OPTIONS } from '../../.
 
 const PAGE_SIZES = [5, 10, 20, 50];
 const RRHH_AUTO_REFRESH_INTERVAL_MS = 30_000;
+const LAST_ACCESS_FORMATTER = new Intl.DateTimeFormat('es-PE', {
+  timeZone: 'America/Lima',
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+const formatLastAccess = (value?: string | null) => {
+  if (!value) return 'Nunca';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : LAST_ACCESS_FORMATTER.format(date);
+};
 
 const getInitialPermissions = () => [...DEFAULT_ADMIN_PERMISSIONS];
 
@@ -715,11 +730,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                     </span>
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {user.last_access ? new Date(user.last_access).toLocaleDateString('es-ES', { 
-                      year: 'numeric', 
-                      month: 'short', 
-                      day: 'numeric' 
-                    }) : 'Nunca'}
+                    {formatLastAccess(user.last_access)}
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap text-right">
                     <div className="flex items-center justify-end gap-2">

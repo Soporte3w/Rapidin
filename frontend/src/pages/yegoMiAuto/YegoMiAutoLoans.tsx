@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
-import { Banknote, History } from 'lucide-react';
+import { Banknote, FileSpreadsheet, History } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatDate } from '../../utils/date';
 import { MIAUTO_NO_CACHE_HEADERS, isAxiosAbortError } from '../../utils/miautoApiUtils';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { RapidinSearchField } from '../../components/RapidinSearchField';
 import { TablePaginationBar } from '../../components/TablePaginationBar';
+import { MiautoControlReportExportModal } from '../../components/yegoMiAuto/MiautoControlReportExportModal';
 import {
   ALQUILER_VENTA_CUOTA_ESTADO_OPTIONS,
   conductorDisplay,
@@ -103,6 +104,7 @@ export default function YegoMiAutoLoans() {
   const [cronogramaId, setCronogramaId] = useState(isReturnFromDetail ? (searchState?.cronogramaId ?? '') : '');
   const [cuotaEstado, setCuotaEstado] = useState(isReturnFromDetail ? (searchState?.cuotaEstado ?? '') : '');
   const [cronogramas, setCronogramas] = useState<{ id: string; name: string }[]>([]);
+  const [showControlExport, setShowControlExport] = useState(false);
 
   const filteredItems = useMemo(() => {
     const q = debouncedSearch.trim();
@@ -258,14 +260,24 @@ export default function YegoMiAutoLoans() {
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => navigate('/admin/yego-mi-auto/fleet-cobros')}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-white/15 px-3 py-2 text-sm font-medium text-white hover:bg-white/25"
-          >
-            <History className="h-4 w-4" />
-            Historial cobros Fleet
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowControlExport(true)}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-[#8B1A1A] hover:bg-red-50"
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              Exportar reporte
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/admin/yego-mi-auto/fleet-cobros')}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-white/15 px-3 py-2 text-sm font-medium text-white hover:bg-white/25"
+            >
+              <History className="h-4 w-4" />
+              Historial cobros Fleet
+            </button>
+          </div>
         </div>
       </header>
 
@@ -462,6 +474,14 @@ export default function YegoMiAutoLoans() {
           )}
         </>
       )}
+
+      <MiautoControlReportExportModal
+        open={showControlExport}
+        country={country}
+        cronogramas={cronogramas}
+        initialCronogramaId={cronogramaId}
+        onClose={() => setShowControlExport(false)}
+      />
     </div>
   );
 }

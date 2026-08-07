@@ -44,7 +44,7 @@ const cuotaSaldoPendienteSql = (alias) =>
       ELSE COALESCE(${alias}.paid_amount, 0)::numeric < COALESCE(${alias}.amount_due, 0)::numeric + COALESCE(${alias}.late_fee, 0)::numeric + COALESCE(${alias}.mora_extra, 0)::numeric - 0.005
     END)`;
 
-const cuotaCubiertaSql = (alias) =>
+export const cuotaCubiertaSql = (alias) =>
   `(CASE
       WHEN LOWER(COALESCE(${alias}.montos_fuente, '')) = 'excel'
         THEN COALESCE(${alias}.paid_amount, 0)::numeric >= COALESCE(${alias}.amount_due, 0)::numeric - 0.005
@@ -389,7 +389,15 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 
 /** Listado Alquiler/Venta con resumen de cuotas y moneda de cuotas según cronograma. */
 export const listAlquilerVenta = async (filters = {}) => {
-  const { country, page = 1, limit = 20, q: qFilter, cronograma_id: cronogramaIdFilter } = filters;
+  const {
+    country,
+    page = 1,
+    limit = 20,
+    q: qFilter,
+    cronograma_id: cronogramaIdFilter,
+    conductor_id: conductorIdFilter,
+    solicitud_id: solicitudIdFilter,
+  } = filters;
   const params = [];
   let n = 1;
   // Solo solicitudes aprobadas (con Yego Mi Auto generado)
@@ -426,6 +434,18 @@ export const listAlquilerVenta = async (filters = {}) => {
     params.push(cronogramaId);
     n += 1;
   }
+  const conductorId = trimOrUndefined(conductorIdFilter);
+  if (conductorId && UUID_RE.test(conductorId)) {
+    where += ` AND s.conductor_id = $${n}::uuid`;
+    params.push(conductorId);
+    n += 1;
+  }
+  const solicitudId = trimOrUndefined(solicitudIdFilter);
+  if (solicitudId && UUID_RE.test(solicitudId)) {
+    where += ` AND s.id = $${n}::uuid`;
+    params.push(solicitudId);
+    n += 1;
+  }
   const cuotaEstado = trimOrUndefined(filters.cuota_estado);
   if (cuotaEstado) {
     const ce = String(cuotaEstado).toLowerCase();
@@ -451,7 +471,8 @@ export const listAlquilerVenta = async (filters = {}) => {
 
   const listSql = `SELECT s.id, s.conductor_id, s.origen_registro, s.cronograma_id, s.cronograma_vehiculo_id, s.dni, s.phone, s.email, s.license_number, s.status, s.created_at, s.fecha_inicio_cobro_semanal, s.placa_asignada, s.driver_id_fleet,
             rd.first_name AS driver_first_name, rd.last_name AS driver_last_name,
-            c.name AS cronograma_name, v.name AS vehiculo_name, v.inicial AS vehiculo_inicial, v.inicial_moneda AS vehiculo_inicial_moneda, v.cuotas_semanales AS vehiculo_cuotas_semanales
+            c.name AS cronograma_name, COALESCE(c.bono_tiempo_activo, false) AS bono_tiempo_activo,
+            v.name AS vehiculo_name, v.inicial AS vehiculo_inicial, v.inicial_moneda AS vehiculo_inicial_moneda, v.cuotas_semanales AS vehiculo_cuotas_semanales
      ${fromBase}
      ${where}
      ORDER BY s.fecha_inicio_cobro_semanal DESC NULLS LAST, s.created_at DESC
@@ -587,6 +608,8 @@ export const listAlquilerVenta = async (filters = {}) => {
       fired_driver_name: isFired ? driverName : undefined,
       yango_work_status: driverStatus || undefined,
       cronograma_name: r.cronograma_name || undefined,
+      cronograma_id: r.cronograma_id || undefined,
+      bono_tiempo_activo: r.bono_tiempo_activo === true,
       vehiculo_name: r.vehiculo_name || undefined,
       vehiculo_inicial: r.vehiculo_inicial != null ? parseFloat(r.vehiculo_inicial) || 0 : undefined,
       vehiculo_inicial_moneda: r.vehiculo_inicial_moneda || undefined,

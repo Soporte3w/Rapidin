@@ -22,6 +22,7 @@ import { getPartnerNameById } from '../../../services/partnersService.js';
 import { getContractorProfile, searchFleetContractorFull } from '../../../services/yangoService.js';
 import { getDniFromPeruvianLicense } from '../../services/utils/miautoLicenseDocument.js';
 import pool from '../../../database/connection.js';
+import { createMiautoControlReportExport } from '../../services/reportes/miautoControlReportService.js';
 
 const router = Router();
 
@@ -79,6 +80,30 @@ async function ensureSolicitudOwnedByDriver(solicitudId, req, res) {
   }
   return true;
 }
+
+// GET /api/miauto/alquiler-venta/exportar
+router.get('/alquiler-venta/exportar', async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return errorResponse(res, 'Sin permisos para exportar el reporte de control', 403);
+    }
+    const { buffer, fileName } = await createMiautoControlReportExport({
+      country: trimOrUndefined(req.query.country),
+      cronograma_id: trimOrUndefined(req.query.cronograma_id),
+      conductor_id: trimOrUndefined(req.query.conductor_id),
+      solicitud_id: trimOrUndefined(req.query.solicitud_id),
+      week_from: trimOrUndefined(req.query.week_from),
+      week_to: trimOrUndefined(req.query.week_to),
+    });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Length', String(buffer.length));
+    return res.send(buffer);
+  } catch (error) {
+    logger.error('Error exportando reporte de control Mi Auto:', error);
+    return errorResponse(res, error.message || 'Error al exportar el reporte de control', error.statusCode || 500);
+  }
+});
 
 // GET /api/miauto/alquiler-venta
 router.get('/alquiler-venta', async (req, res) => {

@@ -10,6 +10,7 @@ export const ALQUILER_VENTA_CUOTA_ESTADO_OPTIONS: { value: string; label: string
 /** Respuesta de GET /miauto/alquiler-venta (listado Alquiler/Venta). */
 export interface AlquilerVentaListItem {
   id: string;
+  conductor_id?: string;
   dni: string;
   status: string;
   created_at: string;
@@ -21,6 +22,8 @@ export interface AlquilerVentaListItem {
   phone?: string;
   email?: string;
   cronograma_name?: string;
+  cronograma_id?: string;
+  bono_tiempo_activo?: boolean;
   vehiculo_name?: string;
   vehiculo_inicial?: number;
   vehiculo_inicial_moneda?: 'USD' | 'PEN' | 'COP' | string;

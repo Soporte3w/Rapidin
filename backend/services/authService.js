@@ -12,20 +12,20 @@ export const login = async (email, password) => {
     const result = await query(
         `SELECT
             u.id,
-            COALESCE(h.email, u.email) AS email,
-            COALESCE(h.password_hash, u.password_hash) AS password_hash,
-            COALESCE(h.first_name, u.first_name) AS first_name,
-            COALESCE(h.last_name, u.last_name) AS last_name,
+            h.email,
+            h.password_hash,
+            h.first_name,
+            h.last_name,
             u.role,
             u.country,
-            (u.active AND COALESCE(h.is_active, true)) AS active,
+            (u.active AND h.is_active) AS active,
             COALESCE(u.custom_allowed_modules, r.allowed_modules, u.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
             COALESCE(r.base_role, u.role) AS base_role,
             r.name AS role_name
          FROM ${SYSTEM_USERS_TABLE} u
          LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
-         LEFT JOIN ${RRHH_USERS_TABLE} h ON h.id = u.rrhh_user_id
-         WHERE LOWER(COALESCE(h.email, u.email)) = LOWER($1)`,
+         JOIN ${RRHH_USERS_TABLE} h ON h.id = u.rrhh_user_id
+         WHERE LOWER(h.email) = LOWER($1)`,
         [email]
     );
 
@@ -72,22 +72,22 @@ export const getCurrentUser = async (userId) => {
     const result = await query(
         `SELECT
             u.id,
-            COALESCE(h.email, u.email) AS email,
-            COALESCE(h.first_name, u.first_name) AS first_name,
-            COALESCE(h.last_name, u.last_name) AS last_name,
+            h.email,
+            h.first_name,
+            h.last_name,
             u.role,
             u.country,
-            (u.active AND COALESCE(h.is_active, true)) AS active,
+            (u.active AND h.is_active) AS active,
             u.last_access,
             u.created_at,
             COALESCE(r.base_role, u.role) AS base_role,
             r.name AS role_name,
             COALESCE(u.custom_allowed_modules, r.allowed_modules, u.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
             u.rrhh_user_id,
-            COALESCE(h.is_active, true) AS employment_active
+            h.is_active AS employment_active
          FROM ${SYSTEM_USERS_TABLE} u
          LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
-         LEFT JOIN ${RRHH_USERS_TABLE} h ON h.id = u.rrhh_user_id
+         JOIN ${RRHH_USERS_TABLE} h ON h.id = u.rrhh_user_id
          WHERE u.id = $1`,
         [userId]
     );

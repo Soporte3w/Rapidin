@@ -13,17 +13,17 @@ function updateRequestUserContext(user) {
 
 const ADMIN_USER_SELECT = `
   u.id,
-  COALESCE(h.email, u.email) AS email,
-  COALESCE(h.first_name, u.first_name) AS first_name,
-  COALESCE(h.last_name, u.last_name) AS last_name,
+  h.email,
+  h.first_name,
+  h.last_name,
   u.role,
   u.country,
-  (u.active AND COALESCE(h.is_active, true)) AS active,
+  (u.active AND h.is_active) AS active,
   COALESCE(u.custom_allowed_modules, r.allowed_modules, u.allowed_modules, '{rapidin}'::text[]) AS allowed_modules,
   COALESCE(r.base_role, u.role) AS base_role,
   r.name AS role_name,
   u.rrhh_user_id,
-  COALESCE(h.is_active, true) AS employment_active,
+  h.is_active AS employment_active,
   CASE
     WHEN u.role = 'admin' OR COALESCE(r.base_role, u.role) = 'admin'
       THEN ARRAY['PE', 'CO']::text[]
@@ -61,7 +61,7 @@ export const verifyToken = async (req, res, next) => {
       `SELECT ${ADMIN_USER_SELECT}
        FROM ${SYSTEM_USERS_TABLE} u
        LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
-       LEFT JOIN ${RRHH_USERS_TABLE} h ON h.id = u.rrhh_user_id
+       JOIN ${RRHH_USERS_TABLE} h ON h.id = u.rrhh_user_id
        WHERE u.id = $1`,
       [decoded.userId]
     );
@@ -131,7 +131,7 @@ export const authenticate = async (req, res, next) => {
         `SELECT ${ADMIN_USER_SELECT}
          FROM ${SYSTEM_USERS_TABLE} u
          LEFT JOIN ${SYSTEM_ROLES_TABLE} r ON r.code = u.role
-         LEFT JOIN ${RRHH_USERS_TABLE} h ON h.id = u.rrhh_user_id
+         JOIN ${RRHH_USERS_TABLE} h ON h.id = u.rrhh_user_id
          WHERE u.id = $1`,
         [decoded.userId]
       );
@@ -190,4 +190,3 @@ export const verifyRole = (...roles) => {
     next();
   };
 };
-

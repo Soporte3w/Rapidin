@@ -8,7 +8,6 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
-  Users,
   ShieldCheck,
   KeyRound,
   UserCheck,
@@ -111,9 +110,8 @@ type SystemRole = {
 
 type SystemUser = {
   id: string;
-  directory_user_id?: string | null;
+  directory_user_id: string;
   system_user_id?: string | null;
-  source?: 'rrhh' | 'local';
   email: string;
   first_name?: string;
   last_name?: string;
@@ -128,22 +126,12 @@ type SystemUser = {
   last_access?: string | null;
 };
 
-const createEmptyUserForm = () => ({
-  email: '',
-  password: '',
-  first_name: '',
-  last_name: '',
-  role: '',
-  country: 'PE',
-});
-
 const createEmptyEditUserForm = () => ({
   first_name: '',
   last_name: '',
   role: '',
   country: 'PE',
   active: true,
-  password: '',
   use_role_permissions: true,
   allowed_modules: getInitialPermissions(),
 });
@@ -268,7 +256,6 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
   const [search, setSearch] = useState('');
-  const [open, setOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [roleOpen, setRoleOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<SystemRole | null>(null);
@@ -277,11 +264,9 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
   const [userToDelete, setUserToDelete] = useState<any>(null);
   const [roleDeleteOpen, setRoleDeleteOpen] = useState(false);
   const [roleToDelete, setRoleToDelete] = useState<SystemRole | null>(null);
-  const [loadingCreate, setLoadingCreate] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(false);
   const [loadingDelete, setLoadingDelete] = useState(false);
   const [loadingRole, setLoadingRole] = useState(false);
-  const [formData, setFormData] = useState(createEmptyUserForm);
   const [editFormData, setEditFormData] = useState(createEmptyEditUserForm);
   const [roleFormData, setRoleFormData] = useState(createEmptyRoleForm);
 
@@ -355,11 +340,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
     await Promise.all([fetchUsers(), fetchRoles()]);
   };
 
-  const applyRoleToForm = (roleCode: string, target: 'create' | 'edit') => {
-    if (target === 'create') {
-      setFormData((prev) => ({ ...prev, role: roleCode }));
-      return;
-    }
+  const applyRoleToForm = (roleCode: string) => {
     setEditFormData((prev) => ({ ...prev, role: roleCode }));
   };
 
@@ -421,22 +402,6 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
     }
   };
 
-  const handleSubmit = async () => {
-    setLoadingCreate(true);
-    try {
-      await api.post('/users', formData);
-      toast.success('Usuario creado correctamente');
-      setOpen(false);
-      setPage(1);
-      await refreshUsersAndRoles();
-      setFormData(createEmptyUserForm());
-    } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Error al crear el usuario');
-    } finally {
-      setLoadingCreate(false);
-    }
-  };
-
   const openEdit = (user: SystemUser) => {
     setEditingUser(user);
     setEditFormData({
@@ -445,7 +410,6 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
       role: user.role || '',
       country: user.country || 'PE',
       active: user.active === true || (!user.system_user_id && user.employment_active !== false),
-      password: '',
       use_role_permissions: user.inherits_role_permissions !== false,
       allowed_modules: user.custom_allowed_modules || user.allowed_modules || getInitialPermissions(),
     });
@@ -464,12 +428,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
         active: editFormData.active,
         custom_allowed_modules: editFormData.use_role_permissions ? null : editFormData.allowed_modules,
       };
-      if (editFormData.password.trim()) payload.password = editFormData.password;
-      if (editingUser.directory_user_id) {
-        await api.put(`/users/directory/${encodeURIComponent(editingUser.directory_user_id)}/access`, payload);
-      } else {
-        await api.put(`/users/${editingUser.system_user_id || editingUser.id}`, payload);
-      }
+      await api.put(`/users/directory/${encodeURIComponent(editingUser.directory_user_id)}/access`, payload);
       toast.success(editFormData.active ? 'Acceso actualizado correctamente' : 'Acceso desactivado correctamente');
       setEditOpen(false);
       setEditingUser(null);
@@ -490,11 +449,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
     if (!userToDelete?.id) return;
     setLoadingDelete(true);
     try {
-      if (userToDelete.directory_user_id) {
-        await api.put(`/users/directory/${encodeURIComponent(userToDelete.directory_user_id)}/access`, { active: false });
-      } else {
-        await api.delete(`/users/${userToDelete.system_user_id || userToDelete.id}`);
-      }
+      await api.put(`/users/directory/${encodeURIComponent(userToDelete.directory_user_id)}/access`, { active: false });
       toast.success('Usuario desactivado correctamente');
       setDeleteOpen(false);
       setUserToDelete(null);
@@ -700,7 +655,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap">
                     <span className="px-3 py-1 text-xs font-semibold rounded-full bg-slate-100 text-slate-700">
-                      {user.rrhh_role || (user.source === 'local' ? 'Cuenta local' : 'Sin rol')}
+                      {user.rrhh_role || 'Sin rol'}
                     </span>
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap">
@@ -908,136 +863,6 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
         </ModalShell>
       )}
 
-      {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-950/60 backdrop-blur-sm">
-          <div className="bg-white rounded-lg shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden border border-gray-200 flex flex-col">
-            <div className="flex justify-between items-center p-5 border-b border-gray-200 bg-white">
-              <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-lg bg-red-50 text-red-700 flex items-center justify-center">
-                  <Users className="h-5 w-5" />
-                </div>
-                <div>
-                  <h2 className="text-lg font-bold text-gray-950">Nuevo usuario</h2>
-                  <p className="text-xs text-gray-500">Crea una cuenta y asígnale un rol.</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setOpen(false)}
-                className="h-9 w-9 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors flex items-center justify-center"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-5 space-y-5 overflow-y-auto">
-              <div className="rounded-lg border border-gray-200 p-4">
-                <h3 className="text-sm font-bold text-gray-950 mb-4">Datos de acceso</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-gray-900 mb-1.5">
-                  Email <span className="text-red-600">*</span>
-                </label>
-                <input
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  required
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-gray-900 mb-1.5">
-                  Contraseña <span className="text-red-600">*</span>
-                </label>
-                <input
-                  type="password"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  required
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
-                />
-              </div>
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-gray-200 p-4">
-                <h3 className="text-sm font-bold text-gray-950 mb-4">Perfil</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-900 mb-1.5">
-                    Nombre <span className="text-red-600">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.first_name}
-                    onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
-                    required
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-gray-900 mb-1.5">
-                    Apellido <span className="text-red-600">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.last_name}
-                    onChange={(e) => setFormData({ ...formData, last_name: e.target.value })}
-                    required
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
-                  />
-                </div>
-              </div>
-
-              <div className="mt-4">
-                <label className="block text-xs font-semibold text-gray-900 mb-1.5">
-                  Rol <span className="text-red-600">*</span>
-                </label>
-                <select
-                  value={formData.role}
-                  onChange={(e) => applyRoleToForm(e.target.value, 'create')}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
-                >
-                  <option value="">Selecciona un rol</option>
-                  {roleOptions.map((role) => (
-                    <option key={role.value} value={role.value}>{role.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="mt-4">
-                <label className="block text-xs font-semibold text-gray-900 mb-1.5">País</label>
-                <select
-                  value={formData.country}
-                  onChange={(e) => setFormData({ ...formData, country: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
-                >
-                  <option value="PE">Perú</option>
-                  <option value="CO">Colombia</option>
-                </select>
-              </div>
-              </div>
-            </div>
-            <div className="flex justify-end gap-3 p-5 border-t border-gray-200 bg-gray-50">
-              <button
-                onClick={() => setOpen(false)}
-                className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all font-medium"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleSubmit}
-                disabled={loadingCreate}
-                className="px-6 py-2 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-lg transition-all font-semibold shadow-md text-sm disabled:opacity-70 disabled:cursor-not-allowed flex items-center gap-2"
-              >
-                {loadingCreate && <Loader2 className="h-4 w-4 animate-spin" />}
-                {loadingCreate ? 'Creando...' : 'Crear'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {editOpen && editingUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-950/60 backdrop-blur-sm">
           <div className="bg-white rounded-lg shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden border border-gray-200 flex flex-col">
@@ -1072,7 +897,6 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                 />
               </div>
 
-              {editingUser.source === 'rrhh' ? (
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1.5">Rol en RR. HH.</label>
                 <input
@@ -1082,18 +906,6 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-600 text-sm"
                 />
               </div>
-              ) : (
-              <div>
-                <label className="block text-xs font-semibold text-gray-900 mb-1.5">Nueva contraseña (opcional)</label>
-                <input
-                  type="password"
-                  value={editFormData.password}
-                  onChange={(e) => setEditFormData({ ...editFormData, password: e.target.value })}
-                  placeholder="Dejar en blanco para no cambiar"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
-                />
-              </div>
-              )}
                 </div>
               </div>
 
@@ -1106,7 +918,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                     type="text"
                     value={editFormData.first_name}
                     onChange={(e) => setEditFormData({ ...editFormData, first_name: e.target.value })}
-                    disabled={editingUser.source === 'rrhh'}
+                    disabled
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm disabled:border-gray-200 disabled:bg-gray-50 disabled:text-gray-600"
                   />
                 </div>
@@ -1116,7 +928,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                     type="text"
                     value={editFormData.last_name}
                     onChange={(e) => setEditFormData({ ...editFormData, last_name: e.target.value })}
-                    disabled={editingUser.source === 'rrhh'}
+                    disabled
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm disabled:border-gray-200 disabled:bg-gray-50 disabled:text-gray-600"
                   />
                 </div>
@@ -1126,7 +938,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
                 <label className="block text-xs font-semibold text-gray-900 mb-1.5">Rol</label>
                 <select
                   value={editFormData.role}
-                  onChange={(e) => applyRoleToForm(e.target.value, 'edit')}
+                  onChange={(e) => applyRoleToForm(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-600 outline-none transition-all text-sm"
                 >
                   <option value="">Selecciona un rol</option>

@@ -26,6 +26,7 @@ import {
 import { DEFAULT_SYSTEM_ROLE_LABELS, DEFAULT_SYSTEM_ROLE_OPTIONS } from '../../../config/systemRoles';
 
 const PAGE_SIZES = [5, 10, 20, 50];
+const RRHH_AUTO_REFRESH_INTERVAL_MS = 30_000;
 
 const getInitialPermissions = () => [...DEFAULT_ADMIN_PERMISSIONS];
 
@@ -308,6 +309,19 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
   useEffect(() => {
     fetchUsers();
     fetchRoles();
+
+    const refreshVisibleDirectory = () => {
+      if (document.visibilityState === 'visible') void fetchUsers(true);
+    };
+    const intervalId = window.setInterval(refreshVisibleDirectory, RRHH_AUTO_REFRESH_INTERVAL_MS);
+    window.addEventListener('focus', refreshVisibleDirectory);
+    document.addEventListener('visibilitychange', refreshVisibleDirectory);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', refreshVisibleDirectory);
+      document.removeEventListener('visibilitychange', refreshVisibleDirectory);
+    };
   }, []);
 
   useEffect(() => {
@@ -318,12 +332,12 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
     setPage(1);
   }, [search]);
 
-  const fetchUsers = async () => {
+  const fetchUsers = async (silent = false) => {
     try {
       const response = await api.get('/users');
       setUsers(response.data.data);
     } catch {
-      toast.error('Error al cargar usuarios');
+      if (!silent) toast.error('Error al cargar usuarios');
     }
   };
 
@@ -594,7 +608,9 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
         <div className="flex flex-col gap-3 px-5 py-4 border-b border-gray-100 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h3 className="text-base font-bold text-gray-950">Directorio de usuarios</h3>
-            <p className="text-xs text-gray-500 mt-0.5">Los empleados sin una asignación aparecen automáticamente sin acceso.</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Altas y bajas se reflejan automáticamente desde RR. HH.; los empleados sin asignación aparecen sin acceso.
+            </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <label className="relative block">

@@ -39,6 +39,9 @@ test('el login acepta usuario, correo o DNI de RR. HH.', async () => {
 test('la administración de usuarios solo concede acceso desde el directorio de RR. HH.', async () => {
   const routesSource = await readBackendFile('routes/users.js');
 
+  assert.match(routesSource, /FROM \$\{RRHH_USERS_TABLE\} h/);
+  assert.match(routesSource, /LEFT JOIN \$\{SYSTEM_USERS_TABLE\} u ON u\.rrhh_user_id = h\.id/);
+  assert.match(routesSource, /\(u\.id IS NOT NULL AND u\.active AND h\.is_active\) AS active/);
   assert.match(routesSource, /router\.put\('\/directory\/:id\/access'/);
   assert.doesNotMatch(routesSource, /router\.post\('\/'/);
   assert.doesNotMatch(routesSource, /router\.put\('\/:id'/);

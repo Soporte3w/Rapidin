@@ -127,6 +127,8 @@ type SystemUser = {
   last_access?: string | null;
 };
 
+type EmploymentStatusFilter = 'active' | 'inactive' | 'all';
+
 const createEmptyEditUserForm = () => ({
   first_name: '',
   last_name: '',
@@ -257,6 +259,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
   const [search, setSearch] = useState('');
+  const [employmentStatusFilter, setEmploymentStatusFilter] = useState<EmploymentStatusFilter>('active');
   const [editOpen, setEditOpen] = useState(false);
   const [roleOpen, setRoleOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<SystemRole | null>(null);
@@ -274,18 +277,24 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
   const total = users.length;
   const activeUsers = users.filter((user) => user.active !== false).length;
   const inactiveUsers = Math.max(0, total - activeUsers);
+  const employmentActiveTotal = users.filter((user) => user.employment_active !== false).length;
+  const employmentInactiveTotal = total - employmentActiveTotal;
   const activeRoles = roles.filter((role) => role.active).length;
   const filteredUsers = useMemo(() => {
     const term = search.trim().toLowerCase();
-    if (!term) return users;
-    return users.filter((user) => [
-      user.first_name,
-      user.last_name,
-      user.email,
-      user.rrhh_role,
-      user.role,
-    ].some((value) => String(value || '').toLowerCase().includes(term)));
-  }, [users, search]);
+    return users.filter((user) => {
+      if (employmentStatusFilter === 'active' && user.employment_active === false) return false;
+      if (employmentStatusFilter === 'inactive' && user.employment_active !== false) return false;
+      if (!term) return true;
+      return [
+        user.first_name,
+        user.last_name,
+        user.email,
+        user.rrhh_role,
+        user.role,
+      ].some((value) => String(value || '').toLowerCase().includes(term));
+    });
+  }, [users, search, employmentStatusFilter]);
   const filteredTotal = filteredUsers.length;
   const totalPages = Math.max(1, Math.ceil(filteredTotal / limit));
   const paginatedUsers = useMemo(() => {
@@ -330,7 +339,7 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
 
   useEffect(() => {
     setPage(1);
-  }, [search]);
+  }, [search, employmentStatusFilter]);
 
   const fetchUsers = async (silent = false) => {
     try {
@@ -613,6 +622,16 @@ const UsersManagement = ({ standalone = false }: { standalone?: boolean }) => {
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <select
+              value={employmentStatusFilter}
+              onChange={(event) => setEmploymentStatusFilter(event.target.value as EmploymentStatusFilter)}
+              aria-label="Filtrar por estado de RR. HH."
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none focus:border-red-600 focus:ring-2 focus:ring-red-500 sm:w-auto"
+            >
+              <option value="active">Activos ({employmentActiveTotal})</option>
+              <option value="inactive">Desactivados ({employmentInactiveTotal})</option>
+              <option value="all">Todos ({total})</option>
+            </select>
             <label className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
               <input
